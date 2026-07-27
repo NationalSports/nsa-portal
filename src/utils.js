@@ -658,11 +658,14 @@ export function labelWeightLbs(items, store = {}, weightByPid = {}) {
 // One shared renderer for every warehouse 4×6: receiving, item fulfillment,
 // box / deco hand-off. Print stock is PORTRAIT 4in × 6in (@page below pins it
 // so the browser targets the label, not Letter). Layout, top→bottom:
-//   QR (scan) → CODE (IF#/PO#) → SO# → PROGRAM (team) → status note → items.
+//   QR (scan) → CODE (IF#/PO#) → SO# → PROGRAM (team) → MEMO → status note → items.
+// The memo is the sales order's memo/description line ("Fall 2026 Soccer
+// Warmups") — it rides directly under the program so the warehouse can tell two
+// concurrent orders for the same team apart without opening the SO.
 // Callers pass either the legacy {id,qrData,lines,shipBadge} shape — lines
-// tagged cls:'team'→program, 'so'→subtitle(SO#), 'sku'/'sz'/plain→items,
-// 'sub'→note — or explicit {program,subtitle,items,note,code,codeSub} which
-// wins over lines.
+// tagged cls:'team'→program, 'so'→subtitle(SO#), 'memo'→memo,
+// 'sku'/'sz'/plain→items, 'sub'→note — or explicit
+// {program,subtitle,memo,items,note,code,codeSub} which wins over lines.
 const _LABEL_CSS=`
   @page{size:4in 6in;margin:0.15in}
   @media print{html,body{width:3.7in}}
@@ -675,6 +678,7 @@ const _LABEL_CSS=`
   .code{font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0}
   .subtitle{font-size:24px;font-weight:700;line-height:1.1;text-align:center;margin:2px 0 0}
   .program{font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word}
+  .memo{font-size:14px;font-weight:700;color:#334155;text-align:center;margin:3px 0 0;line-height:1.2;overflow-wrap:break-word}
   .rep{font-size:11px;font-weight:700;color:#334155;text-align:center;margin:4px 0 0}
   .badge{display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px;text-align:center}
   .meta{font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3}
@@ -700,20 +704,21 @@ const _qrImgSrc=(label,size)=>'https://api.qrserver.com/v1/create-qr-code/?size=
 // Resolve a label's display zones from either explicit fields or legacy `lines`.
 const _labelZones=(label={})=>{
   if(label.items||label.program||label.subtitle){
-    return {program:label.program||'',subtitle:label.subtitle||'',rep:label.rep||'',notes:label.note?[{text:label.note,style:label.noteStyle||''}]:[],items:label.items||[],code:label.code||label.id||''};
+    return {program:label.program||'',subtitle:label.subtitle||'',memo:label.memo||'',rep:label.rep||'',notes:label.note?[{text:label.note,style:label.noteStyle||''}]:[],items:label.items||[],code:label.code||label.id||''};
   }
   const norm=(label.lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
-  let program='',subtitle='',rep='';const notes=[],items=[];let cur=null;
+  let program='',subtitle='',memo='',rep='';const notes=[],items=[];let cur=null;
   norm.forEach(l=>{const t=l.text==null?'':l.text,cls=l.cls||'';
     if(cls==='team'&&!program){program=t;return}
     if(cls==='so'&&!subtitle){subtitle=t;return}
+    if(cls==='memo'&&!memo){memo=t;return}
     if(cls==='rep'&&!rep){rep=t;return}
     if(cls==='sku'){cur={title:t,detail:'',sizes:''};items.push(cur);return}
     if(cls==='sz'){if(cur){cur.sizes=cur.sizes?cur.sizes+'  '+t:t}else{cur={title:'',detail:'',sizes:t};items.push(cur)}return}
     if(cls==='sub'){notes.push({text:t,style:l.style||''});return}
     if(cur){cur.detail=cur.detail?cur.detail+' · '+t:t}else{notes.push({text:t,style:l.style||''})}
   });
-  return {program,subtitle,rep,notes,items,code:label.code||label.id||''};
+  return {program,subtitle,memo,rep,notes,items,code:label.code||label.id||''};
 };
 const _labelPageHtml=(label={})=>{
   const z=_labelZones(label);
@@ -735,6 +740,7 @@ const _labelPageHtml=(label={})=>{
     +(bigCode?`<div class="code">${bigCode}</div>`:'')
     +(z.subtitle?`<div class="subtitle">${z.subtitle}</div>`:'')
     +(z.program?`<div class="program">${z.program}</div>`:'')
+    +(z.memo?`<div class="memo">${z.memo}</div>`:'')
     +(z.rep?`<div class="rep">${z.rep}</div>`:'')
     +badge
     +metaHtml
@@ -784,6 +790,7 @@ export const downloadQrLabel=async(label={})=>{
     +(bigCode?`<div style="font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0">${bigCode}</div>`:'')
     +(z.subtitle?`<div style="font-size:24px;font-weight:700;line-height:1.1;text-align:center;margin:2px 0 0">${z.subtitle}</div>`:'')
     +(z.program?`<div style="font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word">${z.program}</div>`:'')
+    +(z.memo?`<div style="font-size:14px;font-weight:700;color:#334155;text-align:center;margin:3px 0 0;line-height:1.2;overflow-wrap:break-word">${z.memo}</div>`:'')
     +(z.rep?`<div style="font-size:11px;font-weight:700;color:#334155;text-align:center;margin:4px 0 0">${z.rep}</div>`:'')
     +badge+metaHtml
     +`<div style="margin-top:8px">${itemsHtml}</div>`

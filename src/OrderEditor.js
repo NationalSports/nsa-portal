@@ -11574,7 +11574,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
     {receivedConfirm&&(()=>{
       const rc=receivedConfirm;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(rc.poId);
-      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
+      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});if(o?.memo)lines.push({text:o.memo,cls:'memo'});{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
       return<div className="modal-overlay" onClick={()=>setReceivedConfirm(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>📦 Received — {rc.poId}</h2>
           <button className="modal-close" onClick={()=>setReceivedConfirm(null)}>x</button></div>
@@ -11638,6 +11638,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
       const buildLabelLines=()=>{
         const lines=[];
         if(cust?.name)lines.push({text:cust.name,cls:'team'});
+        if(o?.memo)lines.push({text:o.memo,cls:'memo'});
         {const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}
         lines.push({text:o.id,cls:'so'});
         itemInfos.forEach(info=>{
@@ -12193,6 +12194,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
                   qrData:shQrData,
                   lines:[
                     {text:(cust?.name||o.id),cls:'team'},
+                    ...(o?.memo?[{text:o.memo,cls:'memo'}]:[]),
                     ...(_shRep?[{text:_shRep,cls:'rep'}]:[]),
                     {text:o.id+' — Shipment #'+(si+1),cls:'so'},
                     {text:'Received: '+sh.date,cls:'sub',style:'color:#166534;font-weight:800;'},
@@ -12363,6 +12365,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
               const lines=[
                 {text:(cust?.name||o.id),cls:'team'},
+                ...(o?.memo?[{text:o.memo,cls:'memo'}]:[]),
                 ...((()=>{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));return _r&&_r.name?[{text:'Rep: '+_r.name.split(' ')[0],cls:'rep'}]:[]})()),
                 {text:o.id,cls:'so'},
                 {text:(item?.sku||'')+' '+(item?.name||''),cls:'sku'},

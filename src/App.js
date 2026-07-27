@@ -5598,12 +5598,12 @@ export default function App(){
   // print its SCANNABLE plate label (buildBoxLabel — resolves via ?scan= after the box-scan
   // fix). When box tracking isn't deployed (createBoxFor → null), runs printFallback so
   // receiving degrades to today's PO-scan label exactly like the pull path.
-  const receiveBoxAndPrint=async({poId,soId,lines,program,rep,printFallback})=>{
+  const receiveBoxAndPrint=async({poId,soId,lines,program,memo,rep,printFallback})=>{
     const contents=_recvBoxContents(lines,poId);
     let box=null;
     try{if(contents.length)box=await createBoxFor({kind:'receiving',soId:soId||null,poId,contents})}catch(e){/* best-effort */}
     if(box){
-      const _lbl=buildBoxLabel(box,{program:program||'',scanBase:window.location.origin+window.location.pathname});
+      const _lbl=buildBoxLabel(box,{program:program||'',memo:memo||'',scanBase:window.location.origin+window.location.pathname});
       printQrLabel({..._lbl,rep:rep||'',note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534'});
     } else if(typeof printFallback==='function'){printFallback()}
     return box;
@@ -5640,7 +5640,7 @@ export default function App(){
   const printBoxLabel=(box)=>{
     const _so=sos.find(s=>s.id===box.so_id);
     const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
-    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',scanBase:window.location.origin+window.location.pathname}));
+    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',memo:_so?.memo||'',scanBase:window.location.origin+window.location.pathname}));
   };
   // Combine: absorb `srcBox` into the box with id `tgtId` — sum SKUs+sizes, mark the absorbed
   // plate combined + merged_into (its label keeps resolving via the lookup redirect), reprint one label.
@@ -11906,20 +11906,23 @@ export default function App(){
     const _recvOne=(arr,key)=>{const s=[...new Set((arr||[]).map(x=>x[key]).filter(Boolean))];return s.length===1?s[0]:''};
     // Full program name = the SO's customer name (PO lines only carry the short alpha_tag); fall back to the tag.
     const _recvName=(soId,fallback)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fallback||''};
+    // SO memo — the order's description line, printed under the program name so a
+    // receiver can tell two live orders for the same team apart at the bench.
+    const _recvMemo=(soId)=>{const so=soId&&sos.find(s=>s.id===soId);return (so&&so.memo)||''};
     // Sales rep for the SO (customer's primary rep, else the SO creator), first name only.
     const _recvRep=(soId)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?'Rep: '+r.name.split(' ')[0]:''};
     const _recvNoteStyle=(boxLabel)=>/received/i.test(boxLabel||'')?'color:#166534':'color:#475569';
     // Single 4×6 — a non-batch PO, or one source PO pulled out of a batch.
     const printLabel=(items,poId,boxLabel)=>{
       const soId=_recvOne(items,'soId');
-      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),rep:_recvRep(soId),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
+      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),memo:_recvMemo(soId),rep:_recvRep(soId),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
     };
     // One 4×6 page per source PO in a batch — each box carries its own
     // customer + items, but all scan back to the same parent PO.
     const printBatchSeparateLabels=(sourcePOs,poId,boxLabel)=>{
       const n=(sourcePOs||[]).length;
       printQrLabels((sourcePOs||[]).map((sp,i)=>({
-        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),rep:_recvRep(sp.so_id),
+        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),memo:_recvMemo(sp.so_id),rep:_recvRep(sp.so_id),
         subtitle:[sp.so_id,n>1?('Box '+(i+1)+' of '+n):''].filter(Boolean).join(' · '),
         note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(sp.items),
         codeSub:_recvUnits(sp.items)+' units · scan to open '+poId
@@ -12168,7 +12171,7 @@ export default function App(){
                     // Box the received goods (kind='receiving', scannable plate) from the ACTUAL received
                     // qtys; fall back to the PO-scan label when box tracking isn't deployed.
                     const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
-                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
+                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),memo:_recvMemo(_bsid),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
@@ -16950,13 +16953,14 @@ export default function App(){
                         const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
                         if(pulledItemsForLabel.length>0){
                           const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
-                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          const _soMemo=t.so?.memo||'';
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(_soMemo)lines.push({text:_soMemo,cls:'memo'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
                           if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
                           const legacyLabel={id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines};
                           const boxContents=pulledItemsForLabel.map(({pi,qtys})=>({sku:pi.sku,name:pi.name,color:pi.color||'',so_id:t.soId,if_id:pickIdToUse,sizes:Object.fromEntries(pi.szKeys.filter(sz=>(qtys[sz]||0)>0).map(sz=>[sz,qtys[sz]]))}));
                           createBoxForPull({ifId:pickIdToUse,soId:t.soId,contents:boxContents}).then(box=>{
-                            printQrLabel(box?{...buildBoxLabel(box,{program:t.cName||'',rep:t.rep&&t.rep!=='—'?t.rep:'',scanBase:window.location.origin+window.location.pathname}),shipBadge:labelShipBadge}:legacyLabel);
+                            printQrLabel(box?{...buildBoxLabel(box,{program:t.cName||'',memo:_soMemo,rep:t.rep&&t.rep!=='—'?t.rep:'',scanBase:window.location.origin+window.location.pathname}),shipBadge:labelShipBadge}:legacyLabel);
                           }).catch(()=>printQrLabel(legacyLabel));
                         }
                       }catch(e){/* label print is best-effort */}
@@ -17030,7 +17034,7 @@ export default function App(){
                   color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
                   bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
                 };
-                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
+                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.so?.memo)lines.push({text:t.so.memo,cls:'memo'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
                 return<div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge,title:t.cName||t.soId,subtitle:t.soId,totalUnits:grandNeed,items:pickItems.map(pi=>({sku:pi.sku||'',name:pi.name||'',color:pi.color||'',units:pi.needsPull,sizes:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
@@ -17078,7 +17082,7 @@ export default function App(){
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}} disabled={boxUnits===0} title="Print 4×6 box label" onClick={()=>{
                         const _sb=shipDest==='ship_customer'?{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'}:shipDest==='ship_deco'?{text:'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''),color:'#d97706',bg:'#fffbeb'}:null;
                         const _items=(box.items||[]).map(it2=>{const sz=Object.entries(it2.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it2.sku||'')+' '+(it2.name||'')).trim(),detail:[(it2.color&&it2.color!=='—')?it2.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
-                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',rep:t.rep&&t.rep!=='—'?'Rep: '+t.rep:'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
+                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',memo:t.so?.memo||'',rep:t.rep&&t.rep!=='—'?'Rep: '+t.rep:'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
                       }}>🖨️ Label</button>
                       {boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
                         onClick={()=>{const b=[...boxes];b.splice(bi,1);setBoxes(b)}}>×</button>}
@@ -17637,16 +17641,19 @@ export default function App(){
                     const _mkItems=(arr)=>(arr||[]).map(it=>{const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
                     const _pName=(sid,fb)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fb||''};
                     const _pRep=(sid)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?'Rep: '+r.name.split(' ')[0]:''};
+                    // SO memo — printed under the program so the check-in bench can tell
+                    // two live orders for the same team apart without opening the SO.
+                    const _pMemo=(sid)=>{const so=sid&&sos.find(s=>s.id===sid);return (so&&so.memo)||''};
                     if(batchMatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                       const n=batchMatch.source_pos.length;
-                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
+                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),memo:_pMemo(sp.so_id),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
                       const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered,soId:it.soId}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
+                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),memo:_pMemo(_sid),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
                       // Box tracking v1: the received goods get a kind='receiving' box (source_refs=[{PO}])
                       // and a SCANNABLE plate label; falls back to the PO-scan label above when boxes aren't deployed.
-                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
+                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),memo:_pMemo(_sid),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
