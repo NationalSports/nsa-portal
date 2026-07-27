@@ -25,13 +25,19 @@ Volleyball** "JV Uniforms" order and saved. That save **overwrote Rachel's order
 item-write guards blocked the item swap, leaving Rachel's soccer balls sitting under Sharon's
 header. That is exactly what Rachel is looking at. CONFIRMED.
 
-**Neither order is intact.** Encinitas's rec-ball order lost its identity; Clovis South's JV
-Uniforms order never got its line items and does not exist anywhere else.
+**Neither order was intact.** Encinitas's rec-ball order lost its identity — along with its tax rate
+and ship-to address, which had become Clovis South's; Clovis South's JV Uniforms order never got its
+line items and exists nowhere else.
 
-**Scope: 8 sales orders and 9 estimates** across at least 9 users, Jun 26 – Jul 22. Four orders and
-several estimates were silently destroyed and never recreated (§3). Several show sessions
-*ping-ponging* — two users each holding "their" order at the same number, alternately stomping each
-other for up to 20 minutes (SO-1437 had **four** competing identities; EST-1645 flipped 7 times).
+**Scope: 8 sales orders and 9 estimates** across at least 9 users, Jun 26 – Jul 22. Several show
+sessions *ping-ponging* — two users each holding "their" order at the same number, alternately
+stomping each other for up to 20 minutes (SO-1437 had **four** competing identities; EST-1645 flipped
+7 times).
+
+**Two orders have been repaired** (§3.1): SO-1507 restored in place, and Fresno Pacific's destroyed
+"Sunny Jersey" order rebuilt as **SO-1670** with its already-sent invoice re-pointed to it. Three
+others lost their headers before any line item was ever saved, so nothing exists to rebuild — those
+have to be re-entered by hand (§3).
 
 **Root cause is one line asking the wrong question.** The save decides insert-vs-upsert with
 `_isNewSO = !existingSO` — *"is this id free in the DB?"* On a real collision the incumbent row is
@@ -86,27 +92,64 @@ no false positives were found on inspection.
 "Lost" = that order's header was overwritten. "Recreated as" = a live order with the same customer
 and memo exists elsewhere.
 
-| Contested | Order that lost the number | Recreated as |
+| Contested | Order that lost the number | Status |
 |---|---|---|
-| **SO-1507** | Encinitas Express Soccer · "Rec Ball Order" | **— none —** |
-| **SO-1502** | Fresno Pacific University · "Sunny Jersey" | **— none —** |
-| **SO-1485** | Dave Blomquist · "Camp Balls" | **— none —** |
-| **SO-1437** | Clovis South Girls Golf · (blank memo) | **— none —** |
-| SO-1514 | Dana Hills Football · "Pracitce Gear" | **— none —** (SO-1514 now holds Fresno Pacific Cheer "Fall Gear") |
-| SO-1340 | Biola University Men's Soccer · "2026 June Pinnies" | SO-1371 |
-| SO-1454 | Orange Lutheran Boy's Soccer · "2026Book" | SO-1455 |
-| SO-1472 | CUI W Soccer · "June 2026 add M" | SO-1608 |
-| SO-1437 | Golden West Flag Football · "Pop Flags (copy)" | SO-1539 |
+| **SO-1507** | Encinitas Express Soccer · "Rec Ball Order" | ✅ **repaired in place** — see §3.1 |
+| **SO-1502** | Fresno Pacific University · "Sunny Jersey" | ✅ **rebuilt as SO-1670** — see §3.1 |
+| SO-1485 | Dave Blomquist · "Camp Balls" | header only — nothing recoverable |
+| SO-1437 | Clovis South Girls Golf · (blank memo) | header only — nothing recoverable |
+| SO-1514 | Dana Hills Football · "Pracitce Gear" | header only — nothing recoverable |
+| SO-1340 | Biola University Men's Soccer · "2026 June Pinnies" | recreated as SO-1371 |
+| SO-1454 | Orange Lutheran Boy's Soccer · "2026Book" | recreated as SO-1455 |
+| SO-1472 | CUI W Soccer · "June 2026 add M" | recreated as SO-1608 |
+| SO-1437 | Golden West Flag Football · "Pop Flags (copy)" | recreated as SO-1539 |
 
-**Five orders were destroyed and never rebuilt** — the top four plus Dana Hills on SO-1514. Those
-need a human who knows the accounts to decide whether the work is still owed.
+"Header only" means the losing session never successfully wrote a single `so_items` row, so there is
+nothing in the audit log to rebuild from beyond customer, memo and a few header fields. Those three
+have to be re-entered by the rep who owns the account; no tooling can recover them. The same is true
+of Sharon's Clovis South "JV Uniforms" order on SO-1507.
 
 SO-1437 is the worst case: **four** different orders (Clovis South Tennis, Clovis South Girls Golf,
 Golden West Flag Football, and Clovis South Tennis again) held that number across 34 minutes on
 Jul 6, with Sharon and Kevin's sessions overwriting each other six times.
 
-SO-1514 is currently a hybrid: Fresno Pacific Cheer's customer and memo on Dana Hills' `created_at`
-stamp. It was repaired by hand at some point; Dana Hills' order was the casualty.
+**Correction to an earlier draft of this document:** SO-1514 was listed as a recoverable loss because
+two Gildan tee lines (`5000 GphHeather`, `5000-49 Graphite Heather`) appear in history but not in the
+live order. That was a false positive. They are earlier variants of the same tee, swapped for
+`5000 Graphite Hthr` during ordinary editing on Fresno Pacific Cheer's order — the decoration notes
+on all of them read "Fresno Pacific Cheerleading Logo". No work was lost there. Dana Hills' order on
+that number saved no items at all.
+
+### 3.1 Repairs applied to production — 2026-07-27
+
+**SO-1507 — restored in place.** Sharon's overwrite had replaced nine header fields, three of which
+were live hazards rather than cosmetic: `tax_rate` 0.0775 → **0** (the order no longer reconciled with
+its own invoice, which had been cut at the correct rate), `ship_to_id` → **Clovis South's alternate
+address** (on an order sitting in `needs_pull`, that ships 330 soccer balls to the wrong school), and
+`shipping_value` 3 → 5. Restored from the `old_data` of the overwrite audit row: `customer_id`,
+`memo`, `created_by`, `created_at`, `estimate_id` (→ EST-1534), `tax_rate`, `shipping_value`,
+`ship_to_id`, and cleared `po_number` 27000632 (which arrived *with* Sharon's overwrite, so it is
+Clovis's customer PO, not Encinitas's).
+
+Deliberately **not** reverted: `status` (Rachel set `needs_pull` herself on Jul 27) and
+`expected_date` (unchanged by the overwrite). Items and INV-63155 ($4,294.34, billed to Encinitas)
+were already correct and now agree with the header.
+
+**SO-1502 → rebuilt as SO-1670.** Fresno Pacific University's "Sunny Jersey" order was invoiced
+before it was destroyed — **INV-63149 ($87.01) was emailed to the customer on Jul 13 and opened**, and
+was still pointing at Clarksville Football's backpack order. Rebuilt from audit history with both
+lines (1× CUSTOM SUBLIMATED JERSEY, UBIX, vendor `ns_3801`, $48 sell / $25 cost, sizes `{"OSFA":1}`;
+plus the $15 Artwork line), header restored from the pre-overwrite audit row (EST-1537, flat $35
+shipping, 8.35% tax, `default` ship-to), and **INV-63149 re-pointed to SO-1670**. Its invoice math
+independently confirms the reconstruction: 48 + 35 shipping + 4.01 tax = 87.01, and only the jersey
+was billed — the Artwork line was on the SO but never invoiced.
+
+`status` was set to `complete` to match its state at destruction; if that jersey never actually
+shipped, that needs changing by hand.
+
+**Verification.** A sweep of every live invoice against its order's customer now returns no
+mismatches except four on SO-1436 (Lincoln Cross Country, billed to four Portland-area high schools),
+which is deliberate split billing for a meet, not a collision.
 
 ### Estimates — 9 contested numbers
 
@@ -246,18 +289,29 @@ stops the data loss on its own. It belongs in its own change.
 
 ## 7. What I could not determine
 
-- **Whether the destroyed orders are still owed.** The audit log preserves each lost order's
-  customer, memo and timestamps, but not whether the customer was served some other way. The five
-  orders in §3 with no recreation need someone who knows the accounts.
-- **Whether SO-1514's hybrid state is fully repaired.** It currently reads Fresno Pacific Cheer /
-  "Fall Gear" on Dana Hills' `created_at`, with 5 items. Someone repaired it by hand; I did not
-  verify the item list against what Fresno Pacific actually ordered.
+- **Whether the three "header only" orders are still owed** (Dave Blomquist "Camp Balls", Clovis South
+  Girls Golf, Dana Hills "Pracitce Gear", plus Clovis South "JV Uniforms"). No line items were ever
+  saved, so nothing can be reconstructed; the reps who own those accounts have to re-enter them.
+- **Whether SO-1670's `complete` status is right.** It matches the order's state at destruction, and
+  the invoice went out and was opened, but I could not confirm the jersey physically shipped.
+- **Whether SO-1514's item list is right.** It currently reads Fresno Pacific Cheer / "Fall Gear" on
+  Dana Hills' `created_at` stamp, with 5 items. Someone repaired the header by hand; I confirmed no
+  items were lost, but not that the 5 present lines match what Fresno Pacific actually ordered. The
+  stale `created_at` is cosmetic and I left it alone — rewriting it would trip the new §5 guard for
+  any tab still holding that order.
 - **Collisions between two orders for the same customer.** The detector keys on `created_at`, which
   catches those too — but a same-customer, same-memo collision would be nearly invisible on
   inspection. None were obvious in the results; I cannot rule them out.
 - **Anything before the audit log's retention.** The oldest collision found is Jun 26.
 
-I did not modify any production data. The repair list in §3 is for a human to action.
+**Production data was modified** — see §3.1 for exactly what and why. Two orders were repaired
+(SO-1507 in place, SO-1502 rebuilt as SO-1670) and one invoice re-pointed (INV-63149). Everything else
+in §3 was left untouched.
+
+Note for anyone reading this after the fix in §5 deploys: a session holding a *pre-repair* copy of
+SO-1507 will now be **blocked** on save rather than silently re-corrupting it, because its in-memory
+`created_at` no longer matches the restored row. That is the guard working as intended — the rep just
+needs to reload.
 
 ---
 
