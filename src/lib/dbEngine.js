@@ -260,7 +260,14 @@ const _sbResetPassword=async(email)=>{
   if(error)return{error:error.message};
   return{success:true};
 };
-const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut()};
+// scope:'local' is deliberate. supabase-js defaults signOut() to scope:'global', which revokes EVERY
+// refresh token the user holds — every other tab, their phone, the warehouse iPad. So one tab hitting
+// the idle sign-out (or a manual sign-out on one device) silently killed the session everywhere else;
+// those tabs still had `nsa_user` cached, so their next token refresh came back "refresh_token_not_found"
+// → _recoverSession classified it fatal → forced re-login. That is the "portal logs me out a few seconds
+// after I sign in, then it's fine" report. Signing out is a per-device action here, so only this device's
+// session should end.
+const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut({scope:'local'})};
 const _sbGetSession=async()=>{
   if(!supabase)return null;
   const{data}=await supabase.auth.getSession();

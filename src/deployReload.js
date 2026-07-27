@@ -10,9 +10,12 @@
 // current build. Cost is one small static fetch per cycle — no database or realtime load.
 //
 // Fingerprint source, in order of preference:
-//   1. /build-meta.json     — written at build time with a unique id (changes on every
-//                             deploy, including same-commit redeploys, so re-deploying is
-//                             enough to force a fleet-wide reload). See scripts/write-build-meta.js.
+//   1. /build-meta.json     — written at build time with an id derived from the content hashes of
+//                             the built entrypoint bundles, so it changes when (and only when) the
+//                             code a tab is running actually changed. A deploy that touches only
+//                             docs / Netlify functions / SQL ships an identical bundle and no
+//                             longer reloads the fleet. See scripts/write-build-meta.js (and its
+//                             FORCE_RELOAD_BUILD escape hatch for forcing a reload anyway).
 //   2. /asset-manifest.json — CRA's content-hashed manifest, used if the stamp is absent.
 //
 // Paths are root-relative, so this runs for the internal portal (served at the app's own

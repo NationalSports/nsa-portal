@@ -2689,7 +2689,16 @@ export default function App(){
       // Bills sitting in Import & Review are memory-only work — hold the reload for them too
       // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
       // banner recover the list, so a forced reload costs one click instead of the session).
-      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      // dirtyRef (an editor with unsaved changes) and the 60s no-input gap came from the separate
+      // asset-manifest poll this replaced: two watchers polled for the same event on different
+      // cadences with different safety rules, and whichever fired first won — so the WEAKER policy
+      // decided when a reload landed. One watcher, the union of both policies.
+      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current
+        && !dirtyRef.current && (document.hidden || Date.now()-_lastInputRef.current>60000),
+      // Matches the old poll's 10-minute cap. The watcher's 90s default was fine when isSafe only
+      // asked "are saves quiet"; now that it also requires the user to be idle, a busy tab needs a
+      // longer runway before we reload it out from under them.
+      maxDeferMs:10*60*1000,
     });
   },[]);
 
@@ -2914,49 +2923,17 @@ export default function App(){
     return()=>clearInterval(timer);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── Build-version polling: auto-reload stale tabs when a new deploy lands ───
-  // A stale tab running old code bypasses data-integrity guards (e.g. the _bgSync
-  // depth counter). Every 5 minutes, compare /asset-manifest.json's main.js hash to
-  // what was recorded at startup. On a hash change (new deploy), drain any in-flight
-  // saves then force a reload — the new bundle's guards are then active immediately.
-  // The reload additionally waits for a 60s idle gap (no typing/clicking) so it never
-  // lands mid-keystroke: dirtyRef covers order edits, but focused inputs that commit
-  // on blur and modal drafts (e.g. a half-written invoice message) are not saved by
-  // the version-reload autosave. A 10-minute cap keeps a busy tab from deferring the
-  // new build indefinitely.
+  // ─── Last-input clock, read by the deploy-reload safety gate below ───
+  // A version reload must never land mid-keystroke: dirtyRef covers order edits, but focused inputs
+  // that commit on blur and modal drafts (a half-written invoice message) are not saved by the
+  // version-reload autosave, so "no typing/clicking for 60s" is part of what makes a reload safe.
+  const _lastInputRef=useRef(Date.now());
   React.useEffect(()=>{
-    let knownHash=null;
-    let lastInput=Date.now();
-    const markInput=()=>{lastInput=Date.now()};
+    const markInput=()=>{_lastInputRef.current=Date.now()};
     window.addEventListener('pointerdown',markInput,{capture:true,passive:true});
     window.addEventListener('keydown',markInput,{capture:true,passive:true});
-    const check=async()=>{
-      try{
-        const res=await fetch('/asset-manifest.json?_='+Date.now(),{cache:'no-store'});
-        if(!res.ok)return;
-        const manifest=await res.json();
-        const hash=manifest?.files?.['main.js']||'';
-        if(!hash)return;
-        if(knownHash===null){knownHash=hash;return}// record on first run
-        if(hash===knownHash)return;
-        window.dispatchEvent(new Event('nsa:version-reload-pending'));
-        const deferStart=Date.now();
-        const doReload=()=>{
-          const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
-          // An active bill review counts as activity even when the tab is hidden or the mouse
-          // is idle (staff cross-check invoices in other tabs mid-review). Still bounded by the
-          // 10-minute cap; past it the review-session snapshot + Resume banner recover the list.
-          const userIdle=((document.hidden||Date.now()-lastInput>60000)&&!_billReviewBusyRef.current)||Date.now()-deferStart>10*60*1000;
-          if(_authErrorDetected||(savesIdle&&userIdle))window.location.reload();
-          else setTimeout(doReload,2000);
-        };
-        doReload();
-      }catch(e){/* network error — skip this poll */}
-    };
-    check();
-    const t=setInterval(check,5*60*1000);
-    return()=>{clearInterval(t);window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
-  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+    return()=>{window.removeEventListener('pointerdown',markInput,{capture:true});window.removeEventListener('keydown',markInput,{capture:true})};
+  },[]);
 
   // ─── Idle auto-reload: force-reload an idle tab ONLY when it's stuck in a save loop ───
   // The deploy-reload above already reclaims idle tabs onto a new build (and never loops — it reloads
@@ -5345,15 +5322,20 @@ export default function App(){
     const map={csr:'csr',rep:'sales',warehouse:'warehouse',artist:'decorator',art:'decorator',production:'production',prod_manager:'production',prod_assistant:'production',accounting:'admin'};
     setDashView(map[cu.role]||'warehouse');
   },[cu?.id,cu?.role]);
-  const handleLogin=(user)=>{_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
+  // A completed sign-in IS activity — stamp the shared idle clock before anything else. Without this the
+  // idle sign-out below could still be holding a stale (pre-login) timestamp and boot the user seconds
+  // after they signed in: exactly the "I have to log in twice" report.
+  const handleLogin=(user)=>{try{localStorage.setItem('nsa_last_activity',String(Date.now()))}catch(_){}_setSessionDead(false);setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
   // ─── Idle sign-out: log the user out after IDLE_LOGOUT_MS of no activity ───
   // Activity is tracked GLOBALLY across tabs via a shared localStorage timestamp, because signing out
-  // clears the session for EVERY tab — so an idle background tab must never boot a user who's active in
-  // another. Only when there's been no input in ANY tab for the full window do we flush pending work and
-  // sign out (same path as handleLogout → the UI falls back to the sign-in screen). Opening the portal
-  // after being away longer than the window signs you straight out, which is the intent. pointermove/
-  // scroll count as activity (a rep reading a screen isn't "away"); the localStorage write is throttled.
+  // clears the stored session for EVERY tab in this browser — so an idle background tab must never boot
+  // a user who's active in another. (It no longer reaches their OTHER devices: _sbSignOut passes
+  // scope:'local'. It used to, which is what made one idle tab force a re-login everywhere.) Only when
+  // there's been no input in ANY tab for the full window do we flush pending work and sign out (same
+  // path as handleLogout → the UI falls back to the sign-in screen). Opening the portal after being away
+  // longer than the window signs you straight out, which is the intent. pointermove/scroll count as
+  // activity (a rep reading a screen isn't "away"); the localStorage write is throttled.
   React.useEffect(()=>{
     if(typeof window==='undefined')return;
     const IDLE_LOGOUT_MS=60*60*1000; // 1 hour with no activity in any tab
@@ -5363,20 +5345,32 @@ export default function App(){
     const mark=()=>{firing=false;const t=Date.now();if(t-lastWrite<30000)return;lastWrite=t;try{localStorage.setItem(KEY,String(t))}catch(_){}};
     const EVENTS=['pointerdown','keydown','pointermove','scroll','touchstart'];
     EVENTS.forEach(ev=>window.addEventListener(ev,mark,{capture:true,passive:true}));
-    const doLogout=async()=>{
+    // Re-read the SHARED clock (not the captured value that started this logout). The drain below can take
+    // seconds, and in that window the user may have become active — or signed in — in this or another tab.
+    const stillIdle=()=>{let last;try{last=Number(localStorage.getItem(KEY))||0}catch(_){last=0}return last>0&&Date.now()-last>=IDLE_LOGOUT_MS};
+    const doLogout=async(immediate)=>{
       if(firing)return;firing=true;
-      try{
-        window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts first
-        const started=Date.now();
-        while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
-      }catch(_){/* best effort */}
+      // On mount there is nothing of the user's to drain (no edits have happened yet), so skip straight to
+      // the sign-in screen. Draining first meant a returning user got ~5s of dashboard and was then yanked
+      // to login — which reads as a bug even though the sign-out itself is intended.
+      if(!immediate){
+        try{
+          window.dispatchEvent(new Event('nsa:version-reload-pending')); // flush open-editor drafts first
+          const started=Date.now();
+          while((_dbSavePendingIds.size>0||_bgSync>0)&&Date.now()-started<5000){await new Promise(r=>setTimeout(r,250))}
+        }catch(_){/* best effort */}
+        if(!stillIdle()){firing=false;return}// became active / signed in while we drained — stand down
+      }
       try{setCu(null)}catch(_){}
       try{localStorage.removeItem('nsa_user')}catch(_){}
       try{await _sbSignOut()}catch(_){}
     };
-    const tick=()=>{let last;try{last=Number(localStorage.getItem(KEY))||Date.now()}catch(_){last=Date.now()}if(Date.now()-last>=IDLE_LOGOUT_MS)doLogout()};
-    tick(); // also check on mount — opening after a long absence signs out promptly
-    const iv=setInterval(tick,60000); // re-check every minute
+    // NOTE: this deliberately still runs when nobody is signed in. Reaching the sign-in screen with a
+    // stale clock can leave a live Supabase session behind, and LoginGate auto-restores from one on
+    // mount — so skipping the sign-out here would silently log a >1h-idle user straight back in.
+    const tick=(immediate)=>{let last;try{last=Number(localStorage.getItem(KEY))||Date.now()}catch(_){last=Date.now()}if(Date.now()-last>=IDLE_LOGOUT_MS)doLogout(immediate)};
+    tick(true); // also check on mount — opening after a long absence signs out promptly
+    const iv=setInterval(()=>tick(false),60000); // re-check every minute
     return()=>{clearInterval(iv);EVENTS.forEach(ev=>window.removeEventListener(ev,mark,{capture:true}))};
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
   // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
