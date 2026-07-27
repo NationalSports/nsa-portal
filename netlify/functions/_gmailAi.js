@@ -27,6 +27,7 @@ async function getAccessToken() {
   if (!response.ok || !data.access_token) {
     throw new Error(`Gmail token refresh failed (${response.status}): ${data.error_description || data.error || 'unknown error'}`);
   }
+  await assertAuthorizedMailbox(data.access_token);
   return data.access_token;
 }
 
@@ -45,6 +46,18 @@ async function gmailFetch(token, path, options = {}) {
     throw new Error(`Gmail API: ${message}`);
   }
   return data;
+}
+
+async function assertAuthorizedMailbox(token) {
+  const profile = await gmailFetch(token, '/profile');
+  const authorizedEmail = String(profile.emailAddress || '').trim().toLowerCase();
+  if (authorizedEmail !== SALES_EMAIL) {
+    throw new Error(
+      `Gmail OAuth is authorized as ${authorizedEmail || 'an unknown account'}; expected ${SALES_EMAIL}. ` +
+      `Re-authorize while signed into ${SALES_EMAIL}.`
+    );
+  }
+  return profile;
 }
 
 function headerMap(payload) {
@@ -225,6 +238,7 @@ async function sendReply(token, message, payload) {
 
 module.exports = {
   SALES_EMAIL,
+  assertAuthorizedMailbox,
   getAccessToken,
   listInboxMessages,
   getMessage,
