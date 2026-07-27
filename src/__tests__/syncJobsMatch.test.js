@@ -253,6 +253,39 @@ describe('dropMismatchedFrozenClaims', () => {
     expect(changed).toBe(false);
     expect(out.items).toHaveLength(2);
   });
+
+  // SO-1023: a merged embroidery job's frozen claims drifted onto screen-print decos, and the
+  // old blanket merged-job exemption let the art heal ADOPT the foreign screen designs into the
+  // job. Merged jobs now pass the deco types of their DECLARED designs as expectedTypes.
+  describe('expectedTypes (merged jobs judged against their declared designs)', () => {
+    const so1023Job = {
+      id: 'JOB-1023-02', deco_type: 'embroidery', _merged: true,
+      items: [
+        { sku: 'KD5434', item_idx: 3, deco_idx: 0, deco_idxs: [0], units: 22 }, // still embroidery
+        { sku: 'JX4467', item_idx: 0, deco_idx: 0, deco_idxs: [0], units: 20 }, // drifted → screen
+        { sku: 'JP2920', item_idx: 1, deco_idx: 0, deco_idxs: [0], units: 20 }, // drifted → screen
+      ],
+    };
+
+    test('single-declared-method merged job releases claims that drifted to another method', () => {
+      const { job, changed } = dropMismatchedFrozenClaims(so1023Job, resolve, ['embroidery']);
+      expect(changed).toBe(true);
+      expect(job.items.map((gi) => gi.sku)).toEqual(['KD5434']);
+    });
+
+    test('a legit cross-type merge keeps both declared methods’ claims', () => {
+      const { job, changed } = dropMismatchedFrozenClaims(so1023Job, resolve, ['embroidery', 'screen_print']);
+      expect(changed).toBe(false);
+      expect(job.items).toHaveLength(3);
+    });
+
+    test('expectedTypes overrides the job’s own deco_type label', () => {
+      // Merged under an "embroidery" label but declaring only a screen design: the
+      // embroidery claim is the stale one.
+      const { job } = dropMismatchedFrozenClaims(so1023Job, resolve, ['screen_print']);
+      expect(job.items.map((gi) => gi.sku)).toEqual(['JX4467', 'JP2920']);
+    });
+  });
 });
 
 /**
