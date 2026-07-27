@@ -62,7 +62,7 @@ function extractTag(xml, tag) {
   return vals.length > 0 ? vals[0] : null;
 }
 
-// getSignInPricing returns one record per style/color/size. Capture the
+// getPricing returns one record per style/color/size. Capture the
 // per-size price so extended-size upcharges (2XL/3XL+) survive instead of
 // being collapsed to a single number. We split the response into record
 // blocks (each holding a <size> and a price) and map size -> piecePrice
@@ -85,13 +85,13 @@ function parseSizeCosts(xml) {
   blocks.forEach(function(b) {
     var size = extractTag(b, 'size');
     if (!size) return;
-    // Cheapest customer-facing price on the record — a sale/my price beats the
-    // regular piece price (store costing defaults to the cheapest tier).
+    // Account price first — same field priority as the Order Editor's proven
+    // SanMar pricing path (myPrice → salePrice → piecePrice).
     var price = null;
     var keys = ['myPrice', 'salePrice', 'piecePrice', 'customerPrice'];
     for (var k = 0; k < keys.length; k++) {
       var v = parseFloat(extractTag(b, keys[k]));
-      if (v > 0 && (price == null || v < price)) price = v;
+      if (v > 0) { price = v; break; }
     }
     if (price == null) return;
     var key = size.trim();
@@ -176,11 +176,13 @@ exports.handler = async (event) => {
       try {
         if (i > 0) await new Promise(function(r) { setTimeout(r, 500); });
 
-        // Call SanMar Pricing SOAP service with the bare style number.
-        var soapBody = buildSoapEnvelope('getSignInPricing', { style: style, color: '', size: '' }, smUser, smPass);
+        // Call SanMar Pricing SOAP service with the bare style number. getPricing is
+        // the action the Order Editor's live pricing uses (returns myPrice — our
+        // account price); getSignInPricing returned catalog-tier numbers.
+        var soapBody = buildSoapEnvelope('getPricing', { style: style, color: '', size: '' }, smUser, smPass);
         var smRes = await fetch('https://ws.sanmar.com:8080/SanMarWebService/SanMarPricingServicePort', {
           method: 'POST',
-          headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': 'getSignInPricing' },
+          headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': 'getPricing' },
           body: soapBody
         });
 
