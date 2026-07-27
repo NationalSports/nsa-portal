@@ -6094,7 +6094,9 @@ export default function App(){
       const retail=product?.retail_price||0;
       const sell=au?rQ(retail*(1-auTierDisc(c.adidas_ua_tier||'B',product?.pricing_group,product?.category))):rQ(cost*mk);
       const sizes=line.sizes&&Object.keys(line.sizes).length?line.sizes:{};
-      return{product_id:product?.id||null,sku:product?.sku||sku||'CUSTOM',name:product?.name||line.name||'',brand,color:product?.color||line.color||'',vendor_id:product?.vendor_id||null,pricing_group:product?.pricing_group||null,nsa_cost:cost,retail_price:retail,unit_sell:sell,available_sizes:Object.keys(sizes).length?Object.keys(sizes):(product?.available_sizes||['S','M','L','XL','2XL']),sizes,decorations:[],is_custom:!product,notes:line.notes||'',pick_lines:[],po_lines:[]}
+      // No "CUSTOM" placeholder — an unmatched line lands with a blank SKU so the rep has to
+      // enter the real style number; the order editor won't save a line without one.
+      return{product_id:product?.id||null,sku:product?.sku||sku,name:product?.name||line.name||'',brand,color:product?.color||line.color||'',vendor_id:product?.vendor_id||null,pricing_group:product?.pricing_group||null,nsa_cost:cost,retail_price:retail,unit_sell:sell,available_sizes:Object.keys(sizes).length?Object.keys(sizes):(product?.available_sizes||['S','M','L','XL','2XL']),sizes,decorations:[],is_custom:!product,notes:line.notes||'',pick_lines:[],po_lines:[]}
     });
     const memo=(message.subject||'Email estimate request').replace(/^\s*(?:re|fwd?):\s*/i,'').slice(0,180);
     const created=newE(c,null,items,memo);
@@ -26994,7 +26996,7 @@ export default function App(){
                 const _skuNorm=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
                   const baseSku=li.sku;
-                  const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null);
+                  const catMatch=!baseSku?null:(prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null));
                   let sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
                   // Footwear with unknown sizes: swap OSFA for blank shoe-size grid
                   if(catMatch?.category==='Footwear'&&li._sizesUnknown){
