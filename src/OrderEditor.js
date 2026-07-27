@@ -2915,11 +2915,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // a released/auto job carries exactly one deco_type. For those, ANY claim that positively resolves
     // to a different method is drift and is released even when indices stay IN BOUNDS — closing the gap
     // where SO-1468 went unhealed until a later delete pushed an index out of bounds. Merged/split jobs
-    // CAN legitimately hold another method's claims under one label (a cross-type Merge Jobs), so they
-    // stay gated on the out-of-bounds signal. (Giving merged jobs the same in-bounds heal needs a
-    // merge-time stamp of the intended deco types — a follow-up, since that field must be persisted.)
+    // CAN legitimately hold another method's claims under one label (a cross-type Merge Jobs) — but
+    // only for methods among their DECLARED designs (_art_ids, unioned at merge time). Judge their
+    // in-bounds drift against that declared-method set: SO-1023's merged embroidery job had two claims
+    // drift onto screen-print decos, and the old blanket exemption here let _healArtPointers ADOPT the
+    // foreign screen designs into the embroidery job (plus their garments' units) instead of releasing
+    // the stale claims back to the auto-builder.
     const _methodSetKnown=j=>!j._merged&&!j.split_from;
-    const _dropStaleClaims=j=>(_methodSetKnown(j)||_frozenIdxDrift)?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
+    const _declaredMethodSet=j=>{
+      const _ids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(id=>id&&id!=='__tbd');
+      const set=new Set(j.deco_type?[j.deco_type]:[]);
+      for(const aid of _ids){const artF=af.find(a=>a.id===aid);if(!artF)return null;// declared art not hydrated — don't judge drift off a half-loaded order
+        if(artF.deco_type)set.add(artF.deco_type)}
+      return set.size?set:null;
+    };
+    const _dropStaleClaims=j=>{
+      if(_methodSetKnown(j))return dropMismatchedFrozenClaims(j,_liveDecoType).job;
+      const _ms=_declaredMethodSet(j);
+      if(_ms)return dropMismatchedFrozenClaims(j,_liveDecoType,_ms).job;
+      return _frozenIdxDrift?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
+    };
     // Per-art job art_status, shared by the Step-3 builder and the frozen-job art heal below so
     // the two derivations can't drift apart.
     const _artStForFile=(artF,fallbackDt)=>artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||fallbackDt)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';

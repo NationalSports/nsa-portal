@@ -98,12 +98,19 @@ export function matchExistingJob(built, lookups, claimedIds = new Set()) {
  * @param {object} job — a released/merged job (has deco_type and items[] with deco claims)
  * @param {(itemIdx:number, decoIdx:number) => string|null} resolveLiveDecoType — returns the
  *   live decoration's resolved method at that position, or null when item/deco doesn't exist
+ * @param {Iterable<string>=} expectedTypes — the method set this job may legitimately claim.
+ *   Defaults to [job.deco_type] (released/auto jobs are single-method by construction). A
+ *   merged job passes the deco types of its DECLARED designs, so a legit cross-type merge
+ *   keeps both methods' claims while a claim drifting onto a method the job never declared
+ *   is still recognized as stale (SO-1023: a merged embroidery job's claims drifted onto
+ *   screen-print decos and the art heal adopted the foreign designs into the job).
  * @returns {{job: object, changed: boolean}} — job with stale claims removed (rows whose
  *   every claim mismatched are dropped entirely); `changed` false returns the original ref
  */
-export function dropMismatchedFrozenClaims(job, resolveLiveDecoType) {
-  const jobType = job?.deco_type || null;
-  if (!jobType) return { job, changed: false };
+export function dropMismatchedFrozenClaims(job, resolveLiveDecoType, expectedTypes) {
+  const expected = new Set(expectedTypes || []);
+  if (!expected.size && job?.deco_type) expected.add(job.deco_type);
+  if (!expected.size) return { job, changed: false };
   let changed = false;
   const items = [];
   (job.items || []).forEach((gi) => {
@@ -112,7 +119,7 @@ export function dropMismatchedFrozenClaims(job, resolveLiveDecoType) {
       : (gi.deco_idx != null ? [gi.deco_idx] : []);
     const kept = dis.filter((di) => {
       const liveType = resolveLiveDecoType(gi.item_idx, di);
-      return liveType == null || liveType === jobType;
+      return liveType == null || expected.has(liveType);
     });
     if (kept.length === dis.length) { items.push(gi); return; }
     changed = true;
