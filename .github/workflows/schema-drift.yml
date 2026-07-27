@@ -13,6 +13,11 @@ on:
       - 'supabase/migrations/**'
       - 'supabase/migration-baseline.json'
       - 'scripts/check-schema-drift.js'
+      # The column-parity guard's whole point is to catch a write list gaining a column with no
+      # migration behind it — so it has to run on the PR that edits the write lists, not only on
+      # the ones that touch migrations. src/constants.js is where every write list lives.
+      - 'src/constants.js'
+      - 'scripts/check-column-parity.js'
 
 jobs:
   drift:
