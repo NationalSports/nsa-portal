@@ -229,7 +229,8 @@ path rewrites it, so a DB row whose `created_at` differs from the payload's is a
 document wearing our number. This replaces "is the id free?" with "is the row at this id actually
 mine?", which is the question that matters.
 
-Applied to both save paths in `src/lib/dbEngine.js`:
+Applied to **all three** document save paths in `src/lib/dbEngine.js` — sales orders, estimates and
+invoices:
 
 - **Brand-new document** (`!_version` — never successfully saved, so it owns no children under this
   id yet): re-mint from a fresh DB-wide max and INSERT under a free number. Safe to renumber
@@ -239,17 +240,39 @@ Applied to both save paths in `src/lib/dbEngine.js`:
   art under the old id. The edit goes to the outbox conflict card, so nothing typed is lost, and
   the rep gets *"Save blocked — SO-1507 now belongs to a different order. Please reload before
   editing."*
-- **Either side's `created_at` is null** (pre-audit rows, payloads that omit it): treated as "can't
-  tell" and allowed through. An unprovable mismatch must never block a legitimate save.
+- **`created_at` unusable on either side** (null on the text paths, unparseable on the invoice
+  path): treated as "can't tell" and allowed through. An unprovable mismatch must never block a
+  legitimate save.
 
 On the estimate path the guard just forces `_isNewEst = true`, which makes the RPC raise
 `ESTIMATE_ID_EXISTS` and reuses the re-mint machinery that was already there but unreachable.
 
-**Tests:** `src/__tests__/soIdCollision.test.js` — 4 cases driving the real `_dbSaveSOInner` through
-a mocked Supabase client and asserting on the actual insert/upsert calls issued. The two
-no-false-positive cases (matching `created_at`; null `created_at`) are the load-bearing ones: a
-guard that blocks ordinary saves would be worse than the bug. Full suite: **154 suites, 3109 tests,
-all passing.**
+**The invoice path needed a different comparison.** `_dbSaveInvoiceInner` had no new-vs-existing
+check of any kind — a bare `upsert` — so it was the most exposed of the three, on a money document
+carrying payments. But `invoices.created_at` is `timestamptz DEFAULT now()`, **not** the `text`
+column `sales_orders` and `estimates` use, so the two sides legitimately differ in *format* for the
+same instant: a client that just created the invoice holds a `toLocaleString()` value
+(`"7/27/2026, 2:54:42 PM"`) while the DB returns ISO with microseconds
+(`2026-07-27T21:54:42.663188+00:00`). A string compare there would have blocked an ordinary re-save
+of every freshly-created invoice — worse than the bug. It compares parsed instants with a 5-second
+tolerance instead. Its re-mint scans on the `INV` prefix rather than `INV-`, because some live ids
+carry no dash (`INV63316`) and an `INV-%` scan would renumber straight into one.
+
+No invoice collision appears anywhere in the audit history — the INV range moves fast and invoices
+are minted-then-saved in a single burst, so the window is narrow. The guard is there because the hole
+was structurally identical, not because it had fired yet.
+
+**Tests:** `src/__tests__/soIdCollision.test.js` — 9 cases driving the real `_dbSaveSOInner` and
+`_dbSaveInvoiceInner` through a mocked Supabase client and asserting on the actual insert/upsert
+calls issued. The no-false-positive cases are the load-bearing ones (matching `created_at`; null
+`created_at`; the same instant in two formats; an unparseable date): a guard that blocks ordinary
+saves would be worse than the bug. One case reads the outbox back to prove a blocked save preserves
+what was typed. Full suite: **154 suites, 3114 tests, all passing.**
+
+*Bug found while adding the invoice guard, now fixed:* the first cut of the SO guard returned `false`
+without calling `_emitOutboxConflict`, so a blocked save would have **discarded the rep's edit** —
+every other blocking guard in that function parks it on the conflict card. The claim that nothing
+typed is lost was written before it was true.
 
 **Known residual gap, not fixed here:** after a re-mint the tab's React state still holds the old
 id — nothing plumbs a renumber back into `sos`/`eSO`. The pre-existing 23505 path had this too. The
