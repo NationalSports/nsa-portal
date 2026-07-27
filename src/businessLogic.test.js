@@ -1427,6 +1427,39 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.items.reduce((a, gi) => a + gi.fulfilled, 0)).toBe(j.fulfilled_units);
   });
 
+  test('job items refresh their scalar gi.units from the live sizes (lines sum to the job total)', () => {
+    // Regression (SO-1199): total_units is re-derived from the live per-size allocation on every
+    // recompute but gi.units was left frozen at its build-time value, so after units moved between
+    // a job's garments the Units column read "40 / 1" under a 40-unit job while the per-size chips
+    // on those same rows read 37 and 3. Every line's scalar must track the sizes it actually covers.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1199-01', item_status: 'items_received', fulfilled_units: 40, total_units: 40,
+        items: [{ item_idx: 0, units: 40, fulfilled: 25 }, { item_idx: 1, units: 1, fulfilled: 0 }] }],
+    });
+    const items = [
+      makeSOItem({ sku: 'JW6597', sizes: { S: 8, M: 27, L: 2 },
+        po_lines: [{ po_id: 'PO-1', S: 8, M: 27, L: 2, received: { S: 8, M: 27, L: 2 } }] }),
+      makeSOItem({ sku: 'A432', sizes: { L: 3 },
+        po_lines: [{ po_id: 'PO-1', L: 3, received: { L: 3 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.items[0].units).toBe(37);
+    expect(j.items[1].units).toBe(3);
+    expect(j.items.reduce((a, gi) => a + gi.units, 0)).toBe(j.total_units);
+    expect(j.items.reduce((a, gi) => a + gi.fulfilled, 0)).toBe(j.fulfilled_units);
+  });
+
+  test('a job line whose SO item no longer exists keeps its gi.units instead of being zeroed', () => {
+    // itemTotals is left undefined for a dangling item_idx, so the heal must skip it — silently
+    // rewriting the line to 0 units would erase the only record of what the job was built from.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 0,
+        items: [{ item_idx: 7, units: 12, fulfilled: 0 }] }],
+    });
+    const [j] = recalcJobFulfillment(so, [makeSOItem({ sizes: { S: 1 } })]);
+    expect(j.items[0].units).toBe(12);
+  });
+
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
     // The mis-ship scenario: 300 ordered, all received → 5 un-received on the PO (295/300).
     // The job must drop out of items_received so it can be reviewed/split.
@@ -1595,10 +1628,11 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
 
   test('returns same job reference when nothing changed', () => {
     // The identity fast-path only applies when the job is ALREADY fully computed — including each
-    // line's scalar gi.fulfilled (now that the recompute tracks it, a job whose nested fulfilled is
-    // stale/absent is legitimately "changed" and gets a fresh object). Production jobs always carry
-    // it (buildJobs/syncJobs populate it), so mirror that here with the receipt-correct fulfilled: 15.
-    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0, fulfilled: 15 }] };
+    // line's scalars gi.units and gi.fulfilled (now that the recompute tracks them, a job whose
+    // nested units/fulfilled is stale/absent is legitimately "changed" and gets a fresh object).
+    // Production jobs always carry both (buildJobs/syncJobs populate them), so mirror that here
+    // with the size-correct units: 15 and the receipt-correct fulfilled: 15.
+    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0, units: 15, fulfilled: 15 }] };
     const so = makeSO({ jobs: [job] });
     const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
     expect(recalcJobFulfillment(so, items)[0]).toBe(job);

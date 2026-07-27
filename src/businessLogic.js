@@ -458,8 +458,11 @@ const jobLiveArtIds = (j, o) => {
 // claims LAST within its family — the received units stay on the parent, and the backorder slice
 // fills only as its own not-yet-received units actually arrive. Each job is
 // capped at its own per-size quantities (gi.sizes when the split recorded them, else the full
-// item sizes). Returns one {total, fulfilled, fulSizes[<item index>]} entry per job, aligned
-// with the jobs array.
+// item sizes). Returns one {total, fulfilled, fulSizes[<item index>], itemTotals[<item index>]}
+// entry per job, aligned with the jobs array. itemTotals is the per-LINE unit count behind
+// `total` — the live source recalcJobFulfillment heals each gi.units from, so a job's lines
+// always sum to its summary. It is left undefined for a line whose SO item no longer exists,
+// so a dangling reference is never healed down to 0.
 const allocateJobFulfillment = (jobs, items) => {
   const byId = {};
   jobs.forEach(j => { if (j && j.id) byId[j.id] = j; });
@@ -481,7 +484,7 @@ const allocateJobFulfillment = (jobs, items) => {
   const out = new Array(jobs.length);
   order.forEach(e => {
     const j = jobs[e.i];
-    const res = { total: 0, fulfilled: 0, fulSizes: [] };
+    const res = { total: 0, fulfilled: 0, fulSizes: [], itemTotals: [] };
     out[e.i] = res;
     if (!j) return;
     (j.items || []).forEach((gi, gii) => {
@@ -495,8 +498,9 @@ const allocateJobFulfillment = (jobs, items) => {
       // totals its units and counts receipts. Without this its total stays 0, so the job never
       // reads items_received / isJobReady and sits on "Ordered — Waiting" even fully received.
       if (entries.length === 0 && safeNum(it.est_qty) > 0) entries = [['QTY', safeNum(it.est_qty)]];
+      let iTot = 0;
       entries.forEach(([sz, v]) => {
-        res.total += v;
+        res.total += v; iTot += v;
         const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
         const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
         // Per-ITEM split group: consolidated art jobs span multiple split lines, so a shared line's
@@ -509,6 +513,7 @@ const allocateJobFulfillment = (jobs, items) => {
         if (take > 0) fs[sz] = take;
         res.fulfilled += take;
       });
+      res.itemTotals[gii] = iTot;
     });
   });
   return out;
@@ -547,10 +552,12 @@ const isJobReady = (j, o) => {
 // so honor that before falling back to the full SO item sizes — otherwise a receive after
 // a custom split would clobber both halves' totals with the full item quantity. Receipts are
 // apportioned within each split family (see allocateJobFulfillment) so a slice and its parent
-// never both count the same units. EVERY job item gets its scalar gi.fulfilled refreshed to the
-// apportioned amount (split items also refresh their per-size gi.fulSizes, which the UI's size
-// chips read and syncJobs preserves), so a job's per-line fulfilled never drifts from its
-// fulfilled_units summary the way a warehouse receipt on a non-split line used to leave it.
+// never both count the same units. EVERY job item gets its scalars gi.units and gi.fulfilled
+// refreshed to the allocated/apportioned amounts (split items also refresh their per-size
+// gi.fulSizes, which the UI's size chips read and syncJobs preserves), so a job's per-line
+// units and fulfilled never drift from its total_units / fulfilled_units summary the way a
+// warehouse receipt on a non-split line, or an edit that moved units between a job's garments,
+// used to leave them.
 // NOTE: no spread syntax in this file — babel would inject an ESM helper import for it,
 // which makes webpack treat this CommonJS module as ESM and drop module.exports entirely.
 const recalcJobFulfillment = (o, items) => {
@@ -562,6 +569,15 @@ const recalcJobFulfillment = (o, items) => {
     const newItems = (j.items || []).map((gi, gii) => {
       const fs = a.fulSizes[gii] || {};
       const f = Object.keys(fs).reduce((x, sz) => x + fs[sz], 0);
+      // gi.units is a BUILD-TIME snapshot. total_units above is re-derived from the live per-size
+      // allocation on every recompute, but the per-line scalar never was — so anything that moved
+      // units between a job's garments (an edited size grid, a size shifted onto a second colorway)
+      // left the sub-lines summing to something other than the job total, e.g. SO-1199's 40 + 1
+      // under a 40-unit job while the size chips on those same rows read 37 and 3. Heal it from
+      // the same allocation the chips read. Skipped when the SO item is gone (itemTotals[gii]
+      // undefined) so a dangling line isn't silently zeroed.
+      const u = a.itemTotals[gii];
+      const unitsOff = u != null && safeNum(gi.units) !== u;
       // Split job items carry a per-size gi.sizes and render fulSizes chips, so refresh BOTH the
       // size map and the scalar. A plain (non-split) job item has no gi.sizes and only tracks the
       // scalar gi.fulfilled — refresh just that. It used to be skipped entirely, so gi.fulfilled
@@ -573,13 +589,17 @@ const recalcJobFulfillment = (o, items) => {
         const old = gi.fulSizes || {};
         const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
         const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
-        if (same) return gi;
+        if (same && !unitsOff) return gi;
         giChanged = true;
-        return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
+        const upd = { fulSizes: fs, fulfilled: f };
+        if (unitsOff) upd.units = u;
+        return Object.assign({}, gi, upd);
       }
-      if (safeNum(gi.fulfilled) === f) return gi;
+      if (safeNum(gi.fulfilled) === f && !unitsOff) return gi;
       giChanged = true;
-      return Object.assign({}, gi, { fulfilled: f });
+      const upd = { fulfilled: f };
+      if (unitsOff) upd.units = u;
+      return Object.assign({}, gi, upd);
     });
     if (!giChanged && j.item_status === itemSt && j.fulfilled_units === a.fulfilled && j.total_units === a.total) return j;
     return Object.assign({}, j, { item_status: itemSt, fulfilled_units: a.fulfilled, total_units: a.total, items: newItems });

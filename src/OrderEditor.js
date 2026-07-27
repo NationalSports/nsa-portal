@@ -11164,7 +11164,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {_clustered.map(({j,oi})=>{const ji=oi;
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             const canSplit=(j.items||[]).length>0&&j.total_units>1;
-            const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+            // UNITS reads the LIVE family-apportioned allocation, not the stored scalars — same
+            // source as the per-size chips on the sub-rows below and as the ITEMS STATUS badge
+            // (jItemStatus). The stored snapshots only refresh when a receive/split runs, so a
+            // size-grid edit in between left this column contradicting the chips on its own rows
+            // (SO-1199: a 40-unit job over lines reading 40 and 1 while their chips read 37 and 3).
+            const _al=_jobAllocs[ji]||{};
+            const jTot=safeNum(_al.total)||safeNum(j.total_units);
+            const jFul=_al.total>0?safeNum(_al.fulfilled):safeNum(j.fulfilled_units);
+            const pct=jTot>0?Math.round(jFul/jTot*100):0;
             // Reused art still needing its mock confirmed for this garment — show "Check Mock"
             // instead of an "approved / complete" status in the list (mirrors the job detail).
             const _cm=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&garmentsNeedingMockCheck(j,o,priorMocks).length>0;
@@ -11187,7 +11195,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   if(_labels.length>1)return<div style={{fontSize:10,color:'#64748b'}}>{_labels.map((lbl,i)=><div key={i}>{lbl}</div>)}</div>;
                   return<div style={{fontSize:10,color:'#64748b'}}>{_labels[0]||((j.deco_type?.replace(/_/g,' ')||'')+' · '+(j.positions||''))}</div>})()}</td>
               <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
-              <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
+              <td style={{fontWeight:700}}>{jFul}/{jTot}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td>{(()=>{const _is=jItemStatus(j);return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[_is]?.bg,color:SC[_is]?.c}}>{itemLabels[_is]}</span>})()}</td>
               <td>{(()=>{if(_cm)return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef9c3',color:'#854d0e',border:'1px solid #fde047'}} title="Reused art — confirm a mock for this garment">🔍 Check Mock</span>;const sentCust=j.art_status==='waiting_approval'&&j.sent_to_coach_at;const aLbl=sentCust?'Sent to Customer':(artLabels[j.art_status]||j.art_status);const aSt=sentCust?{bg:'#ede9fe',c:'#6d28d9'}:SC[j.art_status];return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:aSt?.bg,color:aSt?.c}}>{aLbl}</span>})()}</td>
@@ -11216,13 +11224,18 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
             </tr>
             {/* Grouped items under this job */}
             {(j.items||[]).map((gi,gii)=>{
-              const giSizes=_giSizes(gi);const giFul=_jobFulSizes(ji)[gii]||{};
+              const giSizes=_giSizes(gi);const giFul=(_al.fulSizes||[])[gii]||{};
+              // Same allocation as the chips beside them, so a line's total always equals its chips
+              // and the lines always sum to the job row above. qty_only lines carry no size grid —
+              // their count lives in gi.units (allocation buckets them under 'QTY').
+              const giUnits=Object.values(giSizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(gi.units);
+              const giDone=Object.values(giFul).reduce((a,v)=>a+safeNum(v),0);
               const _giSzOrd=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
               const giSzEntries=Object.entries(giSizes).filter(([,v])=>safeNum(v)>0).sort(([a],[b])=>{const ai=_giSzOrd.indexOf(a),bi=_giSzOrd.indexOf(b);return(ai===-1?99:ai)-(bi===-1?99:bi)});
               return<tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
-              <td style={{fontSize:11}}>{gi.fulfilled}/{gi.units}</td>
+              <td style={{fontSize:11}}>{giDone}/{giUnits}</td>
               <td colSpan={4} style={{fontSize:11}}>
                 {giSzEntries.length>0&&<div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{giSzEntries.map(([sz,qty])=>{const f=safeNum(giFul[sz]);const done=f>=qty&&qty>0;return<span key={sz} style={{display:'inline-flex',gap:3,alignItems:'baseline'}}><span style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase'}}>{sz}</span><span style={{fontWeight:700,color:done?'#166534':f>0?'#d97706':'#475569'}}>{f}/{qty}</span></span>})}</div>}
               </td>
