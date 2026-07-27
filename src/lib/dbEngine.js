@@ -927,8 +927,31 @@ const _dbSaveEstimateInner = async (est) => {
       // another session already saved, and the RPC's ON CONFLICT upsert would silently REPLACE that
       // estimate (the SO-1514 class). p_is_new (migration 00195) makes the create fail loud instead.
       // Confident-new only when the lookup succeeded AND returned no row — never on a SELECT error.
-      const{data:_existEst,error:_existErr}=await supabase.from('estimates').select('id').eq('id',est.id).maybeSingle();
-      const _isNewEst=!_existErr&&!_existEst;
+      const{data:_existEst,error:_existErr}=await supabase.from('estimates').select('id,created_at').eq('id',est.id).maybeSingle();
+      let _isNewEst=!_existErr&&!_existEst;
+      // IDENTITY GUARD (EST-1645/1646/1672, 2026-07-27) — same defect as the SO path above. "Is this id free
+      // in the DB?" is the wrong question on a collision: the incumbent row exists, so _isNewEst comes back
+      // false, p_is_new is not set, and the RPC's ON CONFLICT upsert replaces the other rep's estimate. The
+      // p_is_new create-guard therefore never fired on the very collisions it was written for. created_at is
+      // stamped once and never rewritten by an edit, so a differing one means this id holds a DIFFERENT
+      // estimate. Compared only when both sides carry one — an unprovable mismatch must not block a save.
+      if(_existEst&&est.created_at&&_existEst.created_at&&_existEst.created_at!==est.created_at){
+        if(!est._version){
+          // Never saved, so it owns nothing under this id yet: declare it a create and let the RPC raise
+          // ESTIMATE_ID_EXISTS, which the re-mint below already handles.
+          _isNewEst=true;
+          console.warn('[DB] Estimate',est.id,'is held by a different estimate (created',_existEst.created_at,'vs ours',est.created_at,') — forcing create so it re-mints');
+        }else{
+          // Already saved under this id, so renumbering would strand its items/decorations. Refuse and park
+          // the edit on the outbox conflict card instead of overwriting the estimate that now owns the number.
+          console.error('[DB] SAFETY: Blocking estimate save —',est.id,'is held by a different estimate (created',_existEst.created_at,'vs ours',est.created_at,')');
+          if(_dbNotify)_dbNotify('Save blocked — '+est.id+' now belongs to a different estimate. Please reload before editing.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:est.id,reason:'id held by a different estimate (created_at '+_existEst.created_at+' != '+est.created_at+') — refused overwrite'});
+          _emitOutboxConflict('estimates',est);
+          _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
+          return false;
+        }
+      }
       const _fnMissing=r=>!!r.error&&(r.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(r.error.message||''));
       let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst}));
       // Fallbacks for older deployed RPC signatures (pre-00195, then pre-00128) so deploy order can't break saving.
@@ -1119,11 +1142,43 @@ const _dbSaveSOInner = async (so) => {
     const finalUpdatedAt=soRow.updated_at;
     const soRowInitial={..._pick(soRow,_soCols)};
     // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
-    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at,deco_pos').eq('id',so.id).maybeSingle();
+    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at,deco_pos,created_at').eq('id',so.id).maybeSingle();
     if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
     // Confident-new only when the lookup succeeded AND returned no row — never on a network/SELECT error,
     // otherwise we could purge a live order's children below.
-    const _isNewSO=!existErr&&!existingSO;
+    let _isNewSO=!existErr&&!existingSO;
+    // IDENTITY GUARD (SO-1507, 2026-07-27). _isNewSO asks "is this id free in the DB?", which is the wrong
+    // question for a collision: when a stale tab mints an id another user already used, the row DOES exist,
+    // so _isNewSO is false and the save takes the upsert branch — exactly the silent header overwrite the
+    // comment below says INSERT prevents. The insert branch only ever fires when there is nothing to collide
+    // with, so it never engaged on a real collision (SO-1507/1502/1485/1472/1454/1437/1340, EST-1645/1646/1672).
+    //
+    // created_at is the document's fingerprint: it is stamped once at creation and no edit path rewrites it,
+    // so a DB row whose created_at differs from ours is a DIFFERENT order wearing our number. Compared only
+    // when BOTH sides carry one — a null on either side (pre-audit rows, payloads that omit it) means "can't
+    // tell", and an unprovable mismatch must never block a legitimate save.
+    const _idHeldByOtherSO=!!existingSO&&!!so.created_at&&!!existingSO.created_at&&existingSO.created_at!==so.created_at;
+    let _remintedFrom=null;
+    if(_idHeldByOtherSO){
+      const oldId=so.id;
+      if(!so._version){
+        // Never successfully saved (no _version has ever been read back), so this is a brand-new order whose
+        // number was taken while the tab sat idle. Claim a free number instead of overwriting the incumbent.
+        // Safe to renumber here precisely because it has no children under the old id yet.
+        const freshMax=await _refreshSoMaxId();
+        so.id=soRowInitial.id='SO-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        soRowInitial.updated_at=finalUpdatedAt;// drop the incumbent's timestamp copied above — it isn't ours
+        _isNewSO=true;_remintedFrom=oldId;
+        console.warn('[DB] SO',oldId,'is held by a different order (created',existingSO.created_at,'vs ours',so.created_at,') — re-minted to',so.id);
+      }else{
+        // Already-saved order whose number is now held by someone else's order. Renumbering here would strand
+        // this order's items/POs/art under the old id, so refuse instead and let the outbox hold the edit.
+        console.error('[DB] SAFETY: Blocking save — SO',oldId,'is held by a different order (created',existingSO.created_at,'vs ours',so.created_at,')');
+        if(_dbNotify)_dbNotify('Save blocked — '+oldId+' now belongs to a different order. Please reload before editing.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different order (created_at '+existingSO.created_at+' != '+so.created_at+') — refused overwrite'});
+        return false;
+      }
+    }
     // deco_pos rides on the SO row, so a whole-row upsert from a stale session silently drops deco POs
     // added by another session since this tab loaded (how DPO 3521 CMSF vanished on 2026-06-30 — the row
     // had no guard while the item/pick/PO children all did). When the version check flagged this save as
@@ -1144,6 +1199,12 @@ const _dbSaveSOInner = async (so) => {
     // — an upsert would then silently REPLACE that order's header while the item-write guards below block
     // the item write, leaving one order's header on another order's items. INSERT fails loud (23505) instead.
     let{error:soErr}=await(_isNewSO?supabase.from('sales_orders').insert(soRowInitial):supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'}));
+    if(!soErr&&_remintedFrom){
+      // The tab's React state still holds the OLD id (nothing plumbs a renumber back into it), so say so
+      // plainly rather than letting the rep keep editing an order that now lives under a different number.
+      if(_dbNotify)_dbNotify(_remintedFrom+' was already taken by another order — this one saved as '+so.id+'. Reload to keep editing it.','error');
+      if(_dataLossAlert)_dataLossAlert({kind:'so_id_reminted',soId:so.id,reason:_remintedFrom+' belonged to a different order (created_at mismatch) — re-minted to '+so.id});
+    }
     if(soErr&&_isNewSO&&soErr.code==='23505'){
       // Id collision on create: re-mint from a fresh DB-wide max (not the stale in-memory one) and retry
       // ONCE, still as an insert — a second collision falls through to the block below instead of ever upserting.
