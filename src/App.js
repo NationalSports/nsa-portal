@@ -33,6 +33,7 @@ import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedA
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
+import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -20063,6 +20064,12 @@ export default function App(){
     });
 
     // ─── Shared helpers ───
+    // Every art write below targets the card's whole split family, not one job id. The slices
+    // share one artwork by construction, so an approval, a mockup send, an artist assignment or a
+    // rejection that landed on only one of them left the other stranded in an earlier column —
+    // and the artist redid work that was already done. Cards that aren't a family resolve to just
+    // their own id, so this is a no-op everywhere else.
+    const _inFam=(j,jj)=>!!jj&&artFamilyIds(j).includes(jj.id);
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return false;
       if(newStatus==='art_complete'){
@@ -20081,7 +20088,7 @@ export default function App(){
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
-        if(jj.id!==j.id)return jj;
+        if(!_inFam(j,jj))return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
@@ -20116,7 +20123,7 @@ export default function App(){
     const setArtHidden=(j,hidden)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
-      const updJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_hidden:!!hidden}:jj);
+      const updJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,art_hidden:!!hidden}:jj);
       savSO({...so,jobs:updJobs});
       nf(hidden?'Job hidden from workboard':'Job restored to workboard');
     };
@@ -20126,7 +20133,7 @@ export default function App(){
       // Keep the open art request pointing at the same artist as assigned_artist — the artist
       // board matches on either, and letting them diverge is how jobs go invisible.
       const _artistName=REPS.find(r=>r.id===artistId)?.name||'';
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId,
+      const updatedJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,assigned_artist:artistId,
         art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,artist:artistId,artist_name:_artistName}:r)}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Assigned to '+(_artistName||'Unassigned'));
@@ -20135,7 +20142,7 @@ export default function App(){
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const rejection={by:cu.name,at:new Date().toISOString(),reason};
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
+      const updatedJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
       const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art'}:a);
       savSO({...so,jobs:updatedJobs,art_files:updArt});
       nf('Art rejected — sent back to artist');
@@ -20143,7 +20150,7 @@ export default function App(){
     const updateArtRequest=(j,updates)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,...updates}:jj);
+      const updatedJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,...updates}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Art request updated');
     };
@@ -20163,19 +20170,28 @@ export default function App(){
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
     const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf','heat_press'].includes(j.artFile?.deco_type||j.deco_type));
-    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j));
+    // ─── Split families are ONE piece of art ───
+    // A split partitions one decoration's units across a parent and its slices; every slice keeps
+    // the parent's artwork, so the artist draws one design, sends one mockup and needs one
+    // approval. Collapse each family to a single card (least-advanced member represents it, so the
+    // card sits in the column that still has work) and let the art actions below write to every
+    // member — two cards meant the same design was drawn and approved twice, and the halves drifted.
+    const _ART_COL_RANK={waiting_for_art:0,needs_approval:1,approved:2,art_complete:3};
+    const _artColRank=j=>{const r=_ART_COL_RANK[getArtFileStatus(j)];return r==null?9:r};
+    const _famed=list=>consolidateArtFamilies(list,_artColRank);
+    const artistJobs=_famed(filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j)));
     // In Production: art complete but decoration not finished yet
-    const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden);
+    const inProductionJobs=_famed(filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
     // Hidden: jobs the artist has hidden from the workboard (booking orders, far-out items, etc.)
-    const hiddenArtJobs=filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status));
+    const hiddenArtJobs=_famed(filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status)));
     // Completed: art complete AND decoration done (completed/shipped) — reference for artists
-    const completedArtJobs=allArtJobs.filter(j=>{
+    const completedArtJobs=_famed(allArtJobs.filter(j=>{
       if(j.art_status!=='art_complete'||!['completed','shipped'].includes(j.prod_status))return false;
       if(artCompletedSearch){const s=artCompletedSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
           !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s))return false}
       return true;
-    });
+    }));
     const artistCols=[
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
@@ -20192,6 +20208,8 @@ export default function App(){
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
       const cardKey=j.id+j.soId+view;
+      // Split family this card stands for (null when it's just the one job) — see consolidateArtFamilies.
+      const _fam=(j._famMembers||[]).length>1?j._famMembers:null;
       const isExp=expandedArtCard===cardKey;
       const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailEditCW(null);setArtJobDetailApprovalMsg('')};
       return<div key={cardKey} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
@@ -20207,7 +20225,11 @@ export default function App(){
             {af&&(()=>{const fSt=(j.coach_rejected&&(j.art_status==='art_requested'||j.art_status==='art_in_progress'))?'changes_requested':getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u</span>
+            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {_fam?j._famUnits:j.total_units}u</span>
+            {/* Split family — one artwork across several jobs. Its own non-truncating chip (like the
+                rep chip) so the artist can see at a glance that this card covers more than one job
+                number and that the units shown are the family's combined total. */}
+            {_fam&&<span style={{fontSize:9,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 6px',borderRadius:4,flexShrink:0,whiteSpace:'nowrap'}} title={'Same artwork on '+_fam.length+' split jobs: '+_fam.map(m=>m.id+' · '+m.total_units+'u').join(', ')+'.\nArt requests, mockups and approvals on this card apply to all of them.'}>✂️ {_fam.length} jobs</span>}
             {/* Sales rep this order is for — its own non-truncating chip so it survives on a narrow
                 column instead of being the first token ellipsed off the shared meta line above.
                 The artist asked to see who each job belongs to; this is that answer at a glance. */}
@@ -20217,6 +20239,13 @@ export default function App(){
         </div>
         {/* EXPANDED — full details + actions. Collapsed by default, mirrors production board UX. */}
         {isExp&&<div style={{padding:'6px 10px 10px',borderTop:'1px solid #e2e8f0'}}>
+          {/* Split family roll-up — the artist needs to know this one design covers several job
+              numbers (and how the units divide) before drawing it or sending it for approval. */}
+          {_fam&&<div style={{marginBottom:4,padding:'3px 6px',background:'#f5f3ff',borderRadius:4,border:'1px solid #ddd6fe'}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#6d28d9'}}>✂️ One artwork · {_fam.length} split jobs · {j._famUnits}u total</div>
+            <div style={{fontSize:9,color:'#5b21b6'}}>{_fam.map(m=>m.id+' ('+m.total_units+'u)').join(' · ')}</div>
+            <div style={{fontSize:8,color:'#7c3aed'}}>These were split off each other, so the art is identical — everything on this card applies to all of them.</div>
+          </div>}
           {af&&(()=>{const genMocks=(af.mockup_files||af.files||[]).length;const itemMocks=Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0);const totalMocks=Math.max(genMocks,itemMocks);const proofN=totalMocks===0?artProofFallback(af).length:0;
             return<div style={{marginBottom:4}}>
             {totalMocks>0&&<div style={{fontSize:9,color:'#166534',fontWeight:700,padding:'1px 5px',background:'#dcfce7',borderRadius:3,display:'inline-block',marginBottom:2}}>{totalMocks} mockup{totalMocks!==1?'s':''} uploaded</div>}
@@ -20286,7 +20315,7 @@ export default function App(){
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
                 if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
+                const updJobs=buildJobs(so2).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -20918,7 +20947,7 @@ export default function App(){
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
               if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -21130,7 +21159,7 @@ export default function App(){
               // Update the job's art_file_id if it was null
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
-            const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
@@ -21185,7 +21214,7 @@ export default function App(){
               updArt=[...existingArt,newAf];
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
-            const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
@@ -21303,7 +21332,7 @@ export default function App(){
           const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:artJobDetailMsg.trim(),ts:new Date().toISOString()};
           const updatedMsgs=[...artMessages,msg];
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const updatedJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
+          const updatedJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:updatedMsgs}:jj);
           savSO({...liveSO2,jobs:updatedJobs});
           setArtJobDetailModal({...j,art_messages:updatedMsgs});
           // Also post as a regular SO message so it shows on Messages tab and rep dashboard
@@ -21338,7 +21367,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
