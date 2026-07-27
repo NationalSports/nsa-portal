@@ -21,6 +21,19 @@ const file = path.join(dir, 'build-meta.json');
 
 // CRA writes build/asset-manifest.json before postbuild runs. `entrypoints` lists the hashed
 // filenames of the JS/CSS a tab actually executes — exactly the surface a reload would refresh.
+//
+// Why hashing the ENTRYPOINTS is enough to cover the lazily-loaded chunks too (OrderEditor,
+// CustDetail, CoachPortal, …), which is the non-obvious part: webpack bakes the chunk manifest
+// (chunk id → hashed chunk filename) into the runtime, and this build carries the runtime inside
+// main.js — there is a single entrypoint and index.html is a ~2 KB shell with no runtime in it. So
+// editing a lazy module changes that chunk's content hash, which changes the manifest, which
+// changes main.js's own hash. Verified empirically: a real (minification-surviving) edit to
+// src/OrderEditor.js moved main.js from aeb2ad64 → 8fd51999 and the build id with it.
+//
+// If the webpack config ever splits the runtime out (optimization.runtimeChunk) this still holds —
+// the runtime becomes its own entrypoint and is listed here. But if entrypoints ever stops covering
+// the runtime, this silently stops reloading tabs on lazy-chunk-only changes, which is the BAD
+// failure direction (staff keep running stale code). Hash Object.entries(m.files) instead if so.
 const bundleSig = () => {
   try {
     const m = JSON.parse(fs.readFileSync(path.join(dir, 'asset-manifest.json'), 'utf8'));
