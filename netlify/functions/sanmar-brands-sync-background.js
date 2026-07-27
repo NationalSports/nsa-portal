@@ -29,7 +29,7 @@
 // Writes:
 //   products        — one row per style+color, id 'smb-{style}-{colorCode}',
 //                     brand = SanMar brandName, vendor_id = SanMar vendor,
-//                     MAP/MSRP as retail, piece price as nsa_cost,
+//                     MAP/MSRP as retail, account (getSignInPricing) price as nsa_cost,
 //                     catalog_sell_price = cost × 1.65
 //   sanmar_inventory — per sku+size stock from PromoStandards getInventoryLevels
 //
@@ -259,6 +259,26 @@ exports.handler = async (event) => {
           });
         } catch (e) { console.warn('[sanmar-brands-sync] inventory', style, e.message); }
 
+        // Customer pricing. getProductInfoByStyleColorSize's productPriceInfo carries
+        // the CATALOG list price (piecePrice), not our account price — for LPC380 it
+        // returned 4.52/5.51/6.30 when our real prices were 3.52/4.51/5.30 (and 3.05
+        // base on sale). The account price lives in the separate Pricing service, so
+        // pull getSignInPricing per style (uniform across colors) and cost from the
+        // cheapest customer-facing price per size. Falls back to the product-info
+        // fields if the pricing call fails.
+        const priceBySize = {};
+        try {
+          const priced = await sm('pricing', 'getSignInPricing', { style, color: '', size: '' });
+          for (const r of arr(priced.items)) {
+            const sz = String(r.size || r.labelSize || '').trim();
+            if (!sz) continue;
+            const cands = [r.myPrice, r.salePrice, r.piecePrice, r.customerPrice].map(num).filter((v) => v > 0);
+            if (!cands.length) continue;
+            const p = Math.min(...cands);
+            if (priceBySize[sz] == null || p < priceBySize[sz]) priceBySize[sz] = p;
+          }
+        } catch (e) { console.warn('[sanmar-brands-sync] pricing', style, e.message); }
+
         const byColor = {};
         for (const it of items) {
           const colorName = it.colorName || it.color || it.catalogColor || 'NA';
@@ -270,11 +290,16 @@ exports.handler = async (event) => {
           const recs = grp.recs, r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          // Our real per-size cost: the sale/program price when SanMar has one, else the
-          // piece price. Base cost = the LOWEST size's price (the XS–XL tier) — recs[0] is
-          // whatever size SanMar lists first (often an upsized 2XL+ row), which inflated
-          // nsa_cost for every color (e.g. LPC380 stored 4.52 vs the real 3.05 base).
-          const costOf = (r) => num(r.myPrice) || num(r.salePrice) || num(r.piecePrice) || num(r.customerPrice) || num(r.casePrice);
+          // Our real per-size cost: the account price from getSignInPricing when we got
+          // one for this size, else the product-info fields. Base cost = the LOWEST
+          // size's price (the XS–XL tier) — recs[0] is whatever size SanMar lists first
+          // (often an upsized 2XL+ row), which inflated nsa_cost for every color
+          // (e.g. LPC380 stored 4.52 vs the real 3.05 base).
+          const costOf = (r) => {
+            const sz = String(r.size || r.labelSize || '').trim();
+            if (sz && priceBySize[sz] > 0) return priceBySize[sz];
+            return num(r.myPrice) || num(r.salePrice) || num(r.piecePrice) || num(r.customerPrice) || num(r.casePrice);
+          };
           const _perSize = recs.map(costOf).filter((c) => c > 0);
           const cost   = _perSize.length ? Math.min(..._perSize) : 0;
           const retail = num(r0.msrp || r0.mapPrice) || num(r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);

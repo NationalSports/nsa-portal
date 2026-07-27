@@ -85,11 +85,13 @@ function parseSizeCosts(xml) {
   blocks.forEach(function(b) {
     var size = extractTag(b, 'size');
     if (!size) return;
+    // Cheapest customer-facing price on the record — a sale/my price beats the
+    // regular piece price (store costing defaults to the cheapest tier).
     var price = null;
-    var keys = ['piecePrice', 'customerPrice', 'salePrice'];
+    var keys = ['myPrice', 'salePrice', 'piecePrice', 'customerPrice'];
     for (var k = 0; k < keys.length; k++) {
       var v = parseFloat(extractTag(b, keys[k]));
-      if (v > 0) { price = v; break; }
+      if (v > 0 && (price == null || v < price)) price = v;
     }
     if (price == null) return;
     var key = size.trim();
@@ -198,17 +200,20 @@ exports.handler = async (event) => {
             .filter(function(v) { return v > 0; });
         }
 
-        if (!prices.length) continue;
+        // Build the per-size cost map (cheapest customer-facing price per size).
+        // Only persist it when sizes actually differ (an upcharge exists); a flat
+        // price needs no map and falls back to nsa_cost in the app.
+        var sizeCosts = parseSizeCosts(xml);
+        var scVals = Object.keys(sizeCosts).map(function(s) { return sizeCosts[s]; });
+
+        if (!scVals.length && !prices.length) continue;
 
         // Base cost = the lowest (XS–XL tier) size price. SanMar record order varies
         // (an upsized 2XL+ row can come first), so take the min — matching
         // sanmar-brands-sync and what the store editor shows as the item cost.
-        var newCost = Math.min.apply(null, prices);
-
-        // Build the per-size cost map. Only persist it when sizes actually
-        // differ (an upcharge exists); a flat price needs no map and falls
-        // back to nsa_cost in the app.
-        var sizeCosts = parseSizeCosts(xml);
+        // Prefer the per-size map (it honors sale/my price); the flat piecePrice
+        // scan is the fallback when the response has no per-size structure.
+        var newCost = scVals.length ? Math.min.apply(null, scVals) : Math.min.apply(null, prices);
         var distinctVals = {};
         Object.keys(sizeCosts).forEach(function(s) { distinctVals[sizeCosts[s].toFixed(2)] = true; });
         var nextSizeCosts = Object.keys(distinctVals).length > 1 ? sizeCosts : null;
