@@ -705,6 +705,53 @@ const _checkVersion=async(table,id,localVersion)=>{
 // while another lacks it (e.g. fresh OMG-import art next to a library copy) 400s the whole batch
 // and aborts the save before items are written (the SO-1459 blank-order bug).
 const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}if(r.mock_links==null)r.mock_links={};return r};
+// ─── Art-row upsert with schema-gap recovery ───
+// PostgREST rejects the ENTIRE batch when one payload key has no matching column, and names it:
+// PGRST204 "Could not find the 'sample_art' column of 'estimate_art_files' in the schema cache".
+// The old recovery re-sent the batch stripped of EVERY optional column (_artExtraCols), so ONE missing
+// column silently wrote art rows with no color_ways / design_id / preview_url / item_mockups /
+// prod_files_attached. That is exactly what happened to estimate art: migration 00046 added sample_art
+// to so_art_files only, _loadArtRow always hydrates a sample_art key, so every save of a reloaded
+// estimate (and every group added from Previous Artwork, which clones an SO record) took the degraded
+// path and came back from the next load as an empty shell. Drop ONLY the column the error names, and
+// tell the user exactly what didn't save — a schema gap must never cost twelve unrelated fields silently.
+// PostgREST names it as "Could not find the 'x' column of 't'"; Postgres itself (42703) as
+// 'column "x" of relation "t" does not exist'. Both shapes are parsed — the jobs path used to
+// match the second one, and folding it in here keeps that coverage in the shared helper.
+const _missingCol=(err)=>{const m=(err?.message||'').match(/Could not find the '([^']+)' column/)||(err?.message||'').match(/column "([^".]+)"/);return m?m[1]:null};
+// An expired-session/RLS rejection is never a schema gap — retrying it with columns removed would
+// write a mangled row (or loop) instead of routing through session recovery. Check auth first.
+const _isSchemaGapErr=(err)=>!!err&&!_isAuthError(err)&&(err.code==='PGRST204'||err.code==='42703'||/schema cache|art_sizes|garment_colors|item_mockups|not found|does not exist/.test(err.message||''));
+// Write `rows` via `send`, surviving a table whose schema is missing a column we write.
+// Returns {error, dropped:[col]} — a non-empty `dropped` means the rows landed but those fields did not.
+// Shared by every child-row write (art, decorations, jobs) so the recovery rule lives in ONE place
+// instead of the four hand-synced copies that had drifted apart (one gated on schema errors, one on
+// ANY error, one strip-all, one per-column).
+const _SCHEMA_DROP_LIMIT=64;
+const _writeRowsSchemaSafe=async(table,rows,send,extraCols)=>{
+  let cur=rows,dropped=[];
+  let{error}=await send(cur);
+  // Each pass removes one named column; bounded so a mis-parsed error can't loop.
+  for(let i=0;i<_SCHEMA_DROP_LIMIT&&error&&_isSchemaGapErr(error);i++){
+    const col=_missingCol(error);
+    if(!col||dropped.includes(col))break;
+    dropped.push(col);
+    cur=cur.map(r=>{const c={...r};delete c[col];return c});
+    ({error}=await send(cur));
+  }
+  // Unnamed schema gap (older PostgREST / a non-PGRST204 shape): last-resort blanket strip, as before.
+  if(error&&_isSchemaGapErr(error)&&!dropped.length&&extraCols){
+    const extras=[...new Set(rows.flatMap(r=>Object.keys(r).filter(k=>extraCols.has(k))))];
+    if(extras.length){
+      const coreRows=rows.map(r=>{const c={};Object.keys(r).forEach(k=>{if(!extraCols.has(k))c[k]=r[k]});return c});
+      ({error}=await send(coreRows));
+      if(!error)dropped=extras;
+    }
+  }
+  return{error,dropped};
+};
+const _schemaGapMsg=(what,table,dropped)=>what+' saved WITHOUT '+dropped.join(', ')+' — '+table+' is missing '+(dropped.length>1?'those columns':'that column')+'. Run the pending DB migration before relying on these fields.';
+const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 // ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
 // When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
 // unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping
@@ -1035,18 +1082,15 @@ const _dbSaveEstimateInner = async (est) => {
       {
         let afRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,estimate_id:est.id}));
         let _afOk=true;
-        const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
+        const{error:afErr,dropped:afDropped}=await _writeRowsSchemaSafe('estimate_art_files',afRows,(r)=>supabase.from('estimate_art_files').upsert(r,{onConflict:'estimate_id,id'}),_artExtraCols);
         if(afErr){
           // A degraded (anon) session is rejected here by RLS — surface it as a save failure so it routes through
           // session recovery below instead of being swallowed (which would clear the dirty flag and lose the art).
           if(_isAuthError(afErr)){decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
-          else if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-            const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-            const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr2.message)}
-            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
+          else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
+        }else if(afDropped.length){
+          console.warn('[DB] estimate_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
+          if(_dbNotify)_dbNotify(_artGapMsg('estimate_art_files',afDropped),'error');
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
         if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
@@ -1324,15 +1368,12 @@ const _dbSaveSOInner = async (so) => {
       {
         let soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
         let _afOk=true;
-        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        const{error:afErr,dropped:afDropped}=await _writeRowsSchemaSafe('so_art_files',soAfRows,(r)=>_retryNet(()=>supabase.from('so_art_files').upsert(r,{onConflict:'so_id,id'})),_artExtraCols);
         if(afErr){
-          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-            console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
-            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-            if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr2.message);_afOk=false}
-            else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false}
+          console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true;_failMsg=_failMsg||('so_art_files: '+afErr.message);_afOk=false;
+        }else if(afDropped.length){
+          console.warn('[DB] so_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
+          if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
         if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
@@ -1770,34 +1811,18 @@ const _dbSaveSOInner = async (so) => {
         if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
       });
       if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
-      const _isSchemaErr=e=>!!e&&(e.message?.includes('schema cache')||e.message?.includes('column')||e.code==='PGRST204'||e.message?.includes('not found'));
-      let{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
-      if(jobErr&&_isSchemaErr(jobErr)){
-        // Retry per-missing-column (audit A9): the old path stripped EVERY _jobExtraCols entry in one
-        // shot, so one unknown column landed the art_status change but dropped all the coach flags
-        // (sent_to_coach_at, coach_approved_at, coach_rejected, follow_up_*) with it. PGRST204 names
-        // the missing column — drop just that one and retry, bounded; the strip-all fallback only
-        // remains for an unparseable error.
-        // Budget note: so_jobs is currently missing FOUR columns the client sends on every save
-        // (_draft, priced_separately, price_override, split_group), so a budget of 4 left no
-        // headroom — one more unknown column and the strip-all fallback below fires, silently
-        // dropping split_open (which mis-orders split-family receipt apportioning, SO-1462) along
-        // with the coach/follow-up flags. Keep the budget comfortably above the known gap.
-        let _rows=jobRows;const _stripped=[];
-        for(let _a=0;_a<8&&jobErr&&_isSchemaErr(jobErr);_a++){
-          const _m=(jobErr.message||'').match(/'([^']+)' column/)||(jobErr.message||'').match(/column "([^".]+)"/);
-          if(!_m||!_rows.some(r=>_m[1] in r))break;
-          _stripped.push(_m[1]);
-          console.warn('[DB] so_jobs: column',_m[1],'missing in schema — retrying without it');
-          _rows=_rows.map(r=>{const{[_m[1]]:_x,...cr}=r;return cr});
-          ({error:jobErr}=await supabase.from('so_jobs').upsert(_rows,{onConflict:'so_id,id'}));
-        }
-        if(!jobErr&&_stripped.length)console.warn('[DB] so_jobs saved without unknown column(s):',_stripped.join(', '));
-        if(jobErr&&_isSchemaErr(jobErr)){
-          const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
-          ({error:jobErr}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'}));
-          if(!jobErr)console.warn('[DB] so_jobs saved with core columns only — coach/follow-up fields NOT persisted this save');
-        }
+      // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
+      // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
+      // client sends on every save (_draft, priced_separately, price_override, split_group) — one
+      // more and the strip-all fallback fired, silently dropping split_open (which mis-orders
+      // split-family receipt apportioning, SO-1462) along with the coach/follow-up flags. Both
+      // halves of that are kept: the helper's budget is far above any real gap, AND this branch
+      // closes the gap itself — _draft is out of _jobCols (session-only, never a column) and the
+      // other three now have a migration, so the retry should never fire here at all.
+      const{error:jobErr,dropped:jobDropped}=await _writeRowsSchemaSafe('so_jobs',jobRows,(r)=>supabase.from('so_jobs').upsert(r,{onConflict:'so_id,id'}),_jobExtraCols);
+      if(jobDropped.length){
+        console.warn('[DB] so_jobs is missing column(s):',jobDropped.join(', '),'— those fields were not saved');
+        if(!jobErr&&_dbNotify)_dbNotify(_schemaGapMsg('Jobs','so_jobs',jobDropped),'error');
       }
       if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
       else dedupedJobs.forEach(j=>{if(j._coach_cleared)delete j._coach_cleared});// one-shot marker — consumed by the save that carried it
@@ -1902,12 +1927,16 @@ const _dbSaveSOInner = async (so) => {
       });
       // Batch insert decorations
       if(allDecoRows.length){
-        const{error:decoErr}=await supabase.from('so_item_decorations').insert(allDecoRows);
-        if(decoErr){
-          const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
-          if(coreErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+coreErr.message+(coreErr.details?' ('+coreErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
-          else console.warn('[DB] so decos saved with core columns only')
+        // Was: ANY error re-inserted the batch stripped of every _decoExtraCols key — so a single
+        // unknown column (split_runs, shipped 2026-07-23 with no migration) silently dropped 24 real
+        // fields including deco_type, vendor, color_way_id, placement, deco_po_id and the split
+        // grouping, and a non-schema failure (FK/constraint) wrote mangled rows instead of failing.
+        // Now: only a schema gap recovers, only the named column is dropped, and the loss is reported.
+        const{error:decoErr,dropped:decoDropped}=await _writeRowsSchemaSafe('so_item_decorations',allDecoRows,(r)=>supabase.from('so_item_decorations').insert(r),_decoExtraCols);
+        if(decoErr){saveFailed=true;_failMsg=_failMsg||('so_item_decorations: '+decoErr.message+(decoErr.details?' ('+decoErr.details+')':''));console.error('[DB] so_item_decorations batch failed:',decoErr.message)}
+        else if(decoDropped.length){
+          console.warn('[DB] so_item_decorations is missing column(s):',decoDropped.join(', '),'— those fields were not saved');
+          if(_dbNotify)_dbNotify(_schemaGapMsg('Decorations','so_item_decorations',decoDropped),'error');
         }
         // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
         if(!saveFailed){
@@ -2055,14 +2084,14 @@ const _dbSaveArtFilesInner = async (so) => {
       const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
       {
         const soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
-        const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
+        const{error:afErr,dropped:afDropped}=await _writeRowsSchemaSafe('so_art_files',soAfRows,(r)=>_retryNet(()=>supabase.from('so_art_files').upsert(r,{onConflict:'so_id,id'})),_artExtraCols);
         if(afErr){
           if(_isAuthError(afErr))return _handleAuthSaveFailure(so.id,afErr);
-          if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
-            const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
-            const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-            if(afErr2){if(_isAuthError(afErr2))return _handleAuthSaveFailure(so.id,afErr2);console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
-          }else{console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false}
+          console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false;
+        }
+        if(afDropped.length){
+          console.warn('[DB] so_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
+          if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
         }
         _resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
       }
@@ -3096,6 +3125,7 @@ export {
   _unionArtFiles,
   _mergeArtConflict,
   _resolveArtRows,
+  _writeRowsSchemaSafe,
   _matchRestoreItem,
   _sanitizeArtRow,
   _isNetErr,
