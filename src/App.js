@@ -844,8 +844,8 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
-const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
-const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');return d.secure_url}catch(e){if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer)}};
+const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');return d.secure_url}catch(e){if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer)}};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
@@ -20592,12 +20592,12 @@ export default function App(){
           try{
             const artId=targetArtId||resolveItemArtId(sku);
             const mk=slotKey||_mockKey(sku,color);
-            const uploaded=[];
-            for(const f of files){
-              if(typeof nf==='function')nf('Uploading '+f.name+' for '+sku+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name,art_file_id:artId||null,sku});
-            }
+            if(typeof nf==='function')nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
+            const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
+            const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
+            if(failedNames.length&&typeof nf==='function')nf('Failed: '+failedNames.join(', '),'error');
+            if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
@@ -21164,12 +21164,12 @@ export default function App(){
           setArtJobDetailUploading(true);
           try{
             const artId=targetArtId||j.art_file_id;
-            const uploaded=[];
-            for(const f of files){
-              nf('Uploading '+f.name+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name,art_file_id:artId||null});
-            }
+            nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');
+            const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null}))));
+            const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
+            if(failedNames.length)nf('Failed: '+failedNames.join(', '),'error');
+            if(uploaded.length===0)return;
             // Re-fetch the latest SO from state to avoid stale data
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
@@ -21215,12 +21215,12 @@ export default function App(){
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
             const mk=slotKey||_mockKey(sku,color);
-            const uploaded=[];
-            for(const f of files){
-              nf('Uploading '+f.name+' for '+sku+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name,art_file_id:artId||null,sku});
-            }
+            nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
+            const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
+            const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
+            if(failedNames.length)nf('Failed: '+failedNames.join(', '),'error');
+            if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
@@ -21294,12 +21294,12 @@ export default function App(){
         const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
           try{
-            const uploads=[];
-            for(const e of entries){
-              nf('Uploading '+e.file.name+'...');
-              const url=await fileUpload(e.file,'nsa-art-files');
-              uploads.push({artId:e.artId,file:{url,name:e.file.name}});
-            }
+            nf('Uploading '+entries.length+' file'+(entries.length>1?'s':'')+'...');
+            const results=await Promise.allSettled(entries.map(e=>fileUpload(e.file,'nsa-art-files').then(url=>({artId:e.artId,file:{url,name:e.file.name}}))));
+            const uploads=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?entries[i].file.name:null).filter(Boolean);
+            if(failedNames.length)nf('Failed: '+failedNames.join(', '),'error');
+            if(uploads.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const updArt=safeArt(liveSO).map(a=>{
               const addl=uploads.filter(u=>u.artId===a.id).map(u=>u.file);

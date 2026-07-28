@@ -29,10 +29,21 @@ const cloudUpload = async (file, folder = 'nsa-store-logos') => {
   const fd = new FormData();
   fd.append('file', file); fd.append('upload_preset', CLOUDINARY_PRESET); fd.append('folder', folder);
   const resType = file.type?.startsWith('image/') ? 'image' : 'auto';
-  const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd });
-  const d = await r.json();
-  if (d.error) throw new Error(d.error.message);
-  return d.secure_url;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 300000);
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd, signal: ctrl.signal });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error.message);
+    console.log('[upload]', file.name, Math.round(file.size / 1024) + 'KB', (Date.now() - t0) + 'ms');
+    return d.secure_url;
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Upload timed out: ' + file.name);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 async function invokeEdgeFn(fnName, body) {
   const r = await supabase.functions.invoke(fnName, { body });

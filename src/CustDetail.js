@@ -1129,7 +1129,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const hasLib=libHasLogo();
       if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the mockup to','error');return}
       const added=[];
-      for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
+      const list=Array.from(fileList||[]);
+      nf&&nf('Uploading '+list.length+' file(s)...');
+      const results=await Promise.allSettled(list.map(f=>fileUpload(f,'nsa-mockups').then(url=>({url,name:f.name}))));
+      const failed=[];
+      results.forEach((r,i)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(list[i].name)});
+      if(failed.length)nf&&nf('Upload failed: '+failed.join(', '),'error');
       if(!added.length)return;
       let srcLabel='';
       if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
@@ -1148,7 +1153,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const hasLib=libHasLogo();
       if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the file to','error');return}
       const added=[];
-      for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
+      const list=Array.from(fileList||[]);
+      nf&&nf('Uploading '+list.length+' file(s)...');
+      const results=await Promise.allSettled(list.map(f=>fileUpload(f,'nsa-production').then(url=>({url,name:f.name}))));
+      const failed=[];
+      results.forEach((r,i)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(list[i].name)});
+      if(failed.length)nf&&nf('Upload failed: '+failed.join(', '),'error');
       if(!added.length)return;
       let srcLabel='';
       if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,prod_files:[...(a.prod_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
