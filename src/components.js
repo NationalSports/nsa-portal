@@ -218,8 +218,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     // Deep-link the portal straight to this estimate (?est=<id>) / SO (?so=<id>)
     // instead of the portal home — the coach portal opens the matching view on load.
     const _dl=est2?.id?(dt==='so'?'&so='+est2.id:'&est='+est2.id):'';
-    const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag+_dl:'';
-    setBody(`Hi ${_firstName},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+(cust2.alpha_tag||'')}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag)+_dl:'';
+    setBody(`Hi ${_firstName},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag||'')}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=portalLink;
     setSmsMsg('Hi '+_firstName+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
@@ -240,7 +240,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(emails.length===0){alert('Please select at least one recipient');return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
-    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+customer.alpha_tag:'';
+    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag):'';
     const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
