@@ -20,7 +20,8 @@ export default function useCoachSession() {
     return () => { alive = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
   }, []);
 
-  const signOut = useCallback(() => { supabaseCoach.auth.signOut().catch(() => {}); }, []);
+  // scope:'local': the default global scope would sign the coach out on every device they use
+  const signOut = useCallback(() => { supabaseCoach.auth.signOut({ scope: 'local' }).catch(() => {}); }, []);
 
   return {
     loading: session === undefined,
