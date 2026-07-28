@@ -494,6 +494,27 @@ describe('SO Status Calculation — calcSOStatus()', () => {
     expect(BL.calcSOStatus(ord)).toBe('items_received');
   });
 
+  test('Topstar DIGITIZING billing line does not hold the SO in need_order (its PO lives in deco_pos, not on the item)', () => {
+    const ord = {
+      items: [
+        { sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [], no_deco: true },
+        { sku: 'DIGITIZING', sizes: {}, qty_only: true, est_qty: 1, pick_lines: [], po_lines: [], decorations: [], no_deco: true, is_custom: true, _topstar: true, _topstar_po: 'PO-100-D1' }
+      ],
+      deco_pos: [{ po_id: 'PO-100-D1', vendor: 'Topstar', topstar_service: 'dst', status: 'waiting' }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
+  test('digitizing-only order (just the Topstar line) is not need_order', () => {
+    const ord = {
+      items: [{ sku: 'DIGITIZING', sizes: {}, qty_only: true, est_qty: 1, pick_lines: [], po_lines: [], decorations: [], no_deco: true, is_custom: true, _topstar: true, _topstar_po: 'PO-101-D1' }],
+      deco_pos: [{ po_id: 'PO-101-D1', vendor: 'Topstar', topstar_service: 'dst', status: 'waiting' }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).not.toBe('need_order');
+  });
+
   test('mixed job statuses — some shipped, some active → in_production', () => {
     const ord = {
       items: [{ sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [{ kind: 'art' }] }],
