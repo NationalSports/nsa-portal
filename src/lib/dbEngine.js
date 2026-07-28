@@ -1822,13 +1822,50 @@ const _dbSaveSOInner = async (so) => {
       // Delete Job button). Auto needs_art placeholders still delete freely: that is the JOB-1057
       // retirement case, and syncJobs regenerates them from live decorations anyway.
       const _explicitDel=new Set(Array.isArray(so._deleteJobIds)?so._deleteJobIds:[]);
-      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status').eq('so_id',so.id);
+      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status,art_file_id,_art_ids').eq('so_id',so.id);
       if(_dbJobErr){
         console.error('[DB] SAFETY: skipping so_jobs wipe for',so.id,'— could not read existing jobs:',_dbJobErr.message);
       }else{
         const _isProtectedJob=r=>!_explicitDel.has(r.id)&&((r.key||'').startsWith('released_')||(r.art_status&&r.art_status!=='needs_art'));
-        const _blocked=(_dbJobRows||[]).filter(_isProtectedJob);
+        let _blocked=(_dbJobRows||[]).filter(_isProtectedJob);
         const _delIds=(_dbJobRows||[]).filter(r=>!_isProtectedJob(r)).map(r=>r.id);
+        // GHOST-JOB RETIREMENT (JOB-1053-02, 2026-07-28): the protection above must not make a DEAD
+        // job immortal. A job can outlive everything it was built from — its art file deleted, every
+        // decoration removed — after which syncJobs computes jobs:[] on every open of the order and
+        // lands here forever, blocked, while the ghost keeps surfacing on the art board's approval
+        // column. Liveness is decided by the DATABASE, never the client payload (a stale or
+        // short-loaded tab is exactly what this guard exists to defend against): a protected job is
+        // retired only when the DB itself holds ZERO decorations on this SO's items AND none of the
+        // job's declared art files still exists on the SO. Jobs with no declared art (numbers/names
+        // only) stay protected — no art id means nothing to prove dead against. Any read error keeps
+        // the protection.
+        if(_blocked.length){
+          try{
+            const{data:_artRows,error:_ae}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
+            if(_ae)throw _ae;
+            const{data:_itRows,error:_ie}=await supabase.from('so_items').select('id').eq('so_id',so.id);
+            if(_ie)throw _ie;
+            let _hasDeco=false;
+            if((_itRows||[]).length){
+              const{data:_decoRows,error:_de}=await supabase.from('so_item_decorations').select('id').in('so_item_id',(_itRows||[]).map(r=>r.id)).limit(1);
+              if(_de)throw _de;
+              _hasDeco=(_decoRows||[]).length>0;
+            }
+            if(!_hasDeco){
+              const _liveArt=new Set((_artRows||[]).map(r=>r.id));
+              const _dead=_blocked.filter(r=>{
+                const _ids=[...(Array.isArray(r._art_ids)?r._art_ids:[]),r.art_file_id].filter(id=>id&&id!=='__tbd');
+                return _ids.length>0&&_ids.every(id=>!_liveArt.has(id));
+              });
+              if(_dead.length){
+                const _deadIds=new Set(_dead.map(r=>r.id));
+                _blocked=_blocked.filter(r=>!_deadIds.has(r.id));
+                _dead.forEach(r=>_delIds.push(r.id));
+                console.warn('[DB] Retired',_dead.length,'dead job(s) on',so.id,'— DB has no decorations on this SO and the job\'s art file(s) no longer exist:',_dead.map(r=>r.id).join(', '));
+              }
+            }
+          }catch(err){console.error('[DB] SAFETY: dead-job liveness check failed on',so.id,'— keeping protection:',err?.message||err)}
+        }
         if(_delIds.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',_delIds);
         if(_blocked.length){
           console.error('[DB] SAFETY: blocked wipe of',_blocked.length,'released/submitted job(s) on',so.id,'from an empty jobs save:',_blocked.map(r=>r.id).join(', '));
