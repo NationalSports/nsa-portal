@@ -2359,9 +2359,26 @@ const _recoverSession=async()=>{
   // queued and we retry on the next save / poll / tab-focus instead of forcing a login.
   if(res&&res.fatal){
     try{const{data:{session}}=await supabase.auth.getSession();if(session){_sessionDead=false;return true}}catch(_){}
-    _sessionDead=true;if(_forceReauth)_forceReauth();
+    _sessionDead=true;
+    // Telemetry: the rep is about to be bounced to the login screen. Best-effort — the dead
+    // session means this insert may itself be rejected; that's fine, we'd rather under-count.
+    _logClientEvent('forced_reauth',{});
+    if(_forceReauth)_forceReauth();
   }
   return false;
+};
+// ── Client-event telemetry (2026-07-28) ──
+// Forced reloads and forced re-logins were anecdotal ("the portal keeps booting reps") with no
+// way to measure them. Every disruptive client event lands one row in public.client_events so
+// the next "is this fixed?" question has a graph. Fire-and-forget: telemetry must never block,
+// throw, or retry — a lost row is fine, a save path stalled on telemetry is not.
+export const _logClientEvent=(event,details)=>{
+  try{
+    if(!supabase)return;
+    let email=null;try{email=(JSON.parse(localStorage.getItem('nsa_user')||'null')||{}).email||null}catch(_){}
+    supabase.from('client_events').insert({user_email:email,event,details:details||null})
+      .then(r=>{if(r.error)console.warn('[telemetry]',event,r.error.message)},()=>{});
+  }catch(_){/* noop */}
 };
 // A genuine PERMISSION denial (a valid session that simply lacks rights — e.g. a magic-link coach or a
 // not-yet-linked account hitting a staff-only RLS policy) is NOT an expired session. It won't be fixed

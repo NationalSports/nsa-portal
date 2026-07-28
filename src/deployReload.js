@@ -6,8 +6,24 @@
 // tables), and there is otherwise no way to push fresh code into an already-open tab.
 //
 // This watcher fetches a tiny build fingerprint on a slow interval and, when it changes
-// (a new build has been deployed), reloads the tab so every open window converges on the
-// current build. Cost is one small static fetch per cycle — no database or realtime load.
+// (a new build has been deployed), converges the tab on the current build. HOW it converges
+// depends on the tab's health (2026-07-28 — reps reported "the portal boots me mid-work"
+// during the July deploy cadence, when every merge force-reloaded every open tab within
+// ~90s regardless of what the rep was doing):
+//
+//   - A STUCK tab (failed-save retry loop — `hasFailedSaves`) keeps the old aggressive
+//     behavior: reload when safe, force past `maxDeferMs` even if never safe. A doomed
+//     looping save will not succeed, and that is exactly the tab whose stale requests
+//     hammer the API (the root cause of the recurring save_estimate storms).
+//   - A HEALTHY tab is never yanked out from under an active user. It reloads only when
+//     the save pipeline is quiet AND the user is idle (tab hidden / no recent input).
+//     `onPendingReload` fires once at detection so the UI can show a "new version —
+//     reload when ready" banner with a button. Past `idleDeadlineMs` (default 4h) the
+//     user-idle requirement drops, but `isSafe` still holds — a healthy tab is never
+//     reloaded mid-save no matter how old the pending build is.
+//
+// Every actual reload reports through `onReload(reason)` first (fire-and-forget
+// telemetry), so forced reloads are measurable instead of anecdotal.
 //
 // Fingerprint source, in order of preference:
 //   1. /build-meta.json     — written at build time with a unique id (changes on every
@@ -54,37 +70,53 @@ async function _fingerprint() {
  * Begin watching for new deployments. Idempotent — safe to call more than once.
  * @param {Object} [opts]
  * @param {number} [opts.intervalMs=180000] How often to check for a new build (min 60s, default 3 min).
- * @param {() => boolean} [opts.isSafe] Return false to defer the reload (e.g. a save is in flight).
+ * @param {() => boolean} [opts.isSafe] Save pipeline quiet? False defers the reload (e.g. a save is in flight).
+ * @param {() => boolean} [opts.hasFailedSaves] Tab stuck in a failed-save loop? Only these tabs may be
+ *   force-reloaded while unsafe (past maxDeferMs). Defaults to true, which preserves the pre-2026-07-28
+ *   behavior for callers that don't distinguish.
+ * @param {() => boolean} [opts.isUserIdle] User away from THIS tab (hidden / no recent input)? Healthy tabs
+ *   wait for this before auto-reloading. Defaults to true (no user-activity gating).
+ * @param {(reloadNow: () => void) => void} [opts.onPendingReload] Called once when a new build is detected —
+ *   show a banner; call the passed function to reload immediately (reports reason 'user').
+ * @param {(reason: string) => void} [opts.onReload] Telemetry hook, called just before every reload with
+ *   'safe-idle' | 'stuck-forced' | 'deadline' | 'user'. Must not throw (wrapped anyway).
+ * @param {number} [opts.maxDeferMs=90000] Stuck-tab force deadline (min 30s).
+ * @param {number} [opts.idleDeadlineMs=14400000] Healthy-tab deadline (default 4h) after which the
+ *   user-idle requirement drops. isSafe still holds past it.
  */
 export function startDeployReloadWatcher(opts = {}) {
   if (_started || typeof window === 'undefined' || typeof fetch === 'undefined') return;
   _started = true;
   const intervalMs = Math.max(60000, opts.intervalMs || 180000);
   const isSafe = typeof opts.isSafe === 'function' ? opts.isSafe : () => true;
-  // Upper bound on how long we defer the reload waiting for isSafe(). A tab stuck in a failed-save
-  // retry loop NEVER becomes safe (it always has a pending/failed save) — and that is exactly the tab
-  // whose stale requests hammer the API. Deferring forever means the one tab that most needs the fixed
-  // build is the one that never reloads (the root cause of the recurring save_estimate storms). Past
-  // this deadline we reload regardless: a doomed/looping save will not succeed, and its estimate's
-  // authoritative copy already lives in the DB, which the reload re-fetches. A healthy tab finishes its
-  // save in seconds and reloads via the normal safe path long before this fires.
+  const hasFailedSaves = typeof opts.hasFailedSaves === 'function' ? opts.hasFailedSaves : () => true;
+  const isUserIdle = typeof opts.isUserIdle === 'function' ? opts.isUserIdle : () => true;
   const maxDeferMs = Math.max(30000, opts.maxDeferMs || 90000);
-  let _reloadDeadline = 0;
-  const canReload = () => isSafe() || (_reloadDeadline > 0 && Date.now() >= _reloadDeadline);
+  const idleDeadlineMs = Math.max(maxDeferMs, opts.idleDeadlineMs || 4 * 60 * 60 * 1000);
+  let _stuckDeadline = 0;   // past this, a failed-save tab reloads even while unsafe
+  let _idleDeadline = 0;    // past this, a healthy tab reloads without waiting for user idle (isSafe still required)
+  let _reloading = false;
+
+  const doReload = (reason) => {
+    if (_reloading) return;
+    _reloading = true;
+    try { if (typeof opts.onReload === 'function') opts.onReload(reason); } catch (_) { /* telemetry must never block the reload */ }
+    // Small random delay so a fleet of tabs doesn't reload — and then re-fetch all data —
+    // at the same instant, which would itself spike the DB. User-initiated reloads skip it.
+    const jitter = reason === 'user' ? 0 : 2000 + Math.floor(Math.random() * 18000); // 2–20s
+    setTimeout(() => { try { window.location.reload(); } catch (_) { /* noop */ } }, jitter);
+  };
 
   // Seed the baseline from the same source we'll compare against, so a freshly-opened tab
   // never reloads on its first read.
   _fingerprint().then((fp) => { if (_baseline == null) _baseline = fp; });
 
-  const reloadWhenSafe = () => {
-    if (!canReload()) { setTimeout(reloadWhenSafe, 5000); return; } // wait for quiescence (bounded by deadline)
-    // Small random delay so a fleet of tabs doesn't reload — and then re-fetch all data —
-    // at the same instant, which would itself spike the DB.
-    const jitter = 2000 + Math.floor(Math.random() * 18000); // 2–20s
-    setTimeout(() => {
-      if (!canReload()) { reloadWhenSafe(); return; } // re-check right before reloading
-      try { window.location.reload(); } catch (_) { /* noop */ }
-    }, jitter);
+  const tick = () => {
+    if (_reloading) return;
+    if (isSafe() && isUserIdle()) { doReload('safe-idle'); return; }
+    if (hasFailedSaves() && Date.now() >= _stuckDeadline) { doReload('stuck-forced'); return; }
+    if (Date.now() >= _idleDeadline && isSafe()) { doReload('deadline'); return; }
+    setTimeout(tick, 5000);
   };
 
   setInterval(async () => {
@@ -94,8 +126,13 @@ export function startDeployReloadWatcher(opts = {}) {
     if (_baseline == null) { _baseline = fp; return; }
     if (fp === _baseline) return;                 // same build — nothing to do
     _committed = true;
-    _reloadDeadline = Date.now() + maxDeferMs;    // force reload past this point even if never "safe"
+    _stuckDeadline = Date.now() + maxDeferMs;
+    _idleDeadline = Date.now() + idleDeadlineMs;
     try { console.warn('[deploy-reload] new build detected — reloading when idle'); } catch (_) { /* noop */ }
-    reloadWhenSafe();
+    try { if (typeof opts.onPendingReload === 'function') opts.onPendingReload(() => doReload('user')); } catch (_) { /* noop */ }
+    tick();
   }, intervalMs);
 }
+
+// Test-only: reset module state so each test starts a fresh watcher.
+export function _resetDeployReloadForTests() { _started = false; _baseline = null; _committed = false; }

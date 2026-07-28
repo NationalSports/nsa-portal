@@ -442,6 +442,7 @@ import {
   _onCacheFullChange,
   _lsSet,
   _dbSaveFailedIds,
+  _logClientEvent,
   _outboxAdd,
   _outboxRemove,
   _outboxRemoveById,
@@ -2145,6 +2146,9 @@ export default function App(){
   const[outboxConflicts,setOutboxConflicts]=useState([]);
   _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>{const key=en.table+':'+en.id;return[...prev.filter(x=>x.table+':'+x.id!==key),en]})});
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_setOnCacheFullChange(setCacheFull);
+  // A new build is deployed and this tab will reload when the rep goes idle — the banner's
+  // "Reload now" lets them pick the moment instead. Holds the reloadNow fn from the watcher.
+  const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
   // Batch PO system
@@ -2702,14 +2706,31 @@ export default function App(){
   // or pending — so a reload never drops unsaved work. Every window then converges on the
   // current code. Production only (dev rebuilds would reload on every hot change). See
   // src/deployReload.js.
+  //
+  // 2026-07-28: healthy tabs are no longer force-reloaded mid-work. During July's deploy
+  // cadence every merge yanked every open tab within ~90s ("the portal keeps booting me").
+  // Now only a tab stuck in a failed-save loop keeps the 90s force; an active rep gets a
+  // banner and the tab reloads when they go idle (hidden, or 2 min without input). Every
+  // reload logs to client_events so this is measurable.
   React.useEffect(()=>{
     if(process.env.NODE_ENV!=='production')return;
+    // Per-TAB input recency — the cross-tab nsa_last_activity key would keep this tab
+    // "active" while the rep works in a different one, which is exactly when reloading
+    // this tab is free.
+    const _lastTabInput={t:Date.now()};
+    const _mark=()=>{_lastTabInput.t=Date.now()};
+    ['pointerdown','keydown','scroll'].forEach(ev=>window.addEventListener(ev,_mark,{passive:true}));
     startDeployReloadWatcher({
       // Bills sitting in Import & Review are memory-only work — hold the reload for them too
       // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
       // banner recover the list, so a forced reload costs one click instead of the session).
       isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
+      hasFailedSaves:()=>_dbSaveFailedIds.size>0,
+      isUserIdle:()=>document.hidden||Date.now()-_lastTabInput.t>120000,
+      onPendingReload:(reloadNow)=>setDeployReloadPending(()=>reloadNow),
+      onReload:(reason)=>_logClientEvent('deploy_reload',{reason}),
     });
+    return()=>{['pointerdown','keydown','scroll'].forEach(ev=>window.removeEventListener(ev,_mark))};
   },[]);
 
   // ─── Auto-heal orphaned "converted" estimates (SO was truly deleted) ───
@@ -33387,6 +33408,10 @@ export default function App(){
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>{try{window.location.reload()}catch(_){}}} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Retry now</button>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
+      </div>}
+      {deployReloadPending&&<div style={{padding:'8px 16px',background:'#f0fdf4',border:'1px solid #bbf7d0',color:'#166534',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:14}}>&#127881;</span><span style={{flex:1}}>A new version of the portal is ready. It will load on its own when you step away &mdash; or grab it now.</span>
+        <button onClick={()=>{try{deployReloadPending()}catch(_){try{window.location.reload()}catch(__){}}}} style={{background:'#166534',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Reload now</button>
       </div>}
       {cacheFull&&<div style={{padding:'8px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:14}}>&#128230;</span><span style={{flex:1}}>Local cache full &mdash; data is still saved to cloud. Clear browser data if issues persist.</span>
