@@ -619,6 +619,16 @@ const _diffSaveSkipLogged=new Set();// rate-limit "skipped" warnings to once per
 // every save, so including them causes a phantom save loop: save → version bump → realtime delivers
 // new version → _diffSave sees version change → saves again → repeat indefinitely.
 const _diffCmp=(o)=>{const{_version,updated_at,...r}=o;return JSON.stringify(r)};
+// Customer child-table arrays attached at load time (promo/credit/pending-shipping data). These
+// persist through their own tables/handlers — _dbSaveCustomer never writes them — but the promo
+// state updates fan them out onto EVERY family member (parent + all subs), so a whole-object diff
+// saw one promo add as an "edit" to each of the 17 Helix customers and queued 17 pointless
+// customer-row saves (which then surfaced as 17 outbox conflict cards after a session death).
+// contacts is NOT in this list: _dbSaveCustomer does persist contacts, so contact edits must diff.
+const _CUST_CHILD_KEYS=['promo_programs','promo_periods','promo_usage','credits','credit_usage','pending_shipping','pending_shipping_usage'];
+// Phantom-save guard for customers: ignore the child-table arrays above (plus the server-managed
+// fields _diffCmp strips) so only changes _dbSaveCustomer can actually save trigger a save.
+const _custDiffCmp=(o)=>{const r={...o};delete r._version;delete r.updated_at;_CUST_CHILD_KEYS.forEach(k=>delete r[k]);return JSON.stringify(r)};
 // Phantom-save guard for estimates: compare ONLY the fields save_estimate actually persists.
 // Estimates carry session-only data that is recomputed on every reload and never saved —
 // per-size _sizeCosts/_sizeSells (from vendor-pricing hooks), _colorImage, _ss_live, plus the
@@ -2929,15 +2939,20 @@ const _outboxValEq=(a,b)=>{if(a===b)return true;if(a==null&&b==null)return true;
 // Client-only keys (_-prefixed) and volatile stamps are ignored. Subset match is the right rule —
 // if everything the client tried to write is already there, there is nothing left to save,
 // whoever wrote it. A false negative here is safe: it just falls through to the version gate.
-const _outboxMatchesRow=(payload,row)=>{if(!payload||!row)return false;
-  for(const k of Object.keys(payload)){if(k.startsWith('_'))continue;if(_OUTBOX_IGNORE_KEYS.has(k))continue;if(!_outboxValEq(payload[k],row[k]))return false}
+// For customers, additionally ignore the load-time child-table arrays (_CUST_CHILD_KEYS): the
+// customer save can't write them, so a payload differing ONLY there has nothing left to save —
+// re-applying it would just re-upsert an identical customer row. Without this, serialization
+// drift in those arrays (Postgres timestamp/numeric formatting vs the client's ISO strings and
+// numbers) defeated the match and turned no-op payloads into conflict cards.
+const _outboxMatchesRow=(payload,row,table)=>{if(!payload||!row)return false;
+  for(const k of Object.keys(payload)){if(k.startsWith('_'))continue;if(_OUTBOX_IGNORE_KEYS.has(k))continue;if(table==='customers'&&_CUST_CHILD_KEYS.includes(k))continue;if(!_outboxValEq(payload[k],row[k]))return false}
   return true};
 const _outboxGate=(entry,dbRow)=>{
   // Row absent: a never-saved new entity (no base version) is safe to apply; a row that HAD a
   // version existed on the server and was deleted there — silently resurrecting it would undo a
   // deliberate delete, so that's a conflict card.
   if(!dbRow)return entry.baseVersion==null?'apply':'conflict';
-  if(_outboxMatchesRow(entry.payload,dbRow))return 'drop';
+  if(_outboxMatchesRow(entry.payload,dbRow,entry.table))return 'drop';
   const v=dbRow._version;const dbV=(v!=null&&isFinite(Number(v)))?Number(v):null;
   if(entry.baseVersion==null||dbV==null)return 'conflict';// no version info on either side → card, never silent overwrite
   return dbV<=entry.baseVersion?'apply':'conflict';
@@ -3033,6 +3048,7 @@ export {
   _bgSync,
   _diffSaveSkipLogged,
   _diffCmp,
+  _custDiffCmp,
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,

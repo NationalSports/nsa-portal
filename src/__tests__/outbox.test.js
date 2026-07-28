@@ -11,6 +11,7 @@ import {
   _outboxAdd, _outboxRemove, _outboxRemoveById, _outboxList,
   _emitOutboxConflict, _setOnOutboxConflict,
   _dbOwnVersions, _rebaseOntoOwnWrite,
+  _custDiffCmp,
 } from '../lib/dbEngine';
 
 const clearBox = () => localStorage.removeItem('nsa_outbox');
@@ -30,6 +31,31 @@ describe('_outboxMatchesRow (committed-but-response-lost detection)', () => {
     expect(_outboxMatchesRow({ id: 'X', po_number: null }, { id: 'X' })).toBe(true);
     expect(_outboxMatchesRow({ id: 'X', memo: 'a' }, { id: 'X', memo: 'b' })).toBe(false);
     expect(_outboxMatchesRow({ id: 'X', items: [{ q: 1 }] }, { id: 'X', items: [{ q: 2 }] })).toBe(false);
+  });
+  test('customers: child-table arrays (promo/credit/pending-ship) are ignored — the customer save cannot write them', () => {
+    // Serialization drift (client ISO timestamps + numbers vs Postgres formatting) in the attached
+    // promo arrays must not defeat the match — the 17-Helix-conflict-cards case.
+    const payload = { id: 'c-1', name: 'Helix HS', promo_programs: [{ id: 'pp1', fixed_amount: 6001, created_at: '2026-07-28T14:11:00.962Z' }] };
+    const row = { id: 'c-1', name: 'Helix HS', promo_programs: [{ id: 'pp1', fixed_amount: '6001', created_at: '2026-07-28 14:11:00.962+00' }] };
+    expect(_outboxMatchesRow(payload, row, 'customers')).toBe(true);
+    // …but only for the customers table; and a real customer-row difference still mismatches.
+    expect(_outboxMatchesRow(payload, row, 'sales_orders')).toBe(false);
+    expect(_outboxMatchesRow({ ...payload, name: 'Renamed' }, row, 'customers')).toBe(false);
+    // contacts DO persist with the customer save, so they still count.
+    expect(_outboxMatchesRow({ ...payload, contacts: [{ name: 'A' }] }, { ...row, contacts: [{ name: 'B' }] }, 'customers')).toBe(false);
+  });
+});
+
+describe('_custDiffCmp (customer autosave phantom-change guard)', () => {
+  test('a promo add fanned out to the family is NOT a customer-row change', () => {
+    const before = { id: 'c-1', name: 'Helix HS', _version: 3, promo_programs: [] };
+    const after = { ...before, promo_programs: [{ id: 'pp1', fixed_amount: 6001 }], promo_periods: [{ id: 'per1' }] };
+    expect(_custDiffCmp(before)).toBe(_custDiffCmp(after));
+  });
+  test('real customer-row and contact changes still diff', () => {
+    const base = { id: 'c-1', name: 'Helix HS', contacts: [{ name: 'Chase' }] };
+    expect(_custDiffCmp(base)).not.toBe(_custDiffCmp({ ...base, name: 'Renamed' }));
+    expect(_custDiffCmp(base)).not.toBe(_custDiffCmp({ ...base, contacts: [{ name: 'Sam' }] }));
   });
 });
 
@@ -56,6 +82,12 @@ describe('_outboxGate (the load-bearing boot decision)', () => {
   test('no version info on either side → conflict (no proof of safety)', () => {
     expect(_outboxGate(entry(null), { id: 'SO-1', memo: 'other' })).toBe('conflict');
     expect(_outboxGate(entry(3), { id: 'SO-1', memo: 'other' })).toBe('conflict');
+  });
+  test('customer payload differing only in attached promo arrays → drop, even past the base version', () => {
+    const en = { table: 'customers', id: 'c-1', baseVersion: 3,
+      payload: { id: 'c-1', name: 'Helix HS', _version: 3, promo_programs: [{ id: 'pp1', fixed_amount: 6001 }] } };
+    const dbRow = { id: 'c-1', name: 'Helix HS', _version: 5, promo_programs: [{ id: 'pp1', fixed_amount: '6001' }] };
+    expect(_outboxGate(en, dbRow)).toBe('drop');
   });
 });
 
