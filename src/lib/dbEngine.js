@@ -150,7 +150,11 @@ const _safeQuery=(table,opts)=>{
     if(c0==='missing'){_missing404Tables.set(table,Date.now());return{data:[],error:null,status:200};}
     // Not cached in _missing404Tables: after a staff login the same table becomes readable, and the
     // next poll should pick it up immediately rather than after the missing-table TTL.
-    if(c0==='denied'){console.warn('[DB] '+table+' not readable by current role (permission denied) — treating as empty');return{data:[],error:null,status:200};}
+    // _probeDeniedSession: "empty is authoritative" is only true for the anonymous coach portal. For a
+    // STAFF tab, a denied poll read means the login died and this tab is now running as the anon role —
+    // left alone it polls stale data for hours while the rep keeps editing, and every one of those edits
+    // later fails RLS and turns into an outbox conflict card (the 2026-07-28 storm). Probe → prompt re-login.
+    if(c0==='denied'){_probeDeniedSession(table);console.warn('[DB] '+table+' not readable by current role (permission denied) — treating as empty');return{data:[],error:null,status:200};}
     if(c0==='error'){
       // Partial/incomplete load: a page failed. Treat it exactly like a timeout — mark the table
       // untrusted so reloads SKIP applying it (poll/realtime both bail on _decoTimedOut) and hydration
@@ -172,7 +176,7 @@ const _safeQuery=(table,opts)=>{
       const results=await Promise.all(starts.map(s=>fetchPage(s)));
       for(const r of results){
         const c=_classifyPage(r);
-        if(c==='missing'||c==='denied'){done=true;break;}// table vanished / access revoked mid-page (unlikely) — stop, keep what we have
+        if(c==='missing'||c==='denied'){if(c==='denied')_probeDeniedSession(table);done=true;break;}// table vanished / access revoked mid-page (unlikely) — stop, keep what we have
         if(c==='error'){_lastLoadTimedOut.add(table);return r;}
         const rows=r.data||[];
         all.push(...rows);
@@ -2393,6 +2397,28 @@ const _verifyPermDenialHasSession=async(id)=>{
     _recoverSession();// no live session behind the "denial" — it's a dead login; refresh or bounce to the login screen
   }catch(_){/* can't tell — keep the permission-denied classification rather than churn recovery */}
 };
+// True when this browser claims a signed-in STAFF user. nsa_user is written at login and survives the
+// Supabase session itself dying, so it distinguishes "a staff login degraded to anon" (recoverable —
+// bounce to re-login) from the anonymous coach portal (?portal=), which never sets it and must NEVER
+// be bounced to the staff login screen (that regression broke every portal link once already).
+// Deploy previews ("<context>--<site>.netlify.app") are exempt, mirroring App.js's stale-session guard:
+// testers there carry a cached nsa_user with no Supabase session on purpose, and bouncing them to login
+// would make previews untestable. Same anchored regex so it can't fail-open on an unrelated host.
+const _isPreviewHost=()=>{try{return typeof window!=='undefined'&&/--[a-z0-9-]+\.netlify\.app$/i.test(window.location.hostname||'')}catch{return false}};
+const _expectsStaffSession=()=>{try{return !_isPreviewHost()&&typeof localStorage!=='undefined'&&!!localStorage.getItem('nsa_user')}catch{return false}};
+// Zombie-tab probe: a poll read denied by RLS/grants on a STAFF tab means the login died and requests
+// are going out as the anon role. Without this the tab keeps polling (stale data) and the rep keeps
+// editing — every edit then fails RLS at save time and resurfaces as an outbox conflict card. Verify
+// the session once per minute at most (a denied burst hits many tables in one poll cycle); the shared
+// _verifyPermDenialHasSession already distinguishes a live session (genuine denial — leave it alone)
+// from a dead one (refresh or force re-login).
+let _deniedProbeAt=0;
+const _probeDeniedSession=(table)=>{
+  if(_sessionDead||!_expectsStaffSession())return;
+  const now=Date.now();if(now-_deniedProbeAt<60000)return;_deniedProbeAt=now;
+  console.warn('[DB] denied read on '+table+' with a staff login present — verifying session');
+  _verifyPermDenialHasSession(null);
+};
 // Proactive guard: ensure the access token isn't expired/near-expiry *before* a write goes out. A
 // hidden/idle/slept tab throttles GoTrue's auto-refresh timer, so the in-memory JWT can be stale; the
 // PostgREST write path would send it as-is, the server treats the request as the anon role, and RLS
@@ -2403,7 +2429,12 @@ const _ensureFreshSession=async()=>{
   if(!supabase||_sessionDead)return;
   try{
     const{data:{session}}=await supabase.auth.getSession();
-    if(session?.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
+    // No session at all on a staff tab: the login is already gone (not merely near expiry), and the
+    // write about to go out will be sent as the anon role and rejected by RLS. Run recovery NOW so a
+    // truly-dead login latches _sessionDead and bounces to re-login (outbox keeps the edit) instead of
+    // burning the attempt on a doomed anon write. Coach-portal saves (no nsa_user) are untouched.
+    if(!session){if(_expectsStaffSession())await _recoverSession();return}
+    if(session.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
   }catch{}
 };
 const _dbSaveCustomer = (c) => _outboxWrap('customers', c, _dbSaveCustomerInner(c));
