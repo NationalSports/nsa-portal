@@ -68,3 +68,49 @@ describe('_isPermissionDenied — terminal RLS denial vs recoverable expiry', ()
     expect(_isPermissionDenied({ message: 'duplicate key' })).toBe(false);
   });
 });
+
+/* Dead-login detection gates (2026-07-28 conflict-card storm). _expectsStaffSession decides whether a
+ * permission-denied read / missing session may trigger recovery → forced re-login. It must be TRUE for
+ * a staff browser (nsa_user cached) and FALSE otherwise — the anonymous coach portal must never be
+ * bounced to the staff login screen (that regression broke every portal link once already). */
+describe('_expectsStaffSession — staff tabs recover, coach portal is never bounced', () => {
+  const { _expectsStaffSession } = require('../lib/dbEngine');
+  afterEach(() => localStorage.removeItem('nsa_user'));
+
+  test('false with no cached staff login (coach portal / logged-out visitor)', () => {
+    localStorage.removeItem('nsa_user');
+    expect(_expectsStaffSession()).toBe(false);
+  });
+
+  test('true when a staff login is cached (jsdom host is not a Netlify preview)', () => {
+    localStorage.setItem('nsa_user', JSON.stringify({ id: 'u1', name: 'Rep' }));
+    expect(_expectsStaffSession()).toBe(true);
+  });
+});
+
+/* signOut scope pin (root cause of the 2026-07-28 session-death storm): supabase-js defaults
+ * signOut to scope:'global', which revokes the user's refresh tokens on EVERY device. With shared
+ * warehouse logins plus the 1-hour idle auto-logout, one idle tab killed every sibling station's
+ * session. Every signOut call site must pass an explicit scope so the default can never sneak back. */
+describe("auth.signOut call sites always pass an explicit scope (never the global default)", () => {
+  const fs = require('fs');
+  const path = require('path');
+  const glob = (dir, out = []) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) glob(p, out);
+      else if (/\.(js|jsx)$/.test(e.name) && !p.includes('__tests__')) out.push(p);
+    }
+    return out;
+  };
+  test('every auth.signOut( call in src/ carries a scope option', () => {
+    const offenders = [];
+    for (const f of glob(path.join(__dirname, '..'))) {
+      const src = fs.readFileSync(f, 'utf8');
+      const re = /auth\.signOut\(([^)]*)\)/g;
+      let m;
+      while ((m = re.exec(src))) { if (!/scope/.test(m[1])) offenders.push(f + ': ' + m[0]); }
+    }
+    expect(offenders).toEqual([]);
+  });
+});

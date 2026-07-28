@@ -264,7 +264,12 @@ const _sbResetPassword=async(email)=>{
   if(error)return{error:error.message};
   return{success:true};
 };
-const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut()};
+// scope:'local' — supabase-js defaults signOut to scope:'global', which revokes the refresh tokens for
+// this USER on EVERY device. With shared accounts (warehouse stations all on one login) and the 1-hour
+// idle auto-logout, one forgotten idle tab was silently killing the sessions of every other station on
+// the account — those tabs then ran as the anon role, every save failed RLS, and the edits resurfaced
+// as outbox conflict cards (the 2026-07-28 storm). Local scope signs out THIS browser only.
+const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut({scope:'local'})};
 const _sbGetSession=async()=>{
   if(!supabase)return null;
   const{data}=await supabase.auth.getSession();
@@ -3164,4 +3169,5 @@ export {
   _isAuthError,
   _isPermissionDenied,
   _classifyRefresh,
+  _expectsStaffSession,
 };

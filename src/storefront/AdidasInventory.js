@@ -1529,7 +1529,8 @@ export default function AdidasInventory() {
     const { error } = await supabase.auth.signInWithOtp({ email: em, options: { emailRedirectTo: window.location.origin + catalogPath() } });
     setSignInState(error ? 'error' : 'sent');
   };
-  const signOut = () => { supabase.auth.signOut().catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
+  // scope:'local': the default global scope would sign the coach out on every device they use
+  const signOut = () => { supabase.auth.signOut({ scope: 'local' }).catch(() => {}); setCoach(null); setSignInOpen(false); setSignInState('idle'); };
   // Team price for a colorway under the coach's adidas/UA tier (null when anonymous)
   const yourPriceFn = useCallback(
     (cw) => {

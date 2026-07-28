@@ -41,7 +41,10 @@ export const sbResetPassword = async (email) => {
   return { success: true };
 };
 
-export const sbSignOut = async () => { if (supabase) await supabase.auth.signOut(); };
+// scope:'local' — the supabase-js default is scope:'global', which revokes this user's refresh tokens
+// on EVERY device. With shared logins (warehouse stations) plus the 1-hour idle auto-logout, one idle
+// tab was killing every sibling station's session (see _sbSignOut in dbEngine.js). This browser only.
+export const sbSignOut = async () => { if (supabase) await supabase.auth.signOut({ scope: 'local' }); };
 
 export const sbGetSession = async () => {
   if (!supabase) return null;
