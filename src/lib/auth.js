@@ -41,7 +41,10 @@ export const sbResetPassword = async (email) => {
   return { success: true };
 };
 
-export const sbSignOut = async () => { if (supabase) await supabase.auth.signOut(); };
+// scope:'local' — end this device's session only. supabase-js defaults to 'global', which revokes the
+// user's refresh tokens everywhere and boots their other tabs/devices to the login screen. See the
+// matching note on _sbSignOut in ./dbEngine.js.
+export const sbSignOut = async () => { if (supabase) await supabase.auth.signOut({ scope: 'local' }); };
 
 export const sbGetSession = async () => {
   if (!supabase) return null;

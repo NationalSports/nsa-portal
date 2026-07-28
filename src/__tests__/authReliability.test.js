@@ -68,3 +68,44 @@ describe('_isPermissionDenied — terminal RLS denial vs recoverable expiry', ()
     expect(_isPermissionDenied({ message: 'duplicate key' })).toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sign-out blast radius. supabase-js defaults signOut() to scope:'global', which revokes EVERY
+// refresh token the user holds — every other tab, their phone, the warehouse iPad. With that
+// default, one tab hitting the 1-hour idle sign-out killed the session everywhere else; those tabs
+// still had `nsa_user` cached, so their next refresh came back "refresh_token_not_found" →
+// _classifyRefresh 'fatal' → forced re-login. That is the "portal makes me log in twice" report.
+// Sign-out is a per-device action here, so every call site must pass scope:'local'. This is a
+// source scan rather than a behavioral test because the failure mode is someone adding a NEW
+// signOut() call that silently inherits the global default.
+describe('signOut scope — signing out one device must not revoke the others', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const SRC = path.join(__dirname, '..');
+
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
+    const p = path.join(dir, d.name);
+    if (d.isDirectory()) return d.name === '__tests__' || d.name === 'node_modules' ? [] : walk(p);
+    return /\.jsx?$/.test(d.name) ? [p] : [];
+  });
+
+  test('every auth.signOut() call in src/ passes scope:\'local\'', () => {
+    const offenders = [];
+    for (const file of walk(SRC)) {
+      const src = fs.readFileSync(file, 'utf8');
+      const re = /auth\.signOut\(([^)]*)\)/g;
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        if (!/scope\s*:\s*['"]local['"]/.test(m[1])) {
+          offenders.push(path.relative(SRC, file) + ': ' + m[0]);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test('at least one call site exists (guards against the scan silently matching nothing)', () => {
+    const found = walk(SRC).some((f) => /auth\.signOut\(/.test(fs.readFileSync(f, 'utf8')));
+    expect(found).toBe(true);
+  });
+});

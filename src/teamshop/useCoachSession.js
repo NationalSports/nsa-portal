@@ -20,7 +20,9 @@ export default function useCoachSession() {
     return () => { alive = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
   }, []);
 
-  const signOut = useCallback(() => { supabaseCoach.auth.signOut().catch(() => {}); }, []);
+  // scope:'local' — signing out on one device must not revoke the coach's magic-link session on their
+  // others (supabase-js defaults to 'global'). See the note on _sbSignOut in ../lib/dbEngine.js.
+  const signOut = useCallback(() => { supabaseCoach.auth.signOut({ scope: 'local' }).catch(() => {}); }, []);
 
   return {
     loading: session === undefined,
