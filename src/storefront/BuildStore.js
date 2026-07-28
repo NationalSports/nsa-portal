@@ -25,14 +25,77 @@ import { computeFacets, filterPool, mapSpecToFacets, FacetBar } from '../ui/stor
 //    doesn't pull in the heavy utils.js / portal graph). ──
 const CLOUDINARY_CLOUD = 'dwlyljyuz';
 const CLOUDINARY_PRESET = 'ml_default_nsaportal';
+// Warn before the tab closes while an upload is in flight — closing mid-upload would silently lose it.
+let _upInFlight = 0; const _upWarn = e => { e.preventDefault(); e.returnValue = ''; };
+const _upStart = () => { if (++_upInFlight === 1) window.addEventListener('beforeunload', _upWarn); };
+const _upDone = () => { if (--_upInFlight <= 0) { _upInFlight = 0; window.removeEventListener('beforeunload', _upWarn); } };
+// ── Upload feedback tray (plain DOM, not React — shared with utils.js/App.js copies) ──
+const _upEsc = s => String(s).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+const _upTrayEl = () => {
+  let el = document.getElementById('nsa-upload-tray');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'nsa-upload-tray';
+    el.style.cssText = 'position:fixed;bottom:14px;left:14px;z-index:99999;display:flex;flex-direction:column;gap:6px;max-width:340px';
+    document.body.appendChild(el);
+  }
+  return el;
+};
+const _upTrayGc = () => {
+  const tr = document.getElementById('nsa-upload-tray');
+  if (tr && !tr.childElementCount) tr.remove();
+};
+const _upTrayAdd = (name) => {
+  try {
+    const it = document.createElement('div');
+    it.style.cssText = 'background:#1e293b;color:#e2e8f0;border-radius:8px;padding:8px 12px;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.25);display:flex;align-items:center;gap:8px';
+    it.innerHTML = '<span style="flex:none">⬆️</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Uploading ' + _upEsc(name) + '…</span>';
+    _upTrayEl().appendChild(it);
+    return it;
+  } catch (e) {
+    return null;
+  }
+};
+const _upTrayDone = (it, name) => {
+  if (!it) return;
+  try {
+    it.style.background = '#166534';
+    it.innerHTML = '<span style="flex:none">✓</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _upEsc(name) + ' uploaded</span>';
+    setTimeout(() => { it.remove(); _upTrayGc(); }, 4000);
+  } catch (e) {}
+};
+const _upTrayFail = (it, name, msg) => {
+  if (!it) return;
+  try {
+    it.style.background = '#991b1b';
+    it.innerHTML = '<span style="flex:none">✕</span><span style="min-width:0"><b>' + _upEsc(name) + '</b> failed — ' + _upEsc(msg || 'upload error') + '. Try again.</span><button style="flex:none;background:none;border:none;color:#fecaca;cursor:pointer;font-size:14px;padding:0 2px">✕</button>';
+    it.lastChild.onclick = () => { it.remove(); _upTrayGc(); };
+  } catch (e) {}
+};
 const cloudUpload = async (file, folder = 'nsa-store-logos') => {
   const fd = new FormData();
   fd.append('file', file); fd.append('upload_preset', CLOUDINARY_PRESET); fd.append('folder', folder);
   const resType = file.type?.startsWith('image/') ? 'image' : 'auto';
-  const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd });
-  const d = await r.json();
-  if (d.error) throw new Error(d.error.message);
-  return d.secure_url;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 300000);
+  const t0 = Date.now();
+  _upStart();
+  const _tr = _upTrayAdd(file.name);
+  try {
+    const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd, signal: ctrl.signal });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error.message);
+    console.log('[upload]', file.name, Math.round(file.size / 1024) + 'KB', (Date.now() - t0) + 'ms');
+    _upTrayDone(_tr, file.name);
+    return d.secure_url;
+  } catch (e) {
+    _upTrayFail(_tr, file.name, e.name === 'AbortError' ? 'timed out after 5 minutes' : (e.message || e));
+    if (e.name === 'AbortError') throw new Error('Upload timed out: ' + file.name);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    _upDone();
+  }
 };
 async function invokeEdgeFn(fnName, body) {
   const r = await supabase.functions.invoke(fnName, { body });

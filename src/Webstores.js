@@ -10778,9 +10778,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
     setUpBusy(true);
     try {
       const clean = (n) => String(n || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
-      const webFiles = [], prodFiles = [];
-      for (const w of webs) webFiles.push({ url: await cloudUpload(w.file, 'nsa-store-art'), name: clean(w.file.name) || 'Logo', cwLabel: w.label });
-      for (const p of prods) prodFiles.push({ url: await cloudUpload(p.file, 'nsa-production'), name: p.file.name || 'Production file' });
+      const [webFiles, prodFiles] = await Promise.all([
+        Promise.all(webs.map(async (w) => ({ url: await cloudUpload(w.file, 'nsa-store-art'), name: clean(w.file.name) || 'Logo', cwLabel: w.label }))),
+        Promise.all(prods.map(async (p) => ({ url: await cloudUpload(p.file, 'nsa-production'), name: p.file.name || 'Production file' })))
+      ]);
       const rec = await onSaveArtFolder({ name, webFiles, prodFiles, decoType, colorWays });
       if (rec) setActiveId(rec.id);
       setFolderOpen(false); setFolderSeed(null);

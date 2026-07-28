@@ -844,8 +844,20 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
-const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
-const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+// Warn before the tab closes while uploads are in flight — uploads run in the background so reps can move on,
+// but closing the tab mid-upload would silently lose them.
+let _upInFlight=0;const _upWarn=e=>{e.preventDefault();e.returnValue=''};
+const _upStart=()=>{if(++_upInFlight===1)window.addEventListener('beforeunload',_upWarn)};
+const _upDone=()=>{if(--_upInFlight<=0){_upInFlight=0;window.removeEventListener('beforeunload',_upWarn)}};
+// ── Upload feedback tray (plain DOM, not React — shared with utils.js/BuildStore.js copies) ──
+const _upEsc=s=>String(s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+const _upTrayEl=()=>{let el=document.getElementById('nsa-upload-tray');if(!el){el=document.createElement('div');el.id='nsa-upload-tray';el.style.cssText='position:fixed;bottom:14px;left:14px;z-index:99999;display:flex;flex-direction:column;gap:6px;max-width:340px';document.body.appendChild(el)}return el};
+const _upTrayGc=()=>{const tr=document.getElementById('nsa-upload-tray');if(tr&&!tr.childElementCount)tr.remove()};
+const _upTrayAdd=(name)=>{try{const it=document.createElement('div');it.style.cssText='background:#1e293b;color:#e2e8f0;border-radius:8px;padding:8px 12px;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.25);display:flex;align-items:center;gap:8px';it.innerHTML='<span style="flex:none">⬆️</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Uploading '+_upEsc(name)+'…</span>';_upTrayEl().appendChild(it);return it}catch(e){return null}};
+const _upTrayDone=(it,name)=>{if(!it)return;try{it.style.background='#166534';it.innerHTML='<span style="flex:none">✓</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+_upEsc(name)+' uploaded</span>';setTimeout(()=>{it.remove();_upTrayGc()},4000)}catch(e){}};
+const _upTrayFail=(it,name,msg)=>{if(!it)return;try{it.style.background='#991b1b';it.innerHTML='<span style="flex:none">✕</span><span style="min-width:0"><b>'+_upEsc(name)+'</b> failed — '+_upEsc(msg||'upload error')+'. Try again.</span><button style="flex:none;background:none;border:none;color:#fecaca;cursor:pointer;font-size:14px;padding:0 2px">✕</button>';it.lastChild.onclick=()=>{it.remove();_upTrayGc()}}catch(e){}};
+const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();_upStart();const _tr=_upTrayAdd(file.name);try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');_upTrayDone(_tr,file.name);return d.secure_url}catch(e){_upTrayFail(_tr,file.name,e.name==='AbortError'?'timed out after 5 minutes':(e.message||e));if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer);_upDone()}};
+const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();_upStart();const _tr=_upTrayAdd(file.name);try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');_upTrayDone(_tr,file.name);return d.secure_url}catch(e){_upTrayFail(_tr,file.name,e.name==='AbortError'?'timed out after 5 minutes':(e.message||e));if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer);_upDone()}};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
@@ -20592,12 +20604,12 @@ export default function App(){
           try{
             const artId=targetArtId||resolveItemArtId(sku);
             const mk=slotKey||_mockKey(sku,color);
-            const uploaded=[];
-            for(const f of files){
-              if(typeof nf==='function')nf('Uploading '+f.name+' for '+sku+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name,art_file_id:artId||null,sku});
-            }
+            if(typeof nf==='function')nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
+            const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
+            const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
+            if(failedNames.length&&typeof nf==='function')nf('Failed: '+failedNames.join(', '),'error');
+            if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
@@ -20617,7 +20629,9 @@ export default function App(){
               updArt=[...existingArt,newAf];
             }
             const newSO=savSO({...liveSO,art_files:updArt});
-            setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]});
+            // Only refresh the modal if it's still open on this job — the rep may have closed it and moved on
+            // while the upload finished in the background; reopening it out from under them is worse than stale.
+            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]}:m);
             const ok=await _dbSaveSO(newSO);
             if(ok===false){if(typeof nf==='function')nf('Mockup uploaded but failed to save to order. Please retry.','error');return}
             if(typeof nf==='function')nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
@@ -21164,12 +21178,12 @@ export default function App(){
           setArtJobDetailUploading(true);
           try{
             const artId=targetArtId||j.art_file_id;
-            const uploaded=[];
-            for(const f of files){
-              nf('Uploading '+f.name+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name,art_file_id:artId||null});
-            }
+            nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');
+            const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null}))));
+            const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
+            if(failedNames.length)nf('Failed: '+failedNames.join(', '),'error');
+            if(uploaded.length===0)return;
             // Re-fetch the latest SO from state to avoid stale data
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
@@ -21191,7 +21205,8 @@ export default function App(){
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
             nf(uploaded.length+' file'+(uploaded.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
@@ -21215,12 +21230,12 @@ export default function App(){
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
             const mk=slotKey||_mockKey(sku,color);
-            const uploaded=[];
-            for(const f of files){
-              nf('Uploading '+f.name+' for '+sku+'...');
-              const url=await fileUpload(f,'nsa-art-files');
-              uploaded.push({url,name:f.name,art_file_id:artId||null,sku});
-            }
+            nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
+            const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
+            const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
+            if(failedNames.length)nf('Failed: '+failedNames.join(', '),'error');
+            if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
@@ -21245,7 +21260,8 @@ export default function App(){
             const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
             // Block on the DB write so the success toast only fires after the mockup is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Mockup file uploaded but failed to save to order. Please retry.','error');return}
@@ -21294,12 +21310,12 @@ export default function App(){
         const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
           try{
-            const uploads=[];
-            for(const e of entries){
-              nf('Uploading '+e.file.name+'...');
-              const url=await fileUpload(e.file,'nsa-art-files');
-              uploads.push({artId:e.artId,file:{url,name:e.file.name}});
-            }
+            nf('Uploading '+entries.length+' file'+(entries.length>1?'s':'')+'...');
+            const results=await Promise.allSettled(entries.map(e=>fileUpload(e.file,'nsa-art-files').then(url=>({artId:e.artId,file:{url,name:e.file.name}}))));
+            const uploads=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+            const failedNames=results.map((r,i)=>r.status==='rejected'?entries[i].file.name:null).filter(Boolean);
+            if(failedNames.length)nf('Failed: '+failedNames.join(', '),'error');
+            if(uploads.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const updArt=safeArt(liveSO).map(a=>{
               const addl=uploads.filter(u=>u.artId===a.id).map(u=>u.file);
@@ -21311,7 +21327,8 @@ export default function App(){
             const autoCompleted=updJobs.some((jj,i)=>jj!==safeJobs(liveSO)[i]);
             const newSO=savSO({...liveSO,art_files:updArt,...(autoCompleted?{jobs:updJobs}:{})});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-            setArtJobDetailModal({...j,artFile:updatedAf});
+            // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf}:m);
             // Block on the DB write so the success toast only fires after the file is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Production file uploaded but failed to save to order. Please retry.','error');return}
