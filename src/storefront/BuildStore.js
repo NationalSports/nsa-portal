@@ -25,6 +25,10 @@ import { computeFacets, filterPool, mapSpecToFacets, FacetBar } from '../ui/stor
 //    doesn't pull in the heavy utils.js / portal graph). ──
 const CLOUDINARY_CLOUD = 'dwlyljyuz';
 const CLOUDINARY_PRESET = 'ml_default_nsaportal';
+// Warn before the tab closes while an upload is in flight — closing mid-upload would silently lose it.
+let _upInFlight = 0; const _upWarn = e => { e.preventDefault(); e.returnValue = ''; };
+const _upStart = () => { if (++_upInFlight === 1) window.addEventListener('beforeunload', _upWarn); };
+const _upDone = () => { if (--_upInFlight <= 0) { _upInFlight = 0; window.removeEventListener('beforeunload', _upWarn); } };
 const cloudUpload = async (file, folder = 'nsa-store-logos') => {
   const fd = new FormData();
   fd.append('file', file); fd.append('upload_preset', CLOUDINARY_PRESET); fd.append('folder', folder);
@@ -32,6 +36,7 @@ const cloudUpload = async (file, folder = 'nsa-store-logos') => {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 300000);
   const t0 = Date.now();
+  _upStart();
   try {
     const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`, { method: 'POST', body: fd, signal: ctrl.signal });
     const d = await r.json();
@@ -43,6 +48,7 @@ const cloudUpload = async (file, folder = 'nsa-store-logos') => {
     throw e;
   } finally {
     clearTimeout(timer);
+    _upDone();
   }
 };
 async function invokeEdgeFn(fnName, body) {

@@ -844,8 +844,13 @@ function AdidasB2BRow({sku, brand, displaySizes, inv}) {
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
-const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');return d.secure_url}catch(e){if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer)}};
-const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');return d.secure_url}catch(e){if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer)}};
+// Warn before the tab closes while uploads are in flight — uploads run in the background so reps can move on,
+// but closing the tab mid-upload would silently lose them.
+let _upInFlight=0;const _upWarn=e=>{e.preventDefault();e.returnValue=''};
+const _upStart=()=>{if(++_upInFlight===1)window.addEventListener('beforeunload',_upWarn)};
+const _upDone=()=>{if(--_upInFlight<=0){_upInFlight=0;window.removeEventListener('beforeunload',_upWarn)}};
+const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();_upStart();try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');return d.secure_url}catch(e){if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer);_upDone()}};
+const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const resType=file.type?.startsWith('image/')?'image':'auto';const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),300000);const t0=Date.now();_upStart();try{const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd,signal:ctrl.signal});const d=await r.json();if(d.error)throw new Error(d.error.message);console.log('[upload]',file.name,Math.round(file.size/1024)+'KB',(Date.now()-t0)+'ms');return d.secure_url}catch(e){if(e.name==='AbortError')throw new Error('Upload timed out: '+file.name);throw e}finally{clearTimeout(timer);_upDone()}};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
@@ -20617,7 +20622,9 @@ export default function App(){
               updArt=[...existingArt,newAf];
             }
             const newSO=savSO({...liveSO,art_files:updArt});
-            setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]});
+            // Only refresh the modal if it's still open on this job — the rep may have closed it and moved on
+            // while the upload finished in the background; reopening it out from under them is worse than stale.
+            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]}:m);
             const ok=await _dbSaveSO(newSO);
             if(ok===false){if(typeof nf==='function')nf('Mockup uploaded but failed to save to order. Please retry.','error');return}
             if(typeof nf==='function')nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
@@ -21191,7 +21198,8 @@ export default function App(){
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
             nf(uploaded.length+' file'+(uploaded.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
@@ -21245,7 +21253,8 @@ export default function App(){
             const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
             // Block on the DB write so the success toast only fires after the mockup is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Mockup file uploaded but failed to save to order. Please retry.','error');return}
@@ -21311,7 +21320,8 @@ export default function App(){
             const autoCompleted=updJobs.some((jj,i)=>jj!==safeJobs(liveSO)[i]);
             const newSO=savSO({...liveSO,art_files:updArt,...(autoCompleted?{jobs:updJobs}:{})});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-            setArtJobDetailModal({...j,artFile:updatedAf});
+            // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf}:m);
             // Block on the DB write so the success toast only fires after the file is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Production file uploaded but failed to save to order. Please retry.','error');return}
