@@ -501,7 +501,15 @@ function QueueTab({ data, cu, cust, nf, refresh }) {
                             )}
                           </td>
                           <td>
-                            <div style={{ fontWeight: 600, color: '#0f172a' }}>{r.design_name}</div>
+                            <div style={{ fontWeight: 600, color: '#0f172a' }}>
+                              {r.design_name}
+                              {r.source === 'art_sync' && (
+                                <span className="badge badge-blue" style={{ marginLeft: 6, fontSize: 9 }} title={'Auto-generated from order art' + (r.so_id ? ' (' + r.so_id + ')' : '')}>auto</span>
+                              )}
+                              {r.source === 'art_sync' && /HEIGHT ASSUMED/.test(r.notes || '') && (
+                                <span className="badge badge-amber" style={{ marginLeft: 4, fontSize: 9 }} title={r.notes}>check height</span>
+                              )}
+                            </div>
                             {(cust1 || r.so_id) && (
                               <div style={{ fontSize: 11, color: '#94a3b8' }}>
                                 {cust1 ? (cust1.alpha_tag || cust1.name) : ''}{cust1 && r.so_id ? ' · ' : ''}{r.so_id || ''}
@@ -526,6 +534,18 @@ function QueueTab({ data, cu, cust, nf, refresh }) {
             )}
           </div>
         </div>
+
+        {data.art_sync && (data.art_sync.skipped || []).some(s => s.reason === 'no_size_on_art') && (
+          <div className="card" style={{ borderColor: '#fcd34d' }}>
+            <div className="card-header"><h2 style={{ color: '#92400e' }}><Icon name="alert" size={14} /> Waiting on art size</h2></div>
+            <div className="card-body" style={{ fontSize: 13, color: '#92400e' }}>
+              These orders need DTF films but the art has no size — add a size on the art file (a single number = width) and they'll queue automatically:
+              {data.art_sync.skipped.filter(s => s.reason === 'no_size_on_art').map((s, i) => (
+                <div key={i} style={{ marginTop: 4, fontWeight: 600 }}>{s.so_id} · job {s.job_id}</div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {preview && preview.unplaced && preview.unplaced.length > 0 && (
           <div className="card" style={{ borderColor: '#fcd34d' }}>
@@ -854,6 +874,7 @@ function SettingsTab({ data, nf, refresh }) {
         <div className="card-body" style={{ fontSize: 13, color: '#475569', lineHeight: 1.7 }}>
           <ol style={{ paddingLeft: 18, margin: 0 }}>
             <li>Staff submit artwork all week — it queues into a shared gang sheet.</li>
+            <li>Orders feed the queue automatically: when a DTF/heat-press job reaches "Order DTF Transfers", its .ai and size (a single number = width) become a queued request — no re-keying.</li>
             <li>Every Wednesday the queue automatically batches into one order.</li>
             <li>The batch is emailed to the supplier (immediately if auto-send is on, or after a staff review otherwise).</li>
             <li>The supplier marks the batch shipped with tracking from their portal link.</li>

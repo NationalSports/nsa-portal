@@ -14,6 +14,7 @@
 
 const { packGangSheet } = require('../../netlify/functions/_dtfLayout');
 const dtf = require('../../netlify/functions/dtf-orders');
+const artSync = require('../../netlify/functions/_dtfArtSync');
 
 // Minimal chainable supabase fake: every chain method returns the builder;
 // awaiting it (or .maybeSingle()) resolves the scripted result.
@@ -190,5 +191,90 @@ describe('vendorMarkShipped', () => {
     const admin = fakeAdmin({ dtf_batches: { data: null, error: null } });
     const res = await dtf.vendorMarkShipped(admin, { batch_id: 'b1', carrier: 'UPS', tracking_number: '1Z1' });
     expect(res.statusCode).toBe(409);
+  });
+});
+
+// ── Art-sync (00236): auto-generate requests from order art ──────────
+describe('parseArtSize', () => {
+  test('two numbers = width × height, in any common notation', () => {
+    expect(artSync.parseArtSize('12" x 4"')).toEqual({ width: 12, height: 4 });
+    expect(artSync.parseArtSize('12x4')).toEqual({ width: 12, height: 4 });
+    expect(artSync.parseArtSize('3.5 by 2.25 in')).toEqual({ width: 3.5, height: 2.25 });
+  });
+  test('one number = WIDTH only (owner default), height left for aspect', () => {
+    expect(artSync.parseArtSize('10"')).toEqual({ width: 10, height: null });
+    expect(artSync.parseArtSize('approx 10 wide')).toEqual({ width: 10, height: null });
+  });
+  test('nothing parseable / absurd values → null', () => {
+    expect(artSync.parseArtSize('')).toBeNull();
+    expect(artSync.parseArtSize('full front')).toBeNull();
+    expect(artSync.parseArtSize('9999')).toBeNull();
+  });
+});
+
+describe('pickArtworkFile', () => {
+  test('prefers the .ai over vectors and rasters, prod_files over files', () => {
+    const arts = [{
+      files: [{ url: 'https://x/mock.png', name: 'mock.png' }, { url: 'https://x/art.ai', name: 'art.ai' }],
+      prod_files: [{ url: 'https://x/final.pdf', name: 'final.pdf' }],
+    }];
+    expect(artSync.pickArtworkFile(arts)).toMatchObject({ name: 'art.ai' });
+    // Without the .ai, the production PDF wins over the pre-production PNG.
+    arts[0].files = [{ url: 'https://x/mock.png', name: 'mock.png' }];
+    expect(artSync.pickArtworkFile(arts)).toMatchObject({ name: 'final.pdf' });
+  });
+  test('no usable https file → null (job is skipped, never guessed)', () => {
+    expect(artSync.pickArtworkFile([{ files: [{ url: 'http://insecure/a.ai', name: 'a.ai' }], prod_files: [] }])).toBeNull();
+    expect(artSync.pickArtworkFile([])).toBeNull();
+  });
+});
+
+describe('buildRequestFromJob', () => {
+  const job = { so_id: 'SO-1001', id: 'job1', art_name: 'Eagles Crest', total_units: 24 };
+  const arts = [{ art_size: '10"', files: [], prod_files: [{ url: 'https://res.cloudinary.com/d/raw/upload/v1/art.ai', name: 'art.ai' }] }];
+
+  test('width-only size + readable aspect → height derived, qty from units', () => {
+    const { request } = artSync.buildRequestFromJob({ job, arts, aspect: 2 });
+    expect(request).toMatchObject({
+      so_id: 'SO-1001', job_id: 'job1', qty: 24, width_in: 10, height_in: 5,
+      source: 'art_sync', status: 'queued', design_name: 'Eagles Crest',
+    });
+    expect(request.preview_url).toContain('/image/upload/pg_1,f_png/');
+  });
+
+  test('width-only size + unreadable aspect → square height, loudly annotated', () => {
+    const { request } = artSync.buildRequestFromJob({ job, arts, aspect: null });
+    expect(request.height_in).toBe(10);
+    expect(request.notes).toMatch(/HEIGHT ASSUMED/);
+  });
+
+  test('no size on art / zero units → skip records, never an order', () => {
+    const noSize = artSync.buildRequestFromJob({ job, arts: [{ art_size: '', files: [], prod_files: arts[0].prod_files }], aspect: null });
+    expect(noSize.skip).toMatchObject({ reason: 'no_size_on_art' });
+    const noUnits = artSync.buildRequestFromJob({ job: { ...job, total_units: 0 }, arts, aspect: 2 });
+    expect(noUnits.skip).toMatchObject({ reason: 'no_units' });
+  });
+});
+
+describe('pngDims / cloudinaryRasterUrl', () => {
+  test('reads IHDR width/height from a real PNG header', () => {
+    const buf = Buffer.alloc(24);
+    buf.writeUInt32BE(0x89504e47, 0); // PNG magic
+    buf.writeUInt32BE(300, 16); // width
+    buf.writeUInt32BE(150, 20); // height
+    expect(artSync.pngDims(buf)).toEqual({ w: 300, h: 150 });
+    expect(artSync.pngDims(Buffer.from('not a png at all........'))).toBeNull();
+  });
+  test('raster URL only for cloudinary-hosted files, tiny w_100 transform', () => {
+    expect(artSync.cloudinaryRasterUrl('https://res.cloudinary.com/d/raw/upload/v1/a.ai')).toContain('/image/upload/pg_1,f_png,w_100/');
+    expect(artSync.cloudinaryRasterUrl('https://elsewhere.com/a.ai')).toBeNull();
+  });
+});
+
+describe('inBatchWindow', () => {
+  test('true only Wednesdays 16:xx UTC', () => {
+    expect(dtf.inBatchWindow(new Date('2026-07-29T16:10:00Z'))).toBe(true);  // Wed 16:10
+    expect(dtf.inBatchWindow(new Date('2026-07-29T15:10:00Z'))).toBe(false); // Wed 15:10
+    expect(dtf.inBatchWindow(new Date('2026-07-30T16:10:00Z'))).toBe(false); // Thu
   });
 });

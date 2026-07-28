@@ -27,6 +27,7 @@
 // the UI shows a banner, never a blank page.
 const { corsHeaders, getSupabaseAdmin, verifyUser, verifyAdmin, safeEqualStr } = require('./_shared');
 const { packGangSheet } = require('./_dtfLayout');
+const { syncFromArt, DTF_ORDER_STATUS } = require('./_dtfArtSync');
 
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ ok: false, error, ...(extra || {}) }) });
 const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...body }) });
@@ -225,6 +226,23 @@ async function sendBatch(admin, batchId, actor) {
       .eq('id', batchId).eq('status', 'sent');
     return { sent: false, reason: 'email_failed' };
   }
+
+  // Films are now ordered: clear the rep todo on the source jobs by advancing
+  // art_status 'order_dtf_transfers' → 'art_complete' for art-synced requests
+  // in this batch (CAS on the exact status so a job someone already moved is
+  // never touched). Best-effort — the send already succeeded.
+  try {
+    const synced = await admin.from('dtf_requests')
+      .select('so_id, job_id').eq('batch_id', batchId).eq('source', 'art_sync').neq('status', 'canceled');
+    const pairs = (synced.data || []).filter((p) => p.so_id && p.job_id);
+    for (const p of pairs) {
+      const upd = await admin.from('so_jobs')
+        .update({ art_status: 'art_complete' })
+        .eq('so_id', p.so_id).eq('id', p.job_id).eq('art_status', DTF_ORDER_STATUS);
+      if (upd.error && !isMissingRelation(upd.error)) console.error('[dtf-orders] art_status advance failed:', p.so_id, p.job_id, upd.error.message);
+    }
+  } catch (e) { console.error('[dtf-orders] art_status advance failed (best-effort):', e.message || e); }
+
   return { sent: true, batch_id: batchId, to: toEmail, actor: actor || null };
 }
 
@@ -266,6 +284,13 @@ function validateRequestPatch(body, { partial } = {}) {
 }
 
 async function listAll(admin) {
+  // Best-effort art-sync first, so opening the page always shows the queue in
+  // step with order state (jobs newly at 'order_dtf_transfers' appear without
+  // waiting for the hourly sweep). Never blocks the list.
+  let artSync = null;
+  try { artSync = await syncFromArt(admin); }
+  catch (e) { if (!isMissingRelation(e)) console.error('[dtf-orders] art sync (list) failed:', e.message || e); }
+
   const [settingsRes, reqRes, batchRes] = await Promise.all([
     admin.from('dtf_settings').select('*').eq('id', 1).maybeSingle(),
     admin.from('dtf_requests').select('*').order('created_at', { ascending: false }).limit(500),
@@ -288,6 +313,7 @@ async function listAll(admin) {
     batches: batchRes.data || [],
     preview,
     vendor_portal_configured: !!process.env.VENDOR_DTF_TOKEN,
+    ...(artSync ? { art_sync: artSync } : {}),
   });
 }
 
@@ -366,7 +392,16 @@ async function saveSettings(admin, body, actor) {
   return ok({ settings: upd.data });
 }
 
-// ── Weekly sweep (scheduled) ──────────────────────────────────────────
+// ── Scheduled sweep ───────────────────────────────────────────────────
+// Runs HOURLY (netlify.toml). Every run art-syncs (jobs newly waiting on DTF
+// films become queued requests); the batch itself only builds inside the
+// weekly window — Wednesdays 16:xx UTC — so the cadence the owner asked for
+// is unchanged while the queue stays continuously up to date.
+const inBatchWindow = (now) => {
+  const d = now instanceof Date ? now : new Date(now);
+  return d.getUTCDay() === 3 && d.getUTCHours() === 16;
+};
+
 // Build a batch from the queue; email it only when auto_send is on AND a
 // supplier email is configured — otherwise the draft waits for staff review
 // (default-inert, like every other auto lane in this repo).
@@ -486,13 +521,19 @@ exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event && event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
 
-  // Scheduled (Netlify cron) invocation — weekly batch build (+ optional auto-send).
+  // Scheduled (Netlify cron) invocation — hourly art-sync; weekly batch build
+  // (+ optional auto-send) only inside the Wednesday window.
   if (!event || event.httpMethod !== 'POST') {
     let admin;
     try { admin = getSupabaseAdmin(); } catch (e) { return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: 'Service not configured' }) }; }
     try {
-      const r = await weeklySweep(admin);
-      return { statusCode: 200, headers, body: JSON.stringify(r) };
+      let artSync = null;
+      try { artSync = await syncFromArt(admin); }
+      catch (e) { if (!isMissingRelation(e)) console.error('[dtf-orders] scheduled art sync failed:', e.message || e); }
+      const r = inBatchWindow(new Date())
+        ? await weeklySweep(admin)
+        : { ok: true, batched: false, reason: 'outside_batch_window' };
+      return { statusCode: 200, headers, body: JSON.stringify({ ...r, ...(artSync ? { art_sync: artSync } : {}) }) };
     } catch (e) {
       console.error('[dtf-orders] scheduled sweep failed:', e.message || e);
       return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: e.message || String(e) }) };
@@ -561,3 +602,4 @@ module.exports.buildBatch = buildBatch;
 module.exports.sendBatch = sendBatch;
 module.exports.weeklySweep = weeklySweep;
 module.exports.vendorMarkShipped = vendorMarkShipped;
+module.exports.inBatchWindow = inBatchWindow;
