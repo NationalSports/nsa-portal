@@ -20,7 +20,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
@@ -7847,6 +7847,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // If items were flagged Outside on the line, default the PO to exactly those (else all items).
         const _dpoFlaggedOut=new Set(safeItems(o).map((_,i)=>i).filter(i=>safeDecos(safeItems(o)[i]).some(d=>d.kind==='art'&&d.fulfillment==='outside')));
         const _initialSel=allItems.filter(it=>_dpoFlaggedOut.size>0?_dpoFlaggedOut.has(it._idx):true);
+        // Default the PO's deco type to the work actually on the covered items — the most common
+        // resolved deco type — instead of a blanket 'embroidery'. A mistyped DPO is not cosmetic:
+        // outsourcedDecoTypes promotes covered items whose decos match none of its type to the '*'
+        // wildcard, silently suppressing EVERY in-house job on them (SO-1682: an embroidery-typed
+        // DPO over a 19-item DTF store order left the whole order jobless — no DST upload target).
+        const _DPO_TYPE_OPTS=['embroidery','screen_print','dtf','heat_transfer','sublimation'];
+        const _dpoTypeCounts={};
+        _initialSel.forEach(it=>safeDecos(safeItems(o)[it._idx]||{}).forEach(d=>{const t=decoConcreteType(o,d);if(t&&_DPO_TYPE_OPTS.includes(t))_dpoTypeCounts[t]=(_dpoTypeCounts[t]||0)+1}));
+        const _dpoDefaultType=Object.entries(_dpoTypeCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||'embroidery';
+        // Covered items with NO decoration of the PO's type fall under that same wildcard, so their
+        // in-house work is lost too. Surface them so the rep unchecks in-house items deliberately.
+        const _dpoMismatched=(items,dt)=>items.filter(it=>{const ts=safeDecos(safeItems(o)[it._idx]||{}).map(d=>decoConcreteType(o,d)).filter(Boolean);return ts.length>0&&!ts.includes(dt)});
+        const _dpoWarnText=(mm,dt)=>'⚠ '+mm.length+' checked item'+(mm.length!==1?'s carry':' carries')+' no '+String(dt).replace(/_/g,' ')+' decoration ('+mm.slice(0,6).map(it=>it.sku).join(', ')+(mm.length>6?'…':'')+') — all of their decorations will be treated as outsourced to this vendor and will NOT create in-house production jobs. Uncheck any item whose decoration is done in-house.';
+        const _initialMismatch=_dpoMismatched(_initialSel,_dpoDefaultType);
         const _initialDpoQty=_initialSel.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
         const _initialDpoStitches=Math.max(0,...(_initialSel.flatMap(it=>safeDecos(safeItems(o)[it._idx]||{}).filter(d=>d.kind==='art').map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0})).filter(n=>n>0)),0);
         // Screen-print upcharges auto-detected from the garments (overridable via the checkboxes below):
@@ -7856,11 +7870,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _initialDark=_initialSel.some(it=>garmentNeedsUnderbase(it.color));
         const _initialFleece=_initialSel.some(it=>_isFleeceGarment(it));
         const _initialMesh=_initialSel.some(it=>_isMeshGarment(it));
-        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:_initialDpoQty,stitches:_initialDpoStitches}):null;
+        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,_dpoDefaultType,{qty:_initialDpoQty,stitches:_initialDpoStitches}):null;
         const _recalcDpo=()=>{
           let qty=0;const selected=[];
           allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);selected.push(vi)}});
-          const dt=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
+          const dt=document.getElementById('dpo-type-'+poId)?.value||_dpoDefaultType;
           // Price the right tier: max ink-colors (SP) / max stitches (EMB) of the selected designs,
           // and underbase when any selected garment is darker than white/light grey/vegas gold.
           const _selDecos=selected.flatMap(vi=>safeDecos(safeItems(o)[allItems[vi]?._idx]||{}).filter(d=>d.kind==='art'));
@@ -7884,6 +7898,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const uc=parseFloat(ucEl?.value)||0;
           const finalQty=parseFloat(qtyEl?.value)||0;
           const expEl=document.getElementById('dpo-expected-cost');if(expEl)expEl.value=(finalQty*uc).toFixed(2);
+          const _mm=_dpoMismatched(selected.map(vi=>allItems[vi]).filter(Boolean),dt);
+          const wEl=document.getElementById('dpo-type-warn-'+poId);
+          if(wEl){wEl.style.display=_mm.length?'block':'none';if(_mm.length)wEl.textContent=_dpoWarnText(_mm,dt)}
         };
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
@@ -7896,11 +7913,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
               <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
-              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue="embroidery" onChange={e=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';const ur=document.getElementById('dpo-upcharge-row-'+poId);if(ur)ur.style.display=e.target.value==='screen_print'?'flex':'none';_recalcDpo()}}>
+              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue={_dpoDefaultType} onChange={e=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';const ur=document.getElementById('dpo-upcharge-row-'+poId);if(ur)ur.style.display=e.target.value==='screen_print'?'flex':'none';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
-            <div id={'dpo-upcharge-row-'+poId} style={{display:'none',gap:14,alignItems:'center',flexWrap:'wrap',marginBottom:12,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+            <div id={'dpo-upcharge-row-'+poId} style={{display:_dpoDefaultType==='screen_print'?'flex':'none',gap:14,alignItems:'center',flexWrap:'wrap',marginBottom:12,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
               <span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>Screen-print upcharges</span>
               {[['dark','Dark / underbase',_initialDark],['fleece','Fleece',_initialFleece],['mesh','Mesh',_initialMesh]].map(([k,label,def])=>(
                 <label key={k} style={{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',color:'#92400e'}}>
@@ -7911,6 +7928,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:2}}>Items covered by this PO</div>
             <div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>Optional — leave everything unchecked for an in-house order (e.g. DTF transfers) not tied to specific SO items, and type the qty below.</div>
+            <div id={'dpo-type-warn-'+poId} style={{display:_initialMismatch.length?'block':'none',marginBottom:8,padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:11,fontWeight:600,color:'#991b1b'}}>{_initialMismatch.length?_dpoWarnText(_initialMismatch,_dpoDefaultType):''}</div>
             {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
               <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=true});_recalcDpo()}}>Select All</button>
@@ -7937,7 +7955,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
               const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
-              const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
+              const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoDefaultType;
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
               const isDropShip=dpoDropShip;
@@ -7963,7 +7981,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {dv&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
               if(_poCreatingRef.current)return;
               const effectiveDpoId=autoPoId;
-              const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
+              const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoDefaultType;
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
               const itemIdxs=[];const selectedItems=[];let totalQty=0;
@@ -11233,7 +11251,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated! Use the wizard to release jobs for art with artist assignments.')}}>Activate All</button>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
-        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items — jobs will populate automatically, then click "Submit to Art" when ready.</div>}
+        {jobs.length===0&&(()=>{
+          // Distinguish "no decorations yet" from "decorations exist but every one is routed to an
+          // outside decorator" — the latter read as a silent failure (SO-1682: a deco PO covering the
+          // whole order showed a blank Jobs tab with no explanation, and no DST upload target).
+          const _outMap=outsourcedDecoTypes(o);
+          const _allDecos=safeItems(o).flatMap((it,ii)=>safeDecos(it).map(d=>({ii,d})));
+          const _allOut=_allDecos.length>0&&_allDecos.every(({ii,d})=>isDecoOutsourced(o,ii,d,_outMap));
+          if(_allOut){const _dposList=(o.deco_pos||[]).map(dp=>(dp.po_id||dp.id)+(dp.vendor?' · '+dp.vendor:'')).join(', ');
+            return<div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>
+              <div style={{fontWeight:700,marginBottom:6}}>No in-house jobs — every decoration on this order is routed to an outside decorator{_dposList?' ('+_dposList+')':''}.</div>
+              <div style={{fontSize:12,color:'#94a3b8'}}>If part of this order is decorated in-house (e.g. embroidery), remove those items from the deco PO's coverage — their jobs will rebuild automatically.</div>
+            </div>}
+          return<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items — jobs will populate automatically, then click "Submit to Art" when ready.</div>})()}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {_clustered.map(({j,oi})=>{const ji=oi;
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
