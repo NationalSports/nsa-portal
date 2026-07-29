@@ -510,7 +510,15 @@ export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':
   'YOUTH SMALL':'YS','YOUTH MEDIUM':'YM','YOUTH LARGE':'YL','YOUTH XL':'YXL',
   'YSM':'YS','YMD':'YM','YLG':'YL',  // Under Armour youth labels
   'BOYS SMALL':'YS','BOYS MEDIUM':'YM','BOYS LARGE':'YL','GIRLS SMALL':'YS','GIRLS MEDIUM':'YM','GIRLS LARGE':'YL',
-  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','OSFM':'OSFA','N/A':'OSFA',  // OSFM = One Size Fits Most (UA)
+  'NONE':'OSFA','ONE SIZE':'OSFA','OS':'OSFA','O/S':'OSFA','OSFM':'OSFA','N/A':'OSFA',  // OSFM = One Size Fits Most (UA)
+  // Spelled-out one-size labels reps type on orders. SanMar (and most vendors) return the
+  // bare token 'OSFA', so without these an order line reading "One Size Fits All" never
+  // matched the catalog and stayed without a SanMar Part ID / Unique_Key (blocked PO — STC21).
+  'ONE SIZE FITS ALL':'OSFA','ONE SIZE FITS MOST':'OSFA','ONESIZE':'OSFA','ONE SIZE FIT ALL':'OSFA',
+  // Toddler labels. SanMar returns '2T'…'6T'; orders often carry the spelled-out
+  // "<n> Toddler" form, which never matched (PC450TD "4 Toddler" → no Part ID).
+  '2 TODDLER':'2T','3 TODDLER':'3T','4 TODDLER':'4T','5 TODDLER':'5T','6 TODDLER':'6T',
+  'TODDLER 2':'2T','TODDLER 3':'3T','TODDLER 4':'4T','TODDLER 5':'5T','TODDLER 6':'6T',
   // Sports Inc's EDI feed truncates spelled-out sizes to 5 chars (seen on Augusta): MEDIUM->MEDIU,
   // EXTRA LARGE->EXTRA, DOUBLE->DOUBL, TRIPLE->TRIPL, ONE SIZE->ONE S. Recover them so billed sizes
   // align to the order instead of falsely reading as 0 ordered. (EXTRA = Extra LARGE on this book;
