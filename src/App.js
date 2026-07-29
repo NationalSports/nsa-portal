@@ -25171,9 +25171,14 @@ export default function App(){
       if(sameSkuSize.length===0)sameSkuSize=sameSku;
       let candidates=sameSkuSize;
       if(billColor&&sameSkuSize.some(c=>c.color)){
-        const exact=sameSkuSize.filter(c=>norm(c.color)===billColor);
+        // Compare colors space-stripped: SanMar truncates the color to ~5 chars ("TrueN"), and
+        // "TRUE NAVY".includes("TRUEN") is false because of the space — so every two-colorway
+        // style came up ambiguous and fell to candidates[0]/manual "(verify)" assignment
+        // (SO-1522 bill 162348107: Rainstorm Grey NEA200 lines billed onto the True Navy line).
+        const nsp=s=>s.replace(/ /g,'');const billC=nsp(billColor);
+        const exact=sameSkuSize.filter(c=>nsp(norm(c.color))===billC);
         if(exact.length>0)candidates=exact;
-        else{const partial=sameSkuSize.filter(c=>{const cc=norm(c.color);return cc&&(cc.includes(billColor)||billColor.includes(cc))});if(partial.length>0)candidates=partial}
+        else{const partial=sameSkuSize.filter(c=>{const cc=nsp(norm(c.color));return cc&&(cc.includes(billC)||billC.includes(cc))});if(partial.length>0)candidates=partial}
       }
       return{item:candidates[0],idx:candidates[0]._idx,ambiguous:candidates.length>1};
     };
