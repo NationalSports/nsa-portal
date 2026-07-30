@@ -70,6 +70,26 @@ export const jobHasUnresolvedArt = (j, o, { archivedIsUnresolved = false } = {})
   });
 };
 
+// A job that reads 'needs_art' while it already carries an ACTIVE artist request
+// (requested / in_progress) is self-contradictory: needs_art means "no request is out," so the
+// two states can't both be true. Worse, the state is self-perpetuating — syncJobs' rebuild path
+// inherits a matched job's art_requests (inheritJobWorkflowFields) while re-deriving art_status,
+// and when the existing status is needs_art it stays needs_art. So a job that once slipped into
+// this state (a merge/family worst-case downgrade, a partial save, a since-fixed release path)
+// never recovers on its own: the rep sees "Needs Art" AND "Art Requested" at once, and every
+// re-submit entry point is gated on needs_art-with-no-request, leaving the job stuck (SO-1707).
+// Promote it to art_requested to match the live request. Skip when the art itself is unresolved
+// (TBD / deleted design): there the artist was never actually asked to produce anything, so
+// needs_art is correct and _healUnresolvedArt's downgrade must win.
+export const healOrphanArtRequest = (j, o) => {
+  if (!j || j.art_status !== 'needs_art') return j;
+  const hasActiveReq = (j.art_requests || []).some(
+    (r) => r && (r.status === 'requested' || r.status === 'in_progress'),
+  );
+  if (!hasActiveReq || jobHasUnresolvedArt(j, o)) return j;
+  return { ...j, art_status: 'art_requested' };
+};
+
 // True when at least one (item_idx, deco_idx) pair this job claims still resolves to a live
 // decoration on the SO. Used to retire frozen (_merged / released / split) jobs after a rep
 // clears every line decoration — without this, syncJobs keeps the frozen snapshot forever
