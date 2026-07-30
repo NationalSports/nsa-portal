@@ -26,6 +26,7 @@ import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -211,6 +212,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return{...jj,prod_status:'hold'};
   });
   const _artSiblingsInProd=(artIds,exceptId)=>safeJobs(o).filter(jj=>jj.id!==exceptId&&_activeProd(jj.prod_status)&&(jj._art_ids||[jj.art_file_id].filter(Boolean)).some(id=>artIds.includes(id))).length;
+  // Split slices of one job share the design and a split_from lineage, so a pull-back (Recall / Send
+  // back to artist) must reset EVERY slice together — otherwise a sibling keeps reading Art Complete
+  // and prints the recalled artwork. artFamilyKey is the dashboard's own family rule; the SO-page
+  // pull-back actions never had split-family awareness, which is the gap. Returns safeJobs(o) indices.
+  const _artFamilyIdxs=(ji)=>{
+    const _js=safeJobs(o);if(!_js[ji])return[ji];
+    const _shim=_js.map(jj=>({...jj,soId:o.id}));
+    const _byId=new Map(_shim.map(jj=>[o.id+'|'+jj.id,jj]));
+    const _tk=artFamilyKey(_shim[ji],_byId);
+    const _out=[];_shim.forEach((jj,i)=>{if(artFamilyKey(jj,_byId)===_tk)_out.push(i)});return _out;
+  };
   // Recall = the design itself is wrong. The job resets to needs_art IN PLACE — released jobs too:
   // dropping the row loses it for every other client (the local syncJobs regeneration is never
   // persisted), orphans split slices' split_from, and can flip the SO to complete. In place, the
@@ -221,8 +233,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const wasInProd=_activeProd(j.prod_status);
     const sibs=_artSiblingsInProd(artIds,j.id);
     if(!window.confirm('⚠️ Recall this art?\n\n• The design is pulled back completely — use this when the logo/design itself is changing\n• Open artist requests are cancelled and the artist is unassigned\n• Approvals and confirmed production files are cleared — everything must be re-approved\n• The job resets to Needs Art — re-request it via 🎨 Set up job\n'+(wasInProd?'• Production will be put back ON HOLD\n':'')+(sibs?'• '+sibs+' other job(s) share this art and will also be put on hold\n':'')+'\nJust need a change to the current design? Use '+updateLabel+' instead — it messages the artist directly.'))return;
-    if(wasInProd&&onStopJobClock)onStopJobClock(o.id,j.id);// leaving staging/in_process — stop any running decorator clock
-    let updJobs=safeJobs(o).map((jj,i2)=>i2!==ji?jj:{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(wasInProd?{prod_status:'hold'}:{})});
+    // Reset the WHOLE split family, not just the clicked slice — siblings share this design and must
+    // pull back together or they go to press on the recalled artwork (each in-prod slice stops its
+    // clock as it leaves staging/in_process).
+    const _famIdx=new Set(_artFamilyIdxs(ji));
+    let updJobs=safeJobs(o).map((jj,i2)=>{
+      if(!_famIdx.has(i2))return jj;
+      const _wp=_activeProd(jj.prod_status);
+      if(_wp&&onStopJobClock)onStopJobClock(o.id,jj.id);
+      return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(_wp?{prod_status:'hold'}:{})};
+    });
     updJobs=_holdArtSiblings(updJobs,artIds,j.id);
     const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
     const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
@@ -9705,7 +9725,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _revAt=new Date().toISOString();
                 const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
                 const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+                // Reset the whole split family — slices share the design, so a redo on one must reset
+                // its siblings too or they stay Art Complete on art that's being redrawn.
+                const _revFamIdx=new Set(_artFamilyIdxs(ji));
+                const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
                 const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
                 saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
               };
