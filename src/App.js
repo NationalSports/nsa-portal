@@ -20171,9 +20171,15 @@ export default function App(){
         return upd;
       });
       let updArt=safeArt(so);
-      if(j.art_file_id){
+      // A job's art files are ALL its locations (jobLiveArtIds), not just the primary art_file_id.
+      // Flipping only the primary left a second location (e.g. "Back Marketing" alongside the front
+      // logo) stuck at its old status; healFrozenJobArtDrift then recomputes the job as the WORST
+      // per-file status, so one un-advanced location drags the whole job back to Needs Art on the
+      // order page even though it's really waiting for approval (SO-1625). Move every location.
+      const _statusArtIds=jobLiveArtIds(j,so);
+      if(_statusArtIds.length){
         const afSt=newStatus==='waiting_approval'?'needs_approval':PROD_FILES_STATUSES.includes(newStatus)||newStatus==='art_complete'?'approved':null;
-        if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
+        if(afSt)updArt=updArt.map(a=>_statusArtIds.includes(a.id)?{...a,status:afSt}:a);
       }
       // Stamp prod_files_attached=true on all live art files when completing — guards against a race
       // where the checkbox save and this save both read the same stale so snapshot, causing this
@@ -20387,7 +20393,7 @@ export default function App(){
                 if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
                 const updJobs=buildJobs(so2).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
-                const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
+                const _sendArtIds=jobLiveArtIds(j,so2);const updArt3=safeArt(so2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
             </div>})()}
@@ -21021,7 +21027,7 @@ export default function App(){
               if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
               const updJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
-              const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
+              const _sendArtIds=jobLiveArtIds(j,liveSO);const updArt=safeArt(liveSO).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
               nf('Mockup sent to rep for approval');
@@ -21444,7 +21450,7 @@ export default function App(){
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
           const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
-          savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
+          const _sendArtIds=jobLiveArtIds(j,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
           nf('Mockup sent to '+(rep?.name||'rep')+' for approval');
