@@ -34,6 +34,7 @@ import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheck
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
+import { closeOpenArtRequests } from './lib/artRequests';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -20155,8 +20156,11 @@ export default function App(){
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
         // it set with art_status ahead is the SO-1199 contradictory shape.
         if(newStatus==='waiting_approval'||newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))upd.coach_rejected=false;
-        if((newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
-          upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
+        // Sending a mockup for approval (waiting_approval) or completing art fulfills the artist's
+        // open request — close it so the job doesn't read as BOTH "Needs Approval" and an open
+        // "Start Working" request (the SO-1625 contradictory shape).
+        if((newStatus==='waiting_approval'||newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
+          upd.art_requests=closeOpenArtRequests(upd.art_requests);
         }
         return upd;
       });
@@ -20376,7 +20380,7 @@ export default function App(){
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
                 if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
+                const updJobs=buildJobs(so2).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -21010,7 +21014,7 @@ export default function App(){
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
               if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -21433,7 +21437,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
