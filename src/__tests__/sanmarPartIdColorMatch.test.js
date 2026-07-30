@@ -53,6 +53,34 @@ describe('smColorSubset — ambiguity is possible by design (resolver breaks the
   });
 });
 
+// Real fixture: SanMar's STC21 (Sport-Tek Pom Pom Team Beanie) colorways as returned by the
+// product API, verbatim from NSA 4566's "What SanMar lists" panel. The order line is
+// "Forest Green/Black/White". SanMar abbreviates it to "For Grn/Blk/Wht"; exactly one of the
+// nine candidates may match, so the resolver's single-Unique_Key rule resolves it.
+describe('smColorSubset — SanMar abbreviated compound colorway (STC21 real fixture)', () => {
+  const ORDER = 'Forest Green/Black/White';
+  const SANMAR_STC21 = [
+    'For Grn/Blk/Wht',   // <- the match
+    'Maroon/Blk/Wht',
+    'Purple/Blk/Wht',
+    'Tr Navy/Gld/Wh',
+    'Tr Red/Blk/Wht',
+    'Tr Red/Roy/Wht',
+    'Tr Roy/Blk/Wht',
+    'IronGy/Blk/Wht',
+    'PnkRsp/Gry/Wht',
+  ];
+
+  test('"For Grn/Blk/Wht" matches "Forest Green/Black/White"', () => {
+    expect(smColorSubset('For Grn/Blk/Wht', ORDER)).toBe(true);
+  });
+
+  test('EXACTLY ONE of the nine SanMar candidates matches (resolver resolves it uniquely)', () => {
+    const hits = SANMAR_STC21.filter((c) => smColorSubset(c, ORDER));
+    expect(hits).toEqual(['For Grn/Blk/Wht']);
+  });
+});
+
 // smSizeMatch takes ALREADY-normalized tokens (the resolver runs _smSizeNorm first). YS/S etc.
 // are what normSzName yields for "YS"/"S"; these pin the youth→bare fallback for 18500B.
 describe('smSizeMatch — youth order size matches a bare catalog size (18500B "YS" ↔ SanMar "S")', () => {

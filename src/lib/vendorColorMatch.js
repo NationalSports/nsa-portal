@@ -4,14 +4,45 @@
 // shared by vendorApis.js. See sanmarResolvePartIds for the SanMar Part ID (Unique_Key)
 // resolver that uses these.
 
-// Color words: split on any non-alphanumeric run. "Forest Green" -> ['FOREST','GREEN'].
-export const smColorTokens = (s) =>
-  String(s ?? '').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+// SanMar abbreviates the words in compound (multi-part) colorway names — its cap/beanie
+// colors come back like "For Grn/Blk/Wht" for "Forest Green/Black/White". Map each known
+// abbreviation to the full word so an order's spelled-out color can match. Only exact,
+// unambiguous abbreviations live here (no fuzzy prefix/vowel logic) — a wrong entry would
+// conflate two real colors, so keep this conservative and expand it as new ones are seen.
+const COLOR_ABBREV = {
+  FOR: 'FOREST', FRST: 'FOREST',
+  GRN: 'GREEN',
+  BLK: 'BLACK', BK: 'BLACK',
+  WHT: 'WHITE', WH: 'WHITE', WHI: 'WHITE',
+  GRY: 'GREY', GY: 'GREY', GRAY: 'GREY',
+  TR: 'TRUE',
+  ROY: 'ROYAL',
+  GLD: 'GOLD',
+  NVY: 'NAVY',
+  RD: 'RED',
+  ATH: 'ATHLETIC',
+  PNK: 'PINK',
+  MAR: 'MAROON',
+  PUR: 'PURPLE', PPL: 'PURPLE',
+  ORG: 'ORANGE',
+  YEL: 'YELLOW',
+  SIL: 'SILVER',
+  CHAR: 'CHARCOAL',
+};
 
-// A vendor color safely matches the order color ONLY when the vendor's words are a SUBSET of
-// the order's — i.e. the vendor carries a shorter spelling of the same color ("Forest" for an
-// order's "Forest Green"), never the reverse. This never lets a generic order color ("Green")
-// grab a more-specific vendor colorway ("Forest Green"). Both sides must be non-empty.
+// Color words, canonicalized: split on any non-alphanumeric run, then expand known SanMar
+// abbreviations to their full word. "For Grn/Blk/Wht" -> ['FOREST','GREEN','BLACK','WHITE'];
+// "Forest Green" -> ['FOREST','GREEN'].
+export const smColorTokens = (s) =>
+  String(s ?? '').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+    .map((t) => COLOR_ABBREV[t] || t);
+
+// A vendor color safely matches the order color ONLY when the vendor's (canonicalized) words
+// are a SUBSET of the order's — i.e. the vendor carries a shorter or abbreviated spelling of
+// the same color, never the reverse. Because tokens are abbreviation-expanded first, this
+// covers both "Forest" for an order's "Forest Green" AND SanMar's "For Grn/Blk/Wht" for
+// "Forest Green/Black/White". It never lets a generic order color ("Green") grab a
+// more-specific vendor colorway ("Forest Green"). Both sides must be non-empty.
 //
 // It is intentionally allowed to return true for two different vendor colors against the same
 // order color (both "Forest" and "Green" are subsets of "Forest Green"); the caller is
