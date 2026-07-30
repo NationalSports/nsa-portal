@@ -108,4 +108,18 @@ SELECT 'ws_order_missing_store', COUNT(*) FROM webstore_orders wo
 UNION ALL
 SELECT 'po_lines_orphaned', COUNT(*) FROM purchase_order_lines pl
   WHERE NOT EXISTS (SELECT 1 FROM purchase_orders po WHERE po.id=pl.po_id)
+-- ── Duplicate billing ───────────────────────────────────────────────────────
+-- A vendor tracking number is one physical package; the same (tracking, sizes) — or the same
+-- (doc, sizes) — appearing twice in a PO line's _bill_details is a double-bill (the 2026-07
+-- SportsInc re-import applied invoices a second time under a different doc number). Counts the
+-- DISTINCT so_item_po_lines carrying at least one such duplicate group.
+UNION ALL
+SELECT 'so_dup_bill_shipment', COUNT(DISTINCT id) FROM (
+  SELECT pl.id
+  FROM so_item_po_lines pl,
+       LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(pl.sizes->'_bill_details')='array' THEN pl.sizes->'_bill_details' ELSE '[]'::jsonb END) d
+  WHERE COALESCE(NULLIF(d->>'tracking',''), d->>'doc') IS NOT NULL
+  GROUP BY pl.id, COALESCE(NULLIF(d->>'tracking',''), d->>'doc'), d->'sizes'
+  HAVING COUNT(*)>1
+) g
 ORDER BY violations DESC, check_name;

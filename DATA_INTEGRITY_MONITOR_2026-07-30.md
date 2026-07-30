@@ -29,6 +29,7 @@ integrity monitor") runs it daily and reports only when a count exceeds baseline
 | `so_item_priced_zero_qty` | 10 | ⚠ backlog — see Finding 2 (8 SOs, several in `need_order`/`needs_pull`) |
 | `est_open_zero_items` | 1 | known — EST-1639, kept deliberately pending rebuild (see `ORDER_ID_COLLISION_INVESTIGATION`-style note below) |
 | `so_zero_items` | 0 | clean after excluding `SO-0DEMO1/2/3` (webstore demo rows) |
+| `so_dup_bill_shipment` | 1 | known — SO-1140 IQ2728, the one tangled duplicate held for manual reconcile (see Finding 3) |
 | all 18 other checks (orphans, dup indexes, dangling customer/SO/estimate/invoice refs) | 0 | ✅ clean |
 
 **Headline: referential integrity is fully clean.** Zero orphaned children, zero
@@ -68,6 +69,28 @@ leakage. Flagged SOs at baseline: SO-1055, SO-1439, SO-1514, SO-1592, SO-1670
 
 Recommended: reps confirm each active-SO line (fill sizes or delete the line);
 longer-term, the app should warn on save/convert when a priced line has no units.
+
+## Finding 3 — duplicate billing (repaired 2026-07-30; guard + monitor added)
+
+A SportsInc re-import on 2026-07-27 applied vendor invoices a **second time** under
+SportsInc's own document numbers (different doc #, but identical tracking # + sizes +
+cost as the native invoice already applied). Because the second application pushed
+billed past ordered and the overage was accepted, it also **doubled the ordered
+quantities** on the affected lines — which is what surfaced as "received shows half"
+(SO-1522 NEA200, SO-1159, and 26 more).
+
+- **Data repaired:** 28 SOs / 57 lines de-duplicated, ~$9,260 of phantom cost removed,
+  `received` never touched. One line (SO-1140 IQ2728) held for manual reconcile — it is
+  the single remaining `so_dup_bill_shipment` violation.
+- **Guard added (recurrence prevention):** `duplicateBillDetail` in
+  `src/lib/billAnomalies.js`, wired into both wizard bill-apply paths
+  (`_applyBillByMappings` so_po and `_applyBillToBatchSOs`). A bill line whose
+  (tracking #, sizes) — or (doc #, sizes) — is already on a PO line is **skipped, not
+  re-billed**, and the rep is notified. Requiring the size breakdown to match keeps
+  legitimate split-billing of one shipment across invoices from being blocked.
+- **Detection added:** the `so_dup_bill_shipment` invariant above.
+- **Still open (accounting):** the duplicates were `pushed` to QuickBooks as separate
+  bills, so the real-money double-payment is unwound on the QB/SportsInc side separately.
 
 ## The road to "data is solid" (agreed direction)
 
