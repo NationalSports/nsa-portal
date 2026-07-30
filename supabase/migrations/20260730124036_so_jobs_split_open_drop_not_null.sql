@@ -1,0 +1,13 @@
+-- Fix SO save failure: "null value in column split_open of relation so_jobs violates not-null constraint".
+--
+-- Migration 00131 added so_jobs.split_open as NOT NULL DEFAULT false. But the app always includes
+-- split_open in the so_jobs column list (_jobCols in src/constants.js), so a job without the flag set
+-- serializes it as an explicit NULL in the PostgREST payload. An explicit NULL bypasses the column
+-- DEFAULT and violates the NOT NULL constraint, which fails the whole sales-order save (delete +
+-- reinsert of child rows). Every sibling optional job flag (run1_done, coach_rejected, art_hidden) is
+-- already nullable with default false; split_open was the lone NOT NULL outlier.
+--
+-- Relax it to match: keep DEFAULT false, allow NULL. NULL reads as falsy everywhere
+-- (isOpenSplitSlice in src/businessLogic.js coerces with !!), and real backorder slices still write
+-- split_open = true explicitly, so allocation behavior is unchanged.
+ALTER TABLE so_jobs ALTER COLUMN split_open DROP NOT NULL;
