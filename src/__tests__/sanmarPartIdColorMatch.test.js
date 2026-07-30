@@ -7,7 +7,7 @@
 // order color's AND exactly one Unique_Key qualifies at that size — so it never grabs a
 // more-specific colorway or guesses between two. These pin that boundary.
 
-import { smColorSubset } from '../lib/vendorColorMatch';
+import { smColorSubset, smSizeMatch } from '../lib/vendorColorMatch';
 
 describe('smColorSubset — SanMar color is a shorter spelling of the order color', () => {
   test('SanMar "Forest" matches an order "Forest Green" (extra qualifier stripped)', () => {
@@ -50,5 +50,35 @@ describe('smColorSubset — ambiguity is possible by design (resolver breaks the
   test('both "Forest" and "Green" are subsets of "Forest Green"', () => {
     expect(smColorSubset('Forest', 'Forest Green')).toBe(true);
     expect(smColorSubset('Green', 'Forest Green')).toBe(true);
+  });
+});
+
+// smSizeMatch takes ALREADY-normalized tokens (the resolver runs _smSizeNorm first). YS/S etc.
+// are what normSzName yields for "YS"/"S"; these pin the youth→bare fallback for 18500B.
+describe('smSizeMatch — youth order size matches a bare catalog size (18500B "YS" ↔ SanMar "S")', () => {
+  test('exact tokens match', () => {
+    expect(smSizeMatch('S', 'S')).toBe(true);
+    expect(smSizeMatch('2XL', '2XL')).toBe(true);
+    expect(smSizeMatch('YS', 'YS')).toBe(true);
+  });
+  test('youth order size matches its bare catalog equivalent', () => {
+    expect(smSizeMatch('YS', 'S')).toBe(true);
+    expect(smSizeMatch('YM', 'M')).toBe(true);
+    expect(smSizeMatch('YL', 'L')).toBe(true);
+    expect(smSizeMatch('YXL', 'XL')).toBe(true);
+    expect(smSizeMatch('YXS', 'XS')).toBe(true);
+  });
+  test('NEVER the reverse — an adult order size must not match a youth catalog size', () => {
+    expect(smSizeMatch('S', 'YS')).toBe(false);
+    expect(smSizeMatch('L', 'YL')).toBe(false);
+  });
+  test('different sizes never match', () => {
+    expect(smSizeMatch('S', 'M')).toBe(false);
+    expect(smSizeMatch('YS', 'M')).toBe(false);
+    expect(smSizeMatch('YS', 'XS')).toBe(false);
+  });
+  test('blank tokens never match', () => {
+    expect(smSizeMatch('', 'S')).toBe(false);
+    expect(smSizeMatch('S', '')).toBe(false);
   });
 });

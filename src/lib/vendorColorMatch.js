@@ -22,3 +22,18 @@ export const smColorSubset = (vendorColor, orderColor) => {
   const oset = new Set(o);
   return s.every((t) => oset.has(t));
 };
+
+// Youth size labels → their bare catalog equivalent. SanMar lists youth-only styles (e.g.
+// Gildan 18500B) with plain S/M/L/XL, while portal orders carry the youth form ("YS").
+const YOUTH_BARE = { YXS: 'XS', YS: 'S', YM: 'M', YL: 'L', YXL: 'XL' };
+
+// Compare two ALREADY-NORMALIZED size tokens (run each through the caller's size normalizer
+// first). Equal → match. A youth order size also matches its bare catalog equivalent (order
+// "YS" ↔ catalog "S") — one direction only, so an adult order can never grab a youth garment.
+// Callers still enforce "exactly one Unique_Key" so a style that somehow lists both "YS" and
+// "S" for one color stays ambiguous rather than guessing.
+export const smSizeMatch = (orderSizeNorm, catalogSizeNorm) => {
+  if (!orderSizeNorm || !catalogSizeNorm) return false;
+  if (orderSizeNorm === catalogSizeNorm) return true;
+  return YOUTH_BARE[orderSizeNorm] === catalogSizeNorm;
+};
