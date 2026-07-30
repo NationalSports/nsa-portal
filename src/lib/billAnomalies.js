@@ -63,4 +63,33 @@ const billAnomalyFlags = (p) => {
   return flags;
 };
 
-module.exports = { billAnomalyFlags, isAdidasUaVendor, FREIGHT_PCT_CAP, SHARP_PRICE_PCT };
+// ── Duplicate-shipment guard ──
+// A vendor tracking number identifies ONE physical package; billing the same (tracking, sizes)
+// onto a PO line twice is always a double-bill. The 2026-07 incident: a SportsInc re-import
+// applied invoices a second time under a DIFFERENT document number (its own wrapper #) than the
+// native vendor invoice, so a doc#-only dedup missed them — but the tracking# + sizes were
+// identical. This detects that (and the plain same-doc re-apply too).
+const sizesSig = (s) => {
+  const o = s || {};
+  return Object.keys(o).sort().map((k) => k + ':' + num(o[k])).join(',');
+};
+// Returns the already-applied _bill_details entry that `candidate` duplicates, or null.
+// A duplicate = same non-empty tracking (or same non-empty doc) AND the identical size breakdown.
+// Requiring the size breakdown to match keeps legitimate split-billing of one shipment across
+// separate invoices (different sizes, same tracking) from being blocked.
+const duplicateBillDetail = (existingDetails, candidate) => {
+  if (!candidate) return null;
+  const list = Array.isArray(existingDetails) ? existingDetails : [];
+  const cTrack = String(candidate.tracking || '').trim();
+  const cDoc = String(candidate.doc || '').trim();
+  const cSig = sizesSig(candidate.sizes);
+  for (const e of list) {
+    if (!e || sizesSig(e.sizes) !== cSig) continue;
+    const eTrack = String(e.tracking || '').trim();
+    const eDoc = String(e.doc || '').trim();
+    if ((cTrack && eTrack === cTrack) || (cDoc && eDoc === cDoc)) return e;
+  }
+  return null;
+};
+
+module.exports = { billAnomalyFlags, isAdidasUaVendor, FREIGHT_PCT_CAP, SHARP_PRICE_PCT, sizesSig, duplicateBillDetail };
