@@ -25,6 +25,7 @@ import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCom
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
+import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -154,7 +155,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -2696,6 +2697,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // When a DST is uploaded to an approved embroidery art file, mark the job art_complete automatically
   // so the rep doesn't have to manually click "Mark Art Complete" after uploading.
   const _autoCompleteEmbAfterUpload=(newArts)=>{const curO=oRef.current;const updArt=newArts.map(a=>{if((a.deco_type||'')!=='embroidery'||a.status!=='approved'||a.prod_files_attached===true)return a;if(![...(a.files||[]),...(a.prod_files||[])].some(f=>isDstFile(f)&&!isStaleFile(f)))return a;return{...a,prod_files_attached:true}});if(!updArt.some((a,i)=>a!==newArts[i]))return;const updJobs=safeJobs(curO).map(j=>{if(j.art_status!=='upload_emb_files')return j;const ids=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');if(!ids.length)return j;const allReady=ids.every(id=>artProdFilesConfirmed(updArt.find(a=>a.id===id)));return allReady?{...j,art_status:'art_complete'}:j});const updated={...curO,art_files:updArt,jobs:updJobs,updated_at:new Date().toLocaleString()};saveSONow(updated,'Art complete','🧵 DST detected — embroidery job auto-marked complete!')};
+  // ── Embroidery stitch-count auto-read ──
+  // Read the stitch count off an embroidery digitizing proof PDF (Wilcom/Tajima/
+  // Melco "Design Information" export) using App.js's pdf.js text extractor, so the
+  // EM price tier comes from the real design instead of the flat 8000-stitch
+  // fallback in decoPricing.emP(). Text-layer proofs auto-fill; image-only proofs
+  // (no text) report "not found" so staff can type it. Never throws into the
+  // caller — a failed read just leaves the field for manual entry.
+  const _readStitchesFromPdfFile=async(file)=>{
+    if(!extractPdfText||!file)return null;
+    try{const r=await extractPdfText(file);return parseStitchCount(r&&r.fullText);}catch(e){return null;}
+  };
+  const _applyArtStitches=async(folderId,n,srcName,verb)=>{
+    // Read the live art_files at apply time (the extract await lets any in-flight
+    // upload save settle) and touch only this folder's stitches, mirroring how the
+    // upload handlers themselves splice oRef.current.art_files.
+    const next=(oRef.current.art_files||[]).map(a=>a.id===folderId?{...a,stitches:n}:a);
+    await saveArtFilesNow(next,'Stitches');
+    nf((verb||'Read')+' '+n.toLocaleString()+' stitches'+(srcName?' from '+srcName:''));
+  };
+  // Manual "Read from PDF": staff pick the proof file; we extract + apply.
+  const readStitchesFromPdf=(folderId)=>{
+    if(!extractPdfText){nf('PDF reading is unavailable here','error');return;}
+    const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
+    inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading stitch count…');
+      const n=await _readStitchesFromPdfFile(f);
+      if(n)await _applyArtStitches(folderId,n,f.name,'Read');
+      else nf('No stitch count found in '+f.name+' — enter it manually','error');};
+    inp.click();
+  };
+  // Opportunistic auto-read after a production-file upload: only when the art is
+  // embroidery, a PDF was among the uploads, and no stitch count is set yet.
+  // Silent on a miss (image-only proof / no match) — the manual field/button remain.
+  const maybeAutoReadStitches=async(arts,folderId,uploadedFiles)=>{
+    if(!extractPdfText)return;
+    const art=(arts||[]).find(a=>a.id===folderId);
+    if(!art||(art.deco_type||'')!=='embroidery'||art.stitches)return;
+    const pdf=(uploadedFiles||[]).find(f=>f&&/\.pdf$/i.test(f.name||''));
+    if(!pdf)return;
+    const n=await _readStitchesFromPdfFile(pdf);
+    if(n)await _applyArtStitches(folderId,n,pdf.name,'Auto-read');
+  };
   // The customer whose library this order's art should be promoted into. Library art lives on
   // the *parent* account and cascades to every sub-customer ("applies to all"), so a logo
   // created on one team's order can be made reusable program-wide. If this order's customer is
@@ -5602,6 +5644,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end'}}>
                     <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
                   </div>
+                  {/* Embroidery stitch count — sets the EM price tier (decoPricing.emP);
+                      unset falls back to the flat 8000-stitch default. */}
+                  {art.deco_type==='embroidery'&&<div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
+                    <div style={{width:140}}>
+                      <label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Stitches</label>
+                      <input className="form-input" type="number" min={0} step={100} value={art.stitches??''} onChange={e=>{const v=e.target.value;uArt(i,'stitches',v===''?null:Math.max(0,parseInt(v,10)||0))}} placeholder="e.g. 6295" style={{fontSize:12}}/>
+                    </div>
+                    {(()=>{const lbl=embStitchTierLabel(art.stitches);return lbl
+                      ?<span title="Embroidery price tier from the stitch count" style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#ede9fe',border:'1px solid #ddd6fe',borderRadius:6,padding:'5px 8px'}}>{lbl} tier</span>
+                      :<span style={{fontSize:10,color:'#94a3b8',padding:'5px 0'}}>unset → ≤10k default</span>})()}
+                    <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>readStitchesFromPdf(art.id)} title="Read the stitch count from an embroidery proof PDF">📄 Read from PDF</button>
+                  </div>}
                   {/* Color Ways */}
                   <div style={{marginBottom:6}}>
                     <ColorWaysEditor colorWays={art.color_ways||[]} onChange={cws=>uArt(i,'color_ways',cws)} decoType={art.deco_type} pantoneColors={mergeColors(cust,allCustomers,'pantone_colors')} threadColors={mergeColors(cust,allCustomers,'thread_colors')} suppressWarning={!!art.ink_colors||!!art.thread_colors}/>
@@ -5615,10 +5669,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
-                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let arts=(oRef.current.art_files||[]);const files=Array.from(inp.files);nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-production').then(url=>({url,name:f.name}))));const added=[];const failed=[];results.forEach((r,ri)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(files[ri].name)});if(failed.length)nf('Upload failed: '+failed.join(', '),'error');if(added.length){arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),...added]}:fa);await saveArtFilesNow(arts,added.length+' file'+(added.length>1?'s':''))}_autoCompleteEmbAfterUpload(arts)};inp.click()}}
+                      onClick={()=>{const folderId=art.id;const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let arts=(oRef.current.art_files||[]);const files=Array.from(inp.files);nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-production').then(url=>({url,name:f.name}))));const added=[];const failed=[];results.forEach((r,ri)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(files[ri].name)});if(failed.length)nf('Upload failed: '+failed.join(', '),'error');if(added.length){arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),...added]}:fa);await saveArtFilesNow(arts,added.length+' file'+(added.length>1?'s':''))}_autoCompleteEmbAfterUpload(arts);maybeAutoReadStitches(arts,folderId,files)};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);let arts=(oRef.current.art_files||[]);nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-production').then(url=>({url,name:f.name}))));const added=[];const failed=[];results.forEach((r,ri)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(files[ri].name)});if(failed.length)nf('Upload failed: '+failed.join(', '),'error');if(added.length){arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),...added]}:fa);await saveArtFilesNow(arts,added.length+' file'+(added.length>1?'s':''))}_autoCompleteEmbAfterUpload(arts)}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const folderId=art.id;const files=Array.from(e.dataTransfer.files);let arts=(oRef.current.art_files||[]);nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+'...');const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-production').then(url=>({url,name:f.name}))));const added=[];const failed=[];results.forEach((r,ri)=>{if(r.status==='fulfilled')added.push(r.value);else failed.push(files[ri].name)});if(failed.length)nf('Upload failed: '+failed.join(', '),'error');if(added.length){arts=arts.map(fa=>fa.id===folderId?{...fa,prod_files:[...(fa.prod_files||[]),...added]}:fa);await saveArtFilesNow(arts,added.length+' file'+(added.length>1?'s':''))}_autoCompleteEmbAfterUpload(arts);maybeAutoReadStitches(arts,folderId,files)}}>
                       <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
