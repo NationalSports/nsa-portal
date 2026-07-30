@@ -23,7 +23,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
@@ -3032,7 +3032,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _healArtPointers=j=>{
       const r=healFrozenJobArtDrift(j,_liveArtClaim);
       if(!r.artChanged)return r.job;
+      const _declared=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const _hIds=(r.job._art_ids&&r.job._art_ids.length?r.job._art_ids:[r.job.art_file_id]).filter(Boolean);
+      // Pure EXPANSION — every old design is still here, the heal only ADDED a location. Keep the
+      // existing designs' art_status: recomputing "worst" here dragged submitted jobs to needs_art
+      // when the added location sat at 'uploaded', and that regressed status got SAVED (SO-1625).
+      if(isPureArtExpansion(_declared,_hIds))return r.job;
       let worst='art_complete';
       for(const aid of _hIds){const artF=af.find(a=>a.id===aid);if(!artF)return r.job;const st=_artStForFile(artF,r.job.deco_type);if(st!=='art_complete')worst=st}
       return worst!==r.job.art_status?{...r.job,art_status:worst}:r.job;

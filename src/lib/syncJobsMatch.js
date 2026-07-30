@@ -183,6 +183,24 @@ export function healFrozenJobArtDrift(job, resolveLiveArtClaim) {
 }
 
 /**
+ * True when the healed art-id set kept EVERY previously-declared design and only ADDED ids —
+ * a new print location placed on garments that already carried the old design(s) (e.g. a
+ * "Back Marketing" print added to shirts that already had the approved front logo).
+ *
+ * On a pure expansion the existing designs' art_status must be preserved. The heal's caller
+ * otherwise recomputes the job's status as the WORST per-file state across all ids, so a freshly
+ * added location sitting at 'uploaded' dragged a submitted (waiting_approval) job all the way back
+ * to needs_art — and that regressed status was SAVED, hiding a submitted proof from the order page
+ * (SO-1625 / JOB-1625-01). A real art-identity change (a declared design removed or swapped) is NOT
+ * an expansion and still recomputes, which is what the heal exists for.
+ */
+export function isPureArtExpansion(declaredIds, healedIds) {
+  const declared = (declaredIds || []).filter(Boolean);
+  const healed = new Set((healedIds || []).filter(Boolean));
+  return declared.length > 0 && healed.size > declared.length && declared.every((id) => healed.has(id));
+}
+
+/**
  * Workflow fields that must not cross-contaminate across distinct jobs.
  * Copied only when matchExistingJob found a real match (key or unique art id).
  */
