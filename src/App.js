@@ -5377,7 +5377,13 @@ export default function App(){
   // change (Approve / Send to Coach / Request changes) still clears the mockup to-do for good on its own.
   const _todoClickedThrough=(t)=>{if(!t)return;
     if(_todoIsFollowUp(t)){snoozeTodo(t,1,'⏰ Follow-up cleared for now — back tomorrow if still open');return}
-    if(t.type==='art')snoozeTodoUntil(t,1,'🎨 Cleared for now — back tomorrow if it still needs review');};
+    // A 'art' (🎨 Mockup ready for review) to-do must NOT be snoozed just because the card was
+    // opened. A returned proof the rep merely clicked into — but has not sent to coach or approved —
+    // still needs review, and auto-hiding it for a day is how returned artwork "disappeared" the
+    // moment the rep clicked in (SO-1625: "I definitely submitted for art, but didn't see it when it
+    // came back"). This to-do already clears itself on a real state change — sent_to_coach_at set, or
+    // art_status leaving waiting_approval (see the todo builder) — so it needs no click-through snooze.
+  };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
   // Placed after cu/mThread/msgs are declared so the dependency array can reference them. Keyed on
