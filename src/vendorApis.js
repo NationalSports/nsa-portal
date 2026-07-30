@@ -9,6 +9,7 @@ import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
 import { buildSsOrdersQuery } from './ssOrders';
 import { normSzName } from './pricing';
+import { smColorSubset } from './lib/vendorColorMatch';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -956,6 +957,24 @@ const sanmarResolvePartIds = async (descriptors) => {
           }
         }
       } catch (e) { /* leave unresolved — never guess */ }
+    }
+    // Safe fuzzy color fallback for lines the exact match missed. Vendors spell the same
+    // color with extra qualifier words — an order built off an S&S/other feed carries
+    // "Forest Green" while SanMar lists "Forest". _smNorm already ignores spacing, so only a
+    // word-level difference remains. Assign ONLY when exactly one SanMar Unique_Key qualifies
+    // at the line's size; any ambiguity (0 or >1 keys) leaves the line blank so the rep orders
+    // it manually — this must never risk shipping the wrong colorway.
+    for (const d of mine) {
+      if (resolved[d.key]) continue;
+      const dsz = _smSizeNorm(d.size);
+      const keys = new Set();
+      let hit = '';
+      for (const c of cand) {
+        if (_smSizeNorm(c.size) !== dsz) continue;
+        if (!smColorSubset(c.color, d.color)) continue;
+        if (c.uniqueKey) { keys.add(c.uniqueKey); hit = c.uniqueKey; }
+      }
+      if (keys.size === 1) resolved[d.key] = hit;
     }
     const seen = new Set();
     candidates[style] = cand.filter(c => { const k = c.color + '|' + c.size; if (seen.has(k)) return false; seen.add(k); return true; });
