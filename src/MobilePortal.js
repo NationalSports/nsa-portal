@@ -669,7 +669,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const af=[...(e.art_files||[])];
       if(!af.some(a=>a.id===art.id)){const clone=JSON.parse(JSON.stringify(art));delete clone._src;af.push(clone)}
       const items=[...e.items];
-      const deco={kind:'art',position:'Front Center',art_file_id:art.id,_cust_art_id:art.id,art_group:art.name,sell_override:null};
+      const deco={kind:'art',position:art.location||'Front Center',art_file_id:art.id,_cust_art_id:art.id,art_group:art.name,sell_override:null};
       items[itemIdx]={...items[itemIdx],decorations:[...(items[itemIdx].decorations||[]),deco]};
       return{...e,items,art_files:af};
     });

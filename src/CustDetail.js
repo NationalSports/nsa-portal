@@ -6,7 +6,7 @@ import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, T
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
-import { dP, rQ, DTF, mergeColors, calcPaidQualifyingSpend } from './pricing';
+import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
@@ -1306,6 +1306,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {isOwnLib&&<div style={{display:'flex',gap:14,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap',alignItems:'flex-end'}}>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Type</div><Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>editLib({deco_type:v})}/></div>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Size</div><input className="form-input" value={art.art_size||''} onChange={e=>editLib({art_size:e.target.value})} placeholder='e.g. 12" x 4"' style={{fontSize:12,width:150}}/></div>
+          <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Default location</div><select className="form-select" value={art.location||''} onChange={e=>editLib({location:e.target.value})} style={{fontSize:12,width:150}} title="Where this art usually goes — decorations default here when it's added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Status</div><select value={art.status||'waiting_for_art'} onChange={e=>editLib({status:e.target.value})} style={{padding:'5px 8px',borderRadius:8,fontSize:12,fontWeight:600,border:'1px solid #e2e8f0',background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c,cursor:'pointer'}}><option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved</option></select></div>
         </div>}
         {!isOwnLib&&<div style={{display:'flex',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap'}}>
