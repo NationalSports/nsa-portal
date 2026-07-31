@@ -2398,9 +2398,11 @@ const _recoverSession=async()=>{
   if(res&&res.fatal){
     try{const{data:{session}}=await supabase.auth.getSession();if(session){_sessionDead=false;return true}}catch(_){}
     _sessionDead=true;
-    // Telemetry: the rep is about to be bounced to the login screen. Best-effort — the dead
-    // session means this insert may itself be rejected; that's fine, we'd rather under-count.
-    _logClientEvent('forced_reauth',{});
+    // Telemetry: the rep is about to be bounced to the login screen. The session is dead here, so
+    // send asAnon — explicitly under the anon key, which the anon INSERT whitelist accepts
+    // (migration client_events_anon_auth_failure_telemetry; keep event names in sync). Riding the
+    // supabase client instead would attach the expired JWT and get 401'd before RLS.
+    _logClientEvent('forced_reauth',{},{asAnon:true});
     if(_forceReauth)_forceReauth();
   }
   return false;
@@ -2410,11 +2412,24 @@ const _recoverSession=async()=>{
 // way to measure them. Every disruptive client event lands one row in public.client_events so
 // the next "is this fixed?" question has a graph. Fire-and-forget: telemetry must never block,
 // throw, or retry — a lost row is fine, a save path stalled on telemetry is not.
-export const _logClientEvent=(event,details)=>{
+export const _logClientEvent=(event,details,opts)=>{
   try{
     if(!supabase)return;
     let email=null;try{email=(JSON.parse(localStorage.getItem('nsa_user')||'null')||{}).email||null}catch(_){}
-    supabase.from('client_events').insert({user_email:email,event,details:details||null})
+    if(typeof email==='string'&&email.length>320)email=email.slice(0,320);// mirror the policy's cap so a mangled localStorage value degrades to a truncated row, not a rejected one
+    const row={user_email:email,event,details:details||null};
+    // asAnon: dead-session events (forced_reauth / auth_save_failed) must NOT ride the supabase
+    // client — it attaches the stored access token, and an EXPIRED token is 401-rejected by
+    // PostgREST before RLS runs, so the anon INSERT whitelist policy never gets a say and the
+    // event is lost (the pre-2026-07-31 blind spot). Send with the anon key explicitly so the
+    // request runs as the anon role and lands via policy client_events_anon_auth_failure_insert.
+    // Routed through the circuit breaker like every other /rest/v1 call.
+    if(opts&&opts.asAnon&&_sbUrl&&_sbKey){
+      _breakerFetch(_sbUrl+'/rest/v1/client_events',{method:'POST',headers:{apikey:_sbKey,Authorization:'Bearer '+_sbKey,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify(row)})
+        .then(r=>{if(!r.ok)console.warn('[telemetry]',event,'anon insert HTTP',r.status)},()=>{});
+      return;
+    }
+    supabase.from('client_events').insert(row)
       .then(r=>{if(r.error)console.warn('[telemetry]',event,r.error.message)},()=>{});
   }catch(_){/* noop */}
 };
@@ -2433,8 +2448,18 @@ const _isPermissionDenied=(err)=>{
 };
 // Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
 // restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
+const _authFailLoggedAt=new Map();// entity id → last auth_save_failed telemetry ts (10-min throttle)
 const _handleAuthSaveFailure=(id,err)=>{
   const perm=_isPermissionDenied(err);
+  // perm=true → a live account lacking rights (won't self-heal); perm=false → expired/zombie session
+  // (recoverable). This row is what separates the two in the client_events dashboard. Event name must
+  // stay in the anon INSERT whitelist (migration client_events_anon_auth_failure_telemetry); sent
+  // asAnon because the session is typically dead when this fires. Throttled per entity: the 60s
+  // retry loop replays failed saves, and unthrottled this would write ~1 row/min/entity all night.
+  // Key on (id, perm) so a reclassification — e.g. first attempt reads as a genuine denial, a later
+  // one as an expired session — logs its own row instead of being swallowed by the throttle.
+  const _tk=(id||'_none')+':'+perm;const _tnow=Date.now();
+  if((_authFailLoggedAt.get(_tk)||0)<_tnow-600000){_authFailLoggedAt.set(_tk,_tnow);_logClientEvent('auth_save_failed',{id:id||null,perm},{asAnon:true});}
   if(id){_dbSaveFailedIds.add(id);_recordSaveError(id,perm?'permission denied — your account can’t save this change; contact an admin':'session expired — sign in again to save');_persistFailedIds()}
   if(!perm)_recoverSession();// a permission denial can't be refreshed away — don't churn recovery or bounce to login
   else _verifyPermDenialHasSession(id);
