@@ -15404,6 +15404,9 @@ export default function App(){
       const setStoreCustomer=(cid)=>{const cc=cid?cust.find(x=>x.id===cid):null;const upd={...s,customer_id:cid||null,...(cc?.primary_rep_id?{rep_id:cc.primary_rep_id}:{})};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const setStoreRep=(rid)=>{const upd={...s,rep_id:rid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const setStoreCsr=(cid)=>{const upd={...s,csr_id:cid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
+      // Artist for this store's art. Stamped onto the pulled SO's jobs (createOmgSO) so online-store
+      // art routes to the chosen artist instead of the shared unassigned pool every artist watches.
+      const setStoreArtist=(aid)=>{const upd={...s,artist_id:aid||null};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       const _applyStoreProds=newProds=>{const upd={...s,products:newProds};setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd)};
       // ── Pre-flight gates for creating the Sales Order ─────────────────
       // Everything below the page must be complete before the SO can be pulled.
@@ -15531,7 +15534,13 @@ export default function App(){
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
                 tax_rate:0,tax_exempt:true,
                 ship_to_id:'default',firm_dates:[],art_files:artFiles,
-                jobs:[],items:soItems,omg_store_id:s.id,webstore_id:_shadowWs?.id||null,
+                // Route this store's art to the artist the rep picked on the OMG page. buildJobs never
+                // sets assigned_artist, so leaving jobs:[] (lazy-built) would land every job in the
+                // shared unassigned pool that all artists watch — the "Mo automatically gets it" bug.
+                // Stamping the chosen artist here owns the jobs; syncJobsMatch preserves assigned_artist
+                // when OrderEditor later reconciles items↔jobs. No artist chosen → keep today's lazy [].
+                jobs:s.artist_id?buildJobs({id:generatedId,items:soItems,art_files:artFiles,jobs:[]}).map(j=>({...j,assigned_artist:s.artist_id})):[],
+                items:soItems,omg_store_id:s.id,webstore_id:_shadowWs?.id||null,
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
@@ -15622,6 +15631,10 @@ export default function App(){
                 · <span title="Customer-order messages route to the CSR (or the rep if no CSR)">CSR </span><select value={s.csr_id||''} onChange={e=>setStoreCsr(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:'#0f172a',background:'white',cursor:'pointer'}}>
                     <option value="">— none —</option>
                     {REPS.filter(r=>(r.role==='csr'||isCommissionRep(r))&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}{r.role==='csr'?'':' ('+r.role+')'}</option>)}
+                  </select>
+                · <span title="The artist this store's art routes to. Pick one so the art lands on their board instead of the shared unassigned pool every artist sees.">🎨 Artist </span><select value={s.artist_id||''} onChange={e=>setStoreArtist(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:'#0f172a',background:'white',cursor:'pointer'}}>
+                    <option value="">— unassigned —</option>
+                    {REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
                   </select> · {s.id}
               </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
