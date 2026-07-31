@@ -10263,7 +10263,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   Update Art</button>}</>})()}
               {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const _appArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _appHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_appArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_appArtIds.length>0&&_appArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));/* Same as the main Approve Artwork button: a __tbd placeholder must open the gate; a truly artless job (names/numbers-only) approves straight through. */if(_allConfirmed||(_appArtIds.length===0&&!_appHasTbd)){_approveArtTo(j.id,_appArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_appArtIds,deco:_apDeco,artName:j.art_name})}}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
-              <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
+              <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>{
+                // Re-point the OPEN art request at the new artist too, not just assigned_artist. The
+                // art board's ownership test (App.js filtered) matches an artist on EITHER
+                // assigned_artist OR the open request's artist, so leaving the request pointed at the
+                // previous owner (e.g. whoever grabbed it from the unassigned pool) keeps that person
+                // seeing the job even after a reassign here — "I picked Erik but Mo still has it."
+                // Mirrors App.js assignArtist (its comment: diverging is how jobs go invisible).
+                const _aid=e.target.value;const _an=(REPS.find(r=>r.id===_aid)||{}).name||'';
+                sv('jobs',jobs.map((jj,i)=>i!==ji?jj:{...jj,assigned_artist:_aid,art_requests:(jj.art_requests||[]).map(r=>(r.status==='requested'||r.status==='in_progress')?{...r,artist:_aid,artist_name:_an}:r)}));
+              }}>
                 <option value="">Unassigned</option>
                 {REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
