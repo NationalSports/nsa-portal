@@ -28,6 +28,7 @@ import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
+import { _dbPersistNewPoLine } from './lib/dbEngine';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -8662,6 +8663,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
           const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
           setO(updated);onSave(updated);
+          // Durably persist each just-created PO line immediately, so it survives a two-tab overwrite even
+          // if the async SO save above is lost before it flushes (SO-1663 "PO dropped from portal"). This is
+          // a fire-and-forget safety net alongside onSave, not a replacement — idempotent and no-ops on a
+          // not-yet-saved order (see _dbPersistNewPoLine). Skipped for preexisting POs, which merge into
+          // already-persisted lines rather than creating a first-flush-vulnerable new one.
+          if(!preexistingPO)newPoLines.forEach(({lineIdx,poIdx})=>{const _pl=updatedItems[lineIdx]&&updatedItems[lineIdx].po_lines&&updatedItems[lineIdx].po_lines[poIdx];if(_pl&&_pl.po_id)_dbPersistNewPoLine(o.id,lineIdx,_pl);});
           // Product PO consumes a counter number unless preexisting; the inline deco PO always consumes one.
           const counterBump=(preexistingPO?0:1)+(podRes?1:0);
           if(counterBump>0)setPOCounter(c=>c+counterBump);
