@@ -1272,7 +1272,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             </div>
           </div>}
 
-          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} /></div>}
+          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
 
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
@@ -2263,8 +2263,13 @@ const inp = { width: '100%', padding: '12px 13px', borderRadius: 4, border: `1px
 const methodBtn = (t, sel) => ({ flex: 1, padding: '13px', borderRadius: 4, border: `2px solid ${sel ? t.primary : t.line}`, background: sel ? t.primary : '#fff', color: sel ? '#fff' : t.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer' });
 function Field({ label, children }) { return <div style={{ marginBottom: 14, flex: 1 }}><div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: NEUTRAL.subText, marginBottom: 6 }}>{label}</div>{children}</div>; }
 
-function StockLine({ onHand, incoming, eta, onOrder }) {
-  if (onHand > 0) return <Pill bg="#EAF3EC" fg={STOCK.in}>● In stock — ready to decorate</Pill>;
+function StockLine({ onHand, incoming, eta, onOrder, alwaysSell }) {
+  // A not-tracked / made-to-order item, or a tracked drop-ship style whose stock
+  // hasn't synced yet (alwaysSell), sells every size — sizesFor surfaces the full
+  // scale and the card badge reads "In stock". Its raw on-hand is 0, so guard here
+  // too; without it the pill falls through to "Sold out" while every size button is
+  // enabled and Add to Cart works (the reported webstore bug).
+  if (onHand > 0 || alwaysSell) return <Pill bg="#EAF3EC" fg={STOCK.in}>● In stock — ready to decorate</Pill>;
   if (incoming) return <Pill bg="#FAF1DB" fg={STOCK.low}>{eta ? `Arriving around ${eta}` : `On the way${onOrder ? ` — ${onOrder} on order` : ''}`} · backorder available</Pill>;
   return <Pill bg="#F6E7E7" fg="#962C32">Sold out</Pill>;
 }
