@@ -389,6 +389,8 @@ const buildJobs = (o) => {
           // in before the seps exist) is NOT enough, so an approved job waits in its production-files
           // stage until someone confirms. Same rule as artProdFilesConfirmed in constants.js — a .dst
           // confirms on its own; staleness after a recall is gated by af.status, not this check.
+          // CANONICAL copy of constants.artStatusForFile (this module is import-free CommonJS and can't
+          // share the symbol). The 'uploaded' branch below is load-bearing — keep both in lockstep.
           const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { if (f && typeof f === 'object' && f.stale) return false; const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
           const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : (af.status === 'needs_approval' || af.status === 'uploaded') ? (_hasMockupContent(af) ? 'waiting_approval' : 'needs_art') : 'needs_art';

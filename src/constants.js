@@ -404,6 +404,25 @@ export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i)
 // looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
 // (which only runs its .dst check under the af.status==='approved' branch).
 export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return artLiveDsts(af).length>0;return false};
+// "Does this art file have anything to review" — mirrors App.js totalMocks / the approval-card UI.
+// An art file can carry a stale 'needs_approval'/'uploaded' status with 0 files/0 mockups (e.g. a
+// recall that didn't reset status), which must NOT read as waiting_approval or it regenerates a
+// phantom "Mockup ready for review" action item forever (SO-1038).
+export const hasMockupContent=(af)=>!!af&&Math.max((af.mockup_files||af.files||[]).length,Object.values(af.item_mockups||{}).reduce((a,arr)=>a+((arr||[]).length),0))>0;
+// SINGLE source of truth for deriving a JOB's art_status from ONE of its art files. buildJobs
+// (businessLogic.js:~394) inlines this exact ladder — that module is deliberately import-free
+// CommonJS (see its module.exports note) so it can't share this symbol; the two copies MUST stay
+// identical. They drifted once: the OrderEditor rebuild copy dropped the 'uploaded' branch, so an
+// artist-uploaded proof derived 'needs_art' on the order page and PERSISTED on the next save — a
+// submitted mockup silently reverting to "Needs Art" (F5 / SO-1023 / SO-1625 class). 'uploaded'
+// and 'needs_approval' share the waiting-approval track; the hasMockupContent guard keeps a
+// mockless uploaded file at needs_art so this never masks a genuinely missing mock.
+export const artStatusForFile=(af,fallbackDt)=>{
+  if(!af)return'needs_art';
+  if(af.status==='approved')return artProdFilesConfirmed(af)?'art_complete':prodFilesStatusFor(af.deco_type||fallbackDt);
+  if(af.status==='needs_approval'||af.status==='uploaded')return hasMockupContent(af)?'waiting_approval':'needs_art';
+  return'needs_art';
+};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
 // 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
 // dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.
