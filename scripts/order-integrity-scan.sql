@@ -166,3 +166,25 @@ order by d.po_qty desc;
 -- )
 -- select base_po, count(distinct so_id) as orders, array_agg(distinct so_id) as sos, array_agg(distinct kind) as kinds
 -- from all_pos group by base_po having count(distinct so_id) > 1 order by orders desc;
+
+-- 2g. Orphaned PO-number claims — the "PO dropped from portal" signature (SO-1663, PO 28950 SANBA).
+--     A rep reserved a product-PO number (po_number_claims, written when the PO form opens) but the
+--     line was overwritten before it reached so_item_po_lines, so the number is claimed yet no PO
+--     line exists AND the order still has an uncovered item. This is a TRIAGE list, not a proven-loss
+--     count (see data_integrity_monitor.sql check so_orphaned_po_claim for the de-noising rationale).
+--     Confirm each hit: check audit_log for the item/PO and that a sibling item has a PO line while
+--     the flagged one has none. `items_without_po` > 0 is the item that likely lost its PO.
+select s.id as so_id, s.status, cst.name as customer,
+       c.n as claimed_number, c.alpha_tag, c.claimed_by, c.claimed_at,
+       (select count(*) from so_items i where i.so_id = s.id
+          and not exists (select 1 from so_item_po_lines p where p.so_item_id = i.id)) as items_without_po
+from sales_orders s
+join po_number_claims c on c.so_id = s.id
+left join customers cst on cst.id = s.customer_id
+where s.deleted_at is null and s.id not like 'SO-0DEMO%'
+  and c.claimed_at < now() - interval '1 day'
+  and not exists (select 1 from so_items i join so_item_po_lines p on p.so_item_id = i.id
+                   where i.so_id = s.id and p.po_id ~ ('\y'||c.n||'\y'))
+  and exists (select 1 from so_items i where i.so_id = s.id
+               and not exists (select 1 from so_item_po_lines p where p.so_item_id = i.id))
+order by c.claimed_at desc;

@@ -12875,8 +12875,9 @@ export default function App(){
   const[rptTab,setRptTab]=useState('overview');
   const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
-  const[rptRep,setRptRep]=useState(()=>(cu?.role==='rep'||cu?.role==='admin')&&cu?.id?cu.id:'all');// default to logged-in rep/admin so they see their own numbers
-  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true,newVsReturning:true});
+  const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'&&cu?.id?cu.id:'all');// reps land on (and are locked to) their own numbers; admins/GM default to the full team and can switch reps
+  const[rptWidgets,setRptWidgets]=useState({histSales:true,pipeline:true,winLoss:true,bookingOrders:true,repLeaderboard:true,custHealth:true,reorderForecast:true,arAging:true,payDays:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true,sameSeason:true,invByCategory:true,invByVendor:true,invTopValue:true,invLowStock:true,invOutOfStock:true,invRecentAdj:true,newVsReturning:true,billAudit:true});
+  const[rptAuditOpen,setRptAuditOpen]=useState({});// Billings-by-Month audit widget: expanded month / rep-in-month keys
   // Historical sales chart UI state — hover tooltip + rep-vs-team mode
   const[histHover,setHistHover]=useState(null);// null | {x,y,label,value,year,scope}
   const[histShowTeam,setHistShowTeam]=useState(true);// when a rep is selected, overlay team totals so reps see their share
@@ -12903,6 +12904,9 @@ export default function App(){
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
+  // Reps see only their own numbers on Reports. A plain rep is locked to their own scope; admins/GM/super-admins keep the full team view and can switch reps.
+  const _rptRepLocked=(cu?.role==='rep');
+  React.useEffect(()=>{if(_rptRepLocked&&cu?.id&&rptRep!==cu.id)setRptRep(cu.id)},[_rptRepLocked,cu,rptRep]);
   // ── Redesigned Reports (NSA brand) — shell + Overview interaction state ──
   const[rptScopeOpen,setRptScopeOpen]=useState(false);
   const[rptExportOpen,setRptExportOpen]=useState(false);
@@ -12992,8 +12996,9 @@ export default function App(){
       return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:(rev+repShipRev)>0?Math.round(margin/(rev+repShipRev)*100):0,mtdThis,mtdLast,mtdIncrease,mtdPct};
     }).sort((a,b)=>b.rev-a.rev);
 
-    // Customer health
-    const custHealth=cust.filter(c=>c.id!=='c_deleted').map(c=>{
+    // Customer health — scoped to the selected rep so a rep view (Top Customers, At-Risk, health)
+    // shows only that rep's book, not the whole team.
+    const custHealth=cust.filter(c=>c.id!=='c_deleted'&&(rptRep==='all'||c.primary_rep_id===rptRep)).map(c=>{
       const cSOs=sos.filter(s=>s.customer_id===c.id);const cInvs=invs.filter(i=>i.customer_id===c.id);
       const rev=cSOs.reduce((a,s)=>a+soCalc(s).rev,0);
       const lastSO=cSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at))[0];
@@ -13195,8 +13200,8 @@ export default function App(){
     const _curTabs=_curGroup.tabs.map(id=>({id,label:_tabLabels[id]||id}));
     const _salesGroup=_curGroup.id==='sales';
     const _scopeReps=REPS.filter(r=>isCommissionRep(r));
-    const _scopeName=rptRep==='all'?'All Reps':(_repObj?_repObj.name:'All Reps');
-    const _scopeSub=rptRep==='all'?'Team total':(_repObj&&_repObj.role==='admin'?'Admin view':'Rep view');
+    const _scopeName=rptRep==='all'?'All Reps':(_repObj?_repObj.name:(_rptRepLocked?(cu?.name||'My Numbers'):'All Reps'));
+    const _scopeSub=rptRep==='all'?'Team total':(_rptRepLocked?'Your view':(_repObj&&_repObj.role==='admin'?'Admin view':'Rep view'));
 
     // KPI set (Sales group) — YTD billed carries the real YoY delta; the rest are live pipeline snapshots
     const _activeSOs=pipeline.filter(s=>s._status!=='complete').length;
@@ -13270,15 +13275,15 @@ export default function App(){
       clearTimeout(window._rptToastT);window._rptToastT=setTimeout(()=>setRptToast(null),2600);
     };
     const RScope=()=><div style={{position:'relative'}}>
-      <div className="nsa-rpt-hit" onClick={()=>{setRptScopeOpen(o=>!o);setRptExportOpen(false)}} style={{display:'flex',alignItems:'center',gap:10,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',borderRadius:6,padding:'6px 10px 6px 6px'}}>
+      <div className={_rptRepLocked?'':'nsa-rpt-hit'} onClick={()=>{if(_rptRepLocked)return;setRptScopeOpen(o=>!o);setRptExportOpen(false)}} style={{display:'flex',alignItems:'center',gap:10,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',borderRadius:6,padding:'6px 10px 6px 6px',cursor:_rptRepLocked?'default':'pointer'}}>
         <span style={{width:32,height:32,borderRadius:5,background:rptRep==='all'?'var(--navy-mid)':'var(--red)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:13,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{rptRep==='all'?'ALL':_ini(_repObj&&_repObj.name)}</span></span>
         <span style={{display:'flex',flexDirection:'column',lineHeight:1.1,textAlign:'left'}}>
           <span style={{fontFamily:FD,fontWeight:700,fontSize:14,color:'#fff',letterSpacing:.4,textTransform:'uppercase',whiteSpace:'nowrap'}}>{_scopeName}</span>
           <span style={{fontSize:10.5,color:'rgba(255,255,255,.55)'}}>{_scopeSub}</span>
         </span>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.6)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        {!_rptRepLocked&&<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.6)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>}
       </div>
-      {rptScopeOpen&&<div style={{position:'absolute',top:52,right:0,width:244,maxHeight:360,overflowY:'auto',background:'#fff',border:'1px solid #E2E7F0',borderRadius:8,boxShadow:'0 16px 40px rgba(16,26,64,.22)',zIndex:60}}>
+      {!_rptRepLocked&&rptScopeOpen&&<div style={{position:'absolute',top:52,right:0,width:244,maxHeight:360,overflowY:'auto',background:'#fff',border:'1px solid #E2E7F0',borderRadius:8,boxShadow:'0 16px 40px rgba(16,26,64,.22)',zIndex:60}}>
         <div style={{padding:'9px 14px',fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.4,textTransform:'uppercase',color:'#8892A6',borderBottom:'1px solid #EEF1F6'}}>View numbers for</div>
         {[{id:'all',name:'All Reps — Team'},..._scopeReps].map(o=><div key={o.id} className="nsa-rpt-hit nsa-row" onClick={()=>{setRptRep(o.id);setRptScopeOpen(false)}} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',borderBottom:'1px solid #F4F6FA',background:o.id===rptRep?'#F7F9FC':'#fff'}}>
           <span style={{width:26,height:26,borderRadius:5,background:'var(--navy)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:11,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{o.id==='all'?'ALL':_ini(o.name)}</span></span>
@@ -13408,13 +13413,13 @@ export default function App(){
         </div>
       </div>
 
-      {/* Leaderboard + Top Products */}
+      {/* Leaderboard + Top Products (leaderboard hidden for a locked rep view — it exposes other reps) */}
       <div className="nsa-2col" style={{marginBottom:16}}>
-        <div style={{..._card,padding:'16px 18px'}}>
+        {!_rptRepLocked&&<div style={{..._card,padding:'16px 18px'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={_h17}>Rep Leaderboard</span><span className="nsa-rpt-hit" onClick={()=>setRptTab('reps')} style={_redLink}>Full board →</span></div>
           {RAccent(14)}
           {_lbTop.length===0?<div style={{fontSize:12,color:'#96A0B4'}}>No rep data.</div>:_lbTop.map((r,i)=><div key={r.id} style={{display:'flex',alignItems:'center',gap:11,padding:'7px 0',borderBottom:'1px solid #F4F6FA',background:r.id===rptRep?'#FBF0F0':'transparent',borderRadius:5}}><span style={{fontFamily:FD,fontWeight:800,fontSize:15,color:i===0?'var(--red)':'#8892A6',width:22,textAlign:'center'}}>{i+1}</span><span style={{width:28,height:28,borderRadius:5,background:r.id===rptRep?'var(--red)':'var(--navy)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:11,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{_ini(r.name)}</span></span><span style={{flex:1,fontWeight:600,fontSize:13,color:'var(--navy)'}}>{r.name}{r.id===(cu&&cu.id)?<span style={{fontFamily:FD,fontWeight:700,fontSize:9.5,letterSpacing:.6,color:'#fff',background:'var(--red)',borderRadius:3,padding:'1px 5px',transform:'skewX(-6deg)',display:'inline-block',marginLeft:6}}>You</span>:null}</span><div style={{width:88,height:6,borderRadius:3,background:'#EDF0F6',overflow:'hidden'}}><div style={{height:'100%',width:(r.rev/_lbMax*100).toFixed(0)+'%',background:'var(--navy)'}}/></div><span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'var(--navy)',width:52,textAlign:'right'}}>{_fmtK1(r.rev)}</span></div>)}
-        </div>
+        </div>}
         <div style={{..._card,padding:'16px 18px'}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={_h17}>Top Products</span><span className="nsa-rpt-hit" onClick={()=>setRptTab('products')} style={_redLink}>All products →</span></div>
           {RAccent(14)}
@@ -13452,9 +13457,13 @@ export default function App(){
             say so instead of showing confident wrong numbers. */}
         {(()=>{const _rptSrc={sales_orders:'sales orders',invoices:'invoices',customer_invoices:'invoice history',estimates:'quotes',customers:'customers'};const _trunc=Object.keys(_rptSrc).filter(t=>_truncatedTables.has(t));return _trunc.length?<div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',color:'#92400E',padding:'10px 20px',fontSize:13,fontWeight:600}}>⚠️ Report totals are incomplete: {_trunc.map(t=>_rptSrc[t]).join(', ')} exceeded the row-load cap, so the oldest rows are missing from every number on this page.</div>:null})()}
         {/* app bar */}
-        <div style={{background:'var(--navy)',position:'relative',overflow:'hidden'}}>
-          <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)',pointerEvents:'none'}}/>
-          <div style={{position:'absolute',top:0,right:0,width:220,height:'100%',background:'var(--red)',opacity:.14,clipPath:'polygon(38% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+        {/* No overflow:hidden here — it would clip the scope/export dropdowns. Decorative
+            backgrounds are clipped by their own inset wrapper instead. */}
+        <div style={{background:'var(--navy)',position:'relative'}}>
+          <div style={{position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none'}}>
+            <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)'}}/>
+            <div style={{position:'absolute',top:0,right:0,width:220,height:'100%',background:'var(--red)',opacity:.14,clipPath:'polygon(38% 0,100% 0,100% 100%,0 100%)'}}/>
+          </div>
           <div style={{maxWidth:1360,margin:'0 auto',padding:'10px 20px',display:'flex',alignItems:'center',gap:16,position:'relative',flexWrap:'wrap',minHeight:44}}>
             <span style={{width:38,height:38,borderRadius:6,background:'var(--red)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:15,color:'#fff',transform:'skewX(-6deg)',letterSpacing:.5}}><span style={{transform:'skewX(6deg)'}}>NSA</span></span>
             <div style={{display:'flex',flexDirection:'column',lineHeight:1}}>
@@ -13841,7 +13850,7 @@ export default function App(){
       </>}
 
       {/* REP LEADERBOARD */}
-      {rptTab==='reps'&&<div className="card" style={{marginBottom:12}}>
+      {rptTab==='reps'&&!_rptRepLocked&&<div className="card" style={{marginBottom:12}}>
         <WH id="repLeaderboard" title="Rep Leaderboard" icon="🏆"/>
         {rptWidgets.repLeaderboard&&<div className="card-body" style={{padding:0}}>
           <table><thead><tr><th>Rank</th><th>Rep</th><th>Revenue</th><th>Margin</th><th>MTD Sales</th><th>vs Last Yr</th><th>SOs</th><th>Customers</th><th>Conv Rate</th><th>Collected</th><th>Open A/R</th><th></th></tr></thead>
@@ -13861,6 +13870,79 @@ export default function App(){
               <td style={{width:100}}><Bar val={r.rev} max={repData[0]?.rev||1} color={i===0?'#d97706':i===1?'#94a3b8':'#cd7c32'}/></td>
             </tr>)}</tbody></table>
         </div>}
+      </div>}
+
+      {/* BILLINGS BY MONTH — invoice-level audit (expand a month → invoices; All Reps → per-rep breakdown). */}
+      {rptTab==='reps'&&<div className="card" style={{marginBottom:12}}>
+        <WH id="billAudit" title="Billings by Month — Invoice Audit" icon="🧾"/>
+        {rptWidgets.billAudit&&(()=>{
+          const _mon=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          const _f$=(n)=>(n<0?'-$':'$')+Math.round(Math.abs(n)).toLocaleString();
+          const _tgl=(k)=>setRptAuditOpen(o=>({...o,[k]:!o[k]}));
+          const _pYMD=(v)=>{if(!v)return null;const s=String(v);let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return{y:+m[1],mo:+m[2]-1,d:+m[3]};m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=+m[3];if(y<100)y+=2000;return{y,mo:+m[1]-1,d:+m[2]}};
+          const _cById=(id)=>cust.find(x=>x.id===id);
+          const _repNm=(id)=>id==null?'Unassigned':((REPS.find(r=>r.id===id)||{}).name||'—');
+          // Dashboard-consistent attribution: portal invoices + NetSuite history, deduped on document id,
+          // void/deleted excluded. Portal rep = linked SO's customer primary rep (else SO creator), else the
+          // invoice customer's primary rep; NetSuite rep = customer's primary rep. Ties out to the dashboard Billings figure.
+          const _hSet=new Set((histInvs||[]).map(h=>h.id));
+          const _bills=[];
+          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?((_cById(so.customer_id)||{}).primary_rep_id||so.created_by):((_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
+          (histInvs||[]).forEach(hi=>{if(!hi||hi.status==='void')return;const p=_pYMD(hi.date);if(!p)return;const c=_cById(hi.customer_id);_bills.push({rep:(c&&c.primary_rep_id)||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,customer:(c&&c.name)||hi.raw_customer_name||hi.customer_id||'Unknown',total:safeNum(hi.total),paid:safeNum(hi.paid),status:hi.status||'paid',src:'NetSuite',id:hi.id})});
+          const _allReps=rptRep==='all';
+          const _scoped=_allReps?_bills:_bills.filter(b=>b.rep===rptRep);
+          const _mm=new Map();
+          _scoped.forEach(b=>{const g=_mm.get(b.ym)||{ym:b.ym,y:b.y,mo:b.mo,total:0,count:0,items:[]};g.total+=b.total;g.count++;g.items.push(b);_mm.set(b.ym,g)});
+          const _months=[..._mm.values()].sort((a,b)=>b.ym-a.ym);
+          const _cellHdr=(right)=>({textAlign:right?'right':'left',fontSize:10,fontWeight:700,color:'#8892A6',textTransform:'uppercase',letterSpacing:.4,padding:'6px 8px',borderBottom:'1px solid #EEF1F6',whiteSpace:'nowrap'});
+          const _tdS={padding:'6px 8px',fontSize:12,color:'#3A4256',borderBottom:'1px solid #F4F6FA',verticalAlign:'top'};
+          const _invTable=(items)=>{const rows=[...items].sort((a,b)=>(a.y-b.y)||(a.mo-b.mo)||(a.day-b.day)||String(a.id).localeCompare(String(b.id)));
+            return<div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:660}}><thead><tr>
+              {['Invoice','Date','Customer','Source','Status','Total','Paid','Balance'].map((h,i)=><th key={i} style={_cellHdr(i>=5)}>{h}</th>)}
+            </tr></thead><tbody>
+              {rows.map((r,i)=><tr key={i}>
+                <td style={{..._tdS,fontWeight:700,color:'var(--navy)',whiteSpace:'nowrap'}}>{r.id}</td>
+                <td style={{..._tdS,whiteSpace:'nowrap'}}>{_mon[r.mo]} {r.day}, {r.y}</td>
+                <td style={_tdS}>{r.customer}</td>
+                <td style={{..._tdS,whiteSpace:'nowrap'}}><span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:4,background:r.src==='Portal'?'#EAF0FB':'#F0EAF7',color:r.src==='Portal'?'#274B90':'#5B21B6'}}>{r.src}</span></td>
+                <td style={{..._tdS,whiteSpace:'nowrap',textTransform:'capitalize',color:r.status==='paid'?'#166534':r.status==='open'?'#B45309':'#3A4256'}}>{r.status}</td>
+                <td style={{..._tdS,textAlign:'right',whiteSpace:'nowrap',fontWeight:600}}>{_f$(r.total)}</td>
+                <td style={{..._tdS,textAlign:'right',whiteSpace:'nowrap'}}>{_f$(r.paid)}</td>
+                <td style={{..._tdS,textAlign:'right',whiteSpace:'nowrap'}}>{_f$(r.total-r.paid)}</td>
+              </tr>)}
+            </tbody></table></div>;};
+          if(_months.length===0)return<div className="card-body" style={{padding:'20px',fontSize:13,color:'#96A0B4'}}>No billings found{_allReps?'':' for '+_repNm(rptRep)}.</div>;
+          return<div className="card-body" style={{padding:'8px 12px 14px'}}>
+            <div style={{fontSize:11.5,color:'#7A8299',padding:'4px 6px 10px'}}>{_allReps?'Team billings by month — expand a month, then a rep, to see the invoices behind the total.':_repNm(rptRep)+"'s billings by month — expand a month to see the invoices behind the total."} Portal invoices + NetSuite history, deduped; ties out to the dashboard Billings figure.</div>
+            {_months.map(m=>{const mk='M'+m.ym;const open=!!rptAuditOpen[mk];
+              return<div key={mk} style={{border:'1px solid #EEF1F6',borderRadius:8,marginBottom:8,overflow:'hidden'}}>
+                <div className="nsa-rpt-hit" onClick={()=>_tgl(mk)} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:open?'#F7F9FC':'#fff',cursor:'pointer'}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8892A6" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" style={{transform:open?'rotate(90deg)':'none',transition:'transform .15s',flex:'none'}}><polyline points="9 18 15 12 9 6"/></svg>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:15,color:'var(--navy)',letterSpacing:.3,minWidth:100}}>{_mon[m.mo]} {m.y}</span>
+                  <span style={{flex:1}}/>
+                  <span style={{fontSize:11.5,color:'#8892A6'}}>{m.count} invoice{m.count===1?'':'s'}</span>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'var(--navy)',minWidth:96,textAlign:'right'}}>{_f$(m.total)}</span>
+                </div>
+                {open&&<div style={{padding:'4px 12px 12px',background:'#FCFDFE'}}>
+                  {_allReps?(()=>{
+                    const rm=new Map();m.items.forEach(b=>{const g=rm.get(b.rep)||{rep:b.rep,total:0,count:0,items:[]};g.total+=b.total;g.count++;g.items.push(b);rm.set(b.rep,g)});
+                    const reps=[...rm.values()].sort((a,b)=>b.total-a.total);
+                    return reps.map(rp=>{const rk='R'+m.ym+':'+(rp.rep||'none');const ropen=!!rptAuditOpen[rk];
+                      return<div key={rk} style={{borderBottom:'1px solid #F1F4F9'}}>
+                        <div className="nsa-rpt-hit" onClick={()=>_tgl(rk)} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 6px',cursor:'pointer'}}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A7AFC0" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" style={{transform:ropen?'rotate(90deg)':'none',transition:'transform .15s',flex:'none'}}><polyline points="9 18 15 12 9 6"/></svg>
+                          <span style={{fontWeight:700,fontSize:13,color:rp.rep==null?'#B45309':'var(--navy)'}}>{_repNm(rp.rep)}</span>
+                          <span style={{flex:1}}/>
+                          <span style={{fontSize:11,color:'#A7AFC0'}}>{rp.count}</span>
+                          <span style={{fontFamily:FD,fontWeight:700,fontSize:14,color:'var(--navy)',minWidth:88,textAlign:'right'}}>{_f$(rp.total)}</span>
+                        </div>
+                        {ropen&&<div style={{padding:'2px 2px 10px'}}>{_invTable(rp.items)}</div>}
+                      </div>;});
+                  })():_invTable(m.items)}
+                </div>}
+              </div>;})}
+          </div>;
+        })()}
       </div>}
 
       {/* CUSTOMER HEALTH */}

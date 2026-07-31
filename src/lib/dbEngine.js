@@ -1193,6 +1193,13 @@ const _refreshMaxId=async(table,prefix)=>{
   return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
 };
 const _refreshSoMaxId=()=>_refreshMaxId('sales_orders','SO-');
+// Map an in-memory PO line to its so_item_po_lines row shape. Extracted so the full-SO save (below)
+// and the durable create-time write (_dbPersistNewPoLine) build the row IDENTICALLY — a lesson from
+// this codebase's hand-synced-duplicate history: two copies of this column mapping WILL drift.
+const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
+  return{so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
+    billed:billed||{},tracking_numbers:tracking_numbers||[],
+    sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
@@ -1978,10 +1985,7 @@ const _dbSaveSOInner = async (so) => {
         const{decorations,pick_lines,po_lines}=item;
         if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
         if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes})});
-        if(po_lines?.length)po_lines.forEach(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
-          allPoRows.push({so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
-            billed:billed||{},tracking_numbers:tracking_numbers||[],
-            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}})});
+        if(po_lines?.length)po_lines.forEach(po=>{allPoRows.push(_poLineToRow(itemId,po))});
       });
       // Batch insert decorations
       if(allDecoRows.length){
@@ -2903,6 +2907,41 @@ const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
     }
   }catch(e){console.error('[DB] Direct pick_line update error:',e)}
 };
+// Durably persist a just-created PO line the instant it's made, decoupled from the debounced whole-SO
+// save. A Create-PO line otherwise lives ONLY in the editing tab's memory until the async SO save
+// flushes it; if a second tab saves first (or this tab reloads/closes before the flush) the line is
+// dropped before it ever reaches so_item_po_lines — the "PO dropped from portal" loss (SO-1663,
+// PO 28950 SANBA, 2026-07-31). The number is already claimed on form-open, so the result is a
+// po_number_claims row with no matching PO line. This write closes that window.
+//   * Idempotent: skips if a row for this (so_item, po_id) already exists, so it can't duplicate the
+//     line the subsequent full save also writes. (A rare race dup is harmless — the duplicate-PO
+//     guard in _dbSaveSOInner drops it, and an individual PO line is a procurement RECORD, not a
+//     placed vendor order, so this can NEVER double-order inventory.)
+//   * No-op when the item isn't in the DB yet (brand-new order): the full save will persist it, and a
+//     just-created order has no stale second tab to race it.
+// Fire-and-forget from the editor, exactly like the po_number_claims breadcrumb write.
+const _dbPersistNewPoLine=async(soId,itemIndex,poLine)=>{
+  if(!supabase||!soId||itemIndex==null||!poLine||!poLine.po_id)return;
+  return _dbSavingGuard(async()=>{try{
+    const{data:itemRow,error:selErr}=await supabase.from('so_items').select('id').eq('so_id',soId).eq('item_index',itemIndex).maybeSingle();
+    if(selErr||!itemRow||!itemRow.id)return;// item not in DB yet — the full SO save will persist it
+    const{data:existing}=await supabase.from('so_item_po_lines').select('id').eq('so_item_id',itemRow.id).eq('po_id',poLine.po_id);
+    if(Array.isArray(existing)&&existing.length)return;// already persisted — don't duplicate
+    const row=_poLineToRow(itemRow.id,poLine);
+    const{error:insErr}=await supabase.from('so_item_po_lines').insert(row);
+    if(insErr){
+      // Older schema without billed/tracking_numbers columns — same fallback the full save uses.
+      const{billed:_b,tracking_numbers:_tn,...core}=row;
+      const{error:coreErr}=await supabase.from('so_item_po_lines').insert({...core,sizes:{...(core.sizes||{}),_billed:_b||{},_tracking_numbers:_tn||[]}});
+      if(coreErr){console.error('[DB] persist new PO line failed for',soId,'item',itemIndex,':',coreErr.message);return}
+    }
+    // Intentionally NOT bumping sales_orders.updated_at here: the whole-SO save (onSave) fires moments
+    // later and owns the timestamp/version bump. Once this row is in the DB, that trailing save — or a
+    // racing second tab's save — preserves it via the existing PO-line restore pass (re-injects DB PO
+    // lines the client's payload lacks), which is exactly how the dropped line now survives.
+    console.log('[DB] Persisted new PO line',poLine.po_id,'on',soId,'item',itemIndex,'at creation');
+  }catch(e){console.error('[DB] persist new PO line error for',soId,'item',itemIndex,':',e?.message||e)}});
+};
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
 // When a save is in-progress and a newer version arrives, the newer version is queued.
 // After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
@@ -3218,6 +3257,7 @@ export {
   _dbSavingGuard,
   _batchPosDirtyUntil,
   _dbUpdatePickLineStatus,
+  _dbPersistNewPoLine,
   _dbSaveInFlight,
   _dbSavePending,
   _queuedEntitySave,

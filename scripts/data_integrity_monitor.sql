@@ -122,4 +122,37 @@ SELECT 'so_dup_bill_shipment', COUNT(DISTINCT id) FROM (
   GROUP BY pl.id, COALESCE(NULLIF(d->>'tracking',''), d->>'doc'), d->'sizes'
   HAVING COUNT(*)>1
 ) g
+-- ── "PO dropped from portal" — orphaned PO-number claim ───────────────────────
+-- Signature of SO-1663 (PO 28950 SANBA, 2026-07-31): a rep reserves a product-PO number
+-- (po_number_claims is written the instant the PO form opens — see OrderEditor.js) but the
+-- line is overwritten (two-tab / never-flushed) before it reaches so_item_po_lines. The number
+-- is claimed; no PO line ever exists. This is a LEAD, not a proven loss — po_number_claims is
+-- intentionally noisy (a claim fires on every PO-form open, and reps abandon numbers routinely),
+-- so it is de-noised three ways so the count tracks REAL gaps:
+--   1. The claimed number appears in NO so_item_po_lines.po_id on the order (whole-number match,
+--      so an 'NSA'-numbered batch promotion or a re-tagged line still counts as covered).
+--   2. The order still has a line item carrying ZERO PO lines (an actual uncovered item — filters
+--      out abandoned forms on fully-covered orders and the char-by-char claim spam of one number).
+--   3. The claim is older than a day (a fresh claim on an in-progress order is normal; a dangling
+--      one with an uncovered item is not — SO-1663's 28950 dangled 7/28→7/31).
+-- Above baseline → triage each the way SO-1663 was (audit_log for the item/PO; confirm a sibling
+-- item has a PO line while this one has none). Drill-down: order-integrity-scan.sql §2g.
+UNION ALL
+SELECT 'so_orphaned_po_claim', COUNT(*) FROM (
+  SELECT DISTINCT s.id
+  FROM sales_orders s
+  JOIN po_number_claims c ON c.so_id = s.id
+  WHERE s.deleted_at IS NULL AND s.id NOT LIKE 'SO-0DEMO%'
+    AND c.claimed_at < now() - interval '1 day'
+    AND NOT EXISTS (
+      SELECT 1 FROM so_items i
+      JOIN so_item_po_lines p ON p.so_item_id = i.id
+      WHERE i.so_id = s.id AND p.po_id ~ ('\y'||c.n||'\y')
+    )
+    AND EXISTS (
+      SELECT 1 FROM so_items i
+      WHERE i.so_id = s.id
+        AND NOT EXISTS (SELECT 1 FROM so_item_po_lines p WHERE p.so_item_id = i.id)
+    )
+) g
 ORDER BY violations DESC, check_name;
