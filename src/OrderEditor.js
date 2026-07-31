@@ -9688,6 +9688,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
             {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+              // Reused / previously-approved art parks here (waiting_approval) but has no garment
+              // mockup for THIS order yet — so it can't be approved or sent to the coach, it needs
+              // SETTING UP first. Same gate the Send-to-Coach button and the review-art to-do use
+              // (skusMissingMockups; a digitizer sew-out proof deliberately doesn't satisfy it), so
+              // the banner reads "set up" instead of "needs your approval" until a mockup exists.
+              const _needsSetup=!_stca&&skusMissingMockups(j,o).length>0;
               // Send the job's art back to the artist for a redo. Shared by the "Request Update"
               // box below and the per-garment "send to artist" button in the Reuse-a-mock panel,
               // so the pullback semantics can't drift apart (audit M1/A5): the redo covers EVERY
@@ -9709,14 +9715,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               };
               return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
-                <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
-                <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
+                <span style={{fontSize:20}}>{_stca?'📤':_needsSetup?'🎨':'⚠️'}</span>
+                <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':_needsSetup?'Set Up This Artwork':'Artwork Needs Your Approval'}</span>
               </div>
               {/* The coach portal hides its Approve button until sent_to_coach_at is stamped (the
               rep-review gate) — a rep who emails the portal link by hand instead of using Send to
               Coach leaves the coach staring at "Proof in progress" with no way to act (SO-1645). */}
-              {!_stca&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>🔒 The coach can't see or approve this proof yet — their portal shows it as "in progress" until you click 📤 Send to Coach below. Sharing the portal link by email/text does not unlock it.</div>}
-              {!_stca&&_jobArtFiles.some(a=>a?.status==='approved')&&<div style={{fontSize:12,color:'#92400e',marginTop:-4,marginBottom:10,fontWeight:600}}>♻️ This art was approved on a previous order — confirm it's good for this one (✅ below), send it to the coach, or request a new mock. It won't go to production until you pick.</div>}
+              {!_stca&&!_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>🔒 The coach can't see or approve this proof yet — their portal shows it as "in progress" until you click 📤 Send to Coach below. Sharing the portal link by email/text does not unlock it.</div>}
+              {_needsSetup&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>♻️ This art was used before, but it has no garment mockup for this order yet — a sew-out proof alone can't be approved or sent to the coach. Set it up below: reuse an approved mock, or send it to the artist for a new one. It won't go to production until you do.</div>}
+              {!_stca&&!_needsSetup&&_jobArtFiles.some(a=>a?.status==='approved')&&<div style={{fontSize:12,color:'#92400e',marginTop:-4,marginBottom:10,fontWeight:600}}>♻️ This art was approved on a previous order — confirm it's good for this one (✅ below), send it to the coach, or request a new mock. It won't go to production until you pick.</div>}
               {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>
                 Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
                 {j.coach_email_opened_at?<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af'}}>Viewed {new Date(j.coach_email_opened_at).toLocaleDateString()} @ {new Date(j.coach_email_opened_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
