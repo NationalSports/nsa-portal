@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { navTo } = require('./helpers');
+const { navTo, seedData, login } = require('./helpers');
 
 /**
  * Persistence round-trip — LOAD/HYDRATION side.
@@ -41,17 +41,6 @@ const TEST_SO = {
 // The nested fields a lossless hydration must still surface after a reload.
 const EXPECT_VISIBLE = ['Roundtrip Tee', 'Crimson', 'PO 9100 RTS'];
 
-function seed(page) {
-  return page.evaluate(([so, cust]) => {
-    const user = { id: '00000000-0000-0000-0000-000000000001', name: 'Steve Peterson', role: 'admin' };
-    localStorage.setItem('nsa_sos', JSON.stringify([so]));
-    localStorage.setItem('nsa_cust', JSON.stringify([cust]));
-    localStorage.setItem('nsa_user', JSON.stringify(user));
-    const sess = { access_token: 'e2e', refresh_token: 'e2e', token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, user: { id: user.id, aud: 'authenticated', role: 'authenticated', email: 'e2e@test.local' } };
-    localStorage.setItem('sb-your-project-auth-token', JSON.stringify(sess));
-  }, [TEST_SO, TEST_CUST]);
-}
-
 async function openOrderAndAssert(page) {
   await navTo(page, 'Sales Orders');
   await page.locator('text=SO-9100').first().click();
@@ -65,10 +54,13 @@ async function openOrderAndAssert(page) {
 
 test.describe('Persistence round-trip (load/hydration)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await seed(page);
-    await page.reload();
-    await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 30000 });
+    // seedData (not a plain localStorage write): dbEngine purges the legacy entity
+    // caches (nsa_sos, nsa_cust, ...) at module load, so a plain seed is wiped before
+    // App reads it — seedData's removeItem shim carries the fixtures through the boot
+    // purge, same as every other data-dependent spec. Fixed 2026-07-31; the old
+    // hand-rolled seed() predated the purge and left these tests permanently red.
+    await seedData(page, { sos: [TEST_SO], cust: [TEST_CUST] });
+    await login(page); // seeds nsa_user via addInitScript, goes to '/', waits for sidebar
   });
 
   test('rich nested order hydrates from storage and survives a reload', async ({ page }) => {
