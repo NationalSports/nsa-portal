@@ -4299,8 +4299,11 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                         <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                             {onSaveAsTemplate && <button title="Save as template — copies this store's items into a reusable template (the store stays here)" onClick={(e) => { e.stopPropagation(); onSaveAsTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#D1D5DE' }}>☆</button>}
+                            {/* Copy the storefront link — moved to a compact chain-link icon so the
+                                labeled "Copy" button below can duplicate the store (what reps expect). */}
                             <button
                               title="Copy store link"
+                              aria-label="Copy store link"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 const url = 'https://nationalsportsapparel.com/shop/' + s.slug;
@@ -4308,13 +4311,22 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 setCopiedId(s.id);
                                 setTimeout(() => setCopiedId((cur) => cur === s.id ? null : cur), 1800);
                               }}
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: copiedId === s.id ? '#dcfce7' : '#f1f5f9', color: copiedId === s.id ? '#15803d' : '#64748b', border: `1px solid ${copiedId === s.id ? '#bbf7d0' : '#e2e8f0'}`, borderRadius: 7, padding: '7px 11px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all .15s' }}
+                              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, background: copiedId === s.id ? '#dcfce7' : '#f1f5f9', color: copiedId === s.id ? '#15803d' : '#64748b', border: `1px solid ${copiedId === s.id ? '#bbf7d0' : '#e2e8f0'}`, borderRadius: 7, cursor: 'pointer', transition: 'all .15s' }}
                             >
                               {copiedId === s.id
-                                ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied</>
-                                : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy</>
+                                ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                                : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                               }
                             </button>
+                            {/* "Copy" = duplicate the store (catalog, packages & transfer setup → new draft). */}
+                            {onDuplicate && <button
+                              title="Copy this store — duplicates its catalog, packages & transfer setup into a new draft store (no orders)"
+                              onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 11px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all .15s' }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                              Copy
+                            </button>}
                             <button
                               onClick={(e) => { e.stopPropagation(); onOpen(s); }}
                               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#192853', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
