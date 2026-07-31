@@ -9,6 +9,7 @@ import {
   dropMismatchedFrozenClaims,
   healFrozenJobArtDrift,
   inheritJobWorkflowFields,
+  isPureArtExpansion,
   matchExistingJob,
 } from '../lib/syncJobsMatch';
 
@@ -394,5 +395,33 @@ describe('healFrozenJobArtDrift', () => {
     const { job, changed } = healFrozenJobArtDrift(twoArt, resolve);
     expect(changed).toBe(false);
     expect(job).toBe(twoArt);
+  });
+});
+
+// A multi-location job (front logo + a later-added "Back Marketing" print) must not lose its
+// approval status when syncJobs heals its art-id set to include the added location. The heal's
+// status recompute takes the WORST per-file state, so an added 'uploaded' location dragged a
+// submitted job to needs_art and SAVED it (SO-1625 / JOB-1625-01). isPureArtExpansion is the guard.
+describe('isPureArtExpansion — added location must not wipe approval status', () => {
+  test('true when every declared id is kept and a new id is added (the SO-1625 shape)', () => {
+    expect(isPureArtExpansion(['afFront'], ['afFront', 'afBack'])).toBe(true);
+  });
+  test('false when a declared design was removed (real identity change → recompute allowed)', () => {
+    expect(isPureArtExpansion(['afOld'], ['afNew'])).toBe(false);
+    expect(isPureArtExpansion(['afA', 'afB'], ['afA'])).toBe(false); // shrink
+  });
+  test('false when the set is unchanged (nothing added)', () => {
+    expect(isPureArtExpansion(['afA'], ['afA'])).toBe(false);
+    expect(isPureArtExpansion(['afA', 'afB'], ['afB', 'afA'])).toBe(false); // reorder only
+  });
+  test('false when there was no declared art to preserve', () => {
+    expect(isPureArtExpansion([], ['afNew'])).toBe(false);
+    expect(isPureArtExpansion(null, ['afNew'])).toBe(false);
+  });
+  test('true for a 2→3 expansion that keeps both originals', () => {
+    expect(isPureArtExpansion(['afA', 'afB'], ['afA', 'afB', 'afC'])).toBe(true);
+  });
+  test('false when the "expansion" replaced one original even though the count grew', () => {
+    expect(isPureArtExpansion(['afA', 'afB'], ['afA', 'afC', 'afD'])).toBe(false); // afB dropped
   });
 });

@@ -23,8 +23,10 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
+import { closeOpenArtRequests } from './lib/artRequests';
+import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -210,6 +212,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return{...jj,prod_status:'hold'};
   });
   const _artSiblingsInProd=(artIds,exceptId)=>safeJobs(o).filter(jj=>jj.id!==exceptId&&_activeProd(jj.prod_status)&&(jj._art_ids||[jj.art_file_id].filter(Boolean)).some(id=>artIds.includes(id))).length;
+  // Split slices of one job share the design and a split_from lineage, so a pull-back (Recall / Send
+  // back to artist) must reset EVERY slice together — otherwise a sibling keeps reading Art Complete
+  // and prints the recalled artwork. artFamilyKey is the dashboard's own family rule; the SO-page
+  // pull-back actions never had split-family awareness, which is the gap. Returns safeJobs(o) indices.
+  const _artFamilyIdxs=(ji)=>{
+    const _js=safeJobs(o);if(!_js[ji])return[ji];
+    const _shim=_js.map(jj=>({...jj,soId:o.id}));
+    const _byId=new Map(_shim.map(jj=>[o.id+'|'+jj.id,jj]));
+    const _tk=artFamilyKey(_shim[ji],_byId);
+    const _out=[];_shim.forEach((jj,i)=>{if(artFamilyKey(jj,_byId)===_tk)_out.push(i)});return _out;
+  };
   // Recall = the design itself is wrong. The job resets to needs_art IN PLACE — released jobs too:
   // dropping the row loses it for every other client (the local syncJobs regeneration is never
   // persisted), orphans split slices' split_from, and can flip the SO to complete. In place, the
@@ -220,8 +233,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const wasInProd=_activeProd(j.prod_status);
     const sibs=_artSiblingsInProd(artIds,j.id);
     if(!window.confirm('⚠️ Recall this art?\n\n• The design is pulled back completely — use this when the logo/design itself is changing\n• Open artist requests are cancelled and the artist is unassigned\n• Approvals and confirmed production files are cleared — everything must be re-approved\n• The job resets to Needs Art — re-request it via 🎨 Set up job\n'+(wasInProd?'• Production will be put back ON HOLD\n':'')+(sibs?'• '+sibs+' other job(s) share this art and will also be put on hold\n':'')+'\nJust need a change to the current design? Use '+updateLabel+' instead — it messages the artist directly.'))return;
-    if(wasInProd&&onStopJobClock)onStopJobClock(o.id,j.id);// leaving staging/in_process — stop any running decorator clock
-    let updJobs=safeJobs(o).map((jj,i2)=>i2!==ji?jj:{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(wasInProd?{prod_status:'hold'}:{})});
+    // Reset the WHOLE split family, not just the clicked slice — siblings share this design and must
+    // pull back together or they go to press on the recalled artwork (each in-prod slice stops its
+    // clock as it leaves staging/in_process).
+    const _famIdx=new Set(_artFamilyIdxs(ji));
+    let updJobs=safeJobs(o).map((jj,i2)=>{
+      if(!_famIdx.has(i2))return jj;
+      const _wp=_activeProd(jj.prod_status);
+      if(_wp&&onStopJobClock)onStopJobClock(o.id,jj.id);
+      return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(_wp?{prod_status:'hold'}:{})};
+    });
     updJobs=_holdArtSiblings(updJobs,artIds,j.id);
     const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
     const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
@@ -3046,7 +3067,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _healArtPointers=j=>{
       const r=healFrozenJobArtDrift(j,_liveArtClaim);
       if(!r.artChanged)return r.job;
+      const _declared=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(Boolean);
       const _hIds=(r.job._art_ids&&r.job._art_ids.length?r.job._art_ids:[r.job.art_file_id]).filter(Boolean);
+      // Pure EXPANSION — every old design is still here, the heal only ADDED a location. Keep the
+      // existing designs' art_status: recomputing "worst" here dragged submitted jobs to needs_art
+      // when the added location sat at 'uploaded', and that regressed status got SAVED (SO-1625).
+      if(isPureArtExpansion(_declared,_hIds))return r.job;
       let worst='art_complete';
       for(const aid of _hIds){const artF=af.find(a=>a.id===aid);if(!artF)return r.job;const st=_artStForFile(artF,r.job.deco_type);if(st!=='art_complete')worst=st}
       return worst!==r.job.art_status?{...r.job,art_status:worst}:r.job;
@@ -9738,7 +9764,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _revAt=new Date().toISOString();
                 const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
                 const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+                // Reset the whole split family — slices share the design, so a redo on one must reset
+                // its siblings too or they stay Art Complete on art that's being redrawn.
+                const _revFamIdx=new Set(_artFamilyIdxs(ji));
+                const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
                 const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
                 saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
               };
@@ -10289,7 +10318,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition */if((ns==='art_complete'||PROD_FILES_STATUSES.includes(ns))&&upd.art_requests)upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}if(!window.confirm('Force this job to Art Complete? This skips the coach-approval flow — only continue if the artwork is approved and the production files are final.'))return}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition. A forward move (incl. waiting_approval) closes the artist's open request — otherwise the job reads as both "Needs Approval" and an open request (SO-1625). */if(_fwd&&upd.art_requests)upd.art_requests=closeOpenArtRequests(upd.art_requests);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* The dropdown never stamps prod_files_attached — the strict gate above already required confirmation (checkbox or .dst), and a manual pick must not manufacture it (H3). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
