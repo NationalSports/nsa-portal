@@ -2592,7 +2592,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // existing request and drop the released flag so syncJobs regenerates the job under the new art name.
   const changeArtFileId=(ii,di,newId)=>{
     setO(e=>{
-      const newItems=safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newId}:d)}:it);
+      // When the attached folder has a default location, seed the deco's placement from it —
+      // but only while the deco is still on its factory default, never clobbering a position the
+      // user deliberately set.
+      const _newFolderLoc=(e.art_files||[]).find(f=>f.id===newId)?.location;
+      const newItems=safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>{
+        if(i!==di)return d;
+        const nd={...d,art_file_id:newId};
+        if(_newFolderLoc&&(!d.position||d.position==='Front Center'))nd.position=_newFolderLoc;
+        return nd;
+      })}:it);
       const oldArtIds=new Set();let touched=false;
       const updJobs=safeArr(e.jobs).flatMap(j=>{
         const inJob=(j.items||[]).some(gi=>{
@@ -5644,9 +5653,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {/* Decoration Type */}
                   <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
-                  {/* Size */}
-                  <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end'}}>
+                  {/* Size + default location */}
+                  <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
                     <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                    {/* Default location — when this folder is placed on a garment, the deco's position
+                        seeds from here instead of the generic front default. Blank = no default. */}
+                    <div style={{width:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Default location</label><select className="form-select" value={art.location||''} onChange={e=>uArt(i,'location',e.target.value)} style={{fontSize:12}} title="Where this art usually goes — decorations default here when the folder is added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
                   </div>
                   {/* Embroidery stitch count — sets the EM price tier (decoPricing.emP);
                       unset falls back to the flat 8000-stitch default. */}
