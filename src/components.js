@@ -98,6 +98,20 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
   // and snap a cleared field back to "0".
   React.useEffect(()=>{if(!focused&&parseFloat(raw)!==value)setRaw(String(value))},[value,focused]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onFocus={()=>setFocused(true)} onChange={e=>{const v=e.target.value;if(!/^-?\d*\.?\d*$/.test(v))return;setRaw(v);if(v===''||v==='.'||v==='-')return;const n=parseFloat(v);if(!isNaN(n))onChange(n)}} onBlur={()=>{setFocused(false);const n=parseFloat(raw)||0;setRaw(String(n));onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
 
+// Buffered text input — keystrokes stay in local `raw` state and only commit to
+// the parent onBlur / Enter, so typing a long note or ink color no longer fires a
+// setO() (and full OrderEditor re-render) on every character. Mirrors $In's
+// focus-guarded sync: the box is only re-seeded from `value` while NOT being edited.
+function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFocus}){
+  const cur=value==null?'':String(value);
+  const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
+  React.useEffect(()=>{if(!focused&&raw!==cur)setRaw(cur)},[cur,focused]);// eslint-disable-line react-hooks/exhaustive-deps
+  const commit=()=>{setFocused(false);if(raw!==cur)onChange(raw)};
+  return<input className={className} style={style} placeholder={placeholder} title={title} autoFocus={autoFocus} value={raw}
+    onFocus={()=>setFocused(true)} onChange={e=>setRaw(e.target.value)} onBlur={commit}
+    onKeyDown={e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}}/>;
+}
+
 function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
 function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim()})};
@@ -596,7 +610,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
           <div style={{display:'flex',gap:6,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f6'}}>
             <span style={{fontSize:10,fontWeight:800,color:'#fff',background:'#475569',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
             <span title={cw.garment_color||'Set garment color'} style={{width:16,height:16,borderRadius:4,flexShrink:0,border:'1px solid #cbd5e1',background:gHex||'repeating-linear-gradient(45deg,#f8fafc,#f8fafc 3px,#e2e8f0 3px,#e2e8f0 6px)'}}/>
-            <input className="form-input" value={cw.garment_color||''} onChange={e=>updCw(ci,{garment_color:e.target.value})} placeholder="Garment color..." style={{fontSize:12,fontWeight:600,flex:1,padding:'4px 8px'}}/>
+            <$Txt className="form-input" value={cw.garment_color||''} onChange={v=>updCw(ci,{garment_color:v})} placeholder="Garment color..." style={{fontSize:12,fontWeight:600,flex:1,padding:'4px 8px'}}/>
             <button onClick={()=>onChange([...cws.slice(0,ci+1),{...cw,id:'cw'+Date.now(),inks:[...(cw.inks||[])],garment_color:''},...cws.slice(ci+1)])} title="Duplicate this color way (same colors, new garment)" style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,display:'flex'}}><Icon name="copy" size={13}/></button>
             <button onClick={()=>onChange(cws.filter((_,x)=>x!==ci))} title="Remove color way" style={{background:'none',border:'none',cursor:'pointer',color:'#ef4444',padding:2,display:'flex'}}><Icon name="trash" size={13}/></button>
           </div>
@@ -609,7 +623,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
             {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
               <span style={{fontSize:10,color:'#cbd5e1',width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
-              <input className="form-input" value={ink} onChange={e=>{const inks=[...(cw.inks||[])];inks[ii]=e.target.value;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
+              <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...(cw.inks||[])];inks[ii]=v;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
               <button onClick={()=>updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
             </div>})}
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}
@@ -620,4 +634,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
