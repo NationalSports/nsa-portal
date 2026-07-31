@@ -21,4 +21,5 @@ supabase/.temp/
 # test reports (generated)
 test-reports/
 test-results/
+output/
 data/adidas-catalog-screenshots/
