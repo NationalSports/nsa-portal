@@ -1193,8 +1193,15 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // One reusable set of size buttons for a variant row. A click selects both the
   // variant (its SKU) and the size, so a fit row resolves to the right SKU.
   const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {
-    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = isTracked(c) ? (q <= 0 && !soon && !isIncoming(c)) : false; const up = sizeUp(c, sz);
-    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz;
+    // A not-tracked / made-to-order item, or a tracked style whose stock hasn't
+    // synced yet, sells every size — sizesFor lists them all and checkout skips the
+    // stock guard (webstore-checkout: both stock maps null → allowed). Never strike
+    // these out, or the size can't be picked and the item can't be added to cart
+    // (the reported "sold out but sizes shown" webstore bug on unsynced styles).
+    const alwaysSell = !isTracked(c) || !hasStockData(c);
+    const out = !alwaysSell && q <= 0 && !soon && !isIncoming(c); const up = sizeUp(c, sz);
+    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[alwaysSell ? '' : (q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock'), up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
       style={{ ...sizeBtn(theme, selB), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
   });
   const nameUp = Number(p.name_upcharge) || 0;
@@ -1272,7 +1279,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             </div>
           </div>}
 
-          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} /></div>}
+          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
 
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
@@ -2263,8 +2270,13 @@ const inp = { width: '100%', padding: '12px 13px', borderRadius: 4, border: `1px
 const methodBtn = (t, sel) => ({ flex: 1, padding: '13px', borderRadius: 4, border: `2px solid ${sel ? t.primary : t.line}`, background: sel ? t.primary : '#fff', color: sel ? '#fff' : t.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer' });
 function Field({ label, children }) { return <div style={{ marginBottom: 14, flex: 1 }}><div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: NEUTRAL.subText, marginBottom: 6 }}>{label}</div>{children}</div>; }
 
-function StockLine({ onHand, incoming, eta, onOrder }) {
-  if (onHand > 0) return <Pill bg="#EAF3EC" fg={STOCK.in}>● In stock — ready to decorate</Pill>;
+function StockLine({ onHand, incoming, eta, onOrder, alwaysSell }) {
+  // A not-tracked / made-to-order item, or a tracked drop-ship style whose stock
+  // hasn't synced yet (alwaysSell), sells every size — sizesFor surfaces the full
+  // scale and the card badge reads "In stock". Its raw on-hand is 0, so guard here
+  // too; without it the pill falls through to "Sold out" while every size button is
+  // enabled and Add to Cart works (the reported webstore bug).
+  if (onHand > 0 || alwaysSell) return <Pill bg="#EAF3EC" fg={STOCK.in}>● In stock — ready to decorate</Pill>;
   if (incoming) return <Pill bg="#FAF1DB" fg={STOCK.low}>{eta ? `Arriving around ${eta}` : `On the way${onOrder ? ` — ${onOrder} on order` : ''}`} · backorder available</Pill>;
   return <Pill bg="#F6E7E7" fg="#962C32">Sold out</Pill>;
 }
