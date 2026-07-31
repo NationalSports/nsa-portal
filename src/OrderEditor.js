@@ -12032,6 +12032,41 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {_vEmail&&<span style={{fontSize:11,color:'#64748b'}}>✉ {_vEmail}</span>}
             </div>;
           })()}
+          {/* Fulfillment method — flip an existing PO between In-House (received/checked in at the
+              warehouse) and Drop Ship (ships direct to the customer, never received). This is the
+              "edit" that lets staff correct a PO that was created the wrong way — e.g. a drop-ship
+              PO whose goods actually arrived at the warehouse and need to be checked in against the
+              SO. drop_ship is a PO-wide flag, so the flip mirrors to every line sharing this po_id
+              (like Shipping does) and recomputes each line's status under the new mode. Hidden for
+              decoration POs (always drop ship — a service, not received goods) and customer-supplied
+              goods (no vendor to receive from). */}
+          {po.po_type!=='outside_deco'&&po.po_type!=='customer_supplied'&&<div style={{padding:'8px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Fulfillment method <span style={{fontWeight:600,textTransform:'none',letterSpacing:0,color:'#94a3b8'}}>— switch between in-house and drop ship</span></div>
+            <DropShipToggle isDropShip={isDropShip} onSelect={target=>{
+              if(!!target===isDropShip)return;// already in this mode — nothing to change
+              const label=target?'Drop Ship':'In-House';
+              if(!window.confirm('Switch '+(po.po_id||'this PO')+' to '+label+'?\n\n'+(target
+                ?'Drop-ship POs ship direct to the customer and are removed from every warehouse receive / check-in flow.'
+                :'In-house POs are received at the warehouse — this PO\'s open sizes will become available to check in against the sales order.')))return;
+              // Mirror the flag to every line on this PO and recompute each line's status under the
+              // new mode: drop ship is tracked by billed{}, in-house by received{}.
+              const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{
+                if(p.po_id!==po.po_id)return p;
+                const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof p[k]==='number');
+                const ord=sk.reduce((a,sz)=>a+(p[sz]||0),0);
+                const rcvd=sk.reduce((a,sz)=>a+((p.received||{})[sz]||0),0);
+                const cncl=sk.reduce((a,sz)=>a+((p.cancelled||{})[sz]||0),0);
+                const bld=sk.reduce((a,sz)=>a+((p.billed||{})[sz]||0),0);
+                const opn=Math.max(0,ord-rcvd-cncl);
+                const st=target?(bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting'):(opn<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting');
+                return{...p,drop_ship:target,status:st};
+              })}));
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              setEditPO(prev=>({...prev,po:{...prev.po,drop_ship:target}}));
+              nf(po.po_id+' switched to '+label);
+            }}/>
+          </div>}
           {/* Decoration PO(s) created alongside this product PO — SO-level deco buckets
               (o.deco_pos) covering any item on this PO. Surfaced here so the rep can copy the
               DPO number (or jump to its page) without hunting for the line-item badge. */}
