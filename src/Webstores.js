@@ -6119,7 +6119,20 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => {
+        const list = products || [];
+        // Add all chosen colors as ONE grouped card (shared variant_group_id) in a single
+        // call. Looping onAddSingle here dropped every color as its own card: addSingle's
+        // auto-group reads detail.catalog, which is stale between awaits in this loop, so
+        // the colors never saw each other as twins. onAddGrouped assigns the group in one
+        // shot (colorways of the same style fold into one item with a color picker).
+        if (onAddGrouped && list.length) {
+          await onAddGrouped(list, rest.decorations || [], { price: rest.price, fundraise: rest.fundraise, takes_number: rest.takes_number, takes_name: rest.takes_name, name_upcharge: rest.name_upcharge, category: rest.category, kit_name: rest.kit_name, required: rest.required, options: rest.options });
+        } else {
+          for (let i = 0; i < list.length; i++) await onAddSingle({ ...rest, product: list[i], image_url: i === 0 ? rest.image_url : null });
+        }
+        setPending(null);
+      }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
 
       {catalog.length === 0 ? (
