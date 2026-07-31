@@ -2350,6 +2350,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
     });
     if(!payloadItems.length)return null;
+    // Decorator drop-ship: SanMar's modal resolves the address itself from shipToDecoId +
+    // decoVendors, but SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — so
+    // without this the S&S order silently defaults to the NSA warehouse. Resolve the decorator's
+    // address (with DPO on the attention line) the same way the batch-ready popup S&S path does.
+    const _decoShip=relDeco?resolveDecoShipToClient({decoId:relDeco.deco_vendor_id,so:o,decoVendors,vendors:vendorList,itemIdxs:[...lineIdxs]}):null;
     return {
       vendorKey:vk,poNumber:poId,vendorName:po.vendor,
       batchPOs:[{so_id:o.id,items:payloadItems}],
@@ -2357,6 +2362,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       ...(relDeco?{
         shipToDecoId:relDeco.deco_vendor_id,
         initialDpoNumber:String(relDeco.po_id||'').replace(/^DPO\s*/i,''),
+        ...(_decoShip?{shipTo:{companyName:_decoShip.name,attentionTo:_decoShip.attention||'',address1:_decoShip.line1,city:_decoShip.city,region:_decoShip.state,postalCode:_decoShip.zip}}:{}),
       }:{}),
     };
   };

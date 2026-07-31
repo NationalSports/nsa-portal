@@ -12466,7 +12466,18 @@ export default function App(){
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}>
+              onClick={()=>{
+                // Decorator-bound group (vendor:decoId): the S&S order must ship to the
+                // DECORATOR with the DPO on the attention line — not the NSA warehouse. Resolve
+                // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
+                // in its shape. Non-deco batches pass no shipTo → default (NSA warehouse).
+                const _ssSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
+                const _deco=vg.ship_to_deco_id
+                  ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_ssSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
+                  :null;
+                const _ssShipTo=_deco?{companyName:_deco.name,attentionTo:_deco.attention||'',address1:_deco.line1,address2:'',city:_deco.city,region:_deco.state,postalCode:_deco.zip}:undefined;
+                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_ssShipTo,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
+              }}>
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
