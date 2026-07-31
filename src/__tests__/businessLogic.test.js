@@ -515,6 +515,30 @@ describe('SO Status Calculation — calcSOStatus()', () => {
     expect(BL.calcSOStatus(ord)).not.toBe('need_order');
   });
 
+  test('reloaded Topstar DIGITIZING line (no _topstar flag — never persisted) is still covered, not need_order', () => {
+    // so_items has no _topstar column, so the flag is dropped on save. After a reload the line
+    // comes back as a plain qty_only custom good identifiable only by sku 'DIGITIZING'. It must
+    // still be treated as covered by its deco PO — otherwise the SO sits in need_order forever.
+    const ord = {
+      items: [
+        { sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [], no_deco: true },
+        { sku: 'DIGITIZING', name: 'Topstar — DST Embroidery File', brand: 'Topstar', sizes: {}, qty_only: true, est_qty: 1, pick_lines: [], po_lines: [], decorations: [], no_deco: true, is_custom: true }
+      ],
+      deco_pos: [{ po_id: 'PO-100-D1', vendor: 'Topstar', topstar_service: 'dst', status: 'waiting' }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
+  test('reloaded digitizing-only order (sku marker only) is not need_order', () => {
+    const ord = {
+      items: [{ sku: 'DIGITIZING', name: 'Topstar — Vector File', brand: 'Topstar', sizes: {}, qty_only: true, est_qty: 1, pick_lines: [], po_lines: [], decorations: [], no_deco: true, is_custom: true }],
+      deco_pos: [{ po_id: 'PO-101-D1', vendor: 'Topstar', topstar_service: 'vector', status: 'waiting' }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).not.toBe('need_order');
+  });
+
   test('mixed job statuses — some shipped, some active → in_production', () => {
     const ord = {
       items: [{ sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [{ kind: 'art' }] }],
