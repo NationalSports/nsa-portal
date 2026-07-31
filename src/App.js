@@ -22,7 +22,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -20151,7 +20151,16 @@ export default function App(){
     // Gather ALL art jobs across SOs — includes every status for rep view
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
-      buildJobs(so).forEach(j=>{
+      buildJobs(so).forEach(_rawJob=>{
+        // Heal the contradictory shape "open art request but art_status still needs_art" at read
+        // time. syncJobs' rebuild inherits a job's art_requests while re-deriving art_status, so a
+        // job that once slipped to needs_art with a live request stays stuck; healOrphanArtRequest
+        // (the same heal syncJobs applies on save) promotes it back to art_requested — but only when
+        // its art actually resolves, so a TBD/unresolved design correctly stays needs_art. buildJobs
+        // hands us the stored jobs verbatim, so without this the artistJobs filter below (which drops
+        // every needs_art job) hid these requested jobs from the workboard even though the SO page
+        // shows them as "Art Requested" (SO-1707: 7 open jobs, only 2 reached the board).
+        const j=healOrphanArtRequest(_rawJob,so);
         // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
         // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
         // 4) or art is approved but needs prod files (repeat art scenario)
