@@ -10826,9 +10826,20 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // "tap a logo" and "place it" are one gesture (no separate activate step the rep can
   // miss). Removing the active logo hands active off to another logo in the set, so the
   // panel never strands the rep with styles selected and nothing left to apply.
-  const toggleStoreArt = (a) => {
+  const toggleStoreArt = async (a) => {
     const cur = storeArt || [];
     if (inStore(a.id)) {
+      // Removing the art from the store also strips it from every item it was placed on:
+      // an orphaned decoration would otherwise keep the logo on the garment (storefront +
+      // order handoff) with no tile left to manage it. Build one entry per affected item
+      // (all color rows carry the shared decorations) and clear it via the bulk apply.
+      const affected = (catalog || [])
+        .filter((it) => (Array.isArray(it.decorations) ? it.decorations : []).some((d) => d && d.art_id === a.id))
+        .map((it) => ({ id: it.id, decorations: it.decorations.filter((d) => !(d && d.art_id === a.id)) }));
+      if (affected.length && onApplyLogoBulk) {
+        if (!window.confirm(`Remove "${a.name || 'this logo'}" from the store? It's on ${affected.length} item${affected.length === 1 ? '' : 's'} and will be taken off ${affected.length === 1 ? 'it' : 'them'} too.`)) return;
+        await onApplyLogoBulk(affected);
+      }
       const next = cur.filter((x) => x.id !== a.id);
       onSaveStoreArt && onSaveStoreArt(next);
       if (activeId === a.id) setActiveId(next[0]?.id || null);
