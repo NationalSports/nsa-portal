@@ -352,6 +352,42 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
 // opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
 // SKU, so callers must pass false when another live line still carries the old SKU in a
 // different color — moving the bare bucket would steal that line's legacy fallback.
+// Strip a mockup image (by URL) from art files, scoped to ONE garment on the art files a job owns.
+// The SO-page "×" lives on a single garment's mock card inside a single job's panel, so a removal
+// must only clear THAT garment's mock keys on the art files the job owns. The old order-wide strip
+// removed the url from EVERY art file and EVERY item_mockups key — and because confirming a reused
+// mock copies the SAME url onto several garments, removing one garment's mock silently wiped the
+// identical image off sibling garments/jobs that reused it, reverting their Check Mock (SO-1023:
+// clearing a mock under the Attack Everything job emptied the Friars job's KV2196 / JX4452 mocks).
+// scope = { sku, color, artFileIds }. artFileIds null/omitted => every art file; sku null/omitted
+// => every item_mockups key (both preserve the legacy order-wide behavior for callers that pass no
+// scope). mockup_files (the design-level bucket, not garment-keyed) is stripped within the scoped
+// art files only. Source art (files / prod_files) is never touched.
+export const removeMockFromArtFiles = (artFiles, url, scope = {}) => {
+  if (!url) return safeArr(artFiles);
+  const urlOf = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
+  const strip = (arr) => safeArr(arr).filter((f) => urlOf(f) !== url);
+  const ids = Array.isArray(scope.artFileIds) ? new Set(scope.artFileIds.filter(Boolean)) : null;
+  const mk = scope.sku != null ? scope.sku + '|' + (scope.color || '') : null;
+  const ownKey = (k) => mk == null || k === mk || k === scope.sku || k.startsWith(mk + '|');
+  return safeArr(artFiles).map((a) => {
+    if (!a) return a;
+    if (ids && !ids.has(a.id)) return a;
+    const im = { ...(a.item_mockups || {}) };
+    let changed = false;
+    Object.keys(im).forEach((k) => {
+      if (!ownKey(k)) return;
+      const before = im[k] || [];
+      const after = strip(before);
+      if (after.length !== before.length) { im[k] = after; changed = true; }
+    });
+    const mf = strip(a.mockup_files);
+    if (mf.length !== safeArr(a.mockup_files).length) changed = true;
+    if (!changed) return a;
+    return { ...a, item_mockups: im, mockup_files: mf };
+  });
+};
+
 export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor, opts) => {
   const moveBareSku = !opts || opts.moveBareSku !== false;
   const fromKey = mockLinkKeyOf(fromSku, fromColor);
