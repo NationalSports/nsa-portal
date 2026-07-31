@@ -21,7 +21,10 @@ const NSA_SHIP_TO = {
 export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, onClose, onSubmitted, onLearnSkus }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
-  const [testMode, setTestMode] = useState(true);
+  // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
+  // validated end-to-end. Every submission is a real order — the confirm checkbox below is
+  // the gate. Kept as a const so the existing `live` branches render the production copy.
+  const testMode = false;
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -324,15 +327,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             </>
           ) : (
             <>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155', cursor: 'pointer' }} title="S&S creates and cancels test orders — nothing ships">
-                <input type="checkbox" checked={testMode} disabled={submitting} onChange={e => { setTestMode(e.target.checked); setConfirmed(false); }} />
-                Test order
-              </label>
               <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: blocked ? '#94a3b8' : '#334155', cursor: blocked ? 'not-allowed' : 'pointer' }}>
                 <input type="checkbox" checked={confirmed} disabled={blocked || submitting} onChange={e => setConfirmed(e.target.checked)} />
-                {live
-                  ? <span>I confirm this is a real order — place it with S&S and ship the goods.</span>
-                  : <span>Confirm test submission (validates only — nothing ships).</span>}
+                <span>I confirm this is a real order — place it with S&S and ship the goods.</span>
               </label>
               <button className="btn btn-secondary" onClick={onClose} disabled={submitting}>Cancel</button>
               <button
