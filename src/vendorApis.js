@@ -1105,28 +1105,48 @@ const ssResolveSkus = async (descriptors) => {
 
   // Fetch a style's S&S products by a search code. S&S /Products?style= expects a numeric
   // styleID, not the style name — so resolve the styleID first via /Styles?search= (the same
-  // path our other S&S lookups use), then fetch that style's products. `strict` requires an
-  // exact part-number/style-name match; otherwise the first returned style is accepted.
-  const fetchItems = async (searchCode, strict) => {
+  // path our other S&S lookups use), then fetch that style's products.
+  //  - not strict (the exact code / suffix-trimmed code): first returned style, as before.
+  //  - strict (a prefix-stripped bare number): never the first fuzzy result. When the brand is
+  //    known (from the stripped prefix) pin to the S&S style of THAT brand — a bare number can
+  //    belong to several brands ("1580" is Next Level's crop top AND another brand's style), so
+  //    picking by brand yields ours, not whichever S&S lists first. With no brand (or none of
+  //    the exact hits carry it) accept the exact match only when it's unambiguous (exactly one),
+  //    so a shared number is left blocked rather than guessed.
+  const fetchItems = async ({ code, strict, brand }) => {
     try {
-      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(searchCode));
+      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(code));
       const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
-      const exact = sa.find(s => _smNorm(s.partNumber) === _smNorm(searchCode) || _smNorm(s.styleName) === _smNorm(searchCode));
-      const match = exact || (strict ? null : sa[0]);
+      let match;
+      if (!strict) {
+        match = sa.find(s => _smNorm(s.partNumber) === _smNorm(code) || _smNorm(s.styleName) === _smNorm(code)) || sa[0];
+      } else {
+        const exacts = sa.filter(s => _smNorm(s.partNumber) === _smNorm(code) || _smNorm(s.styleName) === _smNorm(code));
+        let chosen = null;
+        if (brand) {
+          const bn = _smNorm(brand);
+          const branded = exacts.filter(s => { const sb = _smNorm(s.brandName || s.BrandName); return sb && (sb.includes(bn) || bn.includes(sb)); });
+          if (branded.length) chosen = branded[0];
+        }
+        // No brand, or the brand didn't match any exact hit: use the exact match only if there's
+        // exactly one (a number shared across brands stays blocked, never guessed).
+        if (!chosen && exacts.length === 1) chosen = exacts[0];
+        match = chosen;
+      }
       const styleID = match && (match.styleID || match.StyleID);
       if (!styleID) return [];
       const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
       return Array.isArray(data) ? data : (data ? [data] : []);
-    } catch (e) { console.warn('[S&S] SKU lookup failed for', searchCode, e.message); return []; }
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', code, e.message); return []; }
   };
 
   for (const style of styles) {
     const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
     const cand = [];
     candidates[style] = cand;
-    for (const { code, strict } of ssStyleSearchVariants(style)) {
+    for (const variant of ssStyleSearchVariants(style)) {
       if (mine.every(d => resolved[d.key])) break; // all lines matched — no looser search needed
-      const items = await fetchItems(code, strict);
+      const items = await fetchItems(variant);
       const map = {}; // normalized "color|size" -> sku, from this variant's products
       for (const r of items) {
         const sku = String(r.sku || r.Sku || r.gtin || '');
@@ -1165,6 +1185,39 @@ const ssResolveSkus = async (descriptors) => {
     }
   }
   return { resolved, candidates };
+};
+
+// Free-text S&S product search for the order modal's manual SKU picker: when a line can't be
+// auto-resolved (a color/size S&S doesn't carry under our style, a mis-spec'd style), the rep
+// searches S&S live and picks the exact per-size Sku to drop onto the line. Returns flat,
+// pickable rows [{ sku, style, brand, color, size, price, qty }] — the `sku` is the S&S order
+// `identifier`. Best-effort: a lookup miss/failure returns [] (or throws to surface a real
+// network error to the caller's catch).
+const ssSearchProducts = async (query, { limit = 80 } = {}) => {
+  const q = String(query || '').trim();
+  if (q.length < 2) return [];
+  const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(q));
+  const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
+  const styleIDs = [...new Set(sa.map(s => s.styleID || s.StyleID).filter(Boolean))].slice(0, 5);
+  if (!styleIDs.length) return [];
+  const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleIDs.join(',')));
+  const items = Array.isArray(data) ? data : (data ? [data] : []);
+  const rows = [];
+  for (const r of items) {
+    const sku = String(r.sku || r.Sku || r.gtin || '');
+    if (!sku) continue;
+    rows.push({
+      sku,
+      style: String(r.styleName || r.StyleName || '').trim(),
+      brand: String(r.brandName || r.BrandName || '').trim(),
+      color: String(r.colorName || r.color || '').trim(),
+      size: String(r.sizeName || r.size || '').trim(),
+      price: parseFloat(r.customerPrice || r.piecePrice || 0) || 0,
+      qty: typeof r.qty === 'number' ? r.qty : (parseInt(r.qty, 10) || 0),
+    });
+    if (rows.length >= limit) break;
+  }
+  return rows;
 };
 
 // Submit a built S&S order (the `order` object from buildSSOrderPayload) via
@@ -1673,4 +1726,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

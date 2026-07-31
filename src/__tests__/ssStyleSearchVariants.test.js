@@ -16,19 +16,27 @@ describe('ssStyleSearchVariants', () => {
     ]);
   });
 
-  test('SanMar brand prefixes fall back to the bare S&S style number (strict)', () => {
+  test('SanMar brand prefixes fall back to the bare S&S style number (strict), pinned to the brand', () => {
     expect(ssStyleSearchVariants('BC3945')).toEqual([
       { code: 'BC3945', strict: false },
-      { code: '3945', strict: true },
+      { code: '3945', strict: true, brand: 'Bella' },
     ]);
     expect(ssStyleSearchVariants('NL3600')).toEqual([
       { code: 'NL3600', strict: false },
-      { code: '3600', strict: true },
+      { code: '3600', strict: true, brand: 'Next Level' },
     ]);
     expect(ssStyleSearchVariants('NL1510')).toEqual([
       { code: 'NL1510', strict: false },
-      { code: '1510', strict: true },
+      { code: '1510', strict: true, brand: 'Next Level' },
     ]);
+    // NL1580 is the case that broke: "1580" alone is shared with another brand, so the brand
+    // pin ("Next Level") is what makes it resolve to S&S's crop top instead of the wrong style.
+    expect(ssStyleSearchVariants('NL1580')).toEqual([
+      { code: 'NL1580', strict: false },
+      { code: '1580', strict: true, brand: 'Next Level' },
+    ]);
+    // An unmapped prefix ("BY") still strips, but carries no brand — the resolver then requires
+    // the bare number to be unambiguous on S&S before using it.
     expect(ssStyleSearchVariants('BY6624')).toEqual([
       { code: 'BY6624', strict: false },
       { code: '6624', strict: true },
@@ -45,7 +53,7 @@ describe('ssStyleSearchVariants', () => {
   test('normalizes case/whitespace and dedupes', () => {
     expect(ssStyleSearchVariants('  nl3600 ')).toEqual([
       { code: 'NL3600', strict: false },
-      { code: '3600', strict: true },
+      { code: '3600', strict: true, brand: 'Next Level' },
     ]);
   });
 

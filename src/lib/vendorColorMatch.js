@@ -58,6 +58,16 @@ export const smColorSubset = (vendorColor, orderColor) => {
   return s.every((t) => oset.has(t));
 };
 
+// SanMar brand prefix → the brand S&S lists that garment under, so a prefix-stripped search
+// can be pinned to the RIGHT brand. Values are distinctive tokens matched (normalized,
+// either-direction substring) against S&S's brandName — "NEXTLEVEL" ⊂ "Next Level Apparel",
+// "BELLA" ⊂ "BELLA + CANVAS". Extend as new prefixed styles show up; an unmapped prefix falls
+// back to "use the bare number only if exactly one S&S style has it" (still never a wrong brand).
+const SS_BRAND_BY_PREFIX = {
+  BC: 'Bella', NL: 'Next Level', CC: 'Comfort Colors', G: 'Gildan',
+  DT: 'District', DM: 'District', AA: 'Alternative', BB: 'Bella',
+};
+
 // Order lines carry OUR style code, but S&S catalogs the bare MANUFACTURER style number.
 // For many brands SanMar (where our styles originate) prefixes a brand code — Bella+Canvas
 // "BC3945", Next Level "NL3600" — while S&S lists the same garment as "3945" / "3600".
@@ -65,19 +75,21 @@ export const smColorSubset = (vendorColor, orderColor) => {
 // progressively looser forms tried ONLY as fallbacks for lines the exact code didn't match.
 // Every form still matches on exact color+size downstream, so a looser search can never place
 // a wrong item — an unmatched line just stays blocked. `strict:true` forms additionally
-// require an exact part-number/style-name hit (never the first fuzzy result), so stripping a
-// brand prefix can't grab a different brand that happens to share the bare number.
+// require an exact part-number/style-name hit (never the first fuzzy result); when a `brand`
+// is known (from the stripped prefix) the resolver pins the search to that brand, so a bare
+// number shared across brands ("1580" is Next Level's crop top AND another brand's style)
+// resolves to OURS instead of whichever S&S returns first.
 export const ssStyleSearchVariants = (style) => {
   const s = String(style ?? '').toUpperCase().trim();
   const out = [];
-  const add = (code, strict) => { const t = String(code || '').trim(); if (t && !out.some((o) => o.code === t)) out.push({ code: t, strict }); };
+  const add = (code, strict, brand) => { const t = String(code || '').trim(); if (t && !out.some((o) => o.code === t)) out.push({ code: t, strict, ...(brand ? { brand } : {}) }); };
   add(s, false);
   // Trailing color suffix: "AT300-50" → base style "AT300".
   const dash = s.lastIndexOf('-');
   if (dash > 0) add(s.slice(0, dash), false);
   // Leading 1–3 letter brand prefix on a numeric style: "BC3945" → "3945", "NL3600" → "3600".
   const m = /^([A-Z]{1,3})(\d[A-Z0-9]*)$/.exec(s);
-  if (m) add(m[2], true);
+  if (m) add(m[2], true, SS_BRAND_BY_PREFIX[m[1]]);
   return out;
 };
 

@@ -4,7 +4,7 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload } from './ssOrder';
-import { ssResolveSkus, ssSubmitOrder } from './vendorApis';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder } from './vendorApis';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -30,6 +30,14 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,size,sku}]
   const [resolveErr, setResolveErr] = useState('');
+  // Manual SKU picker: a rep searches S&S live and hand-picks the exact per-size Sku for a
+  // line the auto-resolver couldn't match. manualSku overrides the auto-resolved value.
+  const [manualSku, setManualSku] = useState({}); // line key -> S&S sku chosen by hand
+  const [searchLine, setSearchLine] = useState(null); // the line being matched, or null
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchErr, setSearchErr] = useState('');
 
   const ship = shipTo || NSA_SHIP_TO;
 
@@ -48,8 +56,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     return () => { cancelled = true; };
   }, [missing]);
 
-  // Overlay resolved skus, recompute warnings + the order that will be submitted.
-  const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus]);
+  // Overlay resolved skus (a hand-picked sku wins over the auto-resolved one), recompute
+  // warnings + the order that will be submitted.
+  const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: manualSku[l.key] || resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus, manualSku]);
   const warnings = useMemo(() => lines.filter(l => !l.sku).map(l => `Line (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) has no matched S&S SKU`), [lines]);
   const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode }), [poNumber, lines, ship, testMode]);
   const totals = built.summary;
@@ -91,6 +100,27 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
       }
     }
   };
+
+  // ── Manual SKU search ──────────────────────────────────────────────────────
+  const openSearch = (l) => { setSearchLine(l); setSearchQuery(l.style || ''); setSearchResults([]); setSearchErr(''); };
+  const closeSearch = () => { setSearchLine(null); setSearchResults([]); setSearchErr(''); setSearchBusy(false); };
+  const runSearch = async () => {
+    const q = searchQuery.trim();
+    if (q.length < 2) { setSearchErr('Type at least 2 characters (a style like NL1580, or a keyword).'); return; }
+    setSearchBusy(true); setSearchErr(''); setSearchResults([]);
+    try {
+      const rows = await ssSearchProducts(q);
+      setSearchResults(rows);
+      if (!rows.length) setSearchErr('No S&S products found for "' + q + '".');
+    } catch (e) { setSearchErr(e.message || 'S&S search failed — try again.'); }
+    finally { setSearchBusy(false); }
+  };
+  const pickSku = (row) => {
+    if (!searchLine || !row || !row.sku) return;
+    setManualSku(m => ({ ...m, [searchLine.key]: row.sku }));
+    closeSearch();
+  };
+  const clearManual = (key) => setManualSku(m => { const n = { ...m }; delete n[key]; return n; });
 
   const safeClose = submitting ? undefined : onClose;
 
@@ -164,9 +194,59 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       <code>{st}</code>: {[...new Set((candidates[st] || []).map(c => c.color).filter(Boolean))].slice(0, 16).join(' · ') || '(no colors returned)'}
                     </div>
                   ) : null)}
-                  <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color/size is in that list but didn't match, it's a naming difference — send me a screenshot and I'll fix the match. Otherwise order those lines manually.</div>
+                  <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color/size is in that list but didn't match, it's a naming difference — send me a screenshot and I'll fix the match. Or click <strong>🔍 find SKU</strong> on the line below to search S&S and pick the right item yourself.</div>
                 </div>
               )}
+            </div>
+          )}
+
+          {!done && searchLine && (
+            <div style={{ padding: 12, background: '#f5f3ff', border: '2px solid #6366f1', borderRadius: 8, marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>
+                  🔍 Find S&S SKU for <code>{searchLine.style}</code> · {searchLine.color || '—'} · {searchLine.size}
+                </div>
+                <button className="btn btn-secondary" style={{ fontSize: 11, padding: '2px 8px' }} onClick={closeSearch}>Close</button>
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+                  placeholder="S&S style # or keyword (e.g. 1580, Next Level crop)"
+                  style={{ flex: 1, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13 }} />
+                <button className="btn btn-primary" onClick={runSearch} disabled={searchBusy} style={{ background: '#4f46e5', borderColor: '#4f46e5' }}>
+                  {searchBusy ? 'Searching…' : 'Search S&S'}
+                </button>
+              </div>
+              {searchErr && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 6 }}>{searchErr}</div>}
+              {searchResults.length > 0 && (
+                <div style={{ maxHeight: 240, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff' }}>
+                  <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                    <thead style={{ background: '#eef2ff', position: 'sticky', top: 0 }}>
+                      <tr>
+                        <th style={th}>S&S SKU</th><th style={th}>Style</th><th style={th}>Color</th><th style={th}>Size</th>
+                        <th style={{ ...th, textAlign: 'right' }}>$</th><th style={th}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchResults.map((r, i) => {
+                        const sizeMatch = _norm(r.size) === _norm(searchLine.size);
+                        return (
+                          <tr key={r.sku + '-' + i} style={{ borderTop: '1px solid #f1f5f9', background: sizeMatch ? '#f0fdf4' : 'transparent' }}>
+                            <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#0f766e' }}>{r.sku}</td>
+                            <td style={{ ...td, fontFamily: 'monospace' }}>{r.style || '—'}</td>
+                            <td style={td}>{r.color || '—'}</td>
+                            <td style={{ ...td, fontWeight: 700 }}>{r.size || '—'}{sizeMatch ? ' ✓' : ''}</td>
+                            <td style={{ ...td, textAlign: 'right' }}>${(r.price || 0).toFixed(2)}</td>
+                            <td style={td}><button className="btn btn-primary" style={{ fontSize: 11, padding: '2px 10px', background: '#16a34a', borderColor: '#16a34a' }} onClick={() => pickSku(r)}>Use</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+                Pick the row matching this line's color and size (size-matching rows are highlighted). The chosen S&S SKU fills this line so the order can submit.
+              </div>
             </div>
           )}
 
@@ -205,7 +285,15 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                   {lines.map((l, i) => (
                     <tr key={l.key} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={td}>{i + 1}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>{l.sku || (resolving ? '…' : '⚠ missing')}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>
+                        {l.sku
+                          ? (manualSku[l.key]
+                              ? <span title="Hand-picked SKU — click ✕ to clear and re-match">{l.sku} <span style={{ fontSize: 9, color: '#7c3aed', fontFamily: 'sans-serif', fontWeight: 700 }}>✎ picked</span> <button onClick={() => clearManual(l.key)} style={{ border: 'none', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: 12 }}>✕</button></span>
+                              : l.sku)
+                          : resolving
+                            ? '…'
+                            : <button onClick={() => openSearch(l)} title="Search S&S and pick the matching SKU for this line" style={{ border: '1px solid #fca5a5', background: '#fef2f2', color: '#dc2626', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', padding: '2px 6px' }}>🔍 find SKU</button>}
+                      </td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
                       <td style={td}>{l.color || '—'}</td>
                       <td style={{ ...td, fontWeight: 700 }}>{l.size}</td>
@@ -266,6 +354,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
 
 const th = { padding: '6px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#475569', borderBottom: '1px solid #e2e8f0' };
 const td = { padding: '6px 8px', fontSize: 12 };
+const _norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); // size compare in the SKU search
 
 function Stat({ label, value, mono }) {
   return (
