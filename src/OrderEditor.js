@@ -7,7 +7,7 @@ import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isTopstarLine } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
-import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
+import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
@@ -4321,7 +4321,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
         </div>}
       </div>))}
-      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
+      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><$Txt className="form-input" value={o.production_notes||''} onChange={v=>sv('production_notes',v)} placeholder="Internal notes..."/></div>}
     </div></div>
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
@@ -5025,7 +5025,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(deco.deco_type||'embroidery')==='screen_print'&&<div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#b45309'}}>Upcharges</span>
                   <div style={{display:'flex',gap:8,alignItems:'center',height:28}}>{[['dark','Dark'],['fleece','Fleece'],['mesh','Mesh']].map(([k,label])=><label key={k} style={{display:'flex',alignItems:'center',gap:3,fontSize:11,cursor:'pointer',color:'#92400e'}}><input type="checkbox" checked={!!deco[k]} onChange={e=>{const dvv=decoVendors.find(v=>v.name===deco.vendor);const flags={underbase:deco.dark,fleece:deco.fleece,mesh:deco.mesh};flags[k==='dark'?'underbase':k]=e.target.checked;const c=dvv?_decoVendorPrice(decoVendorPricing,dvv.id,'screen_print',{qty,colors:deco.colors,...flags}):null;uDM(idx,di,{[k]:e.target.checked,...(c!==null?{cost_each:c}:{})})}}/>{label}</label>)}</div></div>}
                 <div style={{display:'flex',flexDirection:'column',gap:2,flex:1}}><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</span>
-                  <input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Thread colors, instructions..."/></div>
+                  <$Txt className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={v=>uD(idx,di,'notes',v)} placeholder="Thread colors, instructions..."/></div>
               </div>
             </div>)}
             // NAMES decoration
@@ -5119,7 +5119,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           {item.notes!=null&&<div style={{display:'flex',gap:6,alignItems:'flex-start',marginTop:6,padding:'6px 10px',background:'#fefce8',borderRadius:6,border:'1px solid #fde047'}}>
             <span style={{fontSize:11,fontWeight:700,color:'#854d0e',paddingTop:4}}>📝 Notes:</span>
-            <input value={item.notes||''} onChange={e=>uI(idx,'notes',e.target.value)} placeholder="Notes to show on estimate / sales order / invoice PDF" style={{flex:1,fontSize:12,border:'1px solid #fde047',borderRadius:4,padding:'4px 8px',background:'white'}}/>
+            <$Txt value={item.notes||''} onChange={v=>uI(idx,'notes',v)} placeholder="Notes to show on estimate / sales order / invoice PDF" style={{flex:1,fontSize:12,border:'1px solid #fde047',borderRadius:4,padding:'4px 8px',background:'white'}}/>
             <button onClick={()=>uI(idx,'notes',null)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,padding:'2px 4px'}} title="Remove notes">✕</button>
           </div>}
           {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
@@ -5726,7 +5726,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
                   {/* Notes */}
-                  <input className="form-input" value={art.notes||''} onChange={e=>uArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
+                  <$Txt className="form-input" value={art.notes||''} onChange={v=>uArt(i,'notes',v)} placeholder="Notes..." style={{fontSize:12}}/>
                   <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6,flexWrap:'wrap',justifyContent:'space-between'}}>
                     <span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s) · {garmentCount} garment{garmentCount===1?'':'s'}</span>
                     {cust&&(cust.parent_id
