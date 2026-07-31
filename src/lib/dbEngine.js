@@ -638,6 +638,13 @@ const _CUST_CHILD_KEYS=['promo_programs','promo_periods','promo_usage','credits'
 // Phantom-save guard for customers: ignore the child-table arrays above (plus the server-managed
 // fields _diffCmp strips) so only changes _dbSaveCustomer can actually save trigger a save.
 const _custDiffCmp=(o)=>{const r={...o};delete r._version;delete r.updated_at;_CUST_CHILD_KEYS.forEach(k=>delete r[k]);return JSON.stringify(r)};
+// NOT NULL columns with DB defaults reject an EXPLICIT null — a default only applies when the
+// column is omitted. Outbox payloads captured before the follow-up fields hydrated carry
+// follow_up_auto/follow_up_count as null, which hard-failed the whole save (SO-1401, 2026-07-31).
+// Coalesce to the DB defaults on every outgoing estimate/invoice/job row. Mirrored by the DB
+// trigger trg_followup_defaults (migration coalesce_followup_defaults_on_write), which also covers
+// stale tabs still running old bundles — keep the two in sync.
+const _fuDefaults=(r)=>{if(r&&r.follow_up_auto==null)r.follow_up_auto=false;if(r&&r.follow_up_count==null)r.follow_up_count=0;return r};
 // Phantom-save guard for estimates: compare ONLY the fields save_estimate actually persists.
 // Estimates carry session-only data that is recomputed on every reload and never saved —
 // per-size _sizeCosts/_sizeSells (from vendor-pricing hooks), _colorImage, _ss_live, plus the
@@ -983,7 +990,7 @@ const _dbSaveEstimateInner = async (est) => {
     let _serverVersioned=false;// true when save_estimate returned the post-save version (base is exact, no bump needed)
     {
       const _rpcItems=(items||[]).map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),item_index:idx,decorations:(decorations||[]).map(d=>_pick(_sanitizeDeco(d),_decoCols))}});
-      const _estPayload=_pick(estRow,_estCols);
+      const _estPayload=_fuDefaults(_pick(estRow,_estCols));
       // Optimistic concurrency (server-side): pass the _version this edit is based on so the DB rejects a
       // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
       // dropped customers. Falls back to the un-versioned call when the versioned RPC (migration 00128)
@@ -1802,7 +1809,7 @@ const _dbSaveSOInner = async (so) => {
     if(jobs?.length){
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
       const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
-      const jobRows=dedupedJobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
+      const jobRows=dedupedJobs.map(j=>_fuDefaults({..._pick(j,_jobCols),so_id:so.id}));
       // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
       // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
       // decision columns and silently reverts it. Never null a non-null coach column unless this save
@@ -2188,7 +2195,7 @@ const _dbSaveInvoiceInner = async (inv) => {
         return false;
       }}
     const{payments,items,...rest}=inv;
-    let invRow=_pick(rest,_invCols);
+    let invRow=_fuDefaults(_pick(rest,_invCols));
     // IDENTITY GUARD (2026-07-27, mirrors the SO/estimate paths). nextInvId mints from the same
     // page-load-stale _dbMaxIds, and this path had NO new-vs-existing check at all — a bare upsert, so
     // a stale tab that re-minted a live invoice number would silently replace another customer's
