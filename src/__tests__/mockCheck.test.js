@@ -51,6 +51,32 @@ describe('skusMissingMockups — garment-aware reuse', () => {
   });
 });
 
+// SO-1727: previously-used art added to an order carries the digitizer's sew-out proof (in
+// prod_files) but NO garment mockup — addPrevArt strips the mockups on clone. The rep dashboard
+// used to drop such a job onto the "review art" to-do (art_status waiting_approval) as if a mockup
+// were ready, when it actually needs to be SET UP first. The review-art to-do now gates on
+// skusMissingMockups (the same gate Send-to-Coach uses), so these assertions pin the fact it
+// relies on: proof-only / empty reused art reports its garment as missing a mockup.
+describe('skusMissingMockups — reused art with only a proof needs setup, not review', () => {
+  test('a sew-out proof in prod_files does NOT count as a garment mockup', () => {
+    const art = { id: 'af-proof', deco_type: 'embroidery', item_mockups: {}, mockup_files: [], files: [], prod_files: [{ url: 'http://x/sewout.pdf' }, { url: 'http://x/sewout.jpg' }] };
+    const { job, so } = makeCase(art);
+    expect(skusMissingMockups(job, so)).toEqual(['A2009']);
+  });
+
+  test('an empty reused clone (no mock of any kind) reports the garment missing', () => {
+    const art = { id: 'af-empty', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], files: [], prod_files: [] };
+    const { job, so } = makeCase(art);
+    expect(skusMissingMockups(job, so)).toEqual(['A2009']);
+  });
+
+  test('once a garment mockup is applied the same job clears the gate (→ review)', () => {
+    const art = { id: 'af-mocked', deco_type: 'embroidery', item_mockups: { 'A2009|White': [{ url: 'http://x/white.png' }] }, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
+    const { job, so } = makeCase(art);
+    expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
 describe('skusMissingMockups — stale job snapshot after a line-item swap', () => {
   // Repro for the reported bug: a line item's product was swapped (A325 → A515) but
   // so.jobs was never rebuilt, so job.items[].sku still says A325 while the live SO
