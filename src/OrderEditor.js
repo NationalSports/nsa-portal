@@ -8791,6 +8791,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setApiOrder({vendorKey:'sanmar',poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batchPOs:liveBatches,isBatch:true,skipSoId:o.id,groupKey:batchReadyPopup.groupKey||null,...(_gkDeco?{shipToDecoId:_gkDeco}:{})});
             setBatchReadyPopup(null);
           }}>🚀 Submit SanMar Order (API)</button>}
+          {batchReadyPopup.vendorKey==='sss'&&<button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
+            // Route through apiOrder/isBatch so a submitted S&S order is RECORDED (queue promoted,
+            // ack stamped), same as the per-PO "Order via API" button. A decorator-bound group
+            // ships to the decorator (DPO on the attention line); otherwise S&S ships the
+            // integrated batch to the NSA warehouse (SSOrderModal's default when no shipTo is set).
+            const _decoId=String(batchReadyPopup.groupKey||'').split(':')[1]||(liveBatches.find(bp=>bp.ship_to_deco_id)||{}).ship_to_deco_id||null;
+            const _d=_decoId?resolveDecoShipToClient({decoId:_decoId,so:o,decoVendors,vendors:vendorList,itemIdxs:liveBatches.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))}):null;
+            const _shipTo=_d?{companyName:_d.name,attentionTo:_d.attention||'',address1:_d.line1,city:_d.city,region:_d.state,postalCode:_d.zip}:null;
+            setApiOrder({vendorKey:'sss',poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batchPOs:liveBatches,isBatch:true,skipSoId:o.id,groupKey:batchReadyPopup.groupKey||null,...(_shipTo?{shipTo:_shipTo}:{})});
+            setBatchReadyPopup(null);
+          }}>🚀 Submit S&S Order (API)</button>}
           {onNavBatch&&<button className="btn btn-secondary" style={{color:'#7c3aed',borderColor:'#ddd6fe'}} onClick={()=>{setBatchReadyPopup(null);onNavBatch()}}><Icon name="package" size={14}/> Open Batch POs page</button>}
           {onOrderBatch&&batchReadyPopup.vendorKey==='momentec'&&<button className="btn btn-secondary" onClick={async()=>{
             if(!window.confirm('Mark '+(batchPONum||'this batch')+' as manually ordered for '+batchReadyPopup.vendorName+'? This records all '+liveBatches.length+' queued PO'+(liveBatches.length!==1?'s':'')+' ($'+liveTotal.toFixed(2)+') as placed in NSA and clears the queue — you still need to place the order on Momentec\'s website.'))return;
