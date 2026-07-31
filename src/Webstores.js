@@ -6119,7 +6119,20 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => {
+        const list = products || [];
+        // Add all chosen colors as ONE grouped card (shared variant_group_id) in a single
+        // call. Looping onAddSingle here dropped every color as its own card: addSingle's
+        // auto-group reads detail.catalog, which is stale between awaits in this loop, so
+        // the colors never saw each other as twins. onAddGrouped assigns the group in one
+        // shot (colorways of the same style fold into one item with a color picker).
+        if (onAddGrouped && list.length) {
+          await onAddGrouped(list, rest.decorations || [], { price: rest.price, fundraise: rest.fundraise, takes_number: rest.takes_number, takes_name: rest.takes_name, name_upcharge: rest.name_upcharge, category: rest.category, kit_name: rest.kit_name, required: rest.required, options: rest.options });
+        } else {
+          for (let i = 0; i < list.length; i++) await onAddSingle({ ...rest, product: list[i], image_url: i === 0 ? rest.image_url : null });
+        }
+        setPending(null);
+      }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
 
       {catalog.length === 0 ? (
@@ -6666,23 +6679,41 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           <div style={card}>
             <div style={cardTitle}>Color <span style={cardHint}>· change one color, or recolor the whole logo</span></div>
             {/* Color-way switcher — flip the placed logo between the art's real CW cutouts
-                (the artist-made variants) without re-adding it. Explicit pick: stamps
-                color_way_id/cw_pick and clears cw_by_color so exactly this cutout renders. */}
+                (the artist-made variants) without re-adding it. Decorations are shared across
+                every garment color in the variant group, so a global stamp would force one
+                cutout onto ALL colors. With multiple colors we instead scope the pick to the
+                previewed color via cw_by_color (which decoUrlForColor honors on the stage,
+                storefront and order handoff); a single-color item still stamps globally. */}
             {(() => {
               const art = (library || []).find((a) => a.id === current.art_id);
               const wls = normalizeWebLogos(art && art.web_logos, art && art.color_ways).filter((w) => w && w.url);
               if (wls.length < 2) return null;
+              const perColor = (colorRows || []).length > 1 && !!_prevColorName;
+              // The cutout resolved for the color currently on the stage — highlights the
+              // active tile per-color instead of by the shared base art_url.
+              const activeUrl = decoUrlForColor(current, _prevColorName, wls);
+              const pickCutout = (w) => {
+                if (perColor) {
+                  const cur = decos[sel]; if (!cur) return;
+                  const m = { ...(cur.cw_by_color || {}) };
+                  m[colorKeyOf(_prevColorName)] = w.color_way_id ? { url: w.url, color_way_id: w.color_way_id } : w.url;
+                  update(sel, { cw_by_color: m });
+                } else {
+                  update(sel, { art_url: w.url, orig_url: w.url, cw_pick: true, color_way_id: w.color_way_id || null, color_label: w.color_way || 'original', cw_by_color: null });
+                }
+              };
               return (
                 <div style={{ marginBottom: 9 }}>
-                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 5 }}>Color way · tap to switch the cutout</div>
+                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 5 }}>Color way · {perColor ? <>tap to set the cutout for <b>{_prevColorName}</b></> : 'tap to switch the cutout'}</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {wls.map((w, wi) => { const on = current.art_url === w.url; return (
-                      <button key={w.url + wi} type="button" onClick={() => update(sel, { art_url: w.url, orig_url: w.url, cw_pick: true, color_way_id: w.color_way_id || null, color_label: w.color_way || 'original', cw_by_color: null })} title={(w.color_way || 'All garments') + ' cutout'} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: 5, borderRadius: 8, border: on ? '2px solid #191919' : '1px solid #d1d5db', background: '#fff', cursor: 'pointer', width: 56 }}>
+                    {wls.map((w, wi) => { const on = activeUrl === w.url; return (
+                      <button key={w.url + wi} type="button" onClick={() => pickCutout(w)} title={(w.color_way || 'All garments') + ' cutout' + (perColor ? ' — ' + _prevColorName : '')} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: 5, borderRadius: 8, border: on ? '2px solid #191919' : '1px solid #d1d5db', background: '#fff', cursor: 'pointer', width: 56 }}>
                         <img src={w.url} alt="" style={{ width: 38, height: 30, objectFit: 'contain' }} />
                         <span style={{ fontSize: 8.5, fontWeight: 800, textTransform: 'uppercase', color: on ? '#191919' : '#64748b', maxWidth: 48, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.color_way || 'All'}</span>
                       </button>
                     ); })}
                   </div>
+                  {perColor && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>Switch colors in the strip below the mockup to set each one.</div>}
                 </div>
               );
             })()}
@@ -10795,9 +10826,20 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // "tap a logo" and "place it" are one gesture (no separate activate step the rep can
   // miss). Removing the active logo hands active off to another logo in the set, so the
   // panel never strands the rep with styles selected and nothing left to apply.
-  const toggleStoreArt = (a) => {
+  const toggleStoreArt = async (a) => {
     const cur = storeArt || [];
     if (inStore(a.id)) {
+      // Removing the art from the store also strips it from every item it was placed on:
+      // an orphaned decoration would otherwise keep the logo on the garment (storefront +
+      // order handoff) with no tile left to manage it. Build one entry per affected item
+      // (all color rows carry the shared decorations) and clear it via the bulk apply.
+      const affected = (catalog || [])
+        .filter((it) => (Array.isArray(it.decorations) ? it.decorations : []).some((d) => d && d.art_id === a.id))
+        .map((it) => ({ id: it.id, decorations: it.decorations.filter((d) => !(d && d.art_id === a.id)) }));
+      if (affected.length && onApplyLogoBulk) {
+        if (!window.confirm(`Remove "${a.name || 'this logo'}" from the store? It's on ${affected.length} item${affected.length === 1 ? '' : 's'} and will be taken off ${affected.length === 1 ? 'it' : 'them'} too.`)) return;
+        await onApplyLogoBulk(affected);
+      }
       const next = cur.filter((x) => x.id !== a.id);
       onSaveStoreArt && onSaveStoreArt(next);
       if (activeId === a.id) setActiveId(next[0]?.id || null);
