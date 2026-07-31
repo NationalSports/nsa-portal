@@ -7475,7 +7475,18 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
+          if(!j.sent_to_coach_at){
+            // Reused / previously-approved art is parked at waiting_approval so the rep confirms it
+            // for THIS order (OrderEditor _newArtSt), but until a real garment mockup exists it can
+            // neither be reviewed nor sent to the coach. skusMissingMockups is the SAME gate the
+            // Send-to-Coach button enforces (OrderEditor openCoachSend), and a digitizer sew-out
+            // proof deliberately does NOT satisfy it — so a job that fails it isn't "ready for
+            // review": it still needs to be SET UP (reuse an approved prior mock, or send it to the
+            // artist for a garment mockup). Surface it as a setup task, not a review one. Once a
+            // mockup is added it clears this gate and lands on the review to-do below. (SO-1727.)
+            if(skusMissingMockups(j,so).length>0){todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at})}
+            else{todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
+          }
           else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
