@@ -81,6 +81,31 @@ describe('smColorSubset — SanMar abbreviated compound colorway (STC21 real fix
   });
 });
 
+// Real fixture: S&S BY6624's pattern colorways as returned by the product API, verbatim from
+// batch NSA 4568's "What S&S lists" panel. The order line abbreviates "Plaid" to "Pl"
+// ("Green/White Pl"); the COLOR_ABBREV expansion (PL→PLAID) lets exactly one of the twelve
+// S&S candidates match, so ssResolveSkus's single-sku rule resolves it — and the other five
+// plaids stay out of the match, so it can never grab the wrong pattern.
+describe('smColorSubset — abbreviated pattern name (S&S BY6624 "Green/White Pl" real fixture)', () => {
+  const ORDER = 'Green/White Pl';
+  const SS_BY6624 = [
+    'Black/ Gold', 'Black/ White', 'Green/ White Plaid', 'Navy/ Columbia Plaid',
+    'Navy/ Gold', 'Navy/ Silver Plaid', 'Purple/ White Plaid', 'Red/ Black Buffalo',
+    'Red/ White', 'Royal/ Silver Plaid', 'Scottish Tartan Plaid', 'Varsity Maroon Oxford Plaid',
+  ];
+  test('"Pl" expands to "Plaid" so "Green/ White Plaid" matches "Green/White Pl"', () => {
+    expect(smColorSubset('Green/ White Plaid', ORDER)).toBe(true);
+  });
+  test('EXACTLY ONE of the twelve S&S candidates matches (resolved uniquely)', () => {
+    const hits = SS_BY6624.filter((c) => smColorSubset(c, ORDER));
+    expect(hits).toEqual(['Green/ White Plaid']);
+  });
+  test('another green+white line does NOT grab the plaid, nor vice versa', () => {
+    expect(smColorSubset('Green/ White Plaid', 'Green/White')).toBe(false); // plaid is more specific
+    expect(smColorSubset('Black/ White', ORDER)).toBe(false);                // black ∉ green/white/plaid
+  });
+});
+
 // smSizeMatch takes ALREADY-normalized tokens (the resolver runs _smSizeNorm first). YS/S etc.
 // are what normSzName yields for "YS"/"S"; these pin the youth→bare fallback for 18500B.
 describe('smSizeMatch — youth order size matches a bare catalog size (18500B "YS" ↔ SanMar "S")', () => {

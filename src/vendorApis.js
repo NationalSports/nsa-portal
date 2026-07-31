@@ -1143,6 +1143,26 @@ const ssResolveSkus = async (descriptors) => {
         if (map[mk]) resolved[d.key] = map[mk];
       }
     }
+    // Safe fuzzy fallback for lines the exact color+size match missed — same rule the SanMar
+    // resolver uses. It closes two vendor-naming gaps once spacing/case is ignored: (1) the
+    // order color carries extra qualifier words S&S abbreviates ("Green/White Pl" vs S&S's
+    // "Green/ White Plaid"); (2) youth sizes labelled "YL"/"YS" against a bare "L"/"S".
+    // smColorSubset is one-directional (S&S's words must be a subset of the order's, never the
+    // reverse) and we assign ONLY when exactly one S&S sku qualifies — any ambiguity leaves the
+    // line blank so it's ordered manually. Never risk shipping the wrong colorway or size.
+    for (const d of mine) {
+      if (resolved[d.key]) continue;
+      const dsz = _smSizeNorm(d.size);
+      const skus = new Set();
+      let hit = '';
+      for (const c of cand) {
+        if (!c.sku) continue;
+        if (!smSizeMatch(dsz, _smSizeNorm(c.size))) continue;
+        if (!smColorSubset(c.color, d.color)) continue;
+        skus.add(c.sku); hit = c.sku;
+      }
+      if (skus.size === 1) resolved[d.key] = hit;
+    }
   }
   return { resolved, candidates };
 };

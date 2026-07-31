@@ -28,6 +28,10 @@ const COLOR_ABBREV = {
   YEL: 'YELLOW',
   SIL: 'SILVER',
   CHAR: 'CHARCOAL',
+  // Pattern name abbreviated on our order lines — S&S spells it out ("Green/White Pl" vs
+  // S&S "Green/ White Plaid"). Only the whole-word token "PL"/"PLD" maps here (tokens are
+  // split on non-alphanumerics first, so "PLAID" itself is never touched).
+  PL: 'PLAID', PLD: 'PLAID',
 };
 
 // Color words, canonicalized: split on any non-alphanumeric run, then expand known SanMar
