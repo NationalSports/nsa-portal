@@ -5861,10 +5861,16 @@ export default function App(){
     setCust(p=>{
       const e=p.find(x=>x.id===c.id);
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
-      // Parent accounts cascade Pantones, thread colors, pricing (tier + markup), and tax (rate + exempt) to all sub-accounts.
+      // Parent accounts cascade Pantones, thread colors, pricing (tier + markup), tax (rate + exempt), and the school logo to all sub-accounts.
       if(!c.parent_id){
         const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,uniform_discount_percent:c.uniform_discount_percent||0,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt,disable_cc_pay:!!c.disable_cc_pay};
-        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.uniform_discount_percent||0)!==inherit.uniform_discount_percent||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt||!!x.disable_cc_pay!==inherit.disable_cc_pay;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        // Logo cascades too, but never clobbers a sub-team's OWN distinct logo: push the parent's logo to
+        // subs that have none, or that were still carrying the parent's PREVIOUS logo (so a parent logo change
+        // propagates). A sub that set its own custom logo keeps it. Mirrors the coach-portal read-time fallback.
+        const _oldParentLogo=e?.logo_url||null,_newParentLogo=c.logo_url||null;
+        next=next.map(x=>{if(x.parent_id!==c.id)return x;
+          const _subLogo=(!x.logo_url||x.logo_url===_oldParentLogo)?_newParentLogo:(x.logo_url||null);
+          const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.uniform_discount_percent||0)!==inherit.uniform_discount_percent||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt||!!x.disable_cc_pay!==inherit.disable_cc_pay||(x.logo_url||null)!==_subLogo;if(differs)subCount++;return differs?{...x,...inherit,logo_url:_subLogo}:x});
         // Shipping address cascade — push parent's shipping address to each sub. If a sub already had a different
         // address, preserve it as a selectable alternate (in alt_billing_addresses) so it isn't lost.
         const pShip={line1:c.shipping_address_line1||'',line2:c.shipping_address_line2||'',city:c.shipping_city||'',state:c.shipping_state||'',zip:c.shipping_zip||''};
