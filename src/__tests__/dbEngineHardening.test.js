@@ -207,3 +207,80 @@ describe('_dbSaveInvoiceInner — invoice_items insert-first swap (fix 4)', () =
     expect(invoiceItemDeletes.length).toBe(0);
   });
 });
+
+// ── Fix 5: _dbPersistNewPoLine — durable create-time write for the "PO dropped from portal" hole ──
+// A just-created Create-PO line must be written to so_item_po_lines immediately, so a two-tab
+// overwrite can't drop it before the debounced whole-SO save flushes (SO-1663, PO 28950 SANBA).
+// It must (a) persist the line when the item exists, (b) no-op when the item isn't in the DB yet,
+// and (c) be idempotent — never write a second row for a (so_item, po_id) that already exists.
+describe('_dbPersistNewPoLine — durable PO line write at creation (fix 5)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const poLine = { po_id: 'PO 35700 SANBA', vendor: 'Adidas', status: 'waiting', L: 3, M: 5, unit_cost: 20.62 };
+
+  test('persists the line when the item exists and no line is present yet', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      so_items: [{ data: { id: 'oi-9' }, error: null }],        // item lookup by so_id+item_index
+      so_item_po_lines: [
+        { data: [], error: null },                              // existence check — none yet
+        { error: null },                                        // the insert
+      ],
+    };
+
+    const { _dbPersistNewPoLine } = require('../lib/dbEngine');
+    await _dbPersistNewPoLine('SO-1663', 2, poLine);
+
+    const inserts = __mockState.calls.filter(c => c.table === 'so_item_po_lines' && c.method === 'insert');
+    expect(inserts.length).toBe(1);
+    const row = inserts[0].args[0];
+    expect(row.po_id).toBe('PO 35700 SANBA');
+    expect(row.so_item_id).toBe('oi-9');
+    expect(row.sizes.M).toBe(5);
+    expect(row.sizes.L).toBe(3);
+    expect(row.sizes.unit_cost).toBe(20.62);
+    // The whole-SO save owns the updated_at/version bump — this durable write must NOT issue its own.
+    expect(__mockState.calls.some(c => c.table === 'sales_orders' && c.method === 'update')).toBe(false);
+  });
+
+  test('no-ops (no insert) when the item is not in the DB yet — brand-new order', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      so_items: [{ data: null, error: null }],                 // item not found
+    };
+
+    const { _dbPersistNewPoLine } = require('../lib/dbEngine');
+    await _dbPersistNewPoLine('SO-NEW', 0, poLine);
+
+    expect(__mockState.calls.some(c => c.table === 'so_item_po_lines' && c.method === 'insert')).toBe(false);
+  });
+
+  test('is idempotent — does not write a second row when the (item, po_id) already exists', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      so_items: [{ data: { id: 'oi-9' }, error: null }],
+      so_item_po_lines: [{ data: [{ id: 'existing-1' }], error: null }], // already there
+    };
+
+    const { _dbPersistNewPoLine } = require('../lib/dbEngine');
+    await _dbPersistNewPoLine('SO-1663', 2, poLine);
+
+    expect(__mockState.calls.some(c => c.table === 'so_item_po_lines' && c.method === 'insert')).toBe(false);
+  });
+
+  test('ignores calls with no po_id or a null item index (nothing to persist)', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = { so_items: [{ data: { id: 'oi-9' }, error: null }] };
+
+    const { _dbPersistNewPoLine } = require('../lib/dbEngine');
+    await _dbPersistNewPoLine('SO-1663', null, poLine);
+    await _dbPersistNewPoLine('SO-1663', 2, { vendor: 'Adidas' }); // no po_id
+
+    expect(__mockState.calls.length).toBe(0);
+  });
+});
