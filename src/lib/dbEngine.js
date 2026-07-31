@@ -566,7 +566,12 @@ const _dbLoad = async (opts={}) => {
     // diffing every SO as "changed" → a mass background re-save whose stale (childless) payloads trip the per-SO
     // restore guard and fire one data-loss alert per SO (the 2026-06-30 ~340-email storm).
     const _decoTimedOut=_lastLoadTimedOut.has('estimate_item_decorations')||_lastLoadTimedOut.has('so_item_decorations')||_lastLoadTimedOut.has('so_items')||_lastLoadTimedOut.has('estimate_items')||_lastLoadTimedOut.has('so_jobs')||_lastLoadTimedOut.has('so_art_files')||_lastLoadTimedOut.has('estimate_art_files')||_lastLoadTimedOut.has('so_item_pick_lines')||_lastLoadTimedOut.has('so_item_po_lines');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_coreOnly:coreOnly};
+    // Parent-table timeout flag (parallel to _decoTimedOut, which only covers order/estimate CHILDREN).
+    // The `customers` parent can itself time out under load and come back EMPTY with error:null (408) —
+    // hasData stays true off sales_orders, so the load looks successful and the empty list would blank
+    // every customer to "Unknown". The initial-load apply reads this to keep the cached list instead.
+    const _custTimedOut=_lastLoadTimedOut.has('customers');
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {

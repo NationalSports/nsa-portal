@@ -2456,10 +2456,23 @@ export default function App(){
               if(_obConflicts.length){setOutboxConflicts(_obConflicts);console.warn('[Outbox]',_obConflicts.length,'unsaved edit(s) conflict with newer server data — awaiting user decision')}
             }
           }catch(e){console.error('[Outbox] rehydrate failed:',e)}
-          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
+          // Customers-timeout guard (2026-07-31): when the `customers` query hits the 20s per-table
+          // timeout under load it returns EMPTY with error:null (dbEngine _safeQuery → 408), yet hasData
+          // stays true off sales_orders — so the load looks successful and this empty list would blank
+          // every order's customer to "Unknown"/blank across the app until the next FULL poll refills it
+          // (~20 min). That is the artist-reported "portal shows Unknown during busy hours". When it
+          // happens, keep the last-known-good cache (mount-time `cust`, seeded from localStorage) in BOTH
+          // state AND the _diffSave baseline (_dbSnap.cust) so the preserved list is never seen as a local
+          // edit and re-saved, then let the poll heal it. Mirrors the poll guard (`if(d.customers.length)
+          // setCust(...)`, ~line 2878). A genuinely empty customers table (no timeout) still applies.
+          const _custTimedOutEmpty=d._custTimedOut&&!d.customers.length&&cust.length>0;
+          const _custLoaded=_custTimedOutEmpty?cust:d.customers;
+          if(_custTimedOutEmpty)console.warn('[DB] Initial load: customers query timed out — kept '+cust.length+' cached customers (poll will refill)');
+          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
           setREPS(d.team.length?d.team:DEFAULT_REPS);
           // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
-          if(_dbSaveFailedIds.size){
+          if(_custTimedOutEmpty){/* customers timed out — state already holds the cached list; leave it */}
+          else if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(_obApplied[c.id]||prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
