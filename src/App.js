@@ -707,14 +707,27 @@ const checkBrevoEmailOpens=async(messageId)=>{
 
 // Circuit breaker: track consecutive poll failures to implement exponential backoff
 let _pollConsecutiveFailures=0;
-const _POLL_BASE_INTERVAL=120000;// 120s backstop. Realtime pushes live changes instantly and a
-// reload also fires on tab-focus (see onVis), so the poll is only a safety net for missed events /
-// cross-device sync — halving its frequency ~halves steady-state poll query volume.
+const _POLL_BASE_INTERVAL=120000;// 120s backstop when realtime is degraded/absent — the poll is then the only
+// cross-tab/cross-device freshness path, so keep it tight.
+const _POLL_HEALTHY_INTERVAL=300000;// 5min backstop when EVERY realtime channel is SUBSCRIBED: the operational
+// tables refresh via realtime push (+ tab-focus reload via onVis), so the poll is a pure safety net. The
+// per-request set_config/search_path cost is ~13% of DB CPU and scales with poll frequency × open tabs, so
+// backing off to 5min while realtime is delivering roughly halves steady-state poll volume with no freshness
+// hit. Flips straight back to _POLL_BASE_INTERVAL the instant any channel errors/closes (see _realtimeHealthy).
 const _POLL_MAX_INTERVAL=300000;// 5min max backoff
-const _getPollInterval=()=>Math.min(_POLL_BASE_INTERVAL*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
-// Tiered polling: core tables every 60s, full sync (including cold tables) every 5th cycle (~5 min)
-let _pollCycle=0;
-const _FULL_SYNC_EVERY=10;// every 10th poll = ~10 minutes (cold tables change rarely; realtime covers the rest)
+// True only while every realtime channel is SUBSCRIBED (maintained by the realtime effect's subscribe
+// callbacks). Conservative on purpose: any single channel drop flips it false so the poll tightens back to
+// the 120s backstop until realtime fully recovers.
+let _realtimeHealthy=false;
+const _getPollInterval=()=>Math.min((_realtimeHealthy?_POLL_HEALTHY_INTERVAL:_POLL_BASE_INTERVAL)*Math.pow(2,_pollConsecutiveFailures),_POLL_MAX_INTERVAL);
+// Full sync (cold tables: 60k product catalog, customers + their child tables, vendors, omg, issues, and the
+// heavy app_state image-fallback rows) is gated on WALL TIME, not poll-cycle count, so the realtime-aware
+// interval above can never balloon the gap between heavy catalog/app_state pulls. Cold data is daily-sync /
+// low-churn, so 30min freshness is ample; this also ~halves those heavy pulls vs the old every-10th-cycle
+// (~20min at 120s) cadence. _lastFullSyncAt is seeded at initial-load success and advanced only after a full
+// poll actually applies data (past the hasData + _decoTimedOut guards).
+const _FULL_SYNC_MS=1800000;// 30 min
+let _lastFullSyncAt=0;
 
 // ─── Adidas B2B Inventory Fetch Helpers ───
 // Adidas Cowork publishes sizes with garment-specific suffixes that don't match
@@ -2419,7 +2432,7 @@ export default function App(){
           // If decoration queries timed out during initial load, warn user — data is incomplete
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
           // Supabase has data — use it as source of truth
-          _dbLoadSuccess.current=true;_syncDbMaxIds();
+          _dbLoadSuccess.current=true;_syncDbMaxIds();_lastFullSyncAt=Date.now();// initial load already pulled cold tables — don't full-sync again for _FULL_SYNC_MS
           // ─── Durable-outbox rehydrate ───
           // Failed edits persisted by dbEngine's outbox re-enter the loaded arrays HERE — before the
           // snapshot and the setters below — but only when _outboxGate proves the server hasn't moved
@@ -2703,9 +2716,15 @@ export default function App(){
       // on every product realtime event consumed ~34% of DB CPU. The 60s poll keeps
       // product prices/skus fresh within a minute — fast enough for catalog data.
       let _rtErrorLogged=false;
-      ['estimates','sales_orders','invoices','messages','customers','so_item_pick_lines','assigned_todos','todo_comments'].forEach(table=>{
+      const _RT_TABLES=['estimates','sales_orders','invoices','messages','customers','so_item_pick_lines','assigned_todos','todo_comments'];
+      const _rtSubbed=new Set();// tables whose realtime channel is currently SUBSCRIBED
+      const _syncRtHealth=()=>{_realtimeHealthy=_rtSubbed.size===_RT_TABLES.length};
+      _RT_TABLES.forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload(table)}).subscribe((status,err)=>{
-          if(status==='SUBSCRIBED')return;
+          if(status==='SUBSCRIBED'){_rtSubbed.add(table);_syncRtHealth();return}
+          // Any non-subscribed status means this table is no longer receiving live pushes — drop it from the
+          // healthy set so _getPollInterval tightens back to the 120s backstop until the channel recovers.
+          _rtSubbed.delete(table);_syncRtHealth();
           if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'){
             if(!_rtErrorLogged){console.warn('[Realtime] Subscription issue for',table,':',status,err?.message||'');_rtErrorLogged=true}
           }
@@ -2722,7 +2741,7 @@ export default function App(){
       document.addEventListener('visibilitychange',onVis);
       channels._onVis=onVis;
     }
-    return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
+    return()=>{cancelled=true;_realtimeHealthy=false;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
 
   // ─── Deploy-aware auto-reload ───
@@ -2804,9 +2823,10 @@ export default function App(){
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
       if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');schedulePoll();return}
       try{
-        // Tiered polling: load only core tables most of the time, full sync every 5th cycle
-        const coreOnly=(_pollCycle%_FULL_SYNC_EVERY)!==0;
-        _pollCycle++;
+        // Tiered polling: load only core tables most of the time; do a full sync (cold tables) at most once
+        // per _FULL_SYNC_MS of wall time so the realtime-aware poll interval can't change how often the heavy
+        // catalog/app_state pulls happen.
+        const coreOnly=(Date.now()-_lastFullSyncAt)<_FULL_SYNC_MS;
         const d=await _dbLoad({coreOnly});
         if(!d||!d.hasData){
           _pollConsecutiveFailures=Math.min(_pollConsecutiveFailures+1,6);
@@ -2818,6 +2838,10 @@ export default function App(){
         _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
         if(d._decoTimedOut){console.warn('[DB] Poll skipped — a child-table query timed out, preserving local data');schedulePoll();return}
+        // Record a completed full sync (cold tables were applied) so the wall-time gate spaces out the next
+        // heavy catalog/app_state pull. Only here — past the hasData + _decoTimedOut guards — did a full poll
+        // actually reach the state setters below.
+        if(!d._coreOnly)_lastFullSyncAt=Date.now();
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
