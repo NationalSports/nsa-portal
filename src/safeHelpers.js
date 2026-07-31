@@ -587,7 +587,13 @@ export const skusMissingMockups = (job, so) => {
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
     if (!it) return;
-    safeDecos(it).forEach(d => {
+    // Scope to the decorations THIS job item owns (deco_idxs). On an art-split line each
+    // sibling job owns ONE of the line's art decorations; pulling in the others would let a
+    // sibling design's mockup satisfy (or mis-report) this design's gate. dis == null keeps
+    // the legacy fall-back to every decoration on the line.
+    const dis = jobItemDecoIdxs(gi);
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
       if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id);
     });
   });
@@ -598,8 +604,9 @@ export const skusMissingMockups = (job, so) => {
     // mockup screen drops these too (App.js itemDetails: `if(!it)return null`), so
     // gating on a garment that can't be shown or mocked would deadlock approval.
     if (!it) return;
+    const dis = jobItemDecoIdxs(gi);
     const decoArtIds = [...new Set(safeDecos(it)
-      .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
@@ -700,15 +707,22 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
     if (!it) return;
-    safeDecos(it).forEach(d => { if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id); });
+    // Only the decorations THIS job item owns (deco_idxs). An art-split garment carries a
+    // separate art decoration for each design (Friars / 2 Col / Attack), one per sibling job;
+    // without this scope the 2-Col job's set would swallow the sibling designs' art and the
+    // check would surface — and gate on — the WRONG design's mocks (SO-1131). Legacy items
+    // with unknown coverage (dis == null) still fall back to every decoration on the line.
+    const dis = jobItemDecoIdxs(gi);
+    safeDecos(it).forEach((d, di) => { if (dis && !dis.includes(di)) return; if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id); });
   });
   const urlOf = f => typeof f === 'string' ? f : (f?.url || '');
   const out = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
     if (!it) return; // live SO line gone (deleted/reindexed) — nothing to mock
+    const dis = jobItemDecoIdxs(gi);
     const decoArtIds = [...new Set(safeDecos(it)
-      .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds

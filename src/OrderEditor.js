@@ -11197,7 +11197,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const _scopedJob=g._existingJobId?safeJobs(o).find(jj=>jj.id===g._existingJobId):null;
               if(!_scopedJob||!(_scopedJob.art_status==='art_complete'||PROD_FILES_STATUSES.includes(_scopedJob.art_status)))return null;
               const _aids=[...new Set(_gi2.map(it=>it.art_file_id).filter(Boolean))];
-              const _pseudo={_art_ids:_aids,art_file_id:_aids[0],items:_gi2.map(it=>({item_idx:it.item_idx,sku:it.sku,color:it.color,name:it.name}))};
+              // Carry each wizard item's deco_idxs into the pseudo-job so garmentsNeedingMockCheck
+              // scopes an art-split garment to THIS group's design only. Without it the split
+              // garment's sibling designs (e.g. Attack Everything on a 2-Col job) leak in as
+              // "reuse an approved mock" cards for the wrong artwork (SO-1131).
+              const _pseudo={_art_ids:_aids,art_file_id:_aids[0],items:_gi2.map(it=>({item_idx:it.item_idx,deco_idx:it.deco_idx,deco_idxs:Array.isArray(it.deco_idxs)&&it.deco_idxs.length?it.deco_idxs:(it.deco_idx!=null?[it.deco_idx]:undefined),sku:it.sku,color:it.color,name:it.name}))};
               const _rc=garmentsNeedingMockCheck(_pseudo,o,priorMocks);
               if(!_rc.length)return null;
               return<div style={{marginBottom:10,padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
