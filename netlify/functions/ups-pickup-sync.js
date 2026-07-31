@@ -8,12 +8,17 @@
 // Two ways a package leaves "Awaiting Pickup" here:
 //   1. UPS scan check — for UPS (1Z…) tracking numbers, ask UPS's public tracking
 //      endpoint whether the package has actually been scanned (real confirmation).
-//   2. Age backstop — for ANY carrier (FedEx, USPS, or a UPS number the scan check
-//      couldn't confirm), a package still awaiting pickup PICKUP_AGE_CLEAR_DAYS days
-//      after its ship date is auto-cleared. Carriers scan daily, so a tracked label
-//      that old has certainly been picked up. This is what keeps FedEx from lingering
-//      forever — FedEx has no free tracking endpoint we can query (it bot-blocks the
-//      public one and gates the official API behind OAuth), so time is the signal.
+//      NOTE: UPS has started tarpitting/blocking server-side callers of that free
+//      endpoint (it hangs instead of answering), so this is now best-effort and
+//      time-bounded — the age backstop below is the reliable clear. Restoring real
+//      UPS confirmation would mean moving to UPS's official OAuth Track API.
+//   2. Age backstop — for ANY carrier (UPS, FedEx, USPS), a package still awaiting
+//      pickup PICKUP_AGE_CLEAR_DAYS days after its ship date is auto-cleared.
+//      Carriers scan daily, so a tracked label that old has certainly been picked
+//      up. This is what keeps packages from lingering forever now that neither UPS
+//      nor FedEx exposes a free tracking endpoint we can query server-side (FedEx
+//      bot-blocks the public one and gates the official API behind OAuth). Time is
+//      the signal.
 //
 // Confirmed packages get carrier_picked_up=true + pickup_date + pickup_source written
 // back to Supabase, which moves them from "Awaiting Pickup" to "Shipped" in the view.
@@ -25,6 +30,14 @@
 
 const MAX_CHECKS_PER_RUN = 150; // sanity cap on UPS lookups per run
 const AGE_CLEAR_DAYS = Math.max(1, parseInt(process.env.PICKUP_AGE_CLEAR_DAYS || '4', 10) || 4);
+
+// UPS's free tracking endpoint now tarpits/blocks server-side callers (it hangs
+// until the function is killed instead of answering). Bound it hard so a broken
+// UPS never stalls the run: each call is aborted after UPS_CALL_TIMEOUT_MS, and
+// once UPS_TIME_BUDGET_MS total has been spent trying UPS we stop attempting it
+// for the rest of the run and let the (free, instant) age backstop do the work.
+const UPS_CALL_TIMEOUT_MS = 6000;
+const UPS_TIME_BUDGET_MS = 15000;
 
 // Match the client's updated_at convention (locale string, Pacific time) so
 // open tabs' poll-merge sees a changed timestamp and refreshes the SO.
@@ -54,9 +67,12 @@ function agedOut(shp, ageDays = AGE_CLEAR_DAYS, now = Date.now()) {
 }
 
 // Same status logic as netlify/functions/ups-tracking.js (the browser endpoint).
+// AbortSignal.timeout keeps a hanging UPS endpoint from stalling the whole run —
+// on timeout the fetch throws, which the caller treats as "not confirmed".
 async function upsStatus(tracking) {
   const response = await fetch('https://webapis.ups.com/track/api/Track/GetStatus?loc=en_US', {
     method: 'POST',
+    signal: AbortSignal.timeout(UPS_CALL_TIMEOUT_MS),
     headers: {
       'Content-Type': 'application/json',
       'User-Agent': 'Mozilla/5.0',
@@ -118,6 +134,8 @@ exports.handler = async () => {
 
   let checked = 0, confirmed = 0, updatedSOs = 0, errors = 0;
   const cache = new Map(); // tracking number -> UPS result (dedupe across shipments)
+  const startedAt = Date.now();
+  const upsBudgetLeft = () => (Date.now() - startedAt) < UPS_TIME_BUDGET_MS;
 
   let agedConfirmed = 0;
   for (const row of rows) {
@@ -139,9 +157,12 @@ exports.handler = async () => {
         continue;
       }
 
-      // 1) UPS real-time scan (only for 1Z numbers, within the per-run lookup budget).
+      // 1) UPS real-time scan (only for 1Z numbers, within the per-run lookup + time
+      // budgets). A cached result is always honored — only NEW lookups respect the
+      // time budget, so once UPS has burned the budget we stop calling it but still
+      // reuse any answer we already got this run.
       let pickedUp = false, statusStr = '', source = '';
-      if (/^1Z/i.test(tn) && checked < MAX_CHECKS_PER_RUN) {
+      if (/^1Z/i.test(tn) && checked < MAX_CHECKS_PER_RUN && (cache.has(tn) || upsBudgetLeft())) {
         let res = cache.get(tn);
         if (!res) {
           try {
