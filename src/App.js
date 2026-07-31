@@ -13457,9 +13457,13 @@ export default function App(){
             say so instead of showing confident wrong numbers. */}
         {(()=>{const _rptSrc={sales_orders:'sales orders',invoices:'invoices',customer_invoices:'invoice history',estimates:'quotes',customers:'customers'};const _trunc=Object.keys(_rptSrc).filter(t=>_truncatedTables.has(t));return _trunc.length?<div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',color:'#92400E',padding:'10px 20px',fontSize:13,fontWeight:600}}>⚠️ Report totals are incomplete: {_trunc.map(t=>_rptSrc[t]).join(', ')} exceeded the row-load cap, so the oldest rows are missing from every number on this page.</div>:null})()}
         {/* app bar */}
-        <div style={{background:'var(--navy)',position:'relative',overflow:'hidden'}}>
-          <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)',pointerEvents:'none'}}/>
-          <div style={{position:'absolute',top:0,right:0,width:220,height:'100%',background:'var(--red)',opacity:.14,clipPath:'polygon(38% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+        {/* No overflow:hidden here — it would clip the scope/export dropdowns. Decorative
+            backgrounds are clipped by their own inset wrapper instead. */}
+        <div style={{background:'var(--navy)',position:'relative'}}>
+          <div style={{position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none'}}>
+            <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)'}}/>
+            <div style={{position:'absolute',top:0,right:0,width:220,height:'100%',background:'var(--red)',opacity:.14,clipPath:'polygon(38% 0,100% 0,100% 100%,0 100%)'}}/>
+          </div>
           <div style={{maxWidth:1360,margin:'0 auto',padding:'10px 20px',display:'flex',alignItems:'center',gap:16,position:'relative',flexWrap:'wrap',minHeight:44}}>
             <span style={{width:38,height:38,borderRadius:6,background:'var(--red)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:15,color:'#fff',transform:'skewX(-6deg)',letterSpacing:.5}}><span style={{transform:'skewX(6deg)'}}>NSA</span></span>
             <div style={{display:'flex',flexDirection:'column',lineHeight:1}}>
