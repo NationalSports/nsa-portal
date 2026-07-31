@@ -126,12 +126,14 @@ function calcSOStatus(ord) {
 
   let totalSz = 0, coveredSz = 0, fulfilledSz = 0;
   safeItems(ord).forEach(it => {
-    // Topstar digitizing/vector billing lines (_topstar) are covered by their SO-level deco PO
+    // Topstar digitizing/vector billing lines are covered by their SO-level deco PO
     // (so.deco_pos) — an item-level PO is never created for them, so counting them as goods
     // held the whole SO in need_order forever ("Items need ordering — Create PO" on every
     // order with a digitizing PO). Count them covered+fulfilled: the file service has its own
     // tracking on the deco PO and must not gate the garment fulfillment ladder.
-    if (it._topstar) {
+    // Mirrors constants.js isTopstarLine — match the persisted sku marker, not just the
+    // in-memory _topstar flag (which is never saved to so_items, so it's gone after a reload).
+    if (it._topstar || it.sku === 'DIGITIZING') {
       let units = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
       if (units === 0) units = safeNum(it.est_qty);
       totalSz += units; coveredSz += units; fulfilledSz += units;

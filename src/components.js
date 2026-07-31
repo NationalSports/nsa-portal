@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
-import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
+import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isTopstarLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment } from './utils';
 
@@ -409,6 +409,17 @@ function calcSOStatus(ord,opts){
   // Fully automatic SO status based on item + job state
   let totalSz=0,coveredSz=0,fulfilledSz=0;
   safeItems(ord).forEach(it=>{
+    // Topstar digitizing/vector billing lines (sku 'DIGITIZING') are covered by their SO-level deco
+    // PO (so.deco_pos) — an item-level PO is never created for them, so counting them as goods held
+    // the whole SO in need_order forever ("Items need ordering — Create PO" on every order with a
+    // digitizing PO). Count them covered+fulfilled: the file service tracks on the deco PO and must
+    // not gate the garment fulfillment ladder.
+    if(isTopstarLine(it)){
+      let units=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      if(units===0)units=safeNum(it.est_qty);
+      totalSz+=units;coveredSz+=units;fulfilledSz+=units;
+      return;
+    }
     let entries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
     // qty_only items hold their quantity in est_qty (sizes is empty); POs/picks track them under the 'QTY' key
     if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
