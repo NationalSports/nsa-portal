@@ -1,6 +1,6 @@
 // Shared supplier-bill anomaly rules — the post-push review net (client pill,
 // ledger resolution.flags, and the daily anomaly email all use these).
-const { billAnomalyFlags, isAdidasUaVendor } = require('../lib/billAnomalies');
+const { billAnomalyFlags, isAdidasUaVendor, duplicateBillDetail } = require('../lib/billAnomalies');
 
 const codes = (p) => billAnomalyFlags(p).map((f) => f.code);
 
@@ -53,5 +53,31 @@ describe('sharp price / overage / total mismatch', () => {
     expect(billAnomalyFlags(null)).toEqual([]);
     expect(billAnomalyFlags({})).toEqual([]);
     expect(codes({ vendor: 'UNDER ARMOUR', merchandise_total: 'abc', freight: 'x', doc_total: null })).toEqual([]);
+  });
+});
+
+describe('duplicateBillDetail (double-bill guard)', () => {
+  const native = { doc: '6165663793', tracking: '530220075675', sizes: { L: 4, S: 4 }, cost: 375 };
+  it('catches the same shipment re-billed under a different doc number (the 2026-07 incident)', () => {
+    // SportsInc wrapper doc 24543535 re-bills native invoice 6165663793 — different doc, same tracking + sizes.
+    const dup = { doc: '24543535', tracking: '530220075675', sizes: { L: 4, S: 4 }, cost: 375 };
+    expect(duplicateBillDetail([native], dup)).toBe(native);
+  });
+  it('catches the exact same document applied twice', () => {
+    expect(duplicateBillDetail([native], { ...native })).toBe(native);
+  });
+  it('key order in the size map does not matter', () => {
+    expect(duplicateBillDetail([native], { doc: 'X', tracking: '530220075675', sizes: { S: 4, L: 4 } })).toBe(native);
+  });
+  it('does NOT block a different shipment (different tracking) even with the same sizes', () => {
+    expect(duplicateBillDetail([native], { doc: 'Y', tracking: '999', sizes: { L: 4, S: 4 } })).toBeNull();
+  });
+  it('does NOT block split-billing one shipment across different sizes (same tracking, different sizes)', () => {
+    expect(duplicateBillDetail([native], { doc: 'Z', tracking: '530220075675', sizes: { M: 2 } })).toBeNull();
+  });
+  it('does not treat blank tracking+doc as a match, and tolerates empty/garbage input', () => {
+    expect(duplicateBillDetail([{ tracking: '', doc: '', sizes: { L: 1 } }], { tracking: '', doc: '', sizes: { L: 1 } })).toBeNull();
+    expect(duplicateBillDetail(null, native)).toBeNull();
+    expect(duplicateBillDetail([native], null)).toBeNull();
   });
 });

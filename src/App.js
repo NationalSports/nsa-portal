@@ -25,7 +25,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
-import { billAnomalyFlags } from './lib/billAnomalies';
+import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
@@ -25359,6 +25359,7 @@ export default function App(){
     // batch-level only (never written under a guessed key). freightBySO: optional {soId:$} applied
     // as _inbound_freight in the same single save per SO.
     const _applyBillToBatchSOs=(bill,batch,allocs,freightBySO)=>{
+      const _dupSkips=[];// shipments already billed to a line — skipped, not double-counted
       const batchKeys=[batch?.po_number,batch?.id].filter(Boolean).map(x=>String(x).toLowerCase());
       const fBySO=freightBySO||{};
       if(!batchKeys.length&&!Object.keys(fBySO).length)return;
@@ -25415,6 +25416,10 @@ export default function App(){
             if(!hasLine)return it;
             return{...it,po_lines:(it.po_lines||[]).map((pl,pi)=>{
               const e=t[ii+'|'+pi];if(!e)return pl;
+              // Duplicate-shipment guard: this (tracking/doc + sizes) is already on the line —
+              // skip re-billing it rather than double-counting (see duplicateBillDetail).
+              const _dup=duplicateBillDetail(pl._bill_details,{doc:bill.doc_number,tracking:bill.tracking,sizes:e.sizes});
+              if(_dup){_dupSkips.push((it.sku||'?')+' '+(pl.po_id||'')+' — '+(bill.tracking?'tracking '+bill.tracking:'doc '+bill.doc_number)+' already billed'+(_dup.doc&&_dup.doc!==bill.doc_number?' (as '+_dup.doc+')':''));return pl;}
               const newBilled={...(pl.billed||{})};
               Object.entries(e.sizes).forEach(([sz,q])=>{newBilled[sz]=(newBilled[sz]||0)+q});
               const trackNums=[...(pl.tracking_numbers||[])];
@@ -25429,6 +25434,8 @@ export default function App(){
           return updatedSO;
         });
       });
+      // setSOs runs its updater asynchronously; read the collected skips after commit.
+      if(_dupSkips.length)setTimeout(()=>nf('Skipped '+_dupSkips.length+' already-billed shipment(s): '+_dupSkips.join('; '),'error'),0);
     };
 
     // Apply a bill using the wizard's explicit per-line mappings (SKU+size+color resolved against a
@@ -25438,6 +25445,7 @@ export default function App(){
     const _applyBillByMappings=(bill)=>{
       const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
       if(!maps.length)return false;
+      const _dupSkips=[];// shipments already billed to a line — skipped, not double-counted
       // FULL landed cost reaches the order: the SI upcharge line rides in the freight
       // allocation (it was already in the QB total but never hit SO costing/commissions).
       const billFreight=safeNum(bill.freight||0)+safeNum(bill.si_upcharge||0);
@@ -25489,6 +25497,11 @@ export default function App(){
               if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
               const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
               lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
+              // Duplicate-shipment guard: this (tracking/doc + sizes) is already on the line —
+              // skip re-billing it rather than double-counting (see duplicateBillDetail). Also
+              // suppresses the overage qty-fix below, so a re-imported bill can't inflate ordered.
+              const _dup=duplicateBillDetail(po._bill_details,{doc:bill.doc_number,tracking:bill.tracking,sizes:sizesAdded});
+              if(_dup){_dupSkips.push((it.sku||'?')+' '+(po.po_id||'')+' — '+(bill.tracking?'tracking '+bill.tracking:'doc '+bill.doc_number)+' already billed'+(_dup.doc&&_dup.doc!==bill.doc_number?' (as '+_dup.doc+')':''));return po;}
               // Approved overage → the bill is the truth about what was bought: raise this
               // line's ordered qty to the billed total (only sizes THIS bill touched, only
               // when the human accepted the flagged overage). Audit in _qty_corrections; the
@@ -25537,6 +25550,7 @@ export default function App(){
           _billApplySave(bill,updatedSO);
           return updatedSO;
         }));
+        if(_dupSkips.length)setTimeout(()=>nf('Skipped '+_dupSkips.length+' already-billed shipment(s): '+_dupSkips.join('; '),'error'),0);
         return true;
       }
 
