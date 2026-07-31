@@ -10916,7 +10916,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Create an art request whenever the artist path is chosen — including for art that was
           // already approved (reused art being sent back for a fresh mock), which otherwise would
           // skip the request and stay art_complete.
-          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved));
+          // BUT don't re-request art that is already production-ready (approved AND prod files
+          // confirmed → would land art_complete). That art is finished, not "reused for a fresh
+          // mock"; re-requesting it bounced approved, prod-ready jobs back to "Art Requested" on
+          // every release (SO-1468/JOB-1468-01: rep saw Needs Art/Art Requested after approval).
+          // Approved-but-not-yet-prod-ready art still gets a fresh request; a rep who wants a new
+          // mock on finished art can still request one by hand.
+          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved&&!allProdFiles));
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
