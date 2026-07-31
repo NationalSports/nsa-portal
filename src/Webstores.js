@@ -6666,23 +6666,41 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           <div style={card}>
             <div style={cardTitle}>Color <span style={cardHint}>· change one color, or recolor the whole logo</span></div>
             {/* Color-way switcher — flip the placed logo between the art's real CW cutouts
-                (the artist-made variants) without re-adding it. Explicit pick: stamps
-                color_way_id/cw_pick and clears cw_by_color so exactly this cutout renders. */}
+                (the artist-made variants) without re-adding it. Decorations are shared across
+                every garment color in the variant group, so a global stamp would force one
+                cutout onto ALL colors. With multiple colors we instead scope the pick to the
+                previewed color via cw_by_color (which decoUrlForColor honors on the stage,
+                storefront and order handoff); a single-color item still stamps globally. */}
             {(() => {
               const art = (library || []).find((a) => a.id === current.art_id);
               const wls = normalizeWebLogos(art && art.web_logos, art && art.color_ways).filter((w) => w && w.url);
               if (wls.length < 2) return null;
+              const perColor = (colorRows || []).length > 1 && !!_prevColorName;
+              // The cutout resolved for the color currently on the stage — highlights the
+              // active tile per-color instead of by the shared base art_url.
+              const activeUrl = decoUrlForColor(current, _prevColorName, wls);
+              const pickCutout = (w) => {
+                if (perColor) {
+                  const cur = decos[sel]; if (!cur) return;
+                  const m = { ...(cur.cw_by_color || {}) };
+                  m[colorKeyOf(_prevColorName)] = w.color_way_id ? { url: w.url, color_way_id: w.color_way_id } : w.url;
+                  update(sel, { cw_by_color: m });
+                } else {
+                  update(sel, { art_url: w.url, orig_url: w.url, cw_pick: true, color_way_id: w.color_way_id || null, color_label: w.color_way || 'original', cw_by_color: null });
+                }
+              };
               return (
                 <div style={{ marginBottom: 9 }}>
-                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 5 }}>Color way · tap to switch the cutout</div>
+                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 5 }}>Color way · {perColor ? <>tap to set the cutout for <b>{_prevColorName}</b></> : 'tap to switch the cutout'}</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {wls.map((w, wi) => { const on = current.art_url === w.url; return (
-                      <button key={w.url + wi} type="button" onClick={() => update(sel, { art_url: w.url, orig_url: w.url, cw_pick: true, color_way_id: w.color_way_id || null, color_label: w.color_way || 'original', cw_by_color: null })} title={(w.color_way || 'All garments') + ' cutout'} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: 5, borderRadius: 8, border: on ? '2px solid #191919' : '1px solid #d1d5db', background: '#fff', cursor: 'pointer', width: 56 }}>
+                    {wls.map((w, wi) => { const on = activeUrl === w.url; return (
+                      <button key={w.url + wi} type="button" onClick={() => pickCutout(w)} title={(w.color_way || 'All garments') + ' cutout' + (perColor ? ' — ' + _prevColorName : '')} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: 5, borderRadius: 8, border: on ? '2px solid #191919' : '1px solid #d1d5db', background: '#fff', cursor: 'pointer', width: 56 }}>
                         <img src={w.url} alt="" style={{ width: 38, height: 30, objectFit: 'contain' }} />
                         <span style={{ fontSize: 8.5, fontWeight: 800, textTransform: 'uppercase', color: on ? '#191919' : '#64748b', maxWidth: 48, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.color_way || 'All'}</span>
                       </button>
                     ); })}
                   </div>
+                  {perColor && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>Switch colors in the strip below the mockup to set each one.</div>}
                 </div>
               );
             })()}
