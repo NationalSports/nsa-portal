@@ -1193,8 +1193,15 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // One reusable set of size buttons for a variant row. A click selects both the
   // variant (its SKU) and the size, so a fit row resolves to the right SKU.
   const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {
-    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = isTracked(c) ? (q <= 0 && !soon && !isIncoming(c)) : false; const up = sizeUp(c, sz);
-    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz;
+    // A not-tracked / made-to-order item, or a tracked style whose stock hasn't
+    // synced yet, sells every size — sizesFor lists them all and checkout skips the
+    // stock guard (webstore-checkout: both stock maps null → allowed). Never strike
+    // these out, or the size can't be picked and the item can't be added to cart
+    // (the reported "sold out but sizes shown" webstore bug on unsynced styles).
+    const alwaysSell = !isTracked(c) || !hasStockData(c);
+    const out = !alwaysSell && q <= 0 && !soon && !isIncoming(c); const up = sizeUp(c, sz);
+    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[alwaysSell ? '' : (q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock'), up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
       style={{ ...sizeBtn(theme, selB), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
   });
   const nameUp = Number(p.name_upcharge) || 0;
