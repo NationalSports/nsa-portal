@@ -9,7 +9,7 @@ import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
 import { buildSsOrdersQuery } from './ssOrders';
 import { normSzName } from './pricing';
-import { smColorSubset, smSizeMatch } from './lib/vendorColorMatch';
+import { smColorSubset, smSizeMatch, ssStyleSearchVariants } from './lib/vendorColorMatch';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -1094,65 +1094,53 @@ const ssPutCrossRef = async (yourSku, identifier) => {
 // S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
 // order lines carry style/color/size, so resolve the Sku live from the Products API.
 // CORRECTNESS RULE: only fill a Sku on an exact color+size match — never guess, so an
-// unmatched line stays blocked (caller falls back to manual ordering).
+// unmatched line stays blocked (caller falls back to manual ordering). Our style codes are
+// often SanMar's brand-prefixed form (Bella+Canvas "BC3945", Next Level "NL3600") while S&S
+// catalogs the bare manufacturer number ("3945", "3600"); ssStyleSearchVariants supplies the
+// as-is code plus the looser bare-number fallback to try (see lib/vendorColorMatch).
 const ssResolveSkus = async (descriptors) => {
   const resolved = {};
   const candidates = {};
   const styles = [...new Set((descriptors || []).map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
-  for (const style of styles) {
-    let items = [];
+
+  // Fetch a style's S&S products by a search code. S&S /Products?style= expects a numeric
+  // styleID, not the style name — so resolve the styleID first via /Styles?search= (the same
+  // path our other S&S lookups use), then fetch that style's products. `strict` requires an
+  // exact part-number/style-name match; otherwise the first returned style is accepted.
+  const fetchItems = async (searchCode, strict) => {
     try {
-      // S&S /Products?style= expects a numeric styleID, not the style name — so resolve
-      // the styleID first via /Styles?search= (the same path our other S&S lookups use),
-      // then fetch that style's products.
-      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(style));
+      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(searchCode));
       const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
-      const match = sa.find(s => _smNorm(s.partNumber) === _smNorm(style) || _smNorm(s.styleName) === _smNorm(style)) || sa[0];
+      const exact = sa.find(s => _smNorm(s.partNumber) === _smNorm(searchCode) || _smNorm(s.styleName) === _smNorm(searchCode));
+      const match = exact || (strict ? null : sa[0]);
       const styleID = match && (match.styleID || match.StyleID);
-      if (styleID) {
-        const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
-        items = Array.isArray(data) ? data : (data ? [data] : []);
-      }
-    } catch (e) { console.warn('[S&S] SKU lookup failed for', style, e.message); }
+      if (!styleID) return [];
+      const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
+      return Array.isArray(data) ? data : (data ? [data] : []);
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', searchCode, e.message); return []; }
+  };
+
+  for (const style of styles) {
+    const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
     const cand = [];
-    const map = {}; // normalized "color|size" -> sku
-    for (const r of items) {
-      const sku = String(r.sku || r.Sku || r.gtin || '');
-      if (!sku) continue;
-      const color = r.colorName || r.color || '';
-      const size = r.sizeName || r.size || '';
-      cand.push({ color, size, sku });
-      const mk = _smNorm(color) + '|' + _smSizeNorm(size);
-      if (color && size && !(mk in map)) map[mk] = sku;
-    }
     candidates[style] = cand;
-    for (const d of descriptors) {
-      if (String(d.style || '').toUpperCase().trim() !== style) continue;
-      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
-      if (map[mk]) resolved[d.key] = map[mk];
-    }
-    // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
-    // For any line still unmatched, retry against the base style — still an exact color+size match.
-    const _dash = style.lastIndexOf('-');
-    const _base = _dash > 0 ? style.slice(0, _dash) : '';
-    if (_base && descriptors.some(d => String(d.style || '').toUpperCase().trim() === style && !resolved[d.key])) {
-      let items2 = [];
-      try {
-        const sl2 = await ssApiCall('/Styles?search=' + encodeURIComponent(_base));
-        const sa2 = Array.isArray(sl2) ? sl2 : (sl2 ? [sl2] : []);
-        const m2 = sa2.find(s => _smNorm(s.partNumber) === _smNorm(_base) || _smNorm(s.styleName) === _smNorm(_base)) || sa2[0];
-        const sid2 = m2 && (m2.styleID || m2.StyleID);
-        if (sid2) { const d2 = await ssApiCall('/Products/?style=' + encodeURIComponent(sid2)); items2 = Array.isArray(d2) ? d2 : (d2 ? [d2] : []); }
-      } catch (e) { /* leave unresolved */ }
-      for (const r of items2) {
-        const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
-        const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
-        candidates[style].push({ color, size, sku });
-        const mk2 = _smNorm(color) + '|' + _smSizeNorm(size);
-        for (const d of descriptors) {
-          if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
-          if (_smNorm(d.color) + '|' + _smSizeNorm(d.size) === mk2) resolved[d.key] = sku;
-        }
+    for (const { code, strict } of ssStyleSearchVariants(style)) {
+      if (mine.every(d => resolved[d.key])) break; // all lines matched — no looser search needed
+      const items = await fetchItems(code, strict);
+      const map = {}; // normalized "color|size" -> sku, from this variant's products
+      for (const r of items) {
+        const sku = String(r.sku || r.Sku || r.gtin || '');
+        if (!sku) continue;
+        const color = r.colorName || r.color || '';
+        const size = r.sizeName || r.size || '';
+        cand.push({ color, size, sku });
+        const mk = _smNorm(color) + '|' + _smSizeNorm(size);
+        if (color && size && !(mk in map)) map[mk] = sku;
+      }
+      for (const d of mine) {
+        if (resolved[d.key]) continue;
+        const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
+        if (map[mk]) resolved[d.key] = map[mk];
       }
     }
   }

@@ -54,6 +54,29 @@ export const smColorSubset = (vendorColor, orderColor) => {
   return s.every((t) => oset.has(t));
 };
 
+// Order lines carry OUR style code, but S&S catalogs the bare MANUFACTURER style number.
+// For many brands SanMar (where our styles originate) prefixes a brand code — Bella+Canvas
+// "BC3945", Next Level "NL3600" — while S&S lists the same garment as "3945" / "3600".
+// Produce the ordered list of style codes to search S&S for: the code as-is first, then
+// progressively looser forms tried ONLY as fallbacks for lines the exact code didn't match.
+// Every form still matches on exact color+size downstream, so a looser search can never place
+// a wrong item — an unmatched line just stays blocked. `strict:true` forms additionally
+// require an exact part-number/style-name hit (never the first fuzzy result), so stripping a
+// brand prefix can't grab a different brand that happens to share the bare number.
+export const ssStyleSearchVariants = (style) => {
+  const s = String(style ?? '').toUpperCase().trim();
+  const out = [];
+  const add = (code, strict) => { const t = String(code || '').trim(); if (t && !out.some((o) => o.code === t)) out.push({ code: t, strict }); };
+  add(s, false);
+  // Trailing color suffix: "AT300-50" → base style "AT300".
+  const dash = s.lastIndexOf('-');
+  if (dash > 0) add(s.slice(0, dash), false);
+  // Leading 1–3 letter brand prefix on a numeric style: "BC3945" → "3945", "NL3600" → "3600".
+  const m = /^([A-Z]{1,3})(\d[A-Z0-9]*)$/.exec(s);
+  if (m) add(m[2], true);
+  return out;
+};
+
 // Youth size labels → their bare catalog equivalent. SanMar lists youth-only styles (e.g.
 // Gildan 18500B) with plain S/M/L/XL, while portal orders carry the youth form ("YS").
 const YOUTH_BARE = { YXS: 'XS', YS: 'S', YM: 'M', YL: 'L', YXL: 'XL' };
