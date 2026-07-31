@@ -1568,6 +1568,9 @@ export default function InvoicesPage(){
         const sendAll=async()=>{
           if(sendableCustomers.length===0){nf('Pick at least one recipient','error');return}
           upd(s=>({...s,sending:true,progress:{done:0,total:sendableCustomers.length,sent:0,failed:0}}));
+          // Local tallies — the `pd` closure is a stale render snapshot, so reading
+          // pd.progress after the loop always reported 0. Count here instead.
+          let _sentN=0,_failedN=0;
           const portalBase='https://nationalsportsapparel.com/coach?portal=';
           const _$ = n => '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           for(const t of sendableCustomers){
@@ -1596,11 +1599,23 @@ export default function InvoicesPage(){
               replyTo:{email:activeSender.email,name:activeSender.name},
             });
             const ok=res.ok;
+            if(ok){
+              _sentN++;
+              // Record the send on every past-due invoice in this statement so it
+              // shows in the invoice's Send History (mirrors the single-invoice path).
+              const _toStr=toList.map(x=>x.email).join(', ');
+              const histEntry={sent_at:new Date().toISOString(),sent_by:cu?.name||cu?.id||'NSA',type:'past_due',methods:['email'],to:_toStr,messageId:res.messageId||null};
+              const _nowLocal=new Date().toLocaleString();
+              const _ids=new Set(t.invoices.map(iv=>iv.id));
+              setInvs(prev=>prev.map(i=>_ids.has(i.id)?{...i,email_status:'sent',email_sent_at:_nowLocal,sent_history:[...(i.sent_history||[]),histEntry]}:i));
+            }else{
+              _failedN++;
+              console.warn('[past-due] failed for '+c.name+':',res.error);
+            }
             upd(s=>({...s,progress:{...s.progress,done:s.progress.done+1,sent:s.progress.sent+(ok?1:0),failed:s.progress.failed+(ok?0:1)}}));
-            if(!ok)console.warn('[past-due] failed for '+c.name+':',res.error);
           }
           upd(s=>({...s,sending:false}));
-          nf('Past-due email: '+pd.progress.sent+' sent'+(pd.progress.failed>0?', '+pd.progress.failed+' failed':''));
+          nf('Past-due email: '+_sentN+' sent'+(_failedN>0?', '+_failedN+' failed':''),_failedN>0&&_sentN===0?'error':undefined);
         };
         return<div className="modal-overlay" onClick={()=>{if(!pd.sending)setPdBulkModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
