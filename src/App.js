@@ -33454,18 +33454,22 @@ export default function App(){
       const estAge=(e)=>{try{const d=opsQuoteAgeDays(e);return d==null?0:Number(d)||0}catch{return 0}};
       let items=[];let getField=()=>'';let toRow=()=>({});let columns=[];
       if(entity==='jobs'){
+        const jobItems=(job,so)=>{try{return String(deriveJobItemStatus(job,so)||'').toLowerCase()}catch{return ''}};
+        const _itemsLbl=(st)=>({items_received:'All In',partially_received:'Partial',waiting_receive:'Waiting',on_order:'On Order',need_to_order:'Need Order'}[st]||st||'—');
         sos.forEach(so=>soJobsOf(so).forEach(j=>items.push({job:j,so})));
         getField=(field,it)=>{const {job,so}=it;switch(field){
           case 'prod_status':return String(job.prod_status||'').toLowerCase();
           case 'art_status':return String(job.art_status||'').toLowerCase();
           case 'needs_art':{let na=!!(job.art_status&&job.art_status!=='art_complete');if(!na){try{na=jobHasUnresolvedArt(job,so)}catch{na=false}}return na}
+          case 'item_status':return jobItems(job,so);
+          case 'items_in':return jobItems(job,so)==='items_received';
           case 'margin_pct':return marginPct(so);
           case 'customer':return custHay(custById(so.customer_id));
           case 'rep':return repOf(so);
           case 'text':return ((job.id||'')+' '+(job.art_name||'')+' '+(job.deco_type||'')+' '+(so.id||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
           default:return '';}};
-        toRow=(it)=>{const {job,so}=it;const c=custById(so.customer_id);return{entity,id:(job.id||'')+so.id,soId:so.id,jobId:job.id,_rec:so,cells:{Job:job.id,Customer:c?.name||c?.alpha_tag||'—',Order:so.id,Deco:job.deco_type||'—',Art:_nlArtLabel(job.art_status),Prod:job.prod_status||'—',Margin:marginPct(so)+'%'}}};
-        columns=['Job','Customer','Order','Deco','Art','Prod','Margin'];
+        toRow=(it)=>{const {job,so}=it;const c=custById(so.customer_id);return{entity,id:(job.id||'')+so.id,soId:so.id,jobId:job.id,_rec:so,cells:{Job:job.id,Customer:c?.name||c?.alpha_tag||'—',Order:so.id,Deco:job.deco_type||'—',Art:_nlArtLabel(job.art_status),Items:_itemsLbl(jobItems(job,so)),Prod:job.prod_status||'—',Margin:marginPct(so)+'%'}}};
+        columns=['Job','Customer','Order','Deco','Art','Items','Prod','Margin'];
       } else if(entity==='invoices'){
         items=invs.slice();
         getField=(field,i)=>{switch(field){
