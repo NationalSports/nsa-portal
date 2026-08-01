@@ -5496,7 +5496,9 @@ export default function App(){
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
-  const[workspaceModal,setWorkspaceModal]=useState({open:false,id:null,item_kind:'note',title:'',body:'',label:'customer_intel',visibility:'personal',link_type:'none',link_id:'',remind_on:'',is_pinned:false});
+  const[workspaceUploading,setWorkspaceUploading]=useState(false);// files uploading into the open note/reminder modal
+  const[workspaceDragOver,setWorkspaceDragOver]=useState(false);// dropzone hover state
+  const[workspaceModal,setWorkspaceModal]=useState({open:false,id:null,item_kind:'note',title:'',body:'',label:'customer_intel',visibility:'personal',link_type:'none',link_id:'',remind_on:'',is_pinned:false,attachments:[]});
   const[workspaceCustomerSearch,setWorkspaceCustomerSearch]=useState('');
   const[workspaceCustomerOpen,setWorkspaceCustomerOpen]=useState(false);
   const[workspaceCustomerIndex,setWorkspaceCustomerIndex]=useState(0);
@@ -7915,7 +7917,7 @@ export default function App(){
         open:true,id:item?.id||null,item_kind:kind,title:item?.title||'',body:item?.body||'',
         label:item?.label||_workspaceLabels[kind][0][0],visibility:item?.visibility||'personal',
         link_type:linkType,link_id:linkId,remind_on:item?.remind_on||((kind==='reminder')?tomorrow:''),
-        is_pinned:!!item?.is_pinned
+        is_pinned:!!item?.is_pinned,attachments:Array.isArray(item?.attachments)?item.attachments:[]
       });
     };
     const _saveWorkspaceItem=async(ev)=>{
@@ -7929,6 +7931,7 @@ export default function App(){
         visibility:m.visibility,customer_id:m.link_type==='customer'?m.link_id:null,
         so_id:m.link_type==='so'?m.link_id:null,po_id:m.link_type==='po'?m.link_id:null,
         remind_on:m.item_kind==='reminder'?m.remind_on:null,is_pinned:m.item_kind==='note'&&!!m.is_pinned,
+        attachments:Array.isArray(m.attachments)?m.attachments:[],
         updated_at:ts
       };
       if(m.link_type!=='none'&&!m.link_id){nf('Choose what to attach this to','error');return}
@@ -7943,10 +7946,19 @@ export default function App(){
       }
       setWorkspaceSaving(true);
       if(supabase){
-        const q=m.id
-          ?supabase.from('workspace_items').update(row).eq('id',m.id).select().single()
-          :supabase.from('workspace_items').insert({...optimistic}).select().single();
-        const r=await q;
+        const _runSave=(payload)=>m.id
+          ?supabase.from('workspace_items').update(payload).eq('id',m.id).select().single()
+          :supabase.from('workspace_items').insert({...payload}).select().single();
+        let r=await _runSave(m.id?row:optimistic);
+        // The `attachments` column ships with a migration that may not be applied to this DB yet.
+        // PostgREST rejects an insert/update naming an unknown column — so if that's the error, drop
+        // attachments and save the rest, keeping notes/reminders working. Attachments persist once
+        // the migration lands. (The files themselves are already in Cloudinary either way.)
+        if(r.error&&/attachments/i.test(r.error.message||'')){
+          const _strip=o=>{const{attachments,..._rest}=o;return _rest;};
+          if((row.attachments||[]).length>0)nf('Saved — file attachments will persist once the latest DB migration is applied');
+          r=await _runSave(m.id?_strip(row):_strip(optimistic));
+        }
         if(r.error){
           setWorkspaceItems(before);setWorkspaceSaving(false);
           console.error('[DB] workspace save:',r.error.message);
@@ -8026,6 +8038,14 @@ export default function App(){
         setWorkspaceCustomerOpen(false);
         setWorkspaceCustomerIndex(0);
       };
+      // Upload dropped/selected files to Cloudinary and append {url,name,type} to the open item.
+      const _workspaceUpload=async(fileList)=>{
+        const files=Array.from(fileList||[]).filter(Boolean);
+        if(!files.length)return;
+        setWorkspaceUploading(true);
+        try{for(const f of files){try{const url=await fileUpload(f,'nsa-workspace');setWorkspaceModal(m=>({...m,attachments:[...(m.attachments||[]),{url,name:f.name,type:f.type||''}]}))}catch(e){nf('Upload failed: '+(e?.message||f.name),'error')}}}
+        finally{setWorkspaceUploading(false)}
+      };
       const row=(item)=>{
         const link=_workspaceLink(item);const date=item.item_kind==='reminder'?_workspaceDate(item.remind_on):null;const mine=item.created_by===cu.id;
         return<div className={`workspace-row ${date?'is-'+date.tone:''}`} key={item.id}>
@@ -8039,6 +8059,13 @@ export default function App(){
             <strong>{item.title}</strong>
             {item.body&&<p>{item.body}</p>}
             {link&&<button className="workspace-link" onClick={()=>_openWorkspaceLink(item)}>{link.kind} · {link.text} <span>→</span></button>}
+            {Array.isArray(item.attachments)&&item.attachments.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:6}}>
+              {item.attachments.map((a,ai)=>{const u=a?.url||'';const isImg=_isImgUrl(u,a);
+                return<a key={ai} href={u} target="_blank" rel="noreferrer" title={a?.name||u} style={{display:'inline-flex',alignItems:'center',gap:5,border:'1px solid #E2E6EF',borderRadius:6,padding:'2px 7px 2px 3px',background:'#fafbfd',fontSize:11,color:'#192853',textDecoration:'none',maxWidth:160}}>
+                  {isImg?<img src={u} alt="" style={{width:20,height:20,borderRadius:3,objectFit:'cover'}}/>:<span style={{width:20,height:20,borderRadius:3,background:'#EEF1F6',display:'flex',alignItems:'center',justifyContent:'center',fontSize:8,fontWeight:800,color:'#5A6075'}}>{(a?.name||'file').split('.').pop().slice(0,3).toUpperCase()}</span>}
+                  <span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a?.name||'file'}</span>
+                </a>})}
+            </div>}
           </div>
           <div className="workspace-row__aside">
             {date&&<span className={`workspace-date is-${date.tone}`}>{date.label}</span>}
@@ -8163,6 +8190,26 @@ export default function App(){
                     {workspaceModal.link_type==='po'&&_workspacePOs.map(po=><option key={po.id} value={po.id}>{po.id} · {po.detail}</option>)}
                   </select>
                 </label>}
+              </section>
+              <section className="workspace-modal__section">
+                <div className="workspace-modal__section-head"><strong>Attachments <small>optional</small></strong><span>Drag files in, or click to browse</span></div>
+                <div
+                  onDragOver={e=>{e.preventDefault();setWorkspaceDragOver(true)}}
+                  onDragLeave={e=>{e.preventDefault();setWorkspaceDragOver(false)}}
+                  onDrop={e=>{e.preventDefault();setWorkspaceDragOver(false);_workspaceUpload(e.dataTransfer.files)}}
+                  onClick={()=>document.getElementById('workspace-file-input')?.click()}
+                  style={{border:'1.5px dashed '+(workspaceDragOver?'#192853':'#cbd5e1'),borderRadius:8,padding:'16px 12px',textAlign:'center',cursor:'pointer',background:workspaceDragOver?'#F4F7FF':'#fafbfd',color:'#5A6075',fontSize:12,transition:'border-color .15s, background .15s'}}>
+                  {workspaceUploading?'Uploading…':<><strong style={{color:'#192853'}}>Drop files here</strong> or click to upload</>}
+                  <input id="workspace-file-input" type="file" multiple style={{display:'none'}} onChange={e=>{_workspaceUpload(e.target.files);e.target.value=''}}/>
+                </div>
+                {(workspaceModal.attachments||[]).length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:10}}>
+                  {(workspaceModal.attachments||[]).map((a,ai)=>{const u=a?.url||'';const isImg=_isImgUrl(u,a);
+                    return<div key={ai} style={{display:'inline-flex',alignItems:'center',gap:6,border:'1px solid #E2E6EF',borderRadius:6,padding:'4px 6px 4px 4px',background:'#fff',maxWidth:210}}>
+                      {isImg?<img src={u} alt="" style={{width:28,height:28,borderRadius:4,objectFit:'cover',flexShrink:0}}/>:<span style={{width:28,height:28,borderRadius:4,background:'#EEF1F6',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:800,color:'#5A6075',flexShrink:0}}>{(a?.name||'file').split('.').pop().slice(0,3).toUpperCase()}</span>}
+                      <a href={u} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,color:'#192853',textDecoration:'none',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}} title={a?.name||u}>{a?.name||'attachment'}</a>
+                      <button type="button" title="Remove" onClick={()=>setWorkspaceModal(m=>({...m,attachments:(m.attachments||[]).filter((_,x)=>x!==ai)}))} style={{border:'none',background:'none',cursor:'pointer',color:'#962C32',fontSize:15,lineHeight:1,flexShrink:0}}>×</button>
+                    </div>})}
+                </div>}
               </section>
             </div>
             <footer>
