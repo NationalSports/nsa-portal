@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import * as Sentry from '@sentry/react';
 import './portal.css';
 import MobilePortal from './MobilePortal';
+import DashboardOverview from './DashboardOverview';
 import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
@@ -5422,6 +5423,29 @@ export default function App(){
     // art_status leaving waiting_approval (see the todo builder) — so it needs no click-through snooze.
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const[workspaceItems,setWorkspaceItems]=useState([]);
+  const[workspaceFilter,setWorkspaceFilter]=useState('all');
+  const[workspaceSaving,setWorkspaceSaving]=useState(false);
+  const[workspaceModal,setWorkspaceModal]=useState({open:false,id:null,item_kind:'note',title:'',body:'',label:'customer_intel',visibility:'personal',link_type:'none',link_id:'',remind_on:'',is_pinned:false});
+  const[workspaceCustomerSearch,setWorkspaceCustomerSearch]=useState('');
+  const[workspaceCustomerOpen,setWorkspaceCustomerOpen]=useState(false);
+  const[workspaceCustomerIndex,setWorkspaceCustomerIndex]=useState(0);
+  // Notes may contain customer context, so they load independently from the
+  // legacy dashboard snapshot and rely on workspace_items' staff-only RLS.
+  React.useEffect(()=>{
+    if(!cu?.id||!supabase){setWorkspaceItems([]);return}
+    let dead=false;
+    const load=async()=>{
+      const r=await supabase.from('workspace_items').select('*').neq('status','archived').order('created_at',{ascending:false});
+      if(!dead&&!r.error)setWorkspaceItems(r.data||[]);
+      else if(!dead&&r.error)console.error('[DB] workspace items:',r.error.message);
+    };
+    load();
+    const channel=supabase.channel('workspace-items-'+cu.id)
+      .on('postgres_changes',{event:'*',schema:'public',table:'workspace_items'},load)
+      .subscribe();
+    return()=>{dead=true;supabase.removeChannel(channel)};
+  },[cu?.id]);
   // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
   // Placed after cu/mThread/msgs are declared so the dependency array can reference them. Keyed on
   // the open thread + msgs so it also catches replies that arrive while the thread is open and
@@ -7766,6 +7790,296 @@ export default function App(){
       }
       nf('🔁 Task requeued — Claude will retry shortly');
     };
+    const _workspaceLabels={
+      note:[
+        ['customer_intel','Customer intel'],['pricing','Pricing'],['idea','Idea'],
+        ['vendor','Vendor'],['internal','Internal'],['risk','Risk']
+      ],
+      reminder:[
+        ['follow_up','Follow-up'],['call','Call'],['approval','Approval'],
+        ['payment','Payment'],['deadline','Deadline'],['pickup','Pickup'],['review','Review']
+      ]
+    };
+    const _workspaceLabelName=(value)=>{
+      const pair=[..._workspaceLabels.note,..._workspaceLabels.reminder].find(x=>x[0]===value);
+      return pair?pair[1]:(value||'General').replace(/_/g,' ');
+    };
+    const _openWorkspaceModal=(kind='note',item=null)=>{
+      const linkType=item?.customer_id?'customer':item?.so_id?'so':item?.po_id?'po':'none';
+      const linkId=item?.customer_id||item?.so_id||item?.po_id||'';
+      const linkedCustomer=linkType==='customer'?cust.find(c=>c.id===linkId):null;
+      const tomorrow=(()=>{const d=new Date();d.setDate(d.getDate()+1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+      setWorkspaceCustomerSearch(linkedCustomer?.name||'');
+      setWorkspaceCustomerOpen(false);
+      setWorkspaceCustomerIndex(0);
+      setWorkspaceModal({
+        open:true,id:item?.id||null,item_kind:kind,title:item?.title||'',body:item?.body||'',
+        label:item?.label||_workspaceLabels[kind][0][0],visibility:item?.visibility||'personal',
+        link_type:linkType,link_id:linkId,remind_on:item?.remind_on||((kind==='reminder')?tomorrow:''),
+        is_pinned:!!item?.is_pinned
+      });
+    };
+    const _saveWorkspaceItem=async(ev)=>{
+      ev?.preventDefault();
+      const m=workspaceModal;
+      if(!m.title.trim()){nf('Add a title','error');return}
+      if(m.item_kind==='reminder'&&!m.remind_on){nf('Choose a reminder date','error');return}
+      const ts=new Date().toISOString();
+      const row={
+        item_kind:m.item_kind,title:m.title.trim(),body:m.body.trim()||null,label:m.label,
+        visibility:m.visibility,customer_id:m.link_type==='customer'?m.link_id:null,
+        so_id:m.link_type==='so'?m.link_id:null,po_id:m.link_type==='po'?m.link_id:null,
+        remind_on:m.item_kind==='reminder'?m.remind_on:null,is_pinned:m.item_kind==='note'&&!!m.is_pinned,
+        updated_at:ts
+      };
+      if(m.link_type!=='none'&&!m.link_id){nf('Choose what to attach this to','error');return}
+      const before=workspaceItems;
+      let optimistic;
+      if(m.id){
+        optimistic={...workspaceItems.find(x=>x.id===m.id),...row};
+        setWorkspaceItems(prev=>prev.map(x=>x.id===m.id?optimistic:x));
+      }else{
+        optimistic={...row,id:(globalThis.crypto?.randomUUID?.()||('workspace-'+Date.now())),created_by:cu.id,status:'open',created_at:ts,completed_at:null};
+        setWorkspaceItems(prev=>[optimistic,...prev]);
+      }
+      setWorkspaceSaving(true);
+      if(supabase){
+        const q=m.id
+          ?supabase.from('workspace_items').update(row).eq('id',m.id).select().single()
+          :supabase.from('workspace_items').insert({...optimistic}).select().single();
+        const r=await q;
+        if(r.error){
+          setWorkspaceItems(before);setWorkspaceSaving(false);
+          console.error('[DB] workspace save:',r.error.message);
+          nf(r.error.code==='42501'?'Sign in with your staff account to save private notes':('Could not save: '+r.error.message),'error');
+          return;
+        }
+        setWorkspaceItems(prev=>prev.map(x=>x.id===optimistic.id?r.data:x));
+      }
+      setWorkspaceSaving(false);
+      setWorkspaceModal(prev=>({...prev,open:false}));
+      nf(m.item_kind==='reminder'?'Reminder saved':'Note saved');
+    };
+    const _patchWorkspaceItem=async(item,patch,success)=>{
+      if(item.created_by!==cu.id){nf('Only the creator can change a shared item','error');return}
+      const before=workspaceItems;const upd={...patch,updated_at:new Date().toISOString()};
+      setWorkspaceItems(prev=>prev.map(x=>x.id===item.id?{...x,...upd}:x));
+      if(supabase){
+        const r=await supabase.from('workspace_items').update(upd).eq('id',item.id).select().single();
+        if(r.error){setWorkspaceItems(before);console.error('[DB] workspace update:',r.error.message);nf('Could not update this item','error');return}
+        setWorkspaceItems(prev=>prev.map(x=>x.id===item.id?r.data:x));
+      }
+      if(success)nf(success);
+    };
+    const _workspaceLink=(item)=>{
+      if(item.customer_id)return{kind:'Customer',text:cust.find(c=>c.id===item.customer_id)?.name||item.customer_id};
+      if(item.so_id){const so=sos.find(s=>s.id===item.so_id);const c=cust.find(x=>x.id===so?.customer_id);return{kind:'Sales order',text:item.so_id+(c?' · '+c.name:'')}}
+      if(item.po_id)return{kind:'PO',text:item.po_id};
+      return null;
+    };
+    const _openWorkspaceLink=(item)=>{
+      if(item.customer_id){const c=cust.find(x=>x.id===item.customer_id);if(c){setSelC(c);setPg('customers')}else nf('Customer not found','error');return}
+      if(item.so_id){const so=sos.find(x=>x.id===item.so_id);if(so){setESO(so);setESOC(cust.find(x=>x.id===so.customer_id));setPg('orders')}else nf(item.so_id+' not found','error');return}
+      if(item.po_id){
+        const inv=invPOs.find(x=>(x.po_number||x.id)===item.po_id);
+        if(inv){setInvPOSearch(item.po_id);setInvTab('pos');setPg('inventory');return}
+        const batch=submittedBatches.find(x=>(x.po_number||x.id)===item.po_id);
+        if(batch){setBatchScan(item.po_id);setPg('batch_pos');return}
+        const so=sos.find(s=>safeItems(s).some(it=>(it.po_lines||[]).some(p=>p.po_id===item.po_id)));
+        if(so){setESOOpenPO(item.po_id);setESO(so);setESOC(cust.find(x=>x.id===so.customer_id));setPg('orders');return}
+        setPOF(f=>({...f,search:item.po_id,status:'all',booking:false}));setPg('purchase_orders');
+      }
+    };
+    const _workspacePOs=(()=>{
+      const map=new Map();
+      invPOs.forEach(p=>{const id=p.po_number||p.id;if(id)map.set(id,{id,detail:p.vendor_name||p.vendor||'Inventory PO'})});
+      submittedBatches.forEach(p=>{const id=p.po_number||p.id;if(id)map.set(id,{id,detail:p.vendor_name||p.vendor||'Batch PO'})});
+      sos.forEach(so=>safeItems(so).forEach(it=>(it.po_lines||[]).forEach(p=>{if(p.po_id&&!map.has(p.po_id))map.set(p.po_id,{id:p.po_id,detail:so.id+' · '+(cust.find(c=>c.id===so.customer_id)?.name||'Sales order')})})));
+      return[...map.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id),undefined,{numeric:true})).slice(0,500);
+    })();
+    const _workspaceDate=(value)=>{
+      if(!value)return{label:'No date',tone:'upcoming'};
+      const ds=String(value).slice(0,10);
+      if(ds<_todayStr)return{label:_fmtDueDate(ds),tone:'overdue'};
+      if(ds===_todayStr)return{label:'Today',tone:'today'};
+      return{label:_fmtDueDate(ds),tone:'upcoming'};
+    };
+    const _renderWorkspace=()=>{
+      const visible=workspaceItems.filter(x=>x.status==='open'&&(workspaceFilter==='all'||x.visibility===workspaceFilter));
+      const notes=visible.filter(x=>x.item_kind==='note').sort((a,b)=>(Number(!!b.is_pinned)-Number(!!a.is_pinned))||(new Date(b.updated_at||b.created_at)-new Date(a.updated_at||a.created_at)));
+      const reminders=visible.filter(x=>x.item_kind==='reminder').sort((a,b)=>String(a.remind_on||'9999').localeCompare(String(b.remind_on||'9999')));
+      const dueNow=reminders.filter(x=>String(x.remind_on).slice(0,10)<=_todayStr).length;
+      const customerTokens=workspaceCustomerSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      const customerResults=cust.filter(c=>{
+        if(c.id==='c_deleted'||c.is_active===false)return false;
+        const contacts=(c.contacts||[]).map(x=>(x.name||'')+' '+(x.email||'')).join(' ');
+        const hay=[c.name,c.alpha_tag,c.id,c.email,c.billing_email,c.shipping_city,c.shipping_state,...(c.search_tags||[]),contacts].filter(Boolean).join(' ').toLowerCase();
+        return customerTokens.every(token=>hay.includes(token));
+      }).sort((a,b)=>{
+        const q=workspaceCustomerSearch.toLowerCase().trim();
+        const ap=String(a.name||'').toLowerCase().startsWith(q)?0:1;
+        const bp=String(b.name||'').toLowerCase().startsWith(q)?0:1;
+        return ap-bp||String(a.name||'').localeCompare(String(b.name||''));
+      }).slice(0,8);
+      const _pickWorkspaceCustomer=(customer)=>{
+        setWorkspaceModal(m=>({...m,link_id:customer.id}));
+        setWorkspaceCustomerSearch(customer.name||customer.alpha_tag||customer.id);
+        setWorkspaceCustomerOpen(false);
+        setWorkspaceCustomerIndex(0);
+      };
+      const row=(item)=>{
+        const link=_workspaceLink(item);const date=item.item_kind==='reminder'?_workspaceDate(item.remind_on):null;const mine=item.created_by===cu.id;
+        return<div className={`workspace-row ${date?'is-'+date.tone:''}`} key={item.id}>
+          <span className={`workspace-row__icon is-${item.item_kind}`}>{item.item_kind==='note'?'N':'R'}</span>
+          <div className="workspace-row__copy">
+            <div className="workspace-row__eyebrow">
+              <span className={`workspace-label is-${item.label}`}>{_workspaceLabelName(item.label)}</span>
+              {item.visibility==='team'&&<span className="workspace-shared">Team</span>}
+              {item.is_pinned&&<span className="workspace-pinned">Pinned</span>}
+            </div>
+            <strong>{item.title}</strong>
+            {item.body&&<p>{item.body}</p>}
+            {link&&<button className="workspace-link" onClick={()=>_openWorkspaceLink(item)}>{link.kind} · {link.text} <span>→</span></button>}
+          </div>
+          <div className="workspace-row__aside">
+            {date&&<span className={`workspace-date is-${date.tone}`}>{date.label}</span>}
+            <div className="workspace-row__actions">
+              {mine&&item.item_kind==='note'&&<button title={item.is_pinned?'Unpin':'Pin'} onClick={()=>_patchWorkspaceItem(item,{is_pinned:!item.is_pinned},item.is_pinned?'Note unpinned':'Note pinned')}>{item.is_pinned?'Unpin':'Pin'}</button>}
+              {mine&&item.item_kind==='note'&&<button title="Turn into a dated reminder" onClick={()=>_openWorkspaceModal('reminder',{...item,id:null,item_kind:'reminder',label:'follow_up',remind_on:''})}>Remind</button>}
+              {mine&&<button title="Edit" onClick={()=>_openWorkspaceModal(item.item_kind,item)}>Edit</button>}
+              {mine&&item.item_kind==='reminder'&&<button className="is-done" title="Mark complete" onClick={()=>_patchWorkspaceItem(item,{status:'completed',completed_at:new Date().toISOString()},'Reminder completed')}>Done</button>}
+              {mine&&<button className="is-archive" title="Archive for later" onClick={()=>_patchWorkspaceItem(item,{status:'archived'},item.item_kind==='note'?'Note archived':'Reminder archived')}>Archive</button>}
+            </div>
+          </div>
+        </div>
+      };
+      return<>
+        <section className="workspace-hub" aria-label="Notes and reminders">
+          <header className="workspace-hub__header">
+            <div><span className="dash-action-card__kicker">Your working memory</span><h2>Notes &amp; reminders</h2></div>
+            <div className="workspace-hub__stats">
+              <span><strong>{notes.length}</strong> notes</span>
+              <span className={dueNow?'has-due':''}><strong>{dueNow}</strong> due now</span>
+            </div>
+            <div className="workspace-hub__filters" aria-label="Workspace visibility filter">
+              {['all','personal','team'].map(f=><button key={f} className={workspaceFilter===f?'is-active':''} onClick={()=>setWorkspaceFilter(f)}>{f==='all'?'All':f==='personal'?'Personal':'Team'}</button>)}
+            </div>
+            <div className="workspace-hub__create">
+              <button onClick={()=>_openWorkspaceModal('note')}><Icon name="plus" size={12}/> Note</button>
+              <button className="is-reminder" onClick={()=>_openWorkspaceModal('reminder')}><Icon name="plus" size={12}/> Reminder</button>
+            </div>
+          </header>
+          <div className="workspace-hub__grid">
+            <article className="workspace-column">
+              <div className="workspace-column__header"><div><span className="workspace-column__mark is-note">N</span><h3>Notes</h3></div><span>{notes.length}</span></div>
+              <div className="workspace-column__list">{notes.length?notes.slice(0,8).map(row):<div className="workspace-empty"><span className="is-note">N</span><strong>Capture the context</strong><p>Save customer intel, pricing details, and ideas where you can find them later.</p><button onClick={()=>_openWorkspaceModal('note')}>Create a note</button></div>}</div>
+            </article>
+            <article className="workspace-column">
+              <div className="workspace-column__header"><div><span className="workspace-column__mark is-reminder">R</span><h3>Reminders</h3></div><span>{reminders.length}</span></div>
+              <div className="workspace-column__list">{reminders.length?reminders.slice(0,8).map(row):<div className="workspace-empty"><span className="is-reminder">R</span><strong>Nothing slipping through</strong><p>Add a date to a follow-up, approval, payment, pickup, or review.</p><button onClick={()=>_openWorkspaceModal('reminder')}>Set a reminder</button></div>}</div>
+            </article>
+          </div>
+        </section>
+        {workspaceModal.open&&<div className="workspace-modal-bg" onMouseDown={e=>{if(e.target===e.currentTarget)setWorkspaceModal(m=>({...m,open:false}))}}>
+          <form className={`workspace-modal is-${workspaceModal.item_kind}`} onSubmit={_saveWorkspaceItem} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
+            <header>
+              <div className="workspace-modal__identity">
+                <span className={`workspace-modal__mark is-${workspaceModal.item_kind}`}>{workspaceModal.item_kind==='note'?'N':'R'}</span>
+                <div><span className="dash-action-card__kicker">{workspaceModal.id?'Edit':'New'} workspace item</span><h2 id="workspace-modal-title">{workspaceModal.item_kind==='note'?'Note':'Reminder'}</h2></div>
+              </div>
+              <div className="workspace-modal__header-actions">
+                <div className="workspace-kind-switch" aria-label="Item type">
+                  {['note','reminder'].map(kind=><button type="button" key={kind} className={workspaceModal.item_kind===kind?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,item_kind:kind,label:_workspaceLabels[kind][0][0],remind_on:kind==='note'?'':(m.remind_on||_todayStr)}))}>{kind==='note'?'Note':'Reminder'}</button>)}
+                </div>
+                <button type="button" className="workspace-modal__close" aria-label="Close" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>×</button>
+              </div>
+            </header>
+            <div className="workspace-modal__body">
+              <label className="workspace-field workspace-field--title"><span>Title</span><input autoFocus maxLength={180} value={workspaceModal.title} onChange={e=>setWorkspaceModal(m=>({...m,title:e.target.value}))} placeholder={workspaceModal.item_kind==='note'?'What should you remember?':'What needs to happen?'}/></label>
+              <label className="workspace-field workspace-field--details"><span>Details <small>optional</small></span><textarea maxLength={5000} rows={2} value={workspaceModal.body} onChange={e=>setWorkspaceModal(m=>({...m,body:e.target.value}))} placeholder="Add useful context for later…"/></label>
+
+              <section className="workspace-modal__section">
+                <div className="workspace-modal__section-head"><strong>{workspaceModal.item_kind==='reminder'?'Schedule & label':'Label & priority'}</strong><span>{workspaceModal.item_kind==='reminder'?'Choose when this comes back':'Make it easy to find later'}</span></div>
+                {workspaceModal.item_kind==='reminder'&&<div className="workspace-schedule">
+                  <label className="workspace-field"><span>Remind on</span><input type="date" required value={workspaceModal.remind_on} onChange={e=>setWorkspaceModal(m=>({...m,remind_on:e.target.value}))}/></label>
+                  <div className="workspace-date-presets" aria-label="Quick reminder dates">
+                    {[[0,'Today'],[1,'Tomorrow'],[7,'Next week']].map(([days,label])=><button type="button" key={days} className={workspaceModal.remind_on===_dateOffsetStr(days)?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,remind_on:_dateOffsetStr(days)}))}>{label}</button>)}
+                  </div>
+                </div>}
+                <div className="workspace-chip-field">
+                  <span>Type</span>
+                  <div className="workspace-label-picker">{_workspaceLabels[workspaceModal.item_kind].map(([value,label])=><button type="button" key={value} className={workspaceModal.label===value?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,label:value}))}>{label}</button>)}</div>
+                </div>
+                {workspaceModal.item_kind==='note'&&<button type="button" className={`workspace-pin-toggle ${workspaceModal.is_pinned?'is-active':''}`} aria-pressed={workspaceModal.is_pinned} onClick={()=>setWorkspaceModal(m=>({...m,is_pinned:!m.is_pinned}))}><span className="workspace-pin-toggle__icon">⌃</span><span><strong>Pin to the top</strong><small>Keep this note easy to reach</small></span><span className="workspace-pin-toggle__state">{workspaceModal.is_pinned?'Pinned':'Off'}</span></button>}
+              </section>
+
+              <section className="workspace-modal__section">
+                <div className="workspace-modal__section-head"><strong>Link to a record</strong><span>Optional · adds useful context</span></div>
+                <div className="workspace-link-kinds" aria-label="Linked record type">
+                  {[['none','None'],['customer','Customer'],['so','Sales order'],['po','Purchase order']].map(([value,label])=><button type="button" key={value} className={workspaceModal.link_type===value?'is-active':''} onClick={()=>{setWorkspaceModal(m=>({...m,link_type:value,link_id:''}));setWorkspaceCustomerSearch('');setWorkspaceCustomerOpen(value==='customer');setWorkspaceCustomerIndex(0)}}>{label}</button>)}
+                </div>
+                {workspaceModal.link_type==='customer'&&<div className="workspace-field workspace-field--linked"><span>Customer</span>
+                  <div className="workspace-customer-combobox" onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget))setWorkspaceCustomerOpen(false)}}>
+                    <div className={`workspace-customer-search ${workspaceCustomerOpen?'is-open':''}`}>
+                      <Icon name="search" size={14}/>
+                      <input
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={workspaceCustomerOpen}
+                        aria-controls="workspace-customer-results"
+                        aria-activedescendant={workspaceCustomerOpen&&customerResults[workspaceCustomerIndex]?`workspace-customer-${customerResults[workspaceCustomerIndex].id}`:undefined}
+                        placeholder="Search customer name, tag, or location…"
+                        value={workspaceCustomerSearch}
+                        onFocus={()=>setWorkspaceCustomerOpen(true)}
+                        onChange={e=>{setWorkspaceCustomerSearch(e.target.value);setWorkspaceModal(m=>({...m,link_id:''}));setWorkspaceCustomerOpen(true);setWorkspaceCustomerIndex(0)}}
+                        onKeyDown={e=>{
+                          if(e.key==='ArrowDown'){e.preventDefault();setWorkspaceCustomerOpen(true);setWorkspaceCustomerIndex(i=>Math.min(i+1,Math.max(customerResults.length-1,0)))}
+                          else if(e.key==='ArrowUp'){e.preventDefault();setWorkspaceCustomerOpen(true);setWorkspaceCustomerIndex(i=>Math.max(i-1,0))}
+                          else if(e.key==='Enter'&&workspaceCustomerOpen&&customerResults.length){e.preventDefault();_pickWorkspaceCustomer(customerResults[workspaceCustomerIndex]||customerResults[0])}
+                          else if(e.key==='Escape'){e.preventDefault();setWorkspaceCustomerOpen(false)}
+                        }}
+                      />
+                      {workspaceModal.link_id&&<button type="button" className="workspace-customer-search__clear" aria-label="Clear selected customer" onClick={()=>{setWorkspaceModal(m=>({...m,link_id:''}));setWorkspaceCustomerSearch('');setWorkspaceCustomerOpen(true)}}>×</button>}
+                    </div>
+                    {workspaceCustomerOpen&&<div className="workspace-customer-results" id="workspace-customer-results" role="listbox">
+                      {customerResults.map((customer,index)=><button
+                        type="button"
+                        role="option"
+                        aria-selected={workspaceModal.link_id===customer.id}
+                        id={`workspace-customer-${customer.id}`}
+                        key={customer.id}
+                        className={`${workspaceModal.link_id===customer.id?'is-selected':''} ${workspaceCustomerIndex===index?'is-highlighted':''}`}
+                        onMouseDown={e=>e.preventDefault()}
+                        onMouseEnter={()=>setWorkspaceCustomerIndex(index)}
+                        onClick={()=>_pickWorkspaceCustomer(customer)}
+                      ><span><strong>{customer.name||customer.id}</strong><small>{[customer.shipping_city,customer.shipping_state].filter(Boolean).join(', ')||'Customer account'}</small></span>{customer.alpha_tag&&<em>{customer.alpha_tag}</em>}</button>)}
+                      {!customerResults.length&&<div className="workspace-customer-results__empty">No customers match “{workspaceCustomerSearch}”</div>}
+                    </div>}
+                  </div>
+                </div>}
+                {(workspaceModal.link_type==='so'||workspaceModal.link_type==='po')&&<label className="workspace-field workspace-field--linked"><span>{workspaceModal.link_type==='so'?'Sales order':'Purchase order'}</span>
+                  <select required value={workspaceModal.link_id} onChange={e=>setWorkspaceModal(m=>({...m,link_id:e.target.value}))}>
+                    <option value="">Choose…</option>
+                    {workspaceModal.link_type==='so'&&sos.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0)).slice(0,500).map(so=><option key={so.id} value={so.id}>{so.id} · {cust.find(c=>c.id===so.customer_id)?.name||so.memo||'Sales order'}</option>)}
+                    {workspaceModal.link_type==='po'&&_workspacePOs.map(po=><option key={po.id} value={po.id}>{po.id} · {po.detail}</option>)}
+                  </select>
+                </label>}
+              </section>
+            </div>
+            <footer>
+              <div className="workspace-visibility">
+                <span>Visibility</span>
+                <div>
+                  <button type="button" className={workspaceModal.visibility==='personal'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'personal'}))}>Private</button>
+                  <button type="button" className={workspaceModal.visibility==='team'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'team'}))}>Team</button>
+                </div>
+              </div>
+              <div className="workspace-modal__footer-actions"><button type="button" className="btn btn-secondary" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>Cancel</button><button type="submit" className="btn btn-primary" disabled={workspaceSaving}>{workspaceSaving?'Saving…':workspaceModal.id?'Save changes':workspaceModal.item_kind==='note'?'Save note':'Set reminder'}</button></div>
+            </footer>
+          </form>
+        </div>}
+      </>;
+    };
     // Rep-delivery: mark a "Pick up & deliver" to-do delivered straight from the dashboard. Mirrors the
     // warehouse Deliver tab (so.delivered[dkey]) so the item drops off every delivery list and persists.
     // Shows a success banner; the to-do regenerates without this item once sos state updates.
@@ -7942,14 +8256,44 @@ export default function App(){
     };
 
     const ROLE_TABS=[
-      {id:'admin',label:'🏢 Admin Overview',icon:'home',roles:['admin','gm']},
-      {id:'sales',label:'💼 Sales Rep',icon:'dollar',roles:['admin','gm','rep']},
-      {id:'warehouse',label:'📦 Warehouse',icon:'warehouse',roles:['admin','gm','warehouse']},
-      {id:'decorator',label:'🎨 Decorator',icon:'image',roles:['admin','gm','artist','art']},
-      {id:'production',label:'🏭 Production',icon:'grid',roles:['admin','gm','production']},
-      {id:'csr',label:'📞 CSR',icon:'mail',roles:['admin','gm','rep','csr']},
+      {id:'admin',label:'Admin overview',icon:'home',roles:['admin','gm']},
+      {id:'sales',label:'Sales rep',icon:'dollar',roles:['admin','gm','rep']},
+      {id:'warehouse',label:'Warehouse',icon:'warehouse',roles:['admin','gm','warehouse']},
+      {id:'decorator',label:'Decorator',icon:'image',roles:['admin','gm','artist','art']},
+      {id:'production',label:'Production',icon:'grid',roles:['admin','gm','production']},
+      {id:'csr',label:'CSR',icon:'mail',roles:['admin','gm','rep','csr']},
     ];
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
+    const _dashActionSource=(isAdmin?adminTodos:myTodos).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
+    const _dashPriorityItems=[
+      ..._dashActionSource.map(t=>({...t,_priorityKind:'generated'})),
+      ...myAssignedTodos.map(t=>({
+        id:t.id,
+        msg:t.title,
+        detail:(t.description||'Assigned task')+(t.due_date?' · Due '+t.due_date:''),
+        action:'Open task',
+        priority:t.priority??2,
+        date:t.due_date||t.created_at,
+        _priorityKind:'assigned',
+        _assignedTask:t,
+      })),
+    ].sort((a,b)=>{
+      const pA=a.priority??2,pB=b.priority??2;
+      if(pA!==pB)return pA-pB;
+      const dA=new Date(a.date||0).getTime()||0,dB=new Date(b.date||0).getTime()||0;
+      return dA-dB;
+    });
+    const _openDashPriority=(t)=>{
+      if(t._priorityKind==='assigned'){setTodoDetailId(t._assignedTask?.id||t.id);return}
+      _todoClickedThrough(t);
+      if(t.type==='issue'){setPg('issues');if(t.issue?.id)setIssueFocus(t.issue.id);return}
+      if(t.inv){setViewInvoice(t.inv);setPg('invoices');return}
+      if(t.est){setEEst(t.est);setEEstC(t.estC||cust.find(c=>c.id===t.est.customer_id));setPg('estimates');return}
+      if(t.so){
+        if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}
+        setESO(t.so);setESOC(cust.find(c=>c.id===t.so.customer_id));setPg('orders');
+      }
+    };
 
     return(<>
     {/* ═══ ACTIVITY CENTER POPUP — expanded, sortable notifications + to-dos with built-in messaging ═══ */}
@@ -8058,12 +8402,30 @@ export default function App(){
         </div>
       </div>;
     })()}
+    <div className="connect-dashboard">
     {/* Role Selector — only show tabs relevant to the user's role */}
-    {visibleTabs.length>1&&<div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
-      {visibleTabs.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
-        style={{fontSize:11,padding:'5px 12px',background:dashView===r.id?'#1e293b':'',borderColor:dashView===r.id?'#1e293b':''}}
-        onClick={()=>setDashView(r.id)}>{r.label}</button>)}
+    {visibleTabs.length>1&&<div className="connect-dashboard__roles" aria-label="Dashboard view">
+      {visibleTabs.map(r=><button key={r.id} type="button" className={`connect-dashboard__role ${dashView===r.id?'is-active':''}`}
+        onClick={()=>setDashView(r.id)}><Icon name={r.icon} size={14}/>{r.label}</button>)}
     </div>}
+    <DashboardOverview
+      view={dashView}
+      user={cu}
+      customers={cust}
+      estimates={ests}
+      orders={sos}
+      invoices={invs}
+      historicalInvoices={histInvs}
+      jobs={sos.flatMap(so=>safeJobs(so).map(job=>({...job,_soId:so.id})))}
+      actionCount={_dashPriorityItems.length}
+      unreadCount={unreadMsgs.length}
+      priorityItems={_dashPriorityItems.slice(0,5)}
+      calcStatus={calcSOStatus}
+      calcMargin={calcOrderMargin}
+      onNavigate={setPg}
+      onOpenPriority={_openDashPriority}
+    />
+    {dashView!=='admin'&&_renderWorkspace()}
 
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
@@ -8073,7 +8435,7 @@ export default function App(){
           daily syncs flagged new, plus locally-parked bills. Click → Import & Review. */}
       {isA&&(()=>{const _parked=savedBills.filter(b=>b.reviewLater).length;const n=ssNewCount+siNewCount+_parked;return n>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#0891b2'}} title={'S&S new: '+ssNewCount+' · Sports Inc new: '+siNewCount+' · parked for later: '+_parked} onClick={()=>{setBillView('import');setPg('import')}}><div className="stat-label">📥 Bills Inbox</div><div className="stat-value" style={{color:'#0e7490'}}>{n}</div></div>})()}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const recentNotifs=visNotifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a)).slice(0,6);const orderedAssigned=myAssignedTodos.slice().sort((a,b)=>(a.priority??2)-(b.priority??2)||(new Date(a.due_date||a.created_at||0)-new Date(b.due_date||b.created_at||0)));const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));const _hubTitle=s=>(s||'').replace(/^[^\w@]+/,'');const _openNotif=t=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -8104,95 +8466,96 @@ export default function App(){
         </div></div>
       {_renderSalesBox(null)}
     </div>
-    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
-        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
-          notifGroups.map(g=><div key={g.cat}>
-            {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-              {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-              <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
-            </div>)}
+    <section className="dash-action-hub" aria-label="Action inbox">
+      <article className="dash-action-card dash-action-card--tasks">
+        <header className="dash-action-card__header">
+          <div>
+            <span className="dash-action-card__kicker">Assigned work</span>
+            <h2>Tasks <span>{myAssignedTodos.length}</span></h2>
+          </div>
+          <button className="dash-action-card__primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}><Icon name="plus" size={13}/> New task</button>
+        </header>
+        <div className="dash-action-card__summary">
+          <span><strong>{orderedAssigned.filter(t=>(t.priority??2)<=1).length}</strong> high priority</span>
+          <span><strong>{orderedAssigned.filter(t=>t.assigned_to===cu.id).length}</strong> assigned to me</span>
+          <span><strong>{recentlyCompleted.length}</strong> recently completed</span>
+        </div>
+        <div className="dash-action-card__list dash-action-card__list--tasks">
+          {orderedAssigned.length===0?<div className="dash-action-card__empty"><Icon name="check" size={19}/><strong>No open assigned tasks</strong><span>Create a task when work needs a clear owner.</span></div>:
+          orderedAssigned.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));const _bot=botRowUI(t.bot_status);const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||['','{}'])[1]):null;return<div className={`dash-action-row dash-action-row--task ${(t.priority??2)<=1?'is-high':''}`} key={t.id} role="button" tabIndex={0} onClick={()=>setTodoDetailId(t.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setTodoDetailId(t.id)}}}>
+            <span className="dash-action-row__marker"><Icon name={(t.priority??2)<=1?'alert':'check'} size={14}/></span>
+            <span className="dash-action-row__copy">
+              <strong>{t.title}{_bot&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_bot.pillBg,color:_bot.pillFg,whiteSpace:'nowrap'}}>{_bot.label}</span>}</strong>
+              <small>{isAssignedToMe?'From '+(creator?.name||'Team'):(assignee?.name||'Unassigned')}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.comments?.length>0?' · '+t.comments.length+' comment'+(t.comments.length!==1?'s':''):''}</small>
+            </span>
+            <span className={`dash-action-row__priority ${(t.priority??2)<=1?'is-high':''}`}>{(t.priority??2)<=1?'High':'Normal'}</span>
+            <span className="dash-action-row__actions">
+              {_rc&&_rc.old_rep_id&&<button title="Revert rep change" aria-label="Revert rep change" onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩</button>}
+              {t.so_id&&<button title={`Open ${t.so_id}`} aria-label={`Open ${t.so_id}`} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open</button>}
+              <button title="Mark task complete" aria-label="Mark task complete" className="is-complete" onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}><Icon name="check" size={13}/></button>
+              <button title="Delete task" aria-label="Delete task" className="is-delete" onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}><Icon name="x" size={13}/></button>
+            </span>
+          </div>})}
+          {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);return<div className="dash-action-row dash-action-row--completed" key={`complete-${t.id}`} role="button" tabIndex={0} onClick={()=>setTodoDetailId(t.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setTodoDetailId(t.id)}}}>
+            <span className="dash-action-row__marker"><Icon name="check" size={14}/></span>
+            <span className="dash-action-row__copy"><strong>{t.title}</strong><small>Completed by {completedBy?.name||'Team'} · {_fmtTodoDate(t.completed_at)}</small></span>
+            <span className="dash-action-row__priority is-done">Done</span>
+            <span className="dash-action-row__actions"><button title="Acknowledge completed task" aria-label="Acknowledge completed task" className="is-complete" onClick={ev=>{ev.stopPropagation();dismissNotif('task-ack-'+t.id)}}><Icon name="check" size={13}/></button></span>
+          </div>})}
+        </div>
+      </article>
+
+      <article className="dash-action-card dash-action-card--messages">
+        <header className="dash-action-card__header">
+          <div>
+            <span className="dash-action-card__kicker">Conversations</span>
+            <h2>Messages <span>{myUnread.length}</span></h2>
+          </div>
+          <button className="dash-action-card__link" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>Open inbox <span aria-hidden="true">→</span></button>
+        </header>
+        <div className="dash-action-card__summary">
+          <span><strong>{myUnread.length}</strong> unread</span>
+          <button onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><strong>{unreadMentions.length}</strong> @mentions</button>
+        </div>
+        <div className="dash-action-card__list">
+          {myUnread.length===0?<div className="dash-action-card__empty"><Icon name="mail" size={20}/><strong>Inbox is clear</strong><span>No unread conversations need a reply.</span><button onClick={()=>setPg('messages')}>Browse messages</button></div>:
+          myUnread.slice(0,5).map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);return<div className={`dash-action-row dash-action-row--message ${isTagged?'is-mentioned':''}`} key={m.id} role="button" tabIndex={0} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.currentTarget.click()}}}>
+            <span className="dash-action-row__avatar">{(m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'C'):author?.name||'T').charAt(0)}</span>
+            <span className="dash-action-row__copy"><strong>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name||'Team'} {isTagged&&<b>@you</b>}</strong><small>{m.text}</small></span>
+            <span className="dash-action-row__time">{m.ts}</span>
+          </div>})}
+        </div>
+        {myUnread.length>5&&<button className="dash-action-card__footer" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>{myUnread.length-5} more unread messages <span aria-hidden="true">→</span></button>}
+      </article>
+
+      <article className="dash-action-card dash-action-card--notifications">
+        <header className="dash-action-card__header">
+          <div>
+            <span className="dash-action-card__kicker">Recent activity</span>
+            <h2>Notifications <span>{visNotifs.length}</span></h2>
+          </div>
+          <button className="dash-action-card__link" onClick={()=>openActivityCenter('notifs')}>Review all <span aria-hidden="true">→</span></button>
+        </header>
+        <div className="dash-action-card__summary">
+          <span><strong>{visNotifs.filter(t=>t.type==='job_completed').length}</strong> jobs ready</span>
+          <span><strong>{visNotifs.filter(t=>t.type==='inv_paid').length}</strong> payments</span>
+        </div>
+        <div className="dash-action-card__list">
+          {recentNotifs.length===0?<div className="dash-action-card__empty"><Icon name="check" size={20}/><strong>You’re up to date</strong><span>New operational activity will appear here.</span></div>:
+          recentNotifs.map((t,i)=><div className="dash-action-row dash-action-row--notification" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openNotif(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openNotif(t)}}}>
+            <span className="dash-action-row__pulse"/>
+            <span className="dash-action-row__copy"><strong>{_hubTitle(t.msg)}</strong><small>{t.detail}</small></span>
+            <span className="dash-action-row__time">{_fmtNotifDT(t.date)}</span>
+            <button title="Mark notification read" aria-label="Mark notification read" className="dash-action-row__dismiss" onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}><Icon name="check" size={13}/></button>
           </div>)}
         </div>
-      </div>})()}
-      {/* Unread messages — moved beside Notifications (each half-width) */}
-      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
-        {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
-        </select>}</div>
-        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':''))}</span>
-                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
-              <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
-            </div>})}
-        </div></div>
-    </div>
+        {visNotifs.length>recentNotifs.length&&<button className="dash-action-card__footer" onClick={()=>openActivityCenter('notifs')}>{visNotifs.length-recentNotifs.length} more notifications <span aria-hidden="true">→</span></button>}
+      </article>
+    </section>
+    {_renderWorkspace()}
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
-    {/* Claude needs you — loud banner when a bot task is waiting on a human
-        (a question, a cart ready to submit, or a blocker). The row pill alone
-        is easy to miss; this sits at the top of the dashboard until acted on. */}
-    {isBotOwner(cu)&&(()=>{const _need=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to==='bot-claude'&&['needs_input','needs_review','blocked'].includes(t.bot_status));
-      if(_need.length===0)return null;
-      return<div className="card" style={{marginBottom:16,border:'2px solid #fb7185',background:'#fff1f2'}}>
-        <div className="card-body" style={{padding:'12px 16px'}}>
-          <div style={{fontSize:14,fontWeight:800,color:'#be123c',marginBottom:8}}>🤖 Claude is waiting on you ({_need.length})</div>
-          {_need.map(t=>{const _b=botRowUI(t.bot_status);return<div key={t.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #fecdd3'}}>
-            <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b?.pillBg,color:_b?.pillFg,whiteSpace:'nowrap',flexShrink:0}}>{_b?.label||t.bot_status}</span>
-            <span style={{fontSize:12,fontWeight:600,color:'#334155',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
-            <button className="btn btn-sm btn-primary" style={{flexShrink:0}} onClick={()=>setTodoDetailId(t.id)}>{t.bot_status==='needs_input'?'Answer':t.bot_status==='needs_review'?'Review & order':'View'}</button>
-          </div>})}
-        </div>
-      </div>})()}
-    {/* Assigned Tasks for Admin */}
-    {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
-      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
-        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
-      </div>
-      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
-        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
-          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#fef3c7':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
-              </div>
-              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
-              <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
-              {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
-              {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
-              {t.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(t.bot_status)&&<button title="Retry — requeue for Claude" style={{background:'none',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#1e40af',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_botRequeue(t.id)}}>🔁</button>}
-              <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
-              <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
-            </div>
-          </div>})}
-      </div>
-      {recentlyCompleted.length>0&&<div style={{borderTop:'1px solid #e2e8f0'}}>
-        <div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#166534',background:'#f0fdf4'}}>Recently Completed ({recentlyCompleted.length})</div>
-        {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/864e5);const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
-          return<div key={t.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',background:'#f0fdf4',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <div style={{flex:1}}>
-                <div style={{fontSize:12,color:'#166534'}}>✅ {t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>Completed by {completedBy?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.completion_note?' — '+t.completion_note:''}{daysAgo===0?' · Today':' · '+daysAgo+'d ago'}</div>
-              </div>
-              <button title="Acknowledge — clear from list" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();dismissNotif('task-ack-'+t.id)}}>✓</button>
-            </div>
-          </div>})}
-      </div>}
-    </div>})()}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
@@ -8796,6 +9159,7 @@ export default function App(){
         </div>
       </div></div>})()}
 
+    </div>
     </>)};
 
 
