@@ -10507,52 +10507,87 @@ async function swapColorToBlob(url, fromHex, toHex, tol = 78) {
 // or a full-garment mockup) can't be placed cleanly on a storefront garment; dropping a
 // transparent PNG/SVG here saves a web-ready cutout onto the record (web_logo_url) so the
 // art becomes placeable & recolorable — on this store, future stores, and orders.
-function WebLogoSlot({ art, onAttach, compact }) {
+function WebLogoSlot({ art, onAttach, onSaveForCw, compact }) {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [err, setErr] = useState('');
+  const [staged, setStaged] = useState(null); // uploaded url awaiting a color-way choice
+  const [newCw, setNewCw] = useState('');
   const ref = useRef();
   const has = !!(art?.web_logo_url || (Array.isArray(art?.web_logos) && art.web_logos.some((w) => w && w.url)));
+  const colorWays = Array.isArray(art?.color_ways) ? art.color_ways.filter((c) => c && String(c.garment_color || '').trim()) : [];
+  const close = () => { setOpen(false); setStaged(null); setNewCw(''); setErr(''); };
   const pick = async (file) => {
     if (!file || !onAttach) return;
     const ok = file.type?.startsWith('image/') || /\.(svg|png)$/i.test(file.name || '');
     if (!ok) { setErr('That file isn’t an image — attach a transparent PNG or SVG.'); return; }
     setErr(''); setBusy(true);
-    try { const url = await cloudUpload(file, 'nsa-store-art'); await onAttach(art, url); setOpen(false); }
-    catch (e) { /* cloudUpload surfaces errors via toast */ }
+    try {
+      const url = await cloudUpload(file, 'nsa-store-art');
+      // If per-color-way saving is available, ask which one; else attach as default.
+      if (onSaveForCw) setStaged(url);
+      else { await onAttach(art, url); close(); }
+    } catch (e) { /* cloudUpload surfaces errors via toast */ }
     setBusy(false);
   };
+  const saveDefault = async () => { if (!staged) return; setBusy(true); try { await onAttach(art, staged); close(); } catch (e) { /* toast */ } setBusy(false); };
+  const saveForCw = async (name) => { if (!staged) return; setBusy(true); try { await onSaveForCw(art, staged, name || ''); close(); } catch (e) { /* toast */ } setBusy(false); };
   return (
     <>
-      <button onClick={(e) => { e.stopPropagation(); setErr(''); setOpen(true); }} disabled={busy}
+      <button onClick={(e) => { e.stopPropagation(); setErr(''); setStaged(null); setNewCw(''); setOpen(true); }} disabled={busy}
         title={has ? 'Replace the web logo — the clean PNG/SVG used to place this art on garments' : 'Add a clean transparent PNG/SVG so this art can be placed & recolored on garments'}
         style={{ fontSize: compact ? 9.5 : 10.5, padding: compact ? '2px 6px' : '3px 8px', fontWeight: 800, borderRadius: 6, lineHeight: 1.3, cursor: busy ? 'wait' : 'pointer', border: has ? '1px solid #166534' : '1px dashed #2563eb', background: has ? '#ecfdf5' : '#eff6ff', color: has ? '#166534' : '#1d4ed8', whiteSpace: 'nowrap' }}>
         {busy ? '…' : has ? 'web ✓' : '+ web logo'}
       </button>
       <input ref={ref} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) pick(f); e.target.value = ''; }} />
       {open && (
-        <div onClick={(e) => { e.stopPropagation(); if (!busy) setOpen(false); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div onClick={(e) => { e.stopPropagation(); if (!busy) close(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 20, width: 420, maxWidth: '92vw', boxShadow: '0 20px 50px rgba(0,0,0,.25)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <div style={{ fontWeight: 800, fontSize: 15 }}>{has ? 'Replace web logo' : 'Add a web logo'}</div>
-              <button onClick={() => !busy && setOpen(false)} style={{ border: 'none', background: 'none', fontSize: 20, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{staged ? 'Which color way?' : has ? 'Replace web logo' : 'Add a web logo'}</div>
+              <button onClick={() => !busy && close()} style={{ border: 'none', background: 'none', fontSize: 20, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
             </div>
-            <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 12 }}>A clean transparent <b>PNG</b> or <b>SVG</b> — the web-ready cutout used to place &amp; recolor <b>{art?.name || 'this logo'}</b> on garments.</div>
-            <div
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragOver) setDragOver(true); }}
-              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
-              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = e.dataTransfer?.files && e.dataTransfer.files[0]; if (f) pick(f); }}
-              onClick={() => { if (!busy && ref.current) ref.current.click(); }}
-              style={{ border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), background: dragOver ? '#eff6ff' : '#f8fafc', borderRadius: 12, padding: '30px 16px', textAlign: 'center', cursor: busy ? 'wait' : 'pointer', transition: 'border-color .12s, background .12s' }}>
-              {busy ? <div style={{ fontWeight: 700, color: '#1d4ed8' }}>Uploading…</div>
-                : (<>
-                  <div style={{ fontSize: 26, marginBottom: 6 }}>⬆️</div>
-                  <div style={{ fontWeight: 700, fontSize: 13.5, color: '#334155' }}>Drag &amp; drop your file here</div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>or <span style={{ color: '#2563eb', fontWeight: 700 }}>browse</span> — PNG or SVG</div>
-                </>)}
-            </div>
-            {err && <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>{err}</div>}
+            {!staged ? (
+              <>
+                <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 12 }}>A clean transparent <b>PNG</b> or <b>SVG</b> — the web-ready cutout used to place &amp; recolor <b>{art?.name || 'this logo'}</b> on garments.</div>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragOver) setDragOver(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
+                  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = e.dataTransfer?.files && e.dataTransfer.files[0]; if (f) pick(f); }}
+                  onClick={() => { if (!busy && ref.current) ref.current.click(); }}
+                  style={{ border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), background: dragOver ? '#eff6ff' : '#f8fafc', borderRadius: 12, padding: '30px 16px', textAlign: 'center', cursor: busy ? 'wait' : 'pointer', transition: 'border-color .12s, background .12s' }}>
+                  {busy ? <div style={{ fontWeight: 700, color: '#1d4ed8' }}>Uploading…</div>
+                    : (<>
+                      <div style={{ fontSize: 26, marginBottom: 6 }}>⬆️</div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, color: '#334155' }}>Drag &amp; drop your file here</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>or <span style={{ color: '#2563eb', fontWeight: 700 }}>browse</span> — PNG or SVG</div>
+                    </>)}
+                </div>
+                {err && <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>{err}</div>}
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <img src={staged} alt="" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 8, border: '1px solid #eef2f7', background: '#f8fafc' }} />
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Which garment color is this cutout for? Pick a color way, or save it for every garment.</div>
+                </div>
+                {colorWays.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8' }}>Existing color ways</div>
+                    {colorWays.map((cw, ci) => <button key={cw.id || ci} disabled={busy} onClick={() => saveForCw(cw.garment_color || ('Color way ' + (ci + 1)))} style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: busy ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, color: '#1e293b' }}><span style={{ fontSize: 10, fontWeight: 700, color: '#fff', background: '#64748b', borderRadius: 5, padding: '1px 6px', flexShrink: 0 }}>CW {ci + 1}</span>{cw.garment_color || ('Color way ' + (ci + 1))}</button>)}
+                  </div>
+                )}
+                <div style={{ paddingTop: 12, borderTop: '1px solid #eef2f7' }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8', marginBottom: 6 }}>Or create a new color way</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input value={newCw} onChange={(e) => setNewCw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newCw.trim()) saveForCw(newCw.trim()); }} placeholder="e.g. Royal, White" style={{ flex: 1, fontSize: 13, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, outline: 'none' }} />
+                    <button className="btn btn-primary" disabled={busy || !newCw.trim()} onClick={() => saveForCw(newCw.trim())}>Create &amp; save</button>
+                  </div>
+                  <button disabled={busy} onClick={saveDefault} style={{ marginTop: 10, fontSize: 11.5, fontWeight: 700, color: '#475569', background: 'none', border: 'none', cursor: busy ? 'wait' : 'pointer', padding: 0 }}>or save as the “all garments” default →</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -11265,7 +11300,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 </div>
                 <div style={{ fontSize: 9.5, fontWeight: 700, color: '#475569', textAlign: 'center', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={view.label}>{view.label || '—'}</div>
               </div>}
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} compact /></div>
               <button onClick={() => toggleStoreArt(a)} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer', lineHeight: '20px', textAlign: 'center', padding: 0 }}>×</button>
             </div>
           ); })}
@@ -11285,12 +11320,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {sel2 && !on2 && <span style={{ position: 'absolute', top: -6, left: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
                 </button>
                 {sel2 && <button onClick={(e) => { e.stopPropagation(); toggleStoreArt(a); }} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, lineHeight: '18px', textAlign: 'center', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>}
-                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} compact /></div>
               </div>
             ); })}
           </div>
         </div>}
-        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} /></div>}
+        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
 
