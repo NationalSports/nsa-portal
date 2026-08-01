@@ -245,6 +245,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setO(updated);onSave(updated);setDirty(false);
     nf('Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''),(wasInProd||sibs)?'error':'success');
   };
+  // Send a job's art back to the artist for a NEW/redone mockup — the reused mock is wrong or the
+  // rep wants a change. The design identity stays (unlike Recall); the art returns to art_requested
+  // and its files to waiting_for_art, clearing coach-send/approval residue and staling seps so the
+  // redo can't skip the production-file re-check. Resets the whole split family (siblings share the
+  // design). Component-level so the art_complete Check-Mock banner and the waiting_approval panel
+  // share ONE implementation instead of two hand-synced copies.
+  const _sendArtBackToArtist=(ji,reason)=>{
+    const j=safeJobs(o)[ji];if(!j)return;
+    const _revAt=new Date().toISOString();
+    const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
+    const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+    const _revFamIdx=new Set(_artFamilyIdxs(ji));
+    const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+    const updArt2=safeArt(o).map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
+    saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
+  };
   // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
   // convention where gi.sizes carries only that job's subset of the SO item's sizes.
   const jobGarmentLines=(jj)=>(jj.items||[]).map(gi=>{
@@ -9660,8 +9676,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:18}}>🔍</span>
                   <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — art reused on a different garment</span>
                 </div>
-                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>This art was approved on a different color/style, so there's no mock for <b>{_gLabels}</b> yet. Set up the job to pick an approved mock (color-way matched) or send it to the artist for a new one.</div>
-                <button className="btn btn-sm" style={{fontSize:12,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'6px 14px'}} onClick={_openSetup}>🎨 Set up job</button>
+                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>This art was approved on a different color/style, so there's no confirmed mock for <b>{_gLabels}</b> yet. If the mock below is right, approve it as-is — or request a new mock from the artist.</div>
+                {/* Approve-as-is: the prior approved mocks render right here (color-way matched) so the rep
+                    can confirm one in a click — no wizard. Same picker the Set up job wizard uses. */}
+                {_mockCheckGarments.map((cg,ci)=><div key={ci} style={{marginBottom:8}} onClick={e=>e.stopPropagation()}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#0f172a',marginBottom:4}}>{cg.color?cg.color+' · ':''}{cg.sku}</div>
+                  {priorMockCards(cg,j.id)}
+                </div>)}
+                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:4}} onClick={e=>e.stopPropagation()}>
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'5px 12px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
+                    title="None of these mocks are right — pull the art back and have the artist build a new mockup for this garment"
+                    onClick={()=>{const _who=REPS.find(r=>r.id===j.assigned_artist)?.name||'the artist';if(!window.confirm('Send "'+(j.art_name||'this art')+'" to '+_who+' for a new mockup on '+_gLabels+'?\n\nThe art goes back to Waiting for Art and any coach-approval state on this job is cleared.'))return;_sendArtBackToArtist(ji,'Need a new mock for '+_gLabels+' — reused art, rep requested a fresh mockup.')}}>🎨 Request a new mock</button>
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'5px 10px',background:'none',color:'#7c3aed',border:'none',fontWeight:700,textDecoration:'underline',cursor:'pointer'}} title="Open the full job setup (reassign artist, notes, split)" onClick={_openSetup}>Set up job…</button>
+                </div>
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
@@ -9770,17 +9797,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // rather than "In Progress" (nobody has started the redo yet). The artist board's
               // Waiting-for-Art column includes art_requested, so the job stays visible there,
               // with its Start Working button moving it to In Progress when the artist picks it up.
-              const _sendBackToArtist=(reason)=>{
-                const _revAt=new Date().toISOString();
-                const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
-                const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                // Reset the whole split family — slices share the design, so a redo on one must reset
-                // its siblings too or they stay Art Complete on art that's being redrawn.
-                const _revFamIdx=new Set(_artFamilyIdxs(ji));
-                const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
-                const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
-                saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
-              };
+              const _sendBackToArtist=(reason)=>_sendArtBackToArtist(ji,reason);
               return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':_needsSetup?'🎨':'⚠️'}</span>
