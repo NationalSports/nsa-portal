@@ -1301,17 +1301,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
       supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
-      supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
+    // Order items are fetched SCOPED to this store's orders, chunked by order_id.
+    // A blanket `select('*')` across webstore_order_items silently truncates at the
+    // PostgREST 1000-row cap once the table grows, dropping newer stores' lines and
+    // showing every order as "0 items" (matches the chunked pattern used elsewhere).
+    const _oidArr = [...new Set((ordRes.data || []).map((o) => o.id))];
+    const _itemRows = [];
+    for (let ii = 0; ii < _oidArr.length; ii += 300) {
+      const { data: chunk } = await supabase.from('webstore_order_items').select('*').in('order_id', _oidArr.slice(ii, ii + 300));
+      if (chunk) _itemRows.push(...chunk);
+    }
+    const itemRes = { data: _itemRows };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
