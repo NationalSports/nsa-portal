@@ -33636,6 +33636,44 @@ export default function App(){
     setNlSpec(spec);setPg('search');
     return res;
   }
+  // Build one estimate line from a resolved catalog product, priced to a target margin
+  // (unit_sell = cost/(1-margin)) or the default markup, or retail when no cost is on file.
+  // Shared by add-to-open-estimate and start-estimate-from-words so the pricing stays identical.
+  function _assistantLine(p,margin_pct,markup){
+    const nsa=Number(p.nsa_cost)||0;
+    const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
+    let unit_sell,applied=false;
+    if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
+    else if(nsa>0){unit_sell=Math.round((nsa*(markup||1.65))*100)/100;}
+    else{unit_sell=Number(p.retail_price)||0;}
+    const bl=String(p.brand||''),nm=String(p.name||'');
+    const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
+    return {line:{product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true},applied,noCost:(m!=null&&nsa<=0)};
+  }
+  // Start a NEW draft estimate for a customer, optionally pre-filled with resolved items. Builds
+  // the whole draft at once (no window-event timing) and opens it unsaved for review — mirrors
+  // the New Estimate flow, so nothing persists until the user saves.
+  async function handleAssistantStartEstimate({customer,items}){
+    const cq=String(customer||'').trim().toLowerCase();
+    if(!cq)return {error:'no_customer'};
+    const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
+    if(!matches.length)return {error:'customer_not_found',customer};
+    const c=[...matches.filter(m=>!m.parent_id),...matches.filter(m=>m.parent_id)][0];
+    const reqItems=Array.isArray(items)?items:[];
+    const lines=[],added=[],notFound=[];
+    for(const it of reqItems){
+      const desc=String((it&&it.description)||'').trim();if(!desc)continue;
+      let p=prod.find(x=>String(x.sku||'').toLowerCase()===desc.toLowerCase());
+      if(!p){try{const r=await _searchProductsServer(desc,{},0,1);p=(r&&r.products&&r.products[0])||null;}catch(e){p=null;}}
+      if(!p){notFound.push(desc);continue;}
+      const{line}=_assistantLine(p,Number(it&&it.margin_pct),c.custom_multiplier||1.65);
+      lines.push(line);added.push({sku:p.sku,name:line.name});
+    }
+    const estId=nextEstId(ests);
+    const ne={id:estId,customer_id:c.id,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:c.custom_multiplier||1.65,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items:lines};
+    setEEst(ne);setEEstC(c);setPg('estimates');
+    return {ok:true,name:c.name||'',estId,added,notFound};
+  }
   // Assistant "add a line to the open estimate". Resolves the product via the same server
   // catalog search the editor uses, prices it here (money math stays out of the AI), and hands a
   // fully-formed line to the open estimate editor via a window event (see OrderEditor listener).
@@ -34877,7 +34915,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate}/>
   </div></AppDataProvider>);
 }
 

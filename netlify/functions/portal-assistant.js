@@ -136,6 +136,7 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '- When the user wants a walkthrough or asks "how do I …" and an available tutorial matches, call the `start_tutorial` tool with that tour id. Do not also type out all the steps — the tutorial guides them on screen. Give a one-line lead-in instead.',
     '- When the user wants to FIND, LIST, FILTER, or COUNT their actual records — "show me…", "which…", "how many…", "find the … order", "jobs that…" — call the `search` tool with a structured filter spec. You do NOT see the results; the app displays them. Give a one-line lead-in ("Here are the open orders for Chase:") and NEVER state specific order/job ids, totals, counts, or margins yourself — the results panel shows them.',
     '- When the user has an estimate OPEN and asks to add an item to it ("add … at N% margin", "put a … on this estimate"), call the `add_line` tool with the product description and the target margin percent if they stated one. It only works while an estimate is open; the app resolves the product from the catalog and prices it, and the user reviews before saving. Do not state a price or claim it is added — the app confirms.',
+    '- To START a NEW estimate ("start/build/create an estimate or quote for <customer>", optionally "with <items>"), call the start_estimate tool with the customer and an items array (each item = a description + optional margin_pct). The app resolves the customer and items and opens the draft for review. This is different from add_line (which adds to an already-open estimate).',
     '- If nothing matches, just answer in words. Only use a tool when it genuinely helps.',
     '',
     'Structured search — pick ONE entity and build the `search` spec from that entity\'s fields ONLY:',
@@ -232,6 +233,24 @@ function buildTools({ tours, targets }) {
     name: 'vendor_stock',
     description: "Check live vendor B2B stock and next delivery for a product (Adidas, Agron, Under Armour, Nike). Use when the user asks whether something is in stock at the vendor, its availability, or when the next delivery is — for a SKU or a product description.",
     input_schema: { type: 'object', properties: { query: { type: 'string', description: 'A product SKU (e.g. IQ2728) or a description (e.g. "adidas navy pregame tee").' } }, required: ['query'], additionalProperties: false },
+  });
+  // Start a new draft estimate (write, reviewed before save).
+  tools.push({
+    name: 'start_estimate',
+    description: "Start a NEW draft estimate for a customer, optionally pre-filled with items. Use when the user says 'start/create/build an estimate (or quote) for <customer>', optionally 'with <items>'. The app resolves the customer and each item from the catalog and opens the draft for review; nothing is saved until the user saves. (Different from add_line, which adds to an ALREADY-open estimate.)",
+    input_schema: {
+      type: 'object',
+      properties: {
+        customer: { type: 'string', description: 'Customer name or tag.' },
+        items: {
+          type: 'array',
+          description: 'Optional items to pre-fill; each a product description (SKU or words) + optional target margin percent.',
+          items: { type: 'object', properties: { description: { type: 'string' }, margin_pct: { type: 'number' } }, required: ['description'], additionalProperties: false },
+        },
+      },
+      required: ['customer'],
+      additionalProperties: false,
+    },
   });
   // Add a product line to the estimate the user has open (write, reviewed before save).
   tools.push({
@@ -347,6 +366,15 @@ async function runAssistant({ client, catalogs, messages }) {
         const mp = Number(tu.input && tu.input.margin_pct);
         if (description) { actions.push({ type: 'add_line', description, margin_pct: (mp > 0 && mp < 100) ? mp : null }); out = { ok: true }; }
         else out = { error: 'No product description' };
+      } else if (tu.name === 'start_estimate') {
+        const customer = normStr(tu.input && tu.input.customer, 120);
+        const rawItems = Array.isArray(tu.input && tu.input.items) ? tu.input.items : [];
+        const items = rawItems.slice(0, 30).map((it) => {
+          const mp = Number(it && it.margin_pct);
+          return { description: normStr(it && it.description, 200), margin_pct: (mp > 0 && mp < 100) ? mp : null };
+        }).filter((it) => it.description);
+        if (customer) { actions.push({ type: 'start_estimate', customer, items }); out = { ok: true }; }
+        else out = { error: 'No customer' };
       } else if (tu.name === 'highlight') {
         const id = String(tu.input?.target_id || '');
         if (targetIds.has(id)) { actions.push({ type: 'highlight', target_id: id }); out = { ok: true }; }

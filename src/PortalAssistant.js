@@ -367,7 +367,7 @@ function StockCard({ stock }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -449,6 +449,22 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     if (res.ok) { setMessages((prev) => [...prev, { id: `s${Date.now()}`, from: 'bot', kind: 'stock', stock: res }]); }
   }, [onVendorStock]);
 
+  const doStartEstimate = useCallback(async (spec) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `e${Date.now()}`, from: 'bot', text: t }]);
+    if (!onStartEstimate) { pushBot("I can't start estimates yet."); return; }
+    let res = null;
+    try { res = await onStartEstimate(spec); } catch { res = null; }
+    if (!res || res.error === 'no_customer') { pushBot('Which customer should the estimate be for?'); return; }
+    if (res.error === 'customer_not_found') { pushBot(`I couldn't find a customer matching "${spec.customer}".`); return; }
+    if (res.ok) {
+      let t = `Started draft ${res.estId} for ${res.name}`;
+      t += (res.added && res.added.length) ? ` with ${res.added.length} item${res.added.length === 1 ? '' : 's'}: ${res.added.map((a) => a.sku).join(', ')}.` : ' (no items yet).';
+      t += ' Set sizes/quantities and Save when it looks right.';
+      if (res.notFound && res.notFound.length) t += ` I couldn't match: ${res.notFound.join('; ')} — add those manually.`;
+      pushBot(t);
+    }
+  }, [onStartEstimate]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -461,7 +477,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     else if (a.type === 'daily_brief') doBrief();
     else if (a.type === 'customer_360' && a.customer) doCustomer360(a.customer);
     else if (a.type === 'vendor_stock' && a.query) doVendorStock(a.query);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock]);
+    else if (a.type === 'start_estimate' && a.customer) doStartEstimate({ customer: a.customer, items: a.items });
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
