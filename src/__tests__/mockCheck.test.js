@@ -350,10 +350,23 @@ describe('garmentsNeedingMockCheck — legacy general mock / sew-out proof is no
     expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toEqual([]);
   });
 
-  test('a displayable sew-out proof in prod_files satisfies the garment too', () => {
+  test('a sew-out proof does NOT satisfy — the prior approved mock is surfaced for reuse', () => {
+    // Policy (SO-1661): a digitizer sew-out proof in prod_files is not a garment mockup and can't
+    // pass the approval gate (skusMissingMockups rejects it). So reused art carrying only a proof
+    // must still surface any prior approved mock — the rep should be offered the ACTUAL mockup to
+    // confirm or redo, not left with the raw proof + "send to artist". Aligns garmentsNeedingMockCheck
+    // with the gate; the shared mockup_files bucket (a real mock) is still honored above.
     const art = { id: 'af-proof', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
     const { job, so } = legacyCase(art);
-    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toEqual([]);
+    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toHaveLength(1);
+  });
+
+  test('a sew-out proof with NO prior mock to offer does not nag', () => {
+    // The check only surfaces when there is a concrete prior mock to reuse — a proof-only garment
+    // with nothing to offer must NOT produce a "Check Mock" nag (there would be nothing to pick).
+    const art = { id: 'af-proof-only', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
+    const { job, so } = legacyCase(art);
+    expect(garmentsNeedingMockCheck(job, so, {})).toEqual([]);
   });
 
   test('a dismissed proof does NOT satisfy — the garment still needs its mock checked', () => {
