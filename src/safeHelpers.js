@@ -43,6 +43,30 @@ export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
 };
+// The set of art files a job owns across its garments. Seeded from the job's declared art
+// (_art_ids / art_file_id) and augmented with the art files referenced by the decorations the
+// job actually owns (jobItemDecoIdxs). Scoping to owned decos is load-bearing: on an art-split
+// line each sibling job owns ONE of the line's art decorations, so scanning EVERY deco pulls in
+// the sibling designs' art files. That over-broad set then (a) leaks a sibling design's mock into
+// this job's display and (b) — because the SO-page "×" passes this set as the mock-removal scope
+// (removeMockFromArtFiles artFileIds) — lets a removal under one design wipe the shared sku|color
+// mock off the sibling designs on the same garment, reverting their Check Mock (SO-1023: clearing
+// the Attack Everything mock on JX4452 emptied the 2 Col / Friars jobs' JX4452 mocks). Mirrors the
+// job-art gathering already in skusMissingMockups / garmentsNeedingMockCheck so the four can't drift.
+export const jobArtFileIds = (job, soItems) => {
+  const ids = new Set(safeArr(job?._art_ids).filter(Boolean));
+  if (ids.size === 0 && job?.art_file_id) ids.add(job.art_file_id);
+  safeArr(job?.items).forEach(gi => {
+    const it = safeArr(soItems)[gi?.item_idx];
+    if (!it) return;
+    const dis = jobItemDecoIdxs(gi);
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
+      if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') ids.add(d.art_file_id);
+    });
+  });
+  return ids;
+};
 // Does this job's artwork fail to resolve to a real art file? True only when the job's declared
 // art (art_file_id/_art_ids — a '__tbd' placeholder counts as declaring) includes NO live design
 // AND an art decoration the job owns has no live art file behind it. Numbers/names-only jobs and
@@ -618,21 +642,10 @@ export const skusMissingMockups = (job, so) => {
   // below looks at the right art file instead of falling back to the job's
   // primary art and falsely reporting a missing mockup. Mirrors the approval
   // renderer at OrderEditor.js:6568.
-  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
-  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
-  items.forEach(gi => {
-    const it = soItems[gi?.item_idx];
-    if (!it) return;
-    // Scope to the decorations THIS job item owns (deco_idxs). On an art-split line each
-    // sibling job owns ONE of the line's art decorations; pulling in the others would let a
-    // sibling design's mockup satisfy (or mis-report) this design's gate. dis == null keeps
-    // the legacy fall-back to every decoration on the line.
-    const dis = jobItemDecoIdxs(gi);
-    safeDecos(it).forEach((d, di) => {
-      if (dis && !dis.includes(di)) return;
-      if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id);
-    });
-  });
+  // Scope to the decorations THIS job item owns (deco_idxs) — on an art-split line pulling in the
+  // sibling designs' art would let their mockups satisfy (or mis-report) this design's gate. Shared
+  // with the OrderEditor mock panels via jobArtFileIds so the two can't drift.
+  const jobArtIds = jobArtFileIds(job, soItems);
   const missing = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
@@ -736,21 +749,11 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
   if (items.length === 0) return [];
   const allArt = safeArt(so);
   const soItems = safeItems(so);
-  // Mirror skusMissingMockups: gather every art file this job's items reference, since a
-  // job's _art_ids only carry the first item's art.
-  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
-  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
-  items.forEach(gi => {
-    const it = soItems[gi?.item_idx];
-    if (!it) return;
-    // Only the decorations THIS job item owns (deco_idxs). An art-split garment carries a
-    // separate art decoration for each design (Friars / 2 Col / Attack), one per sibling job;
-    // without this scope the 2-Col job's set would swallow the sibling designs' art and the
-    // check would surface — and gate on — the WRONG design's mocks (SO-1131). Legacy items
-    // with unknown coverage (dis == null) still fall back to every decoration on the line.
-    const dis = jobItemDecoIdxs(gi);
-    safeDecos(it).forEach((d, di) => { if (dis && !dis.includes(di)) return; if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id); });
-  });
+  // Every art file this job's items reference, scoped to the decorations the job owns (an art-split
+  // garment carries one art deco per design; swallowing the siblings would gate on the WRONG
+  // design's mocks — SO-1131). Shared with skusMissingMockups / the OrderEditor mock panels via
+  // jobArtFileIds so the set can't drift.
+  const jobArtIds = jobArtFileIds(job, soItems);
   const urlOf = f => typeof f === 'string' ? f : (f?.url || '');
   const out = [];
   items.forEach(gi => {
