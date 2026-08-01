@@ -734,17 +734,23 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
       const im = a?.item_mockups || {};
       const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
       if (hasOwn) return;
-      // Legacy single-design art carries ONE mock in the shared mockup_files bucket (or a
-      // displayable sew-out proof in prod_files) that stands in for every garment — the same
-      // fallback skusMissingMockups accepts and every mock-display surface renders. That mock is
-      // already shown and approved on this order, so the garment is NOT missing one: don't nag
-      // "Check Mock" just because the SAME design was later mocked per-garment on another order
-      // (which arrives via priorByArtKey / this order's other-garment keys). Without this, a
-      // fully-approved legacy mock kept re-surfacing "Check Mock" that normal approval could never
-      // clear — there was nothing per-item to write. artProofFallback returns [] the moment the
-      // art has ANY per-item mock, so genuinely reused art (per-item mocks for siblings, none for
-      // this garment) still falls through and flags below.
-      if (artProofFallback(a).length > 0) return;
+      // A real general mock in the shared mockup_files/files bucket stands in for every garment,
+      // satisfies the approval gate (skusMissingMockups accepts it), and is already shown/approved
+      // on this order — so the garment is NOT missing one: don't nag "Check Mock" just because the
+      // SAME design was later mocked per-garment on another order (SO-1023). BUT the digitizer's
+      // sew-out proof in prod_files does NOT satisfy the gate (skusMissingMockups rejects it —
+      // SO-1661): reused art carrying only a proof still needs a real garment mockup, so surface any
+      // prior approved mock here (from priorByArtKey / this order's other-garment keys) — the whole
+      // point of "reuse previous artwork" is to offer that ACTUAL mockup for confirm-or-redo instead
+      // of leaving the rep with just the raw proof and a "send to artist" button. proof_dismissed
+      // clears the general mock too. A per-item mock for a sibling garment makes the general bucket
+      // ambiguous (wrong-colorway class), so it stops standing in and this garment falls through to
+      // flag below (mirrors artProofFallback, which returns [] the moment ANY per-item mock exists).
+      if (!a?.proof_dismissed) {
+        const hasPerItem = Object.values(im).some(v => safeArr(v).length > 0);
+        const genMock = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
+        if (!hasPerItem && genMock.length > 0) return;
+      }
       // Gather candidate prior mocks, grouped by where they were approved (each group keeps its
       // front/back together), deduped by URL across all sources for this art file.
       const seen = new Set();
