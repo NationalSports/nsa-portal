@@ -1301,17 +1301,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
       supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
-      supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
+    // Order items are fetched SCOPED to this store's orders, chunked by order_id.
+    // A blanket `select('*')` across webstore_order_items silently truncates at the
+    // PostgREST 1000-row cap once the table grows, dropping newer stores' lines and
+    // showing every order as "0 items" (matches the chunked pattern used elsewhere).
+    const _oidArr = [...new Set((ordRes.data || []).map((o) => o.id))];
+    const _itemRows = [];
+    for (let ii = 0; ii < _oidArr.length; ii += 300) {
+      const { data: chunk } = await supabase.from('webstore_order_items').select('*').in('order_id', _oidArr.slice(ii, ii + 300));
+      if (chunk) _itemRows.push(...chunk);
+    }
+    const itemRes = { data: _itemRows };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
@@ -4633,7 +4643,7 @@ function Quick({ label, children }) {
 }
 
 function Chip({ label, tone = 'slate' }) {
-  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' } };
+  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' }, violet: { bg: '#ede9fe', fg: '#6d28d9' } };
   const t = tones[tone] || tones.slate;
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: t.bg, color: t.fg, fontFamily: tone === 'gray' ? 'monospace' : 'inherit' }}>{label}</span>;
 }
@@ -4692,7 +4702,7 @@ const BLANK = {
   name: '', slug: '', customer_id: '', rep_id: '', csr_id: '', status: 'draft',
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
-  delivery_mode: 'ship_home',
+  delivery_mode: 'deliver_club',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
@@ -5522,6 +5532,10 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const roster = detail?.roster || [];
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
+  // Product name lookup for order lines. Order items store a SKU + color but no name;
+  // the descriptive name lives on the storefront product (same resolution _itemName uses).
+  const nameByPid = {};
+  catalog.forEach((c) => { const st = stockByWp[c.id]; if (c.product_id && st && st.name && !nameByPid[c.product_id]) nameByPid[c.product_id] = st.name; });
 
   // Real per-store batch numbers for the linked SOs (webstore_batch_no lives on the
   // Sales Order, not the order row). Fetched once here and shared by the "Batches
@@ -5719,7 +5733,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -10493,27 +10507,90 @@ async function swapColorToBlob(url, fromHex, toHex, tol = 78) {
 // or a full-garment mockup) can't be placed cleanly on a storefront garment; dropping a
 // transparent PNG/SVG here saves a web-ready cutout onto the record (web_logo_url) so the
 // art becomes placeable & recolorable — on this store, future stores, and orders.
-function WebLogoSlot({ art, onAttach, compact }) {
+function WebLogoSlot({ art, onAttach, onSaveForCw, compact }) {
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [err, setErr] = useState('');
+  const [staged, setStaged] = useState(null); // uploaded url awaiting a color-way choice
+  const [newCw, setNewCw] = useState('');
   const ref = useRef();
   const has = !!(art?.web_logo_url || (Array.isArray(art?.web_logos) && art.web_logos.some((w) => w && w.url)));
+  const colorWays = Array.isArray(art?.color_ways) ? art.color_ways.filter((c) => c && String(c.garment_color || '').trim()) : [];
+  const close = () => { setOpen(false); setStaged(null); setNewCw(''); setErr(''); };
   const pick = async (file) => {
     if (!file || !onAttach) return;
     const ok = file.type?.startsWith('image/') || /\.(svg|png)$/i.test(file.name || '');
-    if (!ok) return;
-    setBusy(true);
-    try { const url = await cloudUpload(file, 'nsa-store-art'); await onAttach(art, url); }
-    catch (e) { /* cloudUpload surfaces errors via toast */ }
+    if (!ok) { setErr('That file isn’t an image — attach a transparent PNG or SVG.'); return; }
+    setErr(''); setBusy(true);
+    try {
+      const url = await cloudUpload(file, 'nsa-store-art');
+      // If per-color-way saving is available, ask which one; else attach as default.
+      if (onSaveForCw) setStaged(url);
+      else { await onAttach(art, url); close(); }
+    } catch (e) { /* cloudUpload surfaces errors via toast */ }
     setBusy(false);
   };
+  const saveDefault = async () => { if (!staged) return; setBusy(true); try { await onAttach(art, staged); close(); } catch (e) { /* toast */ } setBusy(false); };
+  const saveForCw = async (name) => { if (!staged) return; setBusy(true); try { await onSaveForCw(art, staged, name || ''); close(); } catch (e) { /* toast */ } setBusy(false); };
   return (
     <>
-      <button onClick={(e) => { e.stopPropagation(); ref.current && ref.current.click(); }} disabled={busy}
+      <button onClick={(e) => { e.stopPropagation(); setErr(''); setStaged(null); setNewCw(''); setOpen(true); }} disabled={busy}
         title={has ? 'Replace the web logo — the clean PNG/SVG used to place this art on garments' : 'Add a clean transparent PNG/SVG so this art can be placed & recolored on garments'}
         style={{ fontSize: compact ? 9.5 : 10.5, padding: compact ? '2px 6px' : '3px 8px', fontWeight: 800, borderRadius: 6, lineHeight: 1.3, cursor: busy ? 'wait' : 'pointer', border: has ? '1px solid #166534' : '1px dashed #2563eb', background: has ? '#ecfdf5' : '#eff6ff', color: has ? '#166534' : '#1d4ed8', whiteSpace: 'nowrap' }}>
         {busy ? '…' : has ? 'web ✓' : '+ web logo'}
       </button>
       <input ref={ref} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) pick(f); e.target.value = ''; }} />
+      {open && (
+        <div onClick={(e) => { e.stopPropagation(); if (!busy) close(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 20, width: 420, maxWidth: '92vw', boxShadow: '0 20px 50px rgba(0,0,0,.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{staged ? 'Which color way?' : has ? 'Replace web logo' : 'Add a web logo'}</div>
+              <button onClick={() => !busy && close()} style={{ border: 'none', background: 'none', fontSize: 20, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+            </div>
+            {!staged ? (
+              <>
+                <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 12 }}>A clean transparent <b>PNG</b> or <b>SVG</b> — the web-ready cutout used to place &amp; recolor <b>{art?.name || 'this logo'}</b> on garments.</div>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragOver) setDragOver(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
+                  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = e.dataTransfer?.files && e.dataTransfer.files[0]; if (f) pick(f); }}
+                  onClick={() => { if (!busy && ref.current) ref.current.click(); }}
+                  style={{ border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), background: dragOver ? '#eff6ff' : '#f8fafc', borderRadius: 12, padding: '30px 16px', textAlign: 'center', cursor: busy ? 'wait' : 'pointer', transition: 'border-color .12s, background .12s' }}>
+                  {busy ? <div style={{ fontWeight: 700, color: '#1d4ed8' }}>Uploading…</div>
+                    : (<>
+                      <div style={{ fontSize: 26, marginBottom: 6 }}>⬆️</div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, color: '#334155' }}>Drag &amp; drop your file here</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>or <span style={{ color: '#2563eb', fontWeight: 700 }}>browse</span> — PNG or SVG</div>
+                    </>)}
+                </div>
+                {err && <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>{err}</div>}
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <img src={staged} alt="" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 8, border: '1px solid #eef2f7', background: '#f8fafc' }} />
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Which garment color is this cutout for? Pick a color way, or save it for every garment.</div>
+                </div>
+                {colorWays.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8' }}>Existing color ways</div>
+                    {colorWays.map((cw, ci) => <button key={cw.id || ci} disabled={busy} onClick={() => saveForCw(cw.garment_color || ('Color way ' + (ci + 1)))} style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: busy ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, color: '#1e293b' }}><span style={{ fontSize: 10, fontWeight: 700, color: '#fff', background: '#64748b', borderRadius: 5, padding: '1px 6px', flexShrink: 0 }}>CW {ci + 1}</span>{cw.garment_color || ('Color way ' + (ci + 1))}</button>)}
+                  </div>
+                )}
+                <div style={{ paddingTop: 12, borderTop: '1px solid #eef2f7' }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8', marginBottom: 6 }}>Or create a new color way</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input value={newCw} onChange={(e) => setNewCw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newCw.trim()) saveForCw(newCw.trim()); }} placeholder="e.g. Royal, White" style={{ flex: 1, fontSize: 13, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, outline: 'none' }} />
+                    <button className="btn btn-primary" disabled={busy || !newCw.trim()} onClick={() => saveForCw(newCw.trim())}>Create &amp; save</button>
+                  </div>
+                  <button disabled={busy} onClick={saveDefault} style={{ marginTop: 10, fontSize: 11.5, fontWeight: 700, color: '#475569', background: 'none', border: 'none', cursor: busy ? 'wait' : 'pointer', padding: 0 }}>or save as the “all garments” default →</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -11223,7 +11300,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 </div>
                 <div style={{ fontSize: 9.5, fontWeight: 700, color: '#475569', textAlign: 'center', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={view.label}>{view.label || '—'}</div>
               </div>}
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} compact /></div>
               <button onClick={() => toggleStoreArt(a)} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer', lineHeight: '20px', textAlign: 'center', padding: 0 }}>×</button>
             </div>
           ); })}
@@ -11243,12 +11320,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {sel2 && !on2 && <span style={{ position: 'absolute', top: -6, left: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
                 </button>
                 {sel2 && <button onClick={(e) => { e.stopPropagation(); toggleStoreArt(a); }} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, lineHeight: '18px', textAlign: 'center', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>}
-                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} compact /></div>
               </div>
             ); })}
           </div>
         </div>}
-        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} /></div>}
+        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
 
@@ -12505,7 +12582,23 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
+// Per-line production lifecycle for the order detail's Status column. Mirrors the
+// line_status stages that already drive the order-level badge and the parent
+// tracking page; a line reads 'Shipped' once shipped_qty covers its quantity.
+const WS_LINE_STAGE = {
+  pending: { label: 'Waiting', tone: 'gray' },
+  on_order: { label: 'On order', tone: 'amber' },
+  received: { label: 'Received', tone: 'blue' },
+  in_production: { label: 'In deco', tone: 'violet' },
+  bagging: { label: 'Bagging', tone: 'slate' },
+  shipped: { label: 'Shipped', tone: 'green' },
+  complete: { label: 'Complete', tone: 'green' },
+  cancelled: { label: 'Cancelled', tone: 'gray' },
+};
+const wsLineFullyShipped = (i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped';
+const wsLineStage = (i) => WS_LINE_STAGE[wsLineFullyShipped(i) ? 'shipped' : (i.line_status || 'pending')] || WS_LINE_STAGE.pending;
+
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -12683,6 +12776,9 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             {sorted.map(({ o, items, players, numbers, lineStatus }) => {
               const isOpen = expanded === o.id;
               const lineItems = items.filter((i) => !i.is_bundle_parent);
+              // Individual orders are entirely one player (shown in the header row), so the
+              // per-line Player column is redundant — only bulk orders mix players per line.
+              const showPlayer = o.order_kind === 'bulk';
               const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
@@ -12708,21 +12804,27 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', ...(showPlayer ? ['Player'] : []), 'Qty', 'Status', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
-                        {lineItems.map((i) => (
+                        {lineItems.map((i) => {
+                          const nm = nameByPid[i.product_id] || i.name || '';
+                          // Show the product name up top; color + SKU beneath. When no name
+                          // resolves, the SKU takes the top line so we don't repeat it.
+                          const sub = [i.color, nm ? i.sku : null].filter(Boolean).join(' · ');
+                          return (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}><div style={{ fontWeight: 600 }}>{i.sku || '—'}</div>{i.name && i.name !== i.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{i.name}</div>}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}</td>
                             <td style={td}>{i.size || '—'}</td>
-                            <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
+                            {showPlayer && <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>}
                             <td style={td}>{i.qty}</td>
-                            <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
+                            <td style={td}><Chip label={wsLineStage(i).label} tone={wsLineStage(i).tone} />{!wsLineFullyShipped(i) && (Number(i.shipped_qty) || 0) > 0 && <div style={{ fontSize: 10.5, color: '#1d4ed8', fontWeight: 700, marginTop: 2 }}>{i.shipped_qty}/{i.qty} shipped</div>}</td>
                             <td style={td}>
                               <input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} />
                               {Number(i.missing_qty) > 0 && <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 10.5, color: '#94a3b8' }}>ETA</span><input type="date" value={i.backorder_eta || ''} onChange={(e) => setItemBackEta(i, e.target.value)} title="Expected arrival — shown to the coach" style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12 }} /></div>}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>

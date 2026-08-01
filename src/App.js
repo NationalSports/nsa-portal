@@ -134,15 +134,20 @@ const computeOmgSoSync=(so)=>{
   // actually covered by pulled picks + PO receipts, and holds the rest at
   // on-order — this is what makes the guide's "backordered sizes stay at On
   // order" real during the receiving window (audit fix #4).
-  const storeStage=
+  let storeStage=
     (soStatus==='ready_to_invoice'||soStatus==='complete')?'bagging':
     (soStatus==='in_production')?'in_production':
     (soStatus==='items_received'||soStatus==='waiting_receive'||soStatus==='needs_pull')?'received':
-    null; // need_order / booking → leave parents at on-order
-  // Per-SKU+size received qty = pulled picks + PO receipts (matches calcSOStatus).
+    null; // need_order / booking → nothing received/produced yet (see on-order floor below)
+  // Two per-SKU+size pools:
+  //  • recvBySkuSize = goods in hand: pulled picks + PO receipts (matches calcSOStatus).
+  //  • commBySkuSize = units SECURED but maybe not in hand: every pick line +
+  //    PO-ordered minus cancelled. Mirrors the Jobs board's deriveJobItemStatus
+  //    coverage so a webstore line reads "On order" exactly when a PO/allocation
+  //    exists for it, and "Waiting" until then.
   // aliasKeys maps alternate lookup keys (e.g. name-based) → the canonical
   // SKU|SIZE bucket so allocation always draws from ONE quantity pool.
-  const recvBySkuSize={};const aliasKeys={};
+  const recvBySkuSize={};const commBySkuSize={};const aliasKeys={};
   safeItems(so).forEach(it=>{
     const sk=_wsNormSku(it.sku);if(!sk)return;
     const nm=_wsNormName(it.name);
@@ -151,11 +156,18 @@ const computeOmgSoSync=(so)=>{
       const k=sk+'|'+szN;
       const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      const allPicked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       recvBySkuSize[k]=(recvBySkuSize[k]||0)+pulled+rcvd;
+      commBySkuSize[k]=(commBySkuSize[k]||0)+Math.max(0,allPicked+poOrd);
       if(nm){const ak='N:'+nm+'|'+szN;if(!(ak in aliasKeys))aliasKeys[ak]=k}
     });
   });
-  return { soId:so.id, soStatus, storeStage, recvBySkuSize, aliasKeys };
+  // A PO (or stock allocation) exists but the SO hasn't reached a receiving
+  // status yet → surface covered parents at 'on order' instead of leaving the
+  // sync a no-op. Uncovered lines still fall back to 'pending' (Waiting).
+  if(!storeStage&&Object.values(commBySkuSize).some(v=>v>0))storeStage='on_order';
+  return { soId:so.id, soStatus, storeStage, recvBySkuSize, commBySkuSize, aliasKeys };
 };
 // Auto-push the computed OMG status onto the linked parent order items. Called
 // from savSO whenever an OMG-linked SO changes (receiving, jobs, picks), so the
@@ -163,8 +175,8 @@ const computeOmgSoSync=(so)=>{
 // portal's syncFromSO allocation: store moves together to the SO stage, but an
 // item whose SKU+size isn't fully received holds at on-order (backorder).
 // Never downgrades, never touches shipped/cancelled. Best-effort + silent.
-const _OMG_STAGE_ORD = { pending:0, on_order:0, received:1, in_production:2, bagging:3, shipped:4, complete:4 };
-const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shipped'];
+const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
+const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
 // set of webstore_order_items and advance their line_status. Shared by the OMG
 // shadow-store sync and the native webstore sync. Monotonic — only advances a
@@ -172,8 +184,10 @@ const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shippe
 // received SKU/size at on-order so backordered lines don't jump ahead.
 const _applyWebstoreStageSync=async(sync,items)=>{
   const storeIdx=_OMG_STAGE_ORD[sync.storeStage]??0;
+  const onOrderIdx=_OMG_STAGE_ORD.on_order;
   const aliases=sync.aliasKeys||{};
-  const used={};const byLs={};
+  const comm=sync.commBySkuSize||{};
+  const usedRecv={};const usedComm={};const byLs={};
   (items||[]).forEach(i=>{
     if(i.line_status==='shipped'||i.line_status==='cancelled')return; // ShipStation/cancel own these
     // Resolve the line to its canonical SO SKU|SIZE bucket through the key
@@ -185,9 +199,15 @@ const _applyWebstoreStageSync=async(sync,items)=>{
     }
     const qty=i.qty||1;
     const recvAvail=k?(sync.recvBySkuSize[k]||0):0;
-    if(k)used[k]=used[k]||0;
-    const isReceived=k?(used[k]+qty)<=recvAvail:false;if(k)used[k]+=qty;
-    const targetIdx=isReceived?storeIdx:0; // not received/unmatched → hold at on-order
+    const commAvail=k?(comm[k]||0):0;
+    if(k){usedRecv[k]=usedRecv[k]||0;usedComm[k]=usedComm[k]||0;}
+    // Allocate goods-in-hand first (a received unit also consumes the committed
+    // pool so it isn't double-counted), then remaining committed units → on order;
+    // anything unsecured stays at pending (Waiting).
+    let targetIdx;
+    if(k&&(usedRecv[k]+qty)<=recvAvail){usedRecv[k]+=qty;usedComm[k]+=qty;targetIdx=storeIdx;}
+    else if(k&&(usedComm[k]+qty)<=commAvail){usedComm[k]+=qty;targetIdx=onOrderIdx;}
+    else{targetIdx=0;}
     const curIdx=_OMG_STAGE_ORD[i.line_status]??0;
     if(targetIdx>curIdx){const ls=_OMG_STAGE_LABEL[targetIdx];(byLs[ls]=byLs[ls]||[]).push(i.id)}
   });
