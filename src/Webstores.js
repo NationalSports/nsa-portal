@@ -4643,7 +4643,7 @@ function Quick({ label, children }) {
 }
 
 function Chip({ label, tone = 'slate' }) {
-  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' } };
+  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' }, violet: { bg: '#ede9fe', fg: '#6d28d9' } };
   const t = tones[tone] || tones.slate;
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: t.bg, color: t.fg, fontFamily: tone === 'gray' ? 'monospace' : 'inherit' }}>{label}</span>;
 }
@@ -12519,6 +12519,22 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
+// Per-line production lifecycle for the order detail's Status column. Mirrors the
+// line_status stages that already drive the order-level badge and the parent
+// tracking page; a line reads 'Shipped' once shipped_qty covers its quantity.
+const WS_LINE_STAGE = {
+  pending: { label: 'On order', tone: 'slate' },
+  on_order: { label: 'On order', tone: 'slate' },
+  received: { label: 'Received', tone: 'blue' },
+  in_production: { label: 'In deco', tone: 'violet' },
+  bagging: { label: 'Bagging', tone: 'amber' },
+  shipped: { label: 'Shipped', tone: 'green' },
+  complete: { label: 'Complete', tone: 'green' },
+  cancelled: { label: 'Cancelled', tone: 'gray' },
+};
+const wsLineFullyShipped = (i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped';
+const wsLineStage = (i) => WS_LINE_STAGE[wsLineFullyShipped(i) ? 'shipped' : (i.line_status || 'pending')] || WS_LINE_STAGE.pending;
+
 function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
@@ -12725,7 +12741,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                 <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', ...(showPlayer ? ['Player'] : []), 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', ...(showPlayer ? ['Player'] : []), 'Qty', 'Status', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
                         {lineItems.map((i) => {
                           const nm = nameByPid[i.product_id] || i.name || '';
@@ -12738,7 +12754,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                             <td style={td}>{i.size || '—'}</td>
                             {showPlayer && <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>}
                             <td style={td}>{i.qty}</td>
-                            <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
+                            <td style={td}><Chip label={wsLineStage(i).label} tone={wsLineStage(i).tone} />{!wsLineFullyShipped(i) && (Number(i.shipped_qty) || 0) > 0 && <div style={{ fontSize: 10.5, color: '#1d4ed8', fontWeight: 700, marginTop: 2 }}>{i.shipped_qty}/{i.qty} shipped</div>}</td>
                             <td style={td}>
                               <input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} />
                               {Number(i.missing_qty) > 0 && <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 10.5, color: '#94a3b8' }}>ETA</span><input type="date" value={i.backorder_eta || ''} onChange={(e) => setItemBackEta(i, e.target.value)} title="Expected arrival — shown to the coach" style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12 }} /></div>}
