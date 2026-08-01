@@ -106,6 +106,30 @@ function sanitizeSpec(input) {
   return out;
 }
 
+// ── Guide (dynamic step-by-step walkthrough) validation ────────────────────
+// The AI composes an ordered list of steps for a "how do I…" question. Each step
+// is grounded in the screen/target catalogs the client sent this render; an
+// invalid target/screen degrades to a text-only callout rather than dropping the
+// step, and a step with no instruction body is dropped.
+function sanitizeGuide(input, screenIds, targetIds) {
+  const rawSteps = Array.isArray(input && input.steps) ? input.steps : [];
+  const steps = [];
+  for (const s of rawSteps) {
+    if (!s || typeof s !== 'object') continue;
+    const body = normStr(s.body, 400);
+    if (!body) continue;
+    const step = { title: normStr(s.title, 80), body };
+    const scr = normStr(s.screen, 80);
+    if (scr && screenIds.has(scr)) step.screen = scr;
+    const tid = normStr(s.target_id, 80);
+    if (tid && targetIds.has(tid)) step.target_id = tid;
+    steps.push(step);
+    if (steps.length >= 8) break;
+  }
+  if (!steps.length) return null;
+  return { intro: normStr(input && input.intro, 300), steps };
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────
 // The catalogs are interpolated, so this string varies per request and will
 // not get ephemeral-cache prefix hits across different screens — that's fine;
@@ -120,7 +144,7 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     ? tours.map((t) => `- ${t.id} — ${t.title}${t.desc ? `: ${t.desc}` : ''}`).join('\n')
     : '(none available)';
   const targetLines = targets.length
-    ? targets.map((t) => `- ${t.id}${t.label ? ` — ${t.label}` : ''}`).join('\n')
+    ? targets.map((t) => `- ${t.id}${t.label ? ` — ${t.label}` : ''}${t.screen ? ` [screen: ${t.screen}]` : ''}${t.desc ? `: ${t.desc}` : ''}`).join('\n')
     : '(none available)';
   const here = screen && screen.id
     ? `${screen.id}${screen.title ? ` (“${screen.title}”)` : ''}`
@@ -136,7 +160,8 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '- You are READ-ONLY and can only guide. You cannot click buttons, open records, submit forms, create estimates/orders, or change any data. You also cannot see any specific customer, order, invoice, or number. Never claim to have done any of those — always guide the user to do it themselves.',
     '- Ground every factual claim in the screen list, tutorial list, or a tutorial you launch. Do NOT invent specific button names, menu locations, prices, policies, keyboard shortcuts, or step-by-step instructions you were not given. If you do not know a specific detail, say so plainly and suggest where they might look or that they ask a teammate or manager.',
     '- When the user asks where something is, or to be shown a screen or link, call the `highlight` tool with the matching target id — then say one short sentence pointing at it.',
-    '- When the user wants a walkthrough or asks "how do I …" and an available tutorial matches, call the `start_tutorial` tool with that tour id. Do not also type out all the steps — the tutorial guides them on screen. Give a one-line lead-in instead.',
+    '- When the user wants a walkthrough or asks "how do I …" and an available tutorial matches EXACTLY, call the `start_tutorial` tool with that tour id. Do not also type out all the steps — the tutorial guides them on screen. Give a one-line lead-in instead.',
+    '- For any OTHER "how do I …" / "walk me through …" / "show me how to …" procedural question, BUILD a custom walkthrough with the `guide` tool instead of just describing it in text. Compose an ordered list of short steps; give each a plain instruction, set `screen` when the step happens on a specific screen (the app moves the user there), and set `target_id` to spotlight an element when one from the list below matches. Ground every step in the screens and targets below — never invent a button, field, tab, or menu you were not given; if a step has no matching element, omit target_id and just write the instruction. Prefer `guide` (precise, on-screen) over a plain text answer for procedures. Give a one-line lead-in; the steps carry the detail.',
     '- When the user wants to FIND, LIST, FILTER, or COUNT their actual records — "show me…", "which…", "how many…", "find the … order", "jobs that…" — call the `search` tool with a structured filter spec. You do NOT see the results; the app displays them. Give a one-line lead-in ("Here are the open orders for Chase:") and NEVER state specific order/job ids, totals, counts, or margins yourself — the results panel shows them.',
     '- When the user has an estimate OPEN and asks to add an item to it ("add … at N% margin", "put a … on this estimate"), call the `add_line` tool with the product description and the target margin percent if they stated one. It only works while an estimate is open; the app resolves the product from the catalog and prices it, and the user reviews before saving. Do not state a price or claim it is added — the app confirms.',
     '- To START a NEW estimate ("start/build/create an estimate or quote for <customer>", optionally "with <items>"), call the start_estimate tool with the customer and an items array (each item = a description + optional margin_pct). The app resolves the customer and items and opens the draft for review. This is different from add_line (which adds to an already-open estimate).',
@@ -174,8 +199,39 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
 }
 
 // ── Tools (strict JSON schemas, ids constrained to what the client sent) ───
-function buildTools({ tours, targets }) {
+function buildTools({ tours, targets, screens }) {
   const tools = [];
+  // Dynamic step-by-step walkthrough the AI composes for a "how do I…" question.
+  // Steps are grounded in the screen/target catalogs; enums steer the model to
+  // real ids (server-side sanitize is the backstop). Optional fields only get an
+  // enum when the catalog is non-empty (an empty enum is an invalid schema).
+  {
+    const screenEnum = (screens || []).map((s) => s.id);
+    const targetEnum = (targets || []).map((t) => t.id);
+    const stepProps = {
+      title: { type: 'string', description: 'Short step title (a few words).' },
+      body: { type: 'string', description: 'One or two plain sentences telling the user exactly what to do in this step.' },
+    };
+    if (screenEnum.length) stepProps.screen = { type: 'string', enum: screenEnum, description: 'The portal screen this step happens on. The app navigates there when the step is shown, so set it whenever the step is on a specific screen.' };
+    if (targetEnum.length) stepProps.target_id = { type: 'string', enum: targetEnum, description: 'An on-screen element to spotlight for this step, from the provided targets. Omit if you have no matching element — the instruction still shows.' };
+    tools.push({
+      name: 'guide',
+      description: "Build a custom, step-by-step ON-SCREEN walkthrough that answers a 'how do I…' / 'walk me through…' question by guiding the user through the portal one step at a time. Each step shows an instruction and can move the user to the right screen (screen) and/or spotlight a known element (target_id). Use this for procedural questions when no single predefined tutorial fits — YOU compose the steps. Ground every step in the screens and targets you were given; never invent a button, field, menu, or location. If you don't have an element id for a step, omit target_id and just write the instruction.",
+      input_schema: {
+        type: 'object',
+        properties: {
+          intro: { type: 'string', description: 'Optional one-line lead-in shown before the walkthrough starts.' },
+          steps: {
+            type: 'array',
+            description: 'Ordered steps (1–8). Keep them short and action-oriented.',
+            items: { type: 'object', properties: stepProps, required: ['title', 'body'], additionalProperties: false },
+          },
+        },
+        required: ['steps'],
+        additionalProperties: false,
+      },
+    });
+  }
   // Always available: structured search over the user's real records.
   tools.push({
     name: 'search',
@@ -376,6 +432,7 @@ async function runAssistant({ client, catalogs, messages }) {
   const tools = buildTools(catalogs);
   const tourIds = new Set(catalogs.tours.map((t) => t.id));
   const targetIds = new Set(catalogs.targets.map((t) => t.id));
+  const screenIds = new Set(catalogs.screens.map((s) => s.id));
   const actions = [];
   const convo = messages.slice();
 
@@ -456,6 +513,10 @@ async function runAssistant({ client, catalogs, messages }) {
           actions.push({ type: 'add_note', note: { target, ref, text: noteText } });
           out = { ok: true };
         } else out = { error: 'target, ref and text required' };
+      } else if (tu.name === 'guide') {
+        const g = sanitizeGuide(tu.input, screenIds, targetIds);
+        if (g) { actions.push({ type: 'guide', intro: g.intro, steps: g.steps }); out = { ok: true }; }
+        else out = { error: 'No valid steps' };
       } else if (tu.name === 'highlight') {
         const id = String(tu.input?.target_id || '');
         if (targetIds.has(id)) { actions.push({ type: 'highlight', target_id: id }); out = { ok: true }; }
@@ -498,7 +559,7 @@ exports.handler = async (event) => {
     },
     screens: normCatalog(body.screens, [['label', 120], ['desc', 400]]),
     tours: normCatalog(body.tours, [['title', 120], ['desc', 400]]),
-    targets: normCatalog(body.targets, [['label', 120]]),
+    targets: normCatalog(body.targets, [['label', 120], ['screen', 80], ['desc', 200]]),
   };
 
   try {

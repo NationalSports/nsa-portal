@@ -3708,7 +3708,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <span style={{fontWeight:800,fontSize:14,color:'#166534'}}>Coach Approved This Estimate</span>
           {o.approved_at&&<span style={{fontSize:11,color:'#15803d',marginLeft:8}}>{new Date(o.approved_at).toLocaleDateString()}</span>}
         </div>
-        {onConvertSO&&<button className="btn btn-sm" style={{fontSize:11,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>{const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});if(validItems.length===0){nf('Add items first','error');return}onConvertSO(o)}}>Convert to Sales Order</button>}
+        {onConvertSO&&<button className="btn btn-sm" data-tour-id="oe-convert-so" style={{fontSize:11,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>{const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});if(validItems.length===0){nf('Add items first','error');return}onConvertSO(o)}}>Convert to Sales Order</button>}
       </div>
     </div>}
     {/* UPDATE REQUESTS BANNER — shows when coach has requested changes */}
@@ -5147,7 +5147,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>)})}
     {/* ADD PRODUCT */}
     <div className="card"><div style={{padding:'14px 18px'}}>
-      {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
+      {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" data-tour-id="oe-add-product" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>

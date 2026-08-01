@@ -8995,14 +8995,14 @@ export default function App(){
       </div>
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
+        <div className="search-bar" data-tour-id="estimates-search" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={estF.rep} onChange={e=>setEstF(f=>({...f,rep:e.target.value}))}>
           <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
         {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
-        <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
+        <button className="btn btn-primary" data-tour-id="new-estimate-btn" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Created</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===(c?.primary_rep_id||e.created_by));const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;const _openEst=()=>{setEEst(e);setEEstC(c)};const RL=({children,style})=><RowLink params={{est:e.id}} onOpen={_openEst} style={style}>{children}</RowLink>;return(<tr key={e.id} style={{cursor:'pointer'}}>
@@ -9063,7 +9063,7 @@ export default function App(){
 
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
+        <div className="search-bar" data-tour-id="orders-search" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
           <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
@@ -11980,8 +11980,8 @@ export default function App(){
       </div>}
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
-        <button onClick={()=>setScanModalOpen(true)} style={{background:'#0f172a',border:'2px solid #334155',borderRadius:8,padding:'6px 12px',cursor:'pointer',color:'#22c55e',display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700}} title="Scan barcode"><Icon name="scan" size={16}/> Scan</button>
-        <div className="search-bar" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
+        <button data-tour-id="po-scan-btn" onClick={()=>setScanModalOpen(true)} style={{background:'#0f172a',border:'2px solid #334155',borderRadius:8,padding:'6px 12px',cursor:'pointer',color:'#22c55e',display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700}} title="Scan barcode"><Icon name="scan" size={16}/> Scan</button>
+        <div className="search-bar" data-tour-id="po-search" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
         <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
         <select className="form-select" style={{width:140}} value={poF.rep} onChange={e=>setPOF(f=>({...f,rep:e.target.value}))}>
@@ -20620,7 +20620,7 @@ export default function App(){
           <option value="all">All Artists</option><option value="">Unassigned</option>
           {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>}
-        <input className="form-input" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
+        <input className="form-input" data-tour-id="art-search" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artistJobs.length} job{artistJobs.length!==1?'s':''}</span>
       </div>
 
@@ -34135,7 +34135,7 @@ export default function App(){
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const _toks=s.split(/\s+/).filter(Boolean);
             const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
@@ -35041,7 +35041,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/>
   </div></AppDataProvider>);
 }
 

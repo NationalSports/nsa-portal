@@ -68,9 +68,32 @@ const SCREENS = [
   { id: 'settings', label: 'Settings', desc: 'Portal settings (admin).' },
 ];
 
-// data-tour-id targets currently instrumented: the sidebar link for each
-// screen. Kept in lockstep with SCREENS.
-const TARGETS = SCREENS.map((s) => ({ id: `nav-${s.id}`, label: `${s.label} (sidebar link)` }));
+// data-tour-id targets: the sidebar link for each screen (present on every
+// screen), kept in lockstep with SCREENS.
+const NAV_TARGETS = SCREENS.map((s) => ({ id: `nav-${s.id}`, label: `${s.label} (sidebar link)` }));
+
+// In-screen elements instrumented with data-tour-id in App.js. Each entry MUST have a
+// matching data-tour-id="<id>" on a real, always-present, top-level element on that
+// `screen`. Grow this list (add the attribute in App.js + an entry here) to widen what
+// guided walkthroughs can spotlight. `screen` matches the pg / nav id.
+const SCREEN_TARGETS = [
+  // screen '' = present on every screen (global). Others match a pg / nav id and are
+  // present whenever the user is on that screen. The two oe-* live inside the shared
+  // order/estimate editor, so they only spotlight once a record is open (the step's
+  // instruction should tell the user to open the record first).
+  { id: 'global-search', screen: '', label: 'Global search box (top bar)', desc: 'Searches orders, jobs, POs, invoices, customers; Enter opens the full results page.' },
+  { id: 'new-estimate-btn', screen: 'estimates', label: 'New Estimate button', desc: 'Opens a blank estimate to build a new quote.' },
+  { id: 'estimates-search', screen: 'estimates', label: 'Estimates search box', desc: 'Filters the estimate list by customer or id.' },
+  { id: 'orders-search', screen: 'orders', label: 'Sales Orders search box', desc: 'Filters sales orders by customer, SKU, or PO#.' },
+  { id: 'invoices-search', screen: 'invoices', label: 'Invoices search box', desc: 'Filters the invoice list.' },
+  { id: 'art-search', screen: 'art', label: 'Art workboard search', desc: 'Filters the art board by customer, SO, or art name.' },
+  { id: 'po-search', screen: 'purchase_orders', label: 'Purchase Orders search box', desc: 'Filters the purchase-order list.' },
+  { id: 'po-scan-btn', screen: 'purchase_orders', label: 'PO Scan button', desc: 'Opens the barcode scanner to receive goods against a PO.' },
+  { id: 'oe-add-product', screen: '', label: 'Add Product button (order/estimate editor)', desc: 'Adds a product line — visible inside an OPEN estimate or sales order with a customer set.' },
+  { id: 'oe-convert-so', screen: 'estimates', label: 'Convert to Sales Order button (estimate editor)', desc: 'Converts an OPEN, approved estimate into a sales order — visible inside the open estimate.' },
+];
+
+const TARGETS = [...NAV_TARGETS, ...SCREEN_TARGETS];
 
 // ── Tutorial catalog ─────────────────────────────────────────────────────────
 // Each tour is a sequence of steps. A step with `target` spotlights that
@@ -428,7 +451,7 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, variant, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
+export default function PortalAssistant({ pg, screenTitle, userName, variant, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
   const mCls = variant === 'mobile' ? ' nsa-as-m' : '';
   ensureStyles();
   const [open, setOpen] = useState(() => {
@@ -463,7 +486,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     const tgt = TARGETS.find((x) => x.id === targetId);
     const label = tgt ? tgt.label.replace(/ \(sidebar link\)$/, '') : targetId;
     setOpen(false);
-    setTour({ steps: [{ target: targetId, title: 'Here it is', body: `This is ${label}. Click it to go there.` }], index: 0 });
+    setTour({ steps: [{ target: targetId, screen: (tgt && tgt.screen) || null, title: 'Here it is', body: `This is ${label}.` }], index: 0 });
   }, []);
 
   const doSearch = useCallback((spec) => {
@@ -562,6 +585,19 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     setMessages((prev) => [...prev, { id: `nt${Date.now()}`, from: 'bot', kind: 'confirm', draft: { title: res.title || 'New note', lines: res.lines, confirmLabel: 'Save note' }, commit: res.commit }]);
   }, [onAddNote]);
 
+  // A dynamic, AI-composed walkthrough. Each step carries an instruction and may spotlight an
+  // element (target_id) and/or move the user to a screen (screen). Reuses the Spotlight engine;
+  // the per-step navigation effect below drives onNavigate as the steps advance.
+  const doGuide = useCallback((intro, steps) => {
+    const list = (steps || [])
+      .filter((s) => s && s.body)
+      .map((s) => ({ target: s.target_id || null, screen: s.screen || null, title: s.title || '', body: s.body }));
+    if (!list.length) return;
+    if (intro) setMessages((prev) => [...prev, { id: `g${Date.now()}`, from: 'bot', text: intro }]);
+    setOpen(false); // clear the chat so the spotlight has the screen
+    setTour({ steps: list, index: 0 });
+  }, []);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -578,7 +614,19 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     else if (a.type === 'report' && a.report) doReport(a.report);
     else if (a.type === 'set_reminder' && a.reminder) doSetReminder(a.reminder);
     else if (a.type === 'add_note' && a.note) doAddNote(a.note);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote]);
+    else if (a.type === 'guide' && a.steps) doGuide(a.intro, a.steps);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide]);
+
+  // As a guided walkthrough advances, move the user to each step's screen (desktop nav).
+  // onNavigate is kept in a ref so this fires only when the step changes — not on every
+  // parent re-render — otherwise it would keep yanking the user back to the step's screen.
+  const navRef = useRef(onNavigate);
+  useEffect(() => { navRef.current = onNavigate; }, [onNavigate]);
+  useEffect(() => {
+    if (!tour) return;
+    const step = tour.steps[tour.index];
+    if (step && step.screen && navRef.current) { try { navRef.current(step.screen); } catch (e) { /* ignore */ } }
+  }, [tour]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -627,6 +675,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [
     { label: 'What needs my attention', run: () => doBrief() },
+    { label: 'How do I create an estimate?', run: () => send('walk me through creating an estimate') },
     { label: 'Total value of open orders', run: () => send('total value of my open orders') },
     { label: 'Take the portal tour', run: () => startTour('getting-started') },
   ];
