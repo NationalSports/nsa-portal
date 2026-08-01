@@ -151,6 +151,7 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     'Ranking: "top/biggest/highest/largest" → sort by the money field (value/balance/open_balance/cost) dir desc; "oldest/most overdue" → sort by age_days/days_past_due desc; "smallest/cheapest" → asc. "top N" also sets limit N. The sort field must be one of the chosen entity\'s fields.',
     'Aggregates: for "how much / total / average / highest / lowest" add aggregate {op, field} — "total value of open orders" → sales_orders is_open=true + aggregate {op:"sum", field:"value"}; "total AR past due" → invoices is_open=true + days_past_due gt 0 + aggregate {op:"sum", field:"balance"}; "average margin on my orders" → sales_orders rep "me" + aggregate {op:"avg", field:"margin_pct"}. "How many …" needs only filters — the count shows automatically. Do not state the number yourself; the app computes it.',
     'When the user asks what needs their attention / a daily brief / what\'s on their plate / what to work on, call the daily_brief tool (no input).',
+    'For "everything for <customer>" / a customer snapshot / overview / "how are things with <customer>", call the customer_360 tool with the customer name.',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -218,6 +219,12 @@ function buildTools({ tours, targets }) {
     name: 'daily_brief',
     description: "Show the user a 'what needs my attention' summary — their orders ready to invoice, orders needing art, orders short on pull, shipped-not-invoiced, overdue invoices, and cold quotes. Use when they ask what needs attention / what's on their plate / a daily briefing / what's on fire / what should I work on.",
     input_schema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+  });
+  // One-glance customer snapshot.
+  tools.push({
+    name: 'customer_360',
+    description: "Show a one-glance snapshot for a single customer — their open orders, open estimates, unpaid invoices, and lifetime totals. Use when the user asks for 'everything for <customer>', a customer overview/snapshot/summary, or 'how are things with <customer>'.",
+    input_schema: { type: 'object', properties: { customer: { type: 'string', description: 'The customer name or tag.' } }, required: ['customer'], additionalProperties: false },
   });
   // Add a product line to the estimate the user has open (write, reviewed before save).
   tools.push({
@@ -320,6 +327,10 @@ async function runAssistant({ client, catalogs, messages }) {
       } else if (tu.name === 'daily_brief') {
         actions.push({ type: 'daily_brief' });
         out = { ok: true };
+      } else if (tu.name === 'customer_360') {
+        const customer = normStr(tu.input && tu.input.customer, 120);
+        if (customer) { actions.push({ type: 'customer_360', customer }); out = { ok: true }; }
+        else out = { error: 'No customer' };
       } else if (tu.name === 'add_line') {
         const description = normStr(tu.input && tu.input.description, 200);
         const mp = Number(tu.input && tu.input.margin_pct);

@@ -315,15 +315,16 @@ function ResultsCard({ results, onOpen, onReorder }) {
 }
 
 // "What needs your attention" summary — one clickable row per flagged bucket.
-function BriefCard({ items, onPick }) {
+function BriefCard({ items, onPick, title, showAll }) {
   const rows = (items || []).filter(Boolean);
   const active = rows.filter((r) => (r.count || 0) > 0);
+  const list = showAll ? rows : active;
   return (
     <div className="nsa-as-row bot">
       <div className="nsa-as-results">
-        <div className="nsa-as-results-head">What needs your attention</div>
-        {active.length === 0 && <div className="nsa-as-results-more">You're all clear — nothing flagged right now. 🎉</div>}
-        {active.map((r, i) => (
+        <div className="nsa-as-results-head">{title || 'What needs your attention'}</div>
+        {!showAll && active.length === 0 && <div className="nsa-as-results-more">You're all clear — nothing flagged right now. 🎉</div>}
+        {list.map((r, i) => (
           <button key={i} className="nsa-as-brief-row" onClick={() => onPick && r.spec && onPick(r.spec)}>
             <span className="nsa-as-brief-count">{r.count}</span>
             <span className="nsa-as-brief-label">{r.label}{r.total ? ` · ${r.total}` : ''}</span>
@@ -335,7 +336,7 @@ function BriefCard({ items, onPick }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360 }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -396,6 +397,16 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     setMessages((prev) => [...prev, { id: `br${Date.now()}`, from: 'bot', kind: 'brief', brief: items }]);
   }, [onBrief]);
 
+  const doCustomer360 = useCallback(async (customer) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `c${Date.now()}`, from: 'bot', text: t }]);
+    if (!onCustomer360) { pushBot("I can't pull customer summaries yet."); return; }
+    let res = null;
+    try { res = await onCustomer360(customer); } catch { res = null; }
+    if (!res || res.error === 'no_customer') { pushBot('Which customer?'); return; }
+    if (res.error === 'not_found') { pushBot(`I couldn't find a customer matching "${customer}".`); return; }
+    if (res.ok) { setMessages((prev) => [...prev, { id: `c${Date.now()}`, from: 'bot', kind: 'brief', brief: res.lines, briefTitle: `${res.name}${res.tag ? ` · ${res.tag}` : ''}`, briefAll: true }]); }
+  }, [onCustomer360]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -406,7 +417,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     else if (a.type === 'search' && a.spec) doSearch(a.spec);
     else if (a.type === 'add_line' && a.description) doAddLine({ description: a.description, margin_pct: a.margin_pct });
     else if (a.type === 'daily_brief') doBrief();
-  }, [startTour, highlight, doSearch, doAddLine, doBrief]);
+    else if (a.type === 'customer_360' && a.customer) doCustomer360(a.customer);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -476,7 +488,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
               m.kind === 'results'
                 ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} onReorder={onReorder} />
                 : m.kind === 'brief'
-                  ? <BriefCard key={m.id} items={m.brief} onPick={doSearch} />
+                  ? <BriefCard key={m.id} items={m.brief} onPick={doSearch} title={m.briefTitle} showAll={m.briefAll} />
                   : (
                     <div key={m.id} className={`nsa-as-row ${m.from}`}>
                       <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>

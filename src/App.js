@@ -33426,7 +33426,7 @@ export default function App(){
     if(!spec)return 'Search';
     const _names={sales_orders:'Sales orders',jobs:'Jobs',invoices:'Invoices',estimates:'Estimates',customers:'Customers',products:'Products',purchase_orders:'Purchase orders'};
     const ent=_names[spec.entity]||'Results';
-    const parts=(spec.filters||[]).map(f=>{const o=f.op==='gt'?'>':f.op==='gte'?'≥':f.op==='lt'?'<':f.op==='lte'?'≤':f.op==='is_not'?'≠':f.op==='contains'?'~':'=';return `${f.field} ${o} ${f.value}`});
+    const parts=(spec.filters||[]).map(f=>{if(f.field==='customer_id'){const cc=cust.find(x=>String(x.id).toLowerCase()===String(f.value).toLowerCase());return 'customer: '+(cc?(cc.name||cc.alpha_tag||f.value):f.value)}const o=f.op==='gt'?'>':f.op==='gte'?'≥':f.op==='lt'?'<':f.op==='lte'?'≤':f.op==='is_not'?'≠':f.op==='contains'?'~':'=';return `${f.field} ${o} ${f.value}`});
     let s=ent+(parts.length?' · '+parts.join(' · '):'');
     if(spec.sort&&spec.sort.field)s+=` · by ${spec.sort.field} ${spec.sort.dir==='asc'?'↑':'↓'}`;
     return s;
@@ -33495,6 +33495,7 @@ export default function App(){
           case 'due_date':return ymdInt(i.due_date);
           case 'customer':return custHay(custById(i.customer_id));
           case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id));
+          case 'customer_id':return String(i.customer_id||'').toLowerCase();
           case 'text':return ((i.id||'')+' '+(i.memo||'')+' '+(custById(i.customer_id)?.name||'')).toLowerCase();
           default:return '';}};
         toRow=(i)=>{const c=custById(i.customer_id);const d=invDpd(i);return{entity,id:i.id,_rec:i,cells:{Invoice:i.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(Number(i.total)||0),Balance:_nlMoney(invBal(i)),Status:(i.status||'—'),'Past Due':d>0?d+'d':'—'}}};
@@ -33509,6 +33510,7 @@ export default function App(){
           case 'created_date':return ymdInt(e.created_at);
           case 'customer':return custHay(custById(e.customer_id));
           case 'rep':return (custById(e.customer_id)?.primary_rep_id)||e.created_by||null;
+          case 'customer_id':return String(e.customer_id||'').toLowerCase();
           case 'text':return ((e.id||'')+' '+(e.memo||'')+' '+(custById(e.customer_id)?.name||'')).toLowerCase();
           default:return '';}};
         toRow=(e)=>{const c=custById(e.customer_id);return{entity,id:e.id,_rec:e,cells:{Estimate:e.id,Customer:c?.name||c?.alpha_tag||'—',Value:_nlMoney(orderValue(e)),Status:(e.status||'—'),Age:estAge(e)+'d'}}};
@@ -33577,6 +33579,7 @@ export default function App(){
           case 'paid':{const si=invs.filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);return si.length>0&&!si.some(i=>opsOpenInvoice(i))}
           case 'customer':return custHay(custById(so.customer_id));
           case 'rep':return repOf(so);
+          case 'customer_id':return String(so.customer_id||'').toLowerCase();
           case 'text':return ((so.id||'')+' '+(so.memo||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
           default:return '';}};
         toRow=(so)=>{const c=custById(so.customer_id);return{entity:'sales_orders',id:so.id,soId:so.id,_rec:so,cells:{Order:so.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(orderValue(so)),Status:_nlStatusLabel(soStatus(so)),Art:soNeedsArt(so)?'Needs Art':'OK',Margin:marginPct(so)+'%'}}};
@@ -33669,6 +33672,28 @@ export default function App(){
       {label:'Cold quotes (14d+)',spec:{entity:'estimates',filters:[{field:'is_open',op:'is',value:'true'},{field:'age_days',op:'gt',value:'14'},{field:'rep',op:'is',value:'me'}]}},
     ];
     return B.map(b=>{const s=b.money?{...b.spec,aggregate:{op:'sum',field:b.money}}:b.spec;let r;try{r=runPortalSearch(s)}catch(e){r={total:0}}return{label:b.label,count:r.total||0,total:b.money&&r.aggregate?_nlMoney(r.aggregate.value):null,spec:b.spec}});
+  }
+  // Customer 360 — one-glance snapshot for a single customer (open orders, open estimates,
+  // unpaid invoices, lifetime). Scoped by customer_id via runPortalSearch, so numbers match.
+  function handleAssistantCustomer360(customerText){
+    const q=String(customerText||'').trim().toLowerCase();
+    if(!q)return {error:'no_customer'};
+    const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(q));
+    if(!matches.length)return {error:'not_found',customer:customerText};
+    const c=[...matches.filter(m=>!m.parent_id),...matches.filter(m=>m.parent_id)][0];
+    const cid=String(c.id).toLowerCase();
+    const run=(entity,extra,aggField)=>{try{return runPortalSearch({entity,filters:[{field:'customer_id',op:'is',value:cid},...extra],aggregate:aggField?{op:'sum',field:aggField}:undefined});}catch(e){return {total:0};}};
+    const drill=(entity,extra)=>({entity,filters:[{field:'customer_id',op:'is',value:cid},...extra]});
+    const openO=run('sales_orders',[{field:'is_open',op:'is',value:'true'}],'value');
+    const allO=run('sales_orders',[],'value');
+    const openE=run('estimates',[{field:'is_open',op:'is',value:'true'}],'value');
+    const unpaidI=run('invoices',[{field:'is_open',op:'is',value:'true'}],'balance');
+    return {ok:true,name:c.name||'',tag:c.alpha_tag||'',lines:[
+      {label:'Open orders',count:openO.total||0,total:openO.aggregate?_nlMoney(openO.aggregate.value):null,spec:drill('sales_orders',[{field:'is_open',op:'is',value:'true'}])},
+      {label:'Open estimates',count:openE.total||0,total:openE.aggregate?_nlMoney(openE.aggregate.value):null,spec:drill('estimates',[{field:'is_open',op:'is',value:'true'}])},
+      {label:'Unpaid invoices',count:unpaidI.total||0,total:unpaidI.aggregate?_nlMoney(unpaidI.aggregate.value):null,spec:drill('invoices',[{field:'is_open',op:'is',value:'true'}])},
+      {label:'Lifetime orders',count:allO.total||0,total:allO.aggregate?_nlMoney(allO.aggregate.value):null,spec:drill('sales_orders',[])},
+    ]};
   }
   // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
   function rNlResults(){
@@ -34835,7 +34860,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360}/>
   </div></AppDataProvider>);
 }
 
