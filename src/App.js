@@ -6435,6 +6435,28 @@ export default function App(){
       return clone}),_artIdMap);
     const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
+  // Reorder: clone a past SO (or estimate) into a NEW draft estimate and open it. Promoted from
+  // the inline Quick Reorder handler so the Portal Assistant can reuse it. Mirrors
+  // copyEstimate/copySalesOrder (hydration heal + item strip + qty_only preserve). When
+  // opts.persist===false the draft opens in the editor WITHOUT being added to `ests`, so it is
+  // NOT saved until the user hits Save (same as the "New Estimate" flow); the default persists
+  // immediately, matching the existing Quick Reorder button.
+  const cloneToEstimate=async(source,opts={})=>{
+    if(!source)return;
+    if(source._itemsHydrated===false||source._decosHydrated===false){
+      if(!supabase){nf("This order hasn't finished loading — reload the page and try again before reordering.",'error');return;}
+      const isSO=('estimate_id' in source)||source.order_type!==undefined;
+      try{source=isSO?await _refetchSOForCopy(source):await _refetchEstimateForConvert(source);}
+      catch(e){console.error('[cloneToEstimate] decoration re-fetch failed:',e);nf("Couldn't load this order's decorations to reorder it — reload the page and try again.",'error');return;}
+    }
+    const c=cust.find(x=>x.id===source.customer_id);
+    const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(source.art_files);
+    const clonedItems=remapItemArtIds(safeItems(source).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;return clone}),_artIdMap);
+    const estId=nextEstId(ests);
+    const ne={id:estId,customer_id:source.customer_id,memo:(source.memo||'')+' (reorder)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:source.default_markup||c?.custom_multiplier||1.65,shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,ship_to_id:source.ship_to_id||'default',email_status:null,art_files:clonedArt,items:clonedItems};
+    if(opts.persist===false){setEEst(ne);setEEstC(c);setPg('estimates');nf(`Draft ${estId} ready from ${source.id} — review and Save to keep it`);}
+    else{setEsts(prev=>[ne,...prev]);setEEst(ne);setEEstC(c);setPg('estimates');nf(`Created ${estId} — reordered ${clonedItems.length} items from ${source.id}`);}
+  };
   const revertSOToEst=so=>{
     // Check for open POs or IFs (pick lines) — if any exist, block the revert
     const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
@@ -32675,21 +32697,6 @@ export default function App(){
             const custEsts=ests.filter(e=>e.customer_id===reorderCust).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
             const c=cust.find(x=>x.id===reorderCust);
             if(!custSOs.length&&!custEsts.length)return<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No previous orders or estimates found for {c?.name}.</div>;
-            const cloneToEstimate=(source)=>{
-              const estId=nextEstId(ests);
-              // Fresh art ids on the clone (and re-point decorations) so the reorder never shares
-              // art_file ids with the source order — see reidArtFiles.
-              const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(source.art_files);
-              const clonedItems=remapItemArtIds((source.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||'',color:it.color||'',
-                  nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,notes:it.notes||null,
-                  decorations:(it.decorations||[]).map(d=>({...d}))})),_artIdMap);
-              const newEst={id:estId,customer_id:reorderCust,status:'draft',default_markup:c?.custom_multiplier||1.65,
-                shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,
-                items:clonedItems,
-                art_files:clonedArt,created_at:new Date().toISOString()};
-              setEsts(prev=>[newEst,...prev]);nf('Created '+estId+' — cloned '+((source.items||[]).length)+' items');
-              setEEst(newEst);setPg('estimates');
-            };
             return<div>
               {custSOs.length>0&&<><h3 style={{fontSize:14,marginBottom:8}}>Recent Sales Orders ({custSOs.length})</h3>
                 <table className="data-table" style={{fontSize:12,marginBottom:16}}><thead><tr><th>SO #</th><th>Items</th><th>Date</th><th>Status</th><th></th></tr></thead>
@@ -34776,7 +34783,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}}/>
   </div></AppDataProvider>);
 }
 

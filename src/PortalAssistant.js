@@ -173,9 +173,12 @@ function ensureStyles() {
 .nsa-as-results{max-width:94%;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
 .nsa-as-results-head{padding:8px 12px;font-size:12px;font-weight:700;color:#0f172a;background:#f8fafc;border-bottom:1px solid #e2e8f0}
 .nsa-as-results-list{display:flex;flex-direction:column}
-.nsa-as-results-row{display:flex;gap:8px;align-items:center;padding:8px 12px;background:none;border:none;border-top:1px solid #f1f5f9;cursor:pointer;text-align:left;font-size:12.5px;width:100%}
+.nsa-as-results-row{display:flex;gap:6px;align-items:center;border-top:1px solid #f1f5f9}
 .nsa-as-results-row:first-child{border-top:none}
-.nsa-as-results-row:hover{background:#eff6ff}
+.nsa-as-results-cells{flex:1;min-width:0;display:flex;gap:8px;align-items:center;padding:8px 12px;background:none;border:none;cursor:pointer;text-align:left;font-size:12.5px}
+.nsa-as-results-cells:hover{background:#eff6ff}
+.nsa-as-reorder{flex-shrink:0;margin-right:8px;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:8px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
+.nsa-as-reorder:hover{background:#2563eb;color:#fff;border-color:#2563eb}
 .nsa-as-rc{color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nsa-as-rc:first-child{font-weight:700;color:#1e40af;flex-shrink:0}
 .nsa-as-rc:nth-child(2){flex:1;min-width:0}
@@ -275,10 +278,11 @@ const IconSend = () => (
 function labelFor(entity) {
   return ({ sales_orders: 'sales orders', jobs: 'jobs', invoices: 'invoices', estimates: 'estimates', customers: 'customers', products: 'products', purchase_orders: 'purchase orders' })[entity] || 'results';
 }
-function ResultsCard({ results, onOpen }) {
+function ResultsCard({ results, onOpen, onReorder }) {
   const cols = (results.columns || []).slice(0, 3);
   const rows = results.rows || [];
   const shown = rows.slice(0, 6);
+  const canReorder = (e) => e === 'sales_orders' || e === 'estimates';
   return (
     <div className="nsa-as-row bot">
       <div className="nsa-as-results">
@@ -286,9 +290,14 @@ function ResultsCard({ results, onOpen }) {
         {shown.length > 0 && (
           <div className="nsa-as-results-list">
             {shown.map((r, i) => (
-              <button key={(r.id || '') + i} className="nsa-as-results-row" onClick={() => onOpen && onOpen(r)}>
-                {cols.map((c) => <span key={c} className="nsa-as-rc">{r.cells[c]}</span>)}
-              </button>
+              <div key={(r.id || '') + i} className="nsa-as-results-row">
+                <button className="nsa-as-results-cells" onClick={() => onOpen && onOpen(r)}>
+                  {cols.map((c) => <span key={c} className="nsa-as-rc">{r.cells[c]}</span>)}
+                </button>
+                {onReorder && canReorder(r.entity) && (
+                  <button className="nsa-as-reorder" title="Reorder into a new draft estimate" onClick={() => onReorder(r)}>↻ Reorder</button>
+                )}
+              </div>
             ))}
           </div>
         )}
@@ -300,7 +309,7 @@ function ResultsCard({ results, onOpen }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -414,7 +423,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
           <div className="nsa-as-body" ref={listRef}>
             {messages.map((m) => (
               m.kind === 'results'
-                ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} />
+                ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} onReorder={onReorder} />
                 : (
                   <div key={m.id} className={`nsa-as-row ${m.from}`}>
                     <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
