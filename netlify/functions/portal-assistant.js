@@ -64,12 +64,12 @@ function normCatalog(raw, fields) {
 // in lockstep with the executor (runPortalSearch) in src/App.js — same field
 // names, same entities. Kept small and stable on purpose.
 const SEARCH_FIELDS = {
-  sales_orders: new Set(['status', 'is_open', 'needs_art', 'margin_pct', 'value', 'customer', 'rep', 'text']),
+  sales_orders: new Set(['status', 'is_open', 'needs_art', 'margin_pct', 'value', 'created_date', 'expected_date', 'ready_to_invoice', 'shipped', 'shipped_not_invoiced', 'checked_in', 'short_on_pull', 'paid', 'customer', 'rep', 'text']),
   jobs: new Set(['prod_status', 'art_status', 'needs_art', 'item_status', 'items_in', 'margin_pct', 'customer', 'rep', 'text']),
-  invoices: new Set(['is_open', 'paid', 'status', 'balance', 'days_past_due', 'value', 'customer', 'rep', 'text']),
-  estimates: new Set(['is_open', 'status', 'age_days', 'value', 'customer', 'rep', 'text']),
-  customers: new Set(['rep', 'open_balance', 'has_open_orders', 'text']),
-  products: new Set(['vendor', 'brand', 'color', 'has_image', 'cost', 'price', 'text']),
+  invoices: new Set(['is_open', 'paid', 'status', 'balance', 'days_past_due', 'value', 'date', 'due_date', 'customer', 'rep', 'text']),
+  estimates: new Set(['is_open', 'status', 'age_days', 'value', 'created_date', 'customer', 'rep', 'text']),
+  customers: new Set(['rep', 'open_balance', 'has_open_orders', 'order_count', 'revenue', 'last_order_days', 'text']),
+  products: new Set(['vendor', 'brand', 'color', 'has_image', 'in_stock', 'stock', 'cost', 'price', 'text']),
   purchase_orders: new Set(['status', 'vendor', 'so', 'text']),
 };
 const SEARCH_ENTITIES = Object.keys(SEARCH_FIELDS);
@@ -104,6 +104,7 @@ function sanitizeSpec(input) {
 // the catalogs are small and the win is grounding the model in exactly what
 // exists right now.
 function buildSystemPrompt({ screen, screens, tours, targets }) {
+  const _today = (() => { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } })();
   const screenLines = screens.length
     ? screens.map((s) => `- ${s.id} — ${s.label}${s.desc ? `: ${s.desc}` : ''}`).join('\n')
     : '(none provided)';
@@ -132,14 +133,15 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '- If nothing matches, just answer in words. Only use a tool when it genuinely helps.',
     '',
     'Structured search — pick ONE entity and build the `search` spec from that entity\'s fields ONLY:',
-    '• sales_orders — status (booking|need_order|waiting_receive|needs_pull|items_received|in_production|ready_to_invoice|complete), is_open (true/false), needs_art (true/false), margin_pct (integer %), value ($), customer (contains), rep ("me" or a name), text (contains).',
+    `Today's date is ${_today}. For date fields pass an absolute YYYY-MM-DD value with gt/gte/lt/lte. Convert relative windows using today: "this month" -> created_date gte first-of-this-month; "last 30 days" -> gte (today minus 30); "this year"/"this season" -> gte Jan 1; "last year" -> created_date gte last-Jan-1 AND lt this-Jan-1; "before/after <date>" -> lt/gt that date.`,
+    '• sales_orders — status (booking|need_order|waiting_receive|needs_pull|items_received|in_production|ready_to_invoice|complete), is_open (true/false), needs_art (true/false), margin_pct (integer %), value ($), created_date (YYYY-MM-DD), expected_date (YYYY-MM-DD, when goods are expected), ready_to_invoice (true/false), shipped (true/false), shipped_not_invoiced (true/false), checked_in (true/false = all goods physically received), short_on_pull (true/false = stock came up short), paid (true/false), customer (contains), rep ("me" or a name), text (contains).',
     '• jobs — prod_status (draft|hold|staging|in_process|completed|shipped = the DECORATION/production stage), art_status (needs_art|waiting_approval|production_files_needed|upload_emb_files|order_dtf_transfers|art_complete), needs_art (true/false), item_status (need_to_order|on_order|waiting_receive|partially_received|items_received = the RECEIVING status of the garments), items_in (true/false = ALL garments received), margin_pct (%, from the job\'s order), customer, rep, text.',
-    '• invoices — is_open (true/false = still owed), paid (true/false), status (open|partial|paid), balance ($ owed), days_past_due (number), value ($ total), customer, rep, text.',
-    '• estimates — is_open (true/false = not yet converted), status (draft|approved|converted), age_days (number), value ($), customer, rep, text.',
-    '• customers — rep ("me" or a name), open_balance ($ they owe), has_open_orders (true/false), text (name/tag).',
-    '• products — vendor (contains), brand (contains), color (contains), has_image (true/false), cost ($), price ($), text (sku/name).',
+    '• invoices — is_open (true/false = still owed), paid (true/false), status (open|partial|paid), balance ($ owed), days_past_due (number), value ($ total), date (YYYY-MM-DD invoice date), due_date (YYYY-MM-DD), customer, rep, text.',
+    '• estimates — is_open (true/false = not yet converted), status (draft|approved|converted), age_days (number), value ($), created_date (YYYY-MM-DD), customer, rep, text.',
+    '• customers — rep ("me" or a name), open_balance ($ they owe), has_open_orders (true/false), order_count (lifetime # of orders), revenue ($ lifetime), last_order_days (days since their most recent order), text (name/tag).',
+    '• products — vendor (contains), brand (contains), color (contains), has_image (true/false), in_stock (true/false), stock (units on hand), cost ($), price ($), text (sku/name).',
     '• purchase_orders — status (waiting|ordered|partial|received|shipped), vendor (contains), so (order # contains), text.',
-    'Mapping tips: "open orders" → sales_orders is_open=true. "unpaid / owes us / outstanding" → invoices is_open=true. "past due / overdue 30 days" → invoices days_past_due gt 30. "cold/stale quotes" → estimates is_open=true + age_days gt 7 (stale = 14+). "needs art" → needs_art=true. "all the items in / everything received / goods all here" → jobs items_in=true (do NOT use prod_status for this — prod_status is the decoration stage, not receiving). "margin over 40%" → margin_pct gt 40. "for <name>" → customer contains <name> (or rep if clearly a salesperson). "my/mine/I got/I sold" → rep is "me". "missing image" → products has_image=false. A named record ("the Dana Hills tee order") → text contains the distinctive words. Combine conditions as multiple filters (AND).',
+    'Mapping tips: "open orders" → sales_orders is_open=true. "unpaid / owes us / outstanding" → invoices is_open=true. "past due / overdue 30 days" → invoices days_past_due gt 30. "cold/stale quotes" → estimates is_open=true + age_days gt 7 (stale = 14+). "needs art" → needs_art=true. "all the items in / everything received / goods all here" → jobs items_in=true (do NOT use prod_status for this — prod_status is the decoration stage, not receiving). "margin over 40%" → margin_pct gt 40. "for <name>" → customer contains <name> (or rep if clearly a salesperson). "my/mine/I got/I sold" → rep is "me". "missing image" → products has_image=false. "ready to invoice" → sales_orders ready_to_invoice=true. "shipped but not invoiced" → sales_orders shipped_not_invoiced=true. "goods all in / checked in / arrived" → sales_orders checked_in=true. "short on pull / came up short" → sales_orders short_on_pull=true. "unpaid orders" → sales_orders paid=false; "paid orders" → paid=true. "out of stock" → products in_stock=false; "in stock" → products in_stock=true. "dormant / quiet / gone cold / haven\'t ordered in N days" → customers last_order_days gt N. A named record ("the Dana Hills tee order") → text contains the distinctive words, plus a date filter if a timeframe is given. Combine conditions as multiple filters (AND).',
     'Ranking: "top/biggest/highest/largest" → sort by the money field (value/balance/open_balance/cost) dir desc; "oldest/most overdue" → sort by age_days/days_past_due desc; "smallest/cheapest" → asc. "top N" also sets limit N. The sort field must be one of the chosen entity\'s fields.',
     '',
     'Portal screens (id — label: what it is for):',

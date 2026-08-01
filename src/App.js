@@ -33440,7 +33440,7 @@ export default function App(){
       const soJobsOf=(so)=>{try{return buildJobs(so)||[]}catch{return[]}};
       const soNeedsArt=(so)=>soJobsOf(so).some(j=>j.art_status&&j.art_status!=='art_complete');
       const orderValue=(o)=>{try{return Number(calcOrderTotals(o)?.grand)||0}catch{return 0}};
-      const numVal=(v)=>{const n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''));return isNaN(n)?null:n};
+      const numVal=(v)=>{const s=String(v==null?'':v).trim();let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);if(m)return (+m[1])*10000+(+m[2])*100+(+m[3]);m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(m){let y=+m[3];if(y<100)y+=2000;return y*10000+(+m[1])*100+(+m[2])}const n=parseFloat(s.replace(/[^0-9.\-]/g,''));return isNaN(n)?null:n};
       const boolVal=(v)=>{const s=String(v==null?'':v).toLowerCase();return s==='true'||s==='yes'||s==='1'};
       const cmpNum=(a,op,b)=>op==='gt'?a>b:op==='gte'?a>=b:op==='lt'?a<b:op==='lte'?a<=b:op==='is_not'?a!==b:a===b;
       const cmpStr=(a,op,b)=>op==='is_not'?a!==b:op==='contains'?a.includes(b):a===b;
@@ -33452,6 +33452,11 @@ export default function App(){
       const prodHasImg=(p)=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
       const vendName=(p)=>{const v=vend.find(x=>x.id===p.vendor_id);return((v&&v.name)||p.manufacturer||'')};
       const estAge=(e)=>{try{const d=opsQuoteAgeDays(e);return d==null?0:Number(d)||0}catch{return 0}};
+      const ymdInt=(dstr)=>{if(!dstr)return 0;const s=String(dstr);let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return (+m[1])*10000+(+m[2])*100+(+m[3]);m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=+m[3];if(y<100)y+=2000;return y*10000+(+m[1])*100+(+m[2])}const d=new Date(s);return isNaN(d)?0:d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate()};
+      const _ffC=new Map();const ffOf=(so)=>{if(_ffC.has(so.id))return _ffC.get(so.id);let f=null;try{f=opsFulfillment(so)}catch{f=null}_ffC.set(so.id,f);return f};
+      const soHasNonVoidInv=(so)=>invs.some(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
+      const prodQty=(p)=>{try{return Object.values(p._inv||{}).reduce((a,q)=>a+(Number(q)||0),0)}catch{return 0}};
+      const _nowMs=(()=>{try{return Date.now()}catch{return 0}})();
       let items=[];let getField=()=>'';let toRow=()=>({});let columns=[];
       if(entity==='jobs'){
         const jobItems=(job,so)=>{try{return String(deriveJobItemStatus(job,so)||'').toLowerCase()}catch{return ''}};
@@ -33479,6 +33484,8 @@ export default function App(){
           case 'balance':return invBal(i);
           case 'days_past_due':return invDpd(i);
           case 'value':return Number(i.total)||0;
+          case 'date':return ymdInt(i.date);
+          case 'due_date':return ymdInt(i.due_date);
           case 'customer':return custHay(custById(i.customer_id));
           case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id));
           case 'text':return ((i.id||'')+' '+(i.memo||'')+' '+(custById(i.customer_id)?.name||'')).toLowerCase();
@@ -33492,6 +33499,7 @@ export default function App(){
           case 'status':return String(e.status||'').toLowerCase();
           case 'age_days':return estAge(e);
           case 'value':return orderValue(e);
+          case 'created_date':return ymdInt(e.created_at);
           case 'customer':return custHay(custById(e.customer_id));
           case 'rep':return (custById(e.customer_id)?.primary_rep_id)||e.created_by||null;
           case 'text':return ((e.id||'')+' '+(e.memo||'')+' '+(custById(e.customer_id)?.name||'')).toLowerCase();
@@ -33500,14 +33508,19 @@ export default function App(){
         columns=['Estimate','Customer','Value','Status','Age'];
       } else if(entity==='customers'){
         items=cust.slice();
+        const _agg={};sos.forEach(so=>{const id=so.customer_id;if(!id)return;const a=_agg[id]||(_agg[id]={count:0,revenue:0,lastMs:0});a.count++;a.revenue+=orderValue(so);const ms=Date.parse(so.created_at||'');if(!isNaN(ms)&&ms>a.lastMs)a.lastMs=ms});
+        const lastDays=(c)=>{const ms=_agg[c.id]?.lastMs||0;return ms?Math.floor((_nowMs-ms)/86400000):99999};
         getField=(field,c)=>{switch(field){
           case 'rep':return c.primary_rep_id||null;
           case 'open_balance':return custOpenBal(c);
           case 'has_open_orders':return custOpenOrders(c);
+          case 'order_count':return _agg[c.id]?.count||0;
+          case 'revenue':return _agg[c.id]?.revenue||0;
+          case 'last_order_days':return lastDays(c);
           case 'text':return custHay(c);
           default:return '';}};
-        toRow=(c)=>({entity,id:c.id,_rec:c,cells:{Customer:c.name||'—',Tag:c.alpha_tag||'—','Open Balance':_nlMoney(custOpenBal(c))}});
-        columns=['Customer','Tag','Open Balance'];
+        toRow=(c)=>{const d=lastDays(c);return{entity,id:c.id,_rec:c,cells:{Customer:c.name||'—',Tag:c.alpha_tag||'—',Orders:_agg[c.id]?.count||0,Revenue:_nlMoney(_agg[c.id]?.revenue||0),'Open Balance':_nlMoney(custOpenBal(c)),'Last Order':d>=99999?'never':d+'d ago'}}};
+        columns=['Customer','Tag','Orders','Revenue','Open Balance','Last Order'];
       } else if(entity==='products'){
         items=prod.slice();
         getField=(field,p)=>{switch(field){
@@ -33515,12 +33528,14 @@ export default function App(){
           case 'brand':return String(p.brand||'').toLowerCase();
           case 'color':return String(p.color||'').toLowerCase();
           case 'has_image':return prodHasImg(p);
+          case 'in_stock':return prodQty(p)>0;
+          case 'stock':return prodQty(p);
           case 'cost':return Number(p.nsa_cost)||0;
           case 'price':return Number(p.retail_price)||0;
           case 'text':return ((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase();
           default:return '';}};
-        toRow=(p)=>({entity,id:p.id,_rec:p,cells:{SKU:p.sku||'—',Name:p.name||'—',Brand:p.brand||'—',Color:p.color||'—',Cost:_nlMoney(Number(p.nsa_cost)||0)}});
-        columns=['SKU','Name','Brand','Color','Cost'];
+        toRow=(p)=>({entity,id:p.id,_rec:p,cells:{SKU:p.sku||'—',Name:p.name||'—',Brand:p.brand||'—',Color:p.color||'—',Stock:prodQty(p),Cost:_nlMoney(Number(p.nsa_cost)||0)}});
+        columns=['SKU','Name','Brand','Color','Stock','Cost'];
       } else if(entity==='purchase_orders'){
         const seen=new Set();
         sos.forEach(so=>{const c2=custById(so.customer_id);
@@ -33545,6 +33560,14 @@ export default function App(){
           case 'needs_art':return soNeedsArt(so);
           case 'margin_pct':return marginPct(so);
           case 'value':return orderValue(so);
+          case 'created_date':return ymdInt(so.created_at);
+          case 'expected_date':return ymdInt(so.expected_date||so.expected_ship_date);
+          case 'ready_to_invoice':{try{return !!opsReadyToInvoice(so,ffOf(so))&&!soHasNonVoidInv(so)}catch{return false}}
+          case 'shipped':{try{return !!opsShippedOut(so,ffOf(so))}catch{return false}}
+          case 'shipped_not_invoiced':{try{return !!opsShippedNotInvoiced(so,ffOf(so))&&!soHasNonVoidInv(so)}catch{return false}}
+          case 'checked_in':{try{return !!opsCheckedIn(so,ffOf(so))}catch{return false}}
+          case 'short_on_pull':{try{return !!opsShortOnPull(so)}catch{return false}}
+          case 'paid':{const si=invs.filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);return si.length>0&&!si.some(i=>opsOpenInvoice(i))}
           case 'customer':return custHay(custById(so.customer_id));
           case 'rep':return repOf(so);
           case 'text':return ((so.id||'')+' '+(so.memo||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
