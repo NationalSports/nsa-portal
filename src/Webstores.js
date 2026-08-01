@@ -5532,6 +5532,10 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const roster = detail?.roster || [];
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
+  // Product name lookup for order lines. Order items store a SKU + color but no name;
+  // the descriptive name lives on the storefront product (same resolution _itemName uses).
+  const nameByPid = {};
+  catalog.forEach((c) => { const st = stockByWp[c.id]; if (c.product_id && st && st.name && !nameByPid[c.product_id]) nameByPid[c.product_id] = st.name; });
 
   // Real per-store batch numbers for the linked SOs (webstore_batch_no lives on the
   // Sales Order, not the order row). Fetched once here and shared by the "Batches
@@ -5729,7 +5733,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -12515,7 +12519,7 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -12693,6 +12697,9 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             {sorted.map(({ o, items, players, numbers, lineStatus }) => {
               const isOpen = expanded === o.id;
               const lineItems = items.filter((i) => !i.is_bundle_parent);
+              // Individual orders are entirely one player (shown in the header row), so the
+              // per-line Player column is redundant — only bulk orders mix players per line.
+              const showPlayer = o.order_kind === 'bulk';
               const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
@@ -12718,13 +12725,18 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', ...(showPlayer ? ['Player'] : []), 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
-                        {lineItems.map((i) => (
+                        {lineItems.map((i) => {
+                          const nm = nameByPid[i.product_id] || i.name || '';
+                          // Show the product name up top; color + SKU beneath. When no name
+                          // resolves, the SKU takes the top line so we don't repeat it.
+                          const sub = [i.color, nm ? i.sku : null].filter(Boolean).join(' · ');
+                          return (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}><div style={{ fontWeight: 600 }}>{i.sku || '—'}</div>{i.name && i.name !== i.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{i.name}</div>}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}</td>
                             <td style={td}>{i.size || '—'}</td>
-                            <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
+                            {showPlayer && <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>}
                             <td style={td}>{i.qty}</td>
                             <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
                             <td style={td}>
@@ -12732,7 +12744,8 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                               {Number(i.missing_qty) > 0 && <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 10.5, color: '#94a3b8' }}>ETA</span><input type="date" value={i.backorder_eta || ''} onChange={(e) => setItemBackEta(i, e.target.value)} title="Expected arrival — shown to the coach" style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12 }} /></div>}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>
