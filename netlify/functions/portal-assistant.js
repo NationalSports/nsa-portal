@@ -1,11 +1,14 @@
 // Staff Portal Assistant — the Claude brain behind src/PortalAssistant.js.
 //
-// A read-only, guide-only helper for signed-in NSA staff using the internal
-// portal. It answers "where is X / what does this screen do / how do I ..."
-// questions and can (a) spotlight an on-screen element or (b) launch an
-// interactive on-screen tutorial. It NEVER reads customer/order data, never
-// clicks anything, never writes anything — it points, explains, and teaches.
-// That keeps it well clear of every money/persistence path in the portal.
+// The Claude brain for signed-in NSA staff using the internal portal. It answers
+// "where is X / what does this screen do / how do I ..." questions, spotlights
+// elements, runs tutorials, and translates natural language into structured
+// specs the CLIENT executes over its own in-memory data (search, briefs,
+// reports, vendor stock, estimate co-pilot). This function itself is stateless
+// and reads no DB: it only emits typed actions. Writes it can propose
+// (start_estimate / add_line / set_reminder / add_note) never happen here — the
+// client resolves and persists them, and every write lands behind an explicit
+// user confirm/Save gate, keeping the model clear of the money/persistence path.
 //
 // Pattern copied from netlify/functions/teamshop-assistant.js (owner's chosen
 // Claude config): official @anthropic-ai/sdk, model 'claude-sonnet-5', thinking
@@ -155,6 +158,9 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     'For "everything for <customer>" / a customer snapshot / overview / "how are things with <customer>", call the customer_360 tool with the customer name.',
     'For "is <X> in stock (at the vendor) / available / when is the next delivery", call the vendor_stock tool with the SKU or description. (This is live vendor availability — different from our own warehouse stock, which is the products `stock`/`in_stock` search fields.)',
     '- For a customer REPORT — brand dollars bought ("how much adidas did San Mateo buy this year"), average days-to-pay ("average days to pay for Santa Barbara football"), a printable invoices-with-items list, or a customer snapshot — call the report tool with type (brand_spend|days_to_pay|invoice_detail|customer_summary), customer, brand (for brand_spend), and timeframe (this_year|last_year|last_12_months|all_time; default this_year).',
+    `- To set a personal reminder/task ("remind me to …", "follow up with <customer> on Friday", "add a task …"), call the set_reminder tool. It is assigned to the current user and appears in their Assigned Tasks. Convert any relative due date to an absolute YYYY-MM-DD using today (${_today}). Mark priority "high" only if they signal urgency.`,
+    '- To leave a note ("add a note …", "note on SO-1727: …", "note for <customer>: …"), call the add_note tool. Use target=order for a normal timestamped note on an order, target=production for a spec note that must reach vendors/job tickets, and target=customer for a note on the customer record. Pass ref = the order number (order/production) or customer name (customer).',
+    'Both set_reminder and add_note are WRITE actions: the app shows the user a draft they must confirm before anything saves. Do not say it is saved or done — say you have drafted it for their confirmation.',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -266,6 +272,38 @@ function buildTools({ tours, targets }) {
         timeframe: { type: 'string', enum: ['this_year', 'last_year', 'last_12_months', 'all_time'] },
       },
       required: ['type', 'customer'],
+      additionalProperties: false,
+    },
+  });
+  // Set a personal reminder / task for the current user (write, confirmed before save).
+  tools.push({
+    name: 'set_reminder',
+    description: "Create a personal reminder / to-do for the CURRENT user (it is assigned to them and shows up in their 'Assigned Tasks' widget). Use when they say 'remind me to …', 'set a reminder …', 'add a task …', 'follow up with <customer> on <date>'. You do NOT save it directly — the app shows the drafted reminder and the user confirms before it is saved. Do not claim it is saved; the app confirms.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short title of the reminder/task (e.g. "Follow up with San Mateo on pregame tees").' },
+        due_date: { type: 'string', description: 'Optional due date as YYYY-MM-DD. Convert relative dates ("Friday", "next week", "in 3 days") to an absolute date using today.' },
+        customer: { type: 'string', description: 'Optional customer name to link the reminder to.' },
+        so: { type: 'string', description: 'Optional sales order number to link the reminder to (e.g. SO-1727).' },
+        priority: { type: 'string', enum: ['high', 'normal'], description: 'Optional. "high" if the user says urgent/important/asap/high priority.' },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  });
+  // Add a note to a record (write, confirmed before save).
+  tools.push({
+    name: 'add_note',
+    description: "Add a note to a record. Use when the user says 'add a note …', 'note on <order>: …', 'leave a note for <customer>: …', 'jot down …'. target=order posts a timestamped note to a sales order's message thread; target=production writes a production/spec note on the order that also travels to job tickets and vendors; target=customer saves a note on the customer record. You do NOT save it directly — the app shows the drafted note and the user confirms. Do not claim it is saved.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', enum: ['order', 'production', 'customer'], description: 'order = timestamped note on the order thread; production = production/spec note on the order (reaches vendors/job tickets); customer = note on the customer record.' },
+        ref: { type: 'string', description: 'What to attach it to: the sales order number (e.g. SO-1727) for order/production, or the customer name for customer.' },
+        text: { type: 'string', description: 'The note text.' },
+      },
+      required: ['target', 'ref', 'text'],
       additionalProperties: false,
     },
   });
@@ -399,6 +437,25 @@ async function runAssistant({ client, catalogs, messages }) {
         const tframe = normStr(tu.input && tu.input.timeframe, 40);
         if (rtype && rcustomer) { actions.push({ type: 'report', report: { type: rtype, customer: rcustomer, brand: rbrand || null, timeframe: tframe || null } }); out = { ok: true }; }
         else out = { error: 'type and customer required' };
+      } else if (tu.name === 'set_reminder') {
+        const title = normStr(tu.input && tu.input.title, 160);
+        const due = normStr(tu.input && tu.input.due_date, 10);
+        const customer = normStr(tu.input && tu.input.customer, 120);
+        const so = normStr(tu.input && tu.input.so, 40);
+        const pr = normStr(tu.input && tu.input.priority, 10);
+        const due_date = /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : null;
+        if (title) {
+          actions.push({ type: 'set_reminder', reminder: { title, due_date, customer: customer || null, so: so || null, priority: pr === 'high' ? 'high' : 'normal' } });
+          out = { ok: true };
+        } else out = { error: 'title required' };
+      } else if (tu.name === 'add_note') {
+        const target = normStr(tu.input && tu.input.target, 20);
+        const ref = normStr(tu.input && tu.input.ref, 120);
+        const noteText = normStr(tu.input && tu.input.text, 1000);
+        if (['order', 'production', 'customer'].includes(target) && ref && noteText) {
+          actions.push({ type: 'add_note', note: { target, ref, text: noteText } });
+          out = { ok: true };
+        } else out = { error: 'target, ref and text required' };
       } else if (tu.name === 'highlight') {
         const id = String(tu.input?.target_id || '');
         if (targetIds.has(id)) { actions.push({ type: 'highlight', target_id: id }); out = { ok: true }; }

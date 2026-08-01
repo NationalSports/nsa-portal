@@ -33804,6 +33804,75 @@ export default function App(){
     const doc={title:`Invoices — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]},{label:'Total',lines:[money(grand)]}],tables:tables.length?tables:[{title:'No invoices in range',headers:['—'],aligns:['left'],rows:[]}]};
     return {ok:true,title:`Invoices — ${custLabel}`,summary:[{label:'Invoices',value:String(cInvs.length)},{label:`Total (${tfLabel})`,value:money(grand)}],doc};
   }
+  // Assistant reminders & notes. Both are WRITE actions: each handler RESOLVES the draft
+  // (customer / order lookup) and returns a preview + a `commit` thunk the widget only calls
+  // after the user confirms in the chat. Writes reuse the existing state setters
+  // (setAssignedTodos / setMsgs / setSOs / savC) so the diff-save engine persists them — no
+  // hand-rolled Supabase inserts (see the save-path audits).
+  function _rmDateLabel(d){try{const p=String(d).split('-').map(Number);return new Date(p[0],p[1]-1,p[2]).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});}catch(e){return String(d);}}
+  function handleAssistantSetReminder({title,due_date,customer,so,priority}){
+    const t=String(title||'').trim();
+    if(!t)return {error:'What should the reminder say?'};
+    let cRec=null;
+    if(customer){const cq=String(customer).trim().toLowerCase();const ms=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));if(ms.length)cRec=[...ms.filter(m=>!m.parent_id),...ms.filter(m=>m.parent_id)][0];}
+    let soRec=null;
+    if(so){const sq=String(so).trim().toLowerCase();soRec=sos.find(s=>String(s.id||'').toLowerCase()===sq)||sos.find(s=>String(s.id||'').toLowerCase().includes(sq))||null;}
+    if(soRec&&!cRec&&soRec.customer_id)cRec=cust.find(c=>c.id===soRec.customer_id)||null;
+    const dd=/^\d{4}-\d{2}-\d{2}$/.test(String(due_date||''))?due_date:null;
+    const hi=priority==='high';
+    const lines=[{label:'Reminder',value:t}];
+    if(dd)lines.push({label:'Due',value:_rmDateLabel(dd)});
+    if(cRec)lines.push({label:'Customer',value:cRec.name||cRec.alpha_tag||''});
+    if(soRec)lines.push({label:'Order',value:soRec.id});
+    lines.push({label:'For',value:cu?.name||'me'});
+    if(hi)lines.push({label:'Priority',value:'High'});
+    const commit=async()=>{
+      const nowIso=new Date().toISOString();
+      const todo={id:'todo-'+Date.now(),title:t,description:'Set via Portal Assistant.',created_by:cu?.id||null,assigned_to:cu?.id||null,so_id:soRec?soRec.id:null,customer_id:cRec?cRec.id:null,priority:hi?1:2,status:'open',due_date:dd,created_at:nowIso,updated_at:nowIso,comments:[]};
+      try{setAssignedTodos(prev=>[todo,...prev]);}catch(e){return {ok:false,message:"Couldn't save the reminder — try again."};}
+      return {ok:true,message:`Reminder added to your Assigned Tasks${dd?` · due ${_rmDateLabel(dd)}`:''}.`};
+    };
+    return {ok:true,title:'Reminder — confirm to save',lines,commit};
+  }
+  function handleAssistantAddNote({target,ref,text}){
+    const body=String(text||'').trim();
+    if(!body)return {error:'What should the note say?'};
+    const rf=String(ref||'').trim();
+    const stampLine=`${new Date().toLocaleDateString()} — ${body} (${cu?.name||'staff'})`;
+    if(target==='customer'){
+      const cq=rf.toLowerCase();
+      const ms=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
+      if(!ms.length)return {error:`I couldn't find a customer matching "${ref}".`};
+      const c=[...ms.filter(m=>!m.parent_id),...ms.filter(m=>m.parent_id)][0];
+      const commit=async()=>{
+        const existing=String(c.notes||'').trim();
+        const notes=existing?existing+'\n'+stampLine:stampLine;
+        try{await savC({...c,notes,updated_at:new Date().toISOString()});}catch(e){return {ok:false,message:"Couldn't save the note — try again."};}
+        return {ok:true,message:`Note saved to ${c.name||c.alpha_tag||'the customer'}'s record.`};
+      };
+      return {ok:true,title:'Customer note — confirm to save',lines:[{label:'Customer',value:c.name||c.alpha_tag||''},{label:'Note',value:body}],commit};
+    }
+    const sq=rf.toLowerCase();
+    const so=sos.find(s=>String(s.id||'').toLowerCase()===sq)||sos.find(s=>String(s.id||'').toLowerCase().includes(sq));
+    if(!so)return {error:`I couldn't find an order matching "${ref}".`};
+    const c=cust.find(cc=>cc.id===so.customer_id);
+    if(target==='production'){
+      const commit=async()=>{
+        const existing=String(so.production_notes||'').trim();
+        const production_notes=existing?existing+'\n'+stampLine:stampLine;
+        try{setSOs(prev=>prev.map(s=>s.id===so.id?{...s,production_notes,updated_at:new Date().toISOString()}:s));}catch(e){return {ok:false,message:"Couldn't save the note — try again."};}
+        return {ok:true,message:`Production note added to ${so.id} — it reaches job tickets & vendor exports.`};
+      };
+      return {ok:true,title:'Production note — confirm to save',lines:[{label:'Order',value:so.id},{label:'Customer',value:c?.name||c?.alpha_tag||''},{label:'Production note',value:body}],commit};
+    }
+    const commit=async()=>{
+      const rep=so.created_by&&so.created_by!==cu.id?[so.created_by]:[];
+      const soMsg={id:'m'+Date.now(),so_id:so.id,author_id:cu.id,text:body,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'general',tagged_members:rep,entity_type:'so',entity_id:so.id};
+      try{setMsgs(prev=>[...prev,soMsg]);}catch(e){return {ok:false,message:"Couldn't post the note — try again."};}
+      return {ok:true,message:`Note posted to ${so.id}'s message thread.`};
+    };
+    return {ok:true,title:'Order note — confirm to save',lines:[{label:'Order',value:so.id},{label:'Customer',value:c?.name||c?.alpha_tag||''},{label:'Note',value:body}],commit};
+  }
   // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
   function rNlResults(){
     const res=runPortalSearch(nlSpec);
@@ -34972,7 +35041,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/>
   </div></AppDataProvider>);
 }
 

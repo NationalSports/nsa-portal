@@ -200,6 +200,9 @@ function ensureStyles() {
 .nsa-as-rc:first-child{font-weight:700;color:#1e40af;flex-shrink:0}
 .nsa-as-rc:nth-child(2){flex:1;min-width:0}
 .nsa-as-results-more{padding:8px 12px;font-size:11.5px;color:#64748b;background:#f8fafc;border-top:1px solid #f1f5f9}
+.nsa-as-confirm-actions{display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #f1f5f9;background:#f8fafc}
+.nsa-as-confirm-done{padding:9px 12px;font-size:12.5px;font-weight:700;color:#166534;background:#f0fdf4;border-top:1px solid #dcfce7}
+.nsa-as-confirm-err{padding:9px 12px;font-size:12.5px;font-weight:600;color:#b91c1c;background:#fef2f2;border-top:1px solid #fee2e2}
 `;
   document.head.appendChild(el);
 }
@@ -371,6 +374,40 @@ function StockCard({ stock }) {
   );
 }
 
+// A write the user must confirm before it saves (a reminder or a note). Shows
+// the resolved draft, then Confirm/Cancel. Nothing is written until Confirm.
+function ConfirmCard({ draft, onCommit }) {
+  const [state, setState] = useState('pending'); // pending | saving | done | error | cancelled
+  const [msg, setMsg] = useState('');
+  const confirm = async () => {
+    setState('saving');
+    let res = null;
+    try { res = await onCommit(); } catch { res = null; }
+    if (res && res.ok) { setState('done'); setMsg(res.message || 'Saved.'); }
+    else { setState('error'); setMsg((res && res.message) || "Couldn't save that — try again."); }
+  };
+  return (
+    <div className="nsa-as-row bot">
+      <div className="nsa-as-results">
+        <div className="nsa-as-results-head">{draft.title}</div>
+        {(draft.lines || []).map((l, i) => (
+          <div key={i} className="nsa-as-report-line"><span>{l.label}</span><strong>{l.value}</strong></div>
+        ))}
+        {state === 'pending' && (
+          <div className="nsa-as-confirm-actions">
+            <button className="nsa-as-btn ghost" onClick={() => setState('cancelled')}>Cancel</button>
+            <button className="nsa-as-btn primary" onClick={confirm}>{draft.confirmLabel || 'Confirm & save'}</button>
+          </div>
+        )}
+        {state === 'saving' && <div className="nsa-as-results-more">Saving…</div>}
+        {state === 'done' && <div className="nsa-as-confirm-done">✓ {msg}</div>}
+        {state === 'error' && <div className="nsa-as-confirm-err">{msg}</div>}
+        {state === 'cancelled' && <div className="nsa-as-results-more">Cancelled — nothing was saved.</div>}
+      </div>
+    </div>
+  );
+}
+
 // A computed customer report — headline metrics + a Print/PDF button for the full document.
 function ReportCard({ report, onPrint }) {
   return (
@@ -388,12 +425,12 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
   });
-  const greeting = () => ({ id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can search anything, build reports, help with estimates, and walk you through the portal. Try "unpaid invoices past due 30 days", "how much adidas did San Mateo buy this year", or "what needs my attention."` });
+  const greeting = () => ({ id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can search anything, build reports, help with estimates, set reminders, leave notes, and walk you through the portal. Try "unpaid invoices past due 30 days", "how much adidas did San Mateo buy this year", "remind me to follow up with FPU on Friday", or "what needs my attention."` });
   const [messages, setMessages] = useState(() => [greeting()]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -503,6 +540,24 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     if (res.ok) { setMessages((prev) => [...prev, { id: `rp${Date.now()}`, from: 'bot', kind: 'report', report: res }]); }
   }, [onReport]);
 
+  const doSetReminder = useCallback((reminder) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `rm${Date.now()}`, from: 'bot', text: t }]);
+    if (!onSetReminder) { pushBot("I can't set reminders yet."); return; }
+    let res = null;
+    try { res = onSetReminder(reminder); } catch { res = null; }
+    if (!res || res.error) { pushBot((res && res.error) || "I couldn't build that reminder — try rephrasing."); return; }
+    setMessages((prev) => [...prev, { id: `rm${Date.now()}`, from: 'bot', kind: 'confirm', draft: { title: res.title || 'New reminder', lines: res.lines, confirmLabel: 'Save reminder' }, commit: res.commit }]);
+  }, [onSetReminder]);
+
+  const doAddNote = useCallback((note) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `nt${Date.now()}`, from: 'bot', text: t }]);
+    if (!onAddNote) { pushBot("I can't add notes yet."); return; }
+    let res = null;
+    try { res = onAddNote(note); } catch { res = null; }
+    if (!res || res.error) { pushBot((res && res.error) || "I couldn't figure out where to put that note — tell me the order number or customer."); return; }
+    setMessages((prev) => [...prev, { id: `nt${Date.now()}`, from: 'bot', kind: 'confirm', draft: { title: res.title || 'New note', lines: res.lines, confirmLabel: 'Save note' }, commit: res.commit }]);
+  }, [onAddNote]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -517,7 +572,9 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     else if (a.type === 'vendor_stock' && a.query) doVendorStock(a.query);
     else if (a.type === 'start_estimate' && a.customer) doStartEstimate({ customer: a.customer, items: a.items });
     else if (a.type === 'report' && a.report) doReport(a.report);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport]);
+    else if (a.type === 'set_reminder' && a.reminder) doSetReminder(a.reminder);
+    else if (a.type === 'add_note' && a.note) doAddNote(a.note);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -593,6 +650,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
                     ? <StockCard key={m.id} stock={m.stock} />
                     : m.kind === 'report'
                       ? <ReportCard key={m.id} report={m.report} onPrint={onPrintReport} />
+                    : m.kind === 'confirm'
+                      ? <ConfirmCard key={m.id} draft={m.draft} onCommit={m.commit} />
                       : (
                         <div key={m.id} className={`nsa-as-row ${m.from}`}>
                           <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
