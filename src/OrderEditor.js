@@ -513,9 +513,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _tgtM=_cwMatchForItem(_afObj,_item,cg.color);
     const _tgtCw=(_tgtM&&_tgtM.exact&&(_cws.find(c=>c.id===_tgtM.id)||{}).garment_color)||'';
     const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const cls=garmentColorClass(col);const m=cls?_cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return (m&&m.garment_color)||''};
-    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCw&&x._cw===_tgtCw)?0:1)-((_tgtCw&&y._cw===_tgtCw)?0:1));
-    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-      {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
+    // The SAME design is often approved on many garments, so a reused-art garment can offer a dozen
+    // near-identical mocks (all the same logo/shade). Rank best-first — shade-matched, then a source
+    // garment that IS this SKU — and show only the top few by default, with a toggle for the rest, so
+    // the rep isn't wading through ten copies of the same logo just to confirm one.
+    const _rank=g=>((_tgtCw&&g._cw===_tgtCw)?0:2)+((String(g.from||'').split('|')[0]===cg.sku)?0:1);
+    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>_rank(x)-_rank(y));
+    const _ek=jobIdForApply+'|'+cg.sku+'|'+(cg.color||'')+'|'+af2.art_file_id;
+    const _cap=2;const _isExp=!!expandedMockGroups[_ek];const _shown=_isExp?_grps:_grps.slice(0,_cap);const _hidden=_grps.length-_shown.length;
+    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      {_shown.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
         return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
         {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'zoom-in'}} onClick={()=>setMockupLightbox(pm.url)}/>:<div key={pi} title="Click to enlarge" onClick={()=>setMockupLightbox(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'zoom-in'}}>📄</div>)}
         <div style={{minWidth:92}}>
@@ -527,6 +534,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             :<button className="btn btn-sm" style={{fontSize:9,background:'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} title="This mock was approved on a different garment shade — eyeball it before using" onClick={_apply}>Use for {cg.color||cg.sku} — confirm</button>}
         </div>
       </div>})}
+      {(_hidden>0||_isExp)&&_grps.length>_cap&&<button onClick={e=>{e.stopPropagation();setExpandedMockGroups(p=>({...p,[_ek]:!p[_ek]}))}} style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',border:'1px dashed #c4b5fd',borderRadius:6,padding:'5px 10px',cursor:'pointer',alignSelf:'stretch'}} title="These are all the same design approved on other garments">{_isExp?'Show fewer':'+ '+_hidden+' more mock'+(_hidden>1?'s':'')}</button>}
     </div>;
   });
   // Add a Previous Artwork group to this order WITHOUT auto-applying its mockups. Production files,
@@ -782,6 +790,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
+  const[expandedMockGroups,setExpandedMockGroups]=useState({});// {jobId|sku|color|artFileId:true} — reveal ALL reuse-mock candidates for one garment; default shows only the best couple (the same design was often mocked on many garments — see priorMockCards).
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
