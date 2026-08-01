@@ -11049,7 +11049,18 @@ export default function App(){
     const grpHue=k=>{let h=0;for(let i=0;i<(k||'').length;i++)h=(h*31+k.charCodeAt(i))>>>0;return GRP_HUES[h%GRP_HUES.length]};
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
-    const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so))).filter(j=>j.prod_status!=='shipped');
+    // Once an order is closed out (final invoice / "Close Sales Order" / promo close → SO
+    // status='complete'), its decorated jobs are done and out the door. The shop rarely logs a
+    // separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board forever
+    // even though the order is finished. Treat a 'completed' job on a complete order like a shipped
+    // one and drop it from the production board. Display-only: prod_status is untouched, so the
+    // warehouse ship queue and shipped-unit math are unaffected. Completed jobs on orders that are
+    // NOT yet invoiced (ready_to_invoice, etc.) still show — those genuinely still need attention.
+    const _soCompleteCache={};
+    const _isSOComplete=so=>{if(!so)return false;if(_soCompleteCache[so.id]===undefined)_soCompleteCache[so.id]=calcSOStatus(so)==='complete';return _soCompleteCache[so.id];};
+    const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so)))
+      .filter(j=>j.prod_status!=='shipped')
+      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)));
     // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
     // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
@@ -11096,39 +11107,9 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
-      {/* ── Run-together prompts ── Surfaces groups where 2+ jobs share the same decoration and
-          are sitting at the same production stage right now, so the team runs them on one screen
-          setup instead of recreating it per sales order. */}
-      {(()=>{
-        const sLabel={hold:'Ready for Prod',ready:'Ready for Prod',staging:'In Line',in_process:'In Process'};
-        const byKey={};
-        byStatus.forEach(j=>{if(j.grpKey)(byKey[j.grpKey]=byKey[j.grpKey]||[]).push(j)});
-        const alerts=[];
-        Object.entries(byKey).forEach(([k,members])=>{
-          if(members.length<2)return;
-          const byStat={};
-          members.forEach(m=>{const s=m.prod_status==='ready'?'hold':m.prod_status;(byStat[s]=byStat[s]||[]).push(m)});
-          Object.entries(byStat).forEach(([s,ms])=>{
-            if(s==='completed'||s==='shipped')return;
-            // For Ready-for-Prod, only count jobs that are actually checked in (items pulled/received).
-            const ready=s==='hold'?ms.filter(m=>isJobReady(m,m.so)):ms;
-            if(ready.length<2)return;
-            alerts.push({k,status:s,members:ready});
-          });
-        });
-        if(!alerts.length)return null;
-        return<div style={{marginBottom:12,display:'flex',flexDirection:'column',gap:8}}>
-          {alerts.map((a,i)=>{const m0=a.members[0];return(
-            <div key={a.k+a.status+i} style={{padding:'10px 14px',background:'linear-gradient(135deg,#ecfdf5,#f0fdf4)',border:'1px solid #86efac',borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-              <span style={{fontSize:18}}>🔗</span>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>{a.members.length} jobs share "{m0.art_name||'(unnamed art)'}" ({(m0.deco_type||'').replace(/_/g,' ')}) — run together to reuse the screen</div>
-                <div style={{fontSize:11,color:'#15803d',marginTop:2}}>All at <strong>{sLabel[a.status]||a.status}</strong>: {a.members.map(m=>m.soId+' · '+m.customer).join('  •  ')}</div>
-              </div>
-            </div>
-          )})}
-        </div>;
-      })()}
+      {/* Linked/shared-screen jobs no longer surface as banners here — they travel together in the
+          list and board (clusterLinked keeps siblings adjacent) and carry a 🔗 badge + colored
+          left border on each row, so the run-together signal lives inline with the jobs. */}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
         {kanbanCols.map(col=>{
           // The Completed column holds jobs that are done decorating but not yet shipped — they stay
