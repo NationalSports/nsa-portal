@@ -309,7 +309,7 @@ function ResultsCard({ results, onOpen, onReorder }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -347,6 +347,23 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     setMessages((prev) => [...prev, { id: `r${Date.now()}`, from: 'bot', kind: 'results', results: res }]);
   }, [onSearch]);
 
+  const doAddLine = useCallback(async (spec) => {
+    const pushBot = (text) => setMessages((prev) => [...prev, { id: `a${Date.now()}`, from: 'bot', text }]);
+    if (!onAddLine) { pushBot("I can't add items here yet."); return; }
+    let res = null;
+    try { res = await onAddLine(spec); } catch { res = null; }
+    if (!res || res.error === 'no_estimate_open') { pushBot('Open an estimate first, then tell me what to add — e.g. "add adidas navy LS pregame tee at 40% margin".'); return; }
+    if (res.error === 'not_found') { pushBot(`I couldn't find a product matching "${spec.description}". Try a SKU or different wording.`); return; }
+    if (res.ok) {
+      const p = res.product || {};
+      let txt = `Added ${p.name || 'the item'}${p.color ? ` (${p.color})` : ''} to the estimate at $${p.unit_sell}`;
+      txt += res.applied ? ` — about ${res.margin}% margin.` : (res.noCost ? ` — no cost on file, so I used the default price instead of ${res.margin}% margin.` : '.');
+      txt += ' Set the sizes/quantities and Save when it looks right.';
+      if (res.others && res.others.length) txt += ` Not the right one? Others: ${res.others.map((o) => o.sku).filter(Boolean).join(', ')}.`;
+      pushBot(txt);
+    }
+  }, [onAddLine]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -355,7 +372,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     if (a.type === 'start_tutorial' && a.tour_id) startTour(a.tour_id);
     else if (a.type === 'highlight' && a.target_id) highlight(a.target_id);
     else if (a.type === 'search' && a.spec) doSearch(a.spec);
-  }, [startTour, highlight, doSearch]);
+    else if (a.type === 'add_line' && a.description) doAddLine({ description: a.description, margin_pct: a.margin_pct });
+  }, [startTour, highlight, doSearch, doAddLine]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();

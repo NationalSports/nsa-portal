@@ -130,6 +130,7 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '- When the user asks where something is, or to be shown a screen or link, call the `highlight` tool with the matching target id — then say one short sentence pointing at it.',
     '- When the user wants a walkthrough or asks "how do I …" and an available tutorial matches, call the `start_tutorial` tool with that tour id. Do not also type out all the steps — the tutorial guides them on screen. Give a one-line lead-in instead.',
     '- When the user wants to FIND, LIST, FILTER, or COUNT their actual records — "show me…", "which…", "how many…", "find the … order", "jobs that…" — call the `search` tool with a structured filter spec. You do NOT see the results; the app displays them. Give a one-line lead-in ("Here are the open orders for Chase:") and NEVER state specific order/job ids, totals, counts, or margins yourself — the results panel shows them.',
+    '- When the user has an estimate OPEN and asks to add an item to it ("add … at N% margin", "put a … on this estimate"), call the `add_line` tool with the product description and the target margin percent if they stated one. It only works while an estimate is open; the app resolves the product from the catalog and prices it, and the user reviews before saving. Do not state a price or claim it is added — the app confirms.',
     '- If nothing matches, just answer in words. Only use a tool when it genuinely helps.',
     '',
     'Structured search — pick ONE entity and build the `search` spec from that entity\'s fields ONLY:',
@@ -192,6 +193,20 @@ function buildTools({ tours, targets }) {
         limit: { type: 'integer', description: 'Optional cap on how many results (e.g. "top 10" -> 10).' },
       },
       required: ['entity', 'filters'],
+      additionalProperties: false,
+    },
+  });
+  // Add a product line to the estimate the user has open (write, reviewed before save).
+  tools.push({
+    name: 'add_line',
+    description: "Add a product line to the estimate the user currently has OPEN on screen. Use when they say to add/put an item onto the estimate (e.g. 'add adidas navy long-sleeve pregame tee at 40% margin'). Only works while an estimate is open. You do NOT see the catalog — the app resolves the product from your description, prices it, and adds the line for the user to review before saving.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', description: 'The product to add, as described (brand, color, style, sleeve length, etc.).' },
+        margin_pct: { type: 'number', description: 'Target margin percent if the user gave one (e.g. 40). Omit if none was stated.' },
+      },
+      required: ['description'],
       additionalProperties: false,
     },
   });
@@ -279,6 +294,11 @@ async function runAssistant({ client, catalogs, messages }) {
         const spec = sanitizeSpec(tu.input);
         if (spec) { actions.push({ type: 'search', spec }); out = { ok: true }; }
         else out = { error: 'Invalid search spec' };
+      } else if (tu.name === 'add_line') {
+        const description = normStr(tu.input && tu.input.description, 200);
+        const mp = Number(tu.input && tu.input.margin_pct);
+        if (description) { actions.push({ type: 'add_line', description, margin_pct: (mp > 0 && mp < 100) ? mp : null }); out = { ok: true }; }
+        else out = { error: 'No product description' };
       } else if (tu.name === 'highlight') {
         const id = String(tu.input?.target_id || '');
         if (targetIds.has(id)) { actions.push({ type: 'highlight', target_id: id }); out = { ok: true }; }

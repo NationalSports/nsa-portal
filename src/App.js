@@ -33619,6 +33619,30 @@ export default function App(){
     setNlSpec(spec);setPg('search');
     return res;
   }
+  // Assistant "add a line to the open estimate". Resolves the product via the same server
+  // catalog search the editor uses, prices it here (money math stays out of the AI), and hands a
+  // fully-formed line to the open estimate editor via a window event (see OrderEditor listener).
+  // Per-line margin basis matches the editor's own display: (unit_sell - nsa_cost)/unit_sell.
+  async function handleAssistantAddLine({description,margin_pct}){
+    if(pg!=='estimates'||!eEst)return {error:'no_estimate_open'};
+    const desc=String(description||'').trim();
+    if(!desc)return {error:'not_found',description:desc};
+    let products=[];
+    try{const res=await _searchProductsServer(desc,{},0,5);products=(res&&res.products)||[];}catch(e){products=[];}
+    if(!products.length)return {error:'not_found',description:desc};
+    const p=products[0];
+    const nsa=Number(p.nsa_cost)||0;
+    const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
+    let unit_sell,applied=false;
+    if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
+    else if(nsa>0){unit_sell=Math.round((nsa*(eEst.default_markup||1.65))*100)/100;}
+    else{unit_sell=Number(p.retail_price)||0;}
+    const bl=String(p.brand||''),nm=String(p.name||'');
+    const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
+    const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true};
+    window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
+    return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
+  }
   // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
   function rNlResults(){
     const res=runPortalSearch(nlSpec);
@@ -34783,7 +34807,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine}/>
   </div></AppDataProvider>);
 }
 

@@ -333,6 +333,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // dead "Convert to SO" button that would spawn a second SO (and double-spend promo/credit funds).
   const linkedSO=isE?(allOrders||[]).find(s=>s.estimate_id===o.id):null;
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[editingRep,setEditingRep]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
+  // Portal Assistant → "add a line to the open estimate". The assistant runs at App scope and
+  // cannot reach this editor's local `o` (the sync effect below intentionally ignores external
+  // item additions), so it hands us a fully-formed, already-priced line via a window event and
+  // we append it here, marking dirty. Estimate editor only; the user reviews before saving.
+  React.useEffect(()=>{
+    if(!isE)return;
+    const h=(ev)=>{const line=ev&&ev.detail&&ev.detail.line;if(!line)return;setO(prev=>({...prev,items:[...(prev.items||[]),line],updated_at:new Date().toISOString()}));setDirty(true);};
+    window.addEventListener('nsa:assistant-add-line',h);
+    return ()=>window.removeEventListener('nsa:assistant-add-line',h);
+  },[isE]);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
