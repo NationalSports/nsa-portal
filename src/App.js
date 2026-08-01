@@ -33411,84 +33411,171 @@ export default function App(){
   const _nlStatusLabel=(st)=>({booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items In',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[st]||st||'—');
   const _nlArtLabel=(st)=>({needs_art:'Needs Art',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',upload_emb_files:'Upload EMB',order_dtf_transfers:'Order DTF',art_complete:'Art Complete'}[st]||st||'—');
   const _nlCell=(col,val)=>{
-    if(col==='Order'||col==='Job')return <span style={{fontWeight:700,color:'#1e40af'}}>{val}</span>;
+    if(['Order','Job','Invoice','Estimate','PO','SKU'].includes(col))return <span style={{fontWeight:700,color:'#1e40af'}}>{val}</span>;
     if(col==='Art')return <span style={{color:(val==='Needs Art'||val==='Needs art')?'#b45309':'#166534',fontWeight:600}}>{val}</span>;
     return val;
   };
   const _nlSpecLabel=(spec)=>{
     if(!spec)return 'Search';
-    const ent=spec.entity==='jobs'?'Jobs':'Sales orders';
+    const _names={sales_orders:'Sales orders',jobs:'Jobs',invoices:'Invoices',estimates:'Estimates',customers:'Customers',products:'Products',purchase_orders:'Purchase orders'};
+    const ent=_names[spec.entity]||'Results';
     const parts=(spec.filters||[]).map(f=>{const o=f.op==='gt'?'>':f.op==='gte'?'≥':f.op==='lt'?'<':f.op==='lte'?'≤':f.op==='is_not'?'≠':f.op==='contains'?'~':'=';return `${f.field} ${o} ${f.value}`});
-    return ent+(parts.length?' · '+parts.join(' · '):'');
+    let s=ent+(parts.length?' · '+parts.join(' · '):'');
+    if(spec.sort&&spec.sort.field)s+=` · by ${spec.sort.field} ${spec.sort.dir==='asc'?'↑':'↓'}`;
+    return s;
   };
   function runPortalSearch(spec){
     try{
       const entity=(spec&&spec.entity)||'sales_orders';
       const filters=Array.isArray(spec&&spec.filters)?spec.filters:[];
+      const sort=spec&&spec.sort;
       const limit=Math.min(Math.max(Number(spec&&spec.limit)||200,1),300);
       const custById=(id)=>cust.find(c=>c.id===id);
+      const soById=(id)=>id?sos.find(s=>s.id===id):null;
       const custHay=(c)=>{if(!c)return'';const par=c.parent_id?cust.find(x=>x.id===c.parent_id):null;return((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
-      const repOf=(so)=>{try{return commissionRepId(custById(so.customer_id),so)}catch{return null}};
-      const _mCache=new Map();
-      const marginPct=(so)=>{if(_mCache.has(so.id))return _mCache.get(so.id);let p=0;try{p=Number(calcOrderMargin(so)?.pct)||0}catch{p=0}_mCache.set(so.id,p);return p};
-      const _sCache=new Map();
-      const soStatus=(so)=>{if(_sCache.has(so.id))return _sCache.get(so.id);let st='';try{st=calcSOStatus(so)}catch{st=''}_sCache.set(so.id,st);return st};
+      const repOf=(so)=>{try{return commissionRepId(custById(so&&so.customer_id),so)}catch{return null}};
+      const repMatch=(rid,val)=>{const rv=String(val==null?'':val).toLowerCase();if(rv==='me')return rid===cu.id;const ids=(DEFAULT_REPS||[]).filter(r=>String(r.name||'').toLowerCase().includes(rv)||String(r.id||'').toLowerCase()===rv).map(r=>r.id);if(ids.length)return ids.includes(rid);return String(rid||'').toLowerCase()===rv};
+      const _mC=new Map();const marginPct=(so)=>{if(_mC.has(so.id))return _mC.get(so.id);let p=0;try{p=Number(calcOrderMargin(so)?.pct)||0}catch{p=0}_mC.set(so.id,p);return p};
+      const _sC=new Map();const soStatus=(so)=>{if(_sC.has(so.id))return _sC.get(so.id);let st='';try{st=calcSOStatus(so)}catch{st=''}_sC.set(so.id,st);return st};
       const soJobsOf=(so)=>{try{return buildJobs(so)||[]}catch{return[]}};
       const soNeedsArt=(so)=>soJobsOf(so).some(j=>j.art_status&&j.art_status!=='art_complete');
-      const soValue=(so)=>{try{return Number(calcOrderTotals(so)?.grand)||0}catch{return 0}};
+      const orderValue=(o)=>{try{return Number(calcOrderTotals(o)?.grand)||0}catch{return 0}};
       const numVal=(v)=>{const n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''));return isNaN(n)?null:n};
       const boolVal=(v)=>{const s=String(v==null?'':v).toLowerCase();return s==='true'||s==='yes'||s==='1'};
       const cmpNum=(a,op,b)=>op==='gt'?a>b:op==='gte'?a>=b:op==='lt'?a<b:op==='lte'?a<=b:op==='is_not'?a!==b:a===b;
       const cmpStr=(a,op,b)=>op==='is_not'?a!==b:op==='contains'?a.includes(b):a===b;
+      const _todayYmd=(()=>{try{return new Date().toLocaleDateString('en-CA')}catch{return''}})();
+      const invBal=(i)=>{try{return Number(opsInvoiceBalance(i))||0}catch{return 0}};
+      const invDpd=(i)=>{try{const d=opsInvoiceDaysPastDue(i,_todayYmd);return d==null?0:Number(d)||0}catch{return 0}};
+      const _obC=new Map();const custOpenBal=(c)=>{if(_obC.has(c.id))return _obC.get(c.id);let b=0;try{invs.forEach(i=>{if(i.customer_id===c.id&&opsOpenInvoice(i))b+=invBal(i)})}catch{b=0}_obC.set(c.id,b);return b};
+      const custOpenOrders=(c)=>{try{return sos.some(s=>s.customer_id===c.id&&soStatus(s)!=='complete')}catch{return false}};
+      const prodHasImg=(p)=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
+      const vendName=(p)=>{const v=vend.find(x=>x.id===p.vendor_id);return((v&&v.name)||p.manufacturer||'')};
+      const estAge=(e)=>{try{const d=opsQuoteAgeDays(e);return d==null?0:Number(d)||0}catch{return 0}};
+      let items=[];let getField=()=>'';let toRow=()=>({});let columns=[];
       if(entity==='jobs'){
-        let list=[];
-        sos.forEach(so=>{soJobsOf(so).forEach(j=>list.push({job:j,so}))});
-        for(const f of filters){const field=f&&f.field,op=(f&&f.op)||'is',val=f&&f.value;list=list.filter(({job,so})=>{
-          switch(field){
-            case 'prod_status':return cmpStr(String(job.prod_status||'').toLowerCase(),op,String(val||'').toLowerCase());
-            case 'art_status':return cmpStr(String(job.art_status||'').toLowerCase(),op,String(val||'').toLowerCase());
-            case 'needs_art':{let na=(job.art_status&&job.art_status!=='art_complete');if(!na){try{na=jobHasUnresolvedArt(job,so)}catch{na=false}}return boolVal(val)?na:!na}
-            case 'margin_pct':{const n=numVal(val);return n==null?true:cmpNum(marginPct(so),op,n)}
-            case 'customer':return custHay(custById(so.customer_id)).includes(String(val||'').toLowerCase());
-            case 'rep':{const rid=repOf(so);const rv=String(val||'').toLowerCase();if(rv==='me')return rid===cu.id;const _rids=(DEFAULT_REPS||[]).filter(r=>String(r.name||'').toLowerCase().includes(rv)||String(r.id||'').toLowerCase()===rv).map(r=>r.id);if(_rids.length)return _rids.includes(rid);return String(rid||'').toLowerCase()===rv}
-            case 'text':{const c=custById(so.customer_id);const h=((job.id||'')+' '+(job.art_name||'')+' '+(job.deco_type||'')+' '+(so.id||'')+' '+custHay(c)).toLowerCase();return h.includes(String(val||'').toLowerCase())}
-            default:return true;
-          }
-        })}
-        const total=list.length;
-        const rows=list.slice(0,limit).map(({job,so})=>{const c=custById(so.customer_id);return{entity:'jobs',id:(job.id||'')+so.id,soId:so.id,jobId:job.id,cells:{Job:job.id,Customer:c?.name||c?.alpha_tag||'—',Order:so.id,Deco:job.deco_type||'—',Art:_nlArtLabel(job.art_status),Prod:job.prod_status||'—',Margin:marginPct(so)+'%'}}});
-        return{entity:'jobs',total,rows,columns:['Job','Customer','Order','Deco','Art','Prod','Margin']};
+        sos.forEach(so=>soJobsOf(so).forEach(j=>items.push({job:j,so})));
+        getField=(field,it)=>{const {job,so}=it;switch(field){
+          case 'prod_status':return String(job.prod_status||'').toLowerCase();
+          case 'art_status':return String(job.art_status||'').toLowerCase();
+          case 'needs_art':{let na=!!(job.art_status&&job.art_status!=='art_complete');if(!na){try{na=jobHasUnresolvedArt(job,so)}catch{na=false}}return na}
+          case 'margin_pct':return marginPct(so);
+          case 'customer':return custHay(custById(so.customer_id));
+          case 'rep':return repOf(so);
+          case 'text':return ((job.id||'')+' '+(job.art_name||'')+' '+(job.deco_type||'')+' '+(so.id||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
+          default:return '';}};
+        toRow=(it)=>{const {job,so}=it;const c=custById(so.customer_id);return{entity,id:(job.id||'')+so.id,soId:so.id,jobId:job.id,_rec:so,cells:{Job:job.id,Customer:c?.name||c?.alpha_tag||'—',Order:so.id,Deco:job.deco_type||'—',Art:_nlArtLabel(job.art_status),Prod:job.prod_status||'—',Margin:marginPct(so)+'%'}}};
+        columns=['Job','Customer','Order','Deco','Art','Prod','Margin'];
+      } else if(entity==='invoices'){
+        items=invs.slice();
+        getField=(field,i)=>{switch(field){
+          case 'is_open':return !!opsOpenInvoice(i);
+          case 'paid':{try{return !!opsFullyPaid(i)}catch{return false}}
+          case 'status':return String(i.status||'').toLowerCase();
+          case 'balance':return invBal(i);
+          case 'days_past_due':return invDpd(i);
+          case 'value':return Number(i.total)||0;
+          case 'customer':return custHay(custById(i.customer_id));
+          case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id));
+          case 'text':return ((i.id||'')+' '+(i.memo||'')+' '+(custById(i.customer_id)?.name||'')).toLowerCase();
+          default:return '';}};
+        toRow=(i)=>{const c=custById(i.customer_id);const d=invDpd(i);return{entity,id:i.id,_rec:i,cells:{Invoice:i.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(Number(i.total)||0),Balance:_nlMoney(invBal(i)),Status:(i.status||'—'),'Past Due':d>0?d+'d':'—'}}};
+        columns=['Invoice','Customer','Total','Balance','Status','Past Due'];
+      } else if(entity==='estimates'){
+        items=ests.slice();
+        getField=(field,e)=>{switch(field){
+          case 'is_open':return String(e.status||'').toLowerCase()!=='converted';
+          case 'status':return String(e.status||'').toLowerCase();
+          case 'age_days':return estAge(e);
+          case 'value':return orderValue(e);
+          case 'customer':return custHay(custById(e.customer_id));
+          case 'rep':return (custById(e.customer_id)?.primary_rep_id)||e.created_by||null;
+          case 'text':return ((e.id||'')+' '+(e.memo||'')+' '+(custById(e.customer_id)?.name||'')).toLowerCase();
+          default:return '';}};
+        toRow=(e)=>{const c=custById(e.customer_id);return{entity,id:e.id,_rec:e,cells:{Estimate:e.id,Customer:c?.name||c?.alpha_tag||'—',Value:_nlMoney(orderValue(e)),Status:(e.status||'—'),Age:estAge(e)+'d'}}};
+        columns=['Estimate','Customer','Value','Status','Age'];
+      } else if(entity==='customers'){
+        items=cust.slice();
+        getField=(field,c)=>{switch(field){
+          case 'rep':return c.primary_rep_id||null;
+          case 'open_balance':return custOpenBal(c);
+          case 'has_open_orders':return custOpenOrders(c);
+          case 'text':return custHay(c);
+          default:return '';}};
+        toRow=(c)=>({entity,id:c.id,_rec:c,cells:{Customer:c.name||'—',Tag:c.alpha_tag||'—','Open Balance':_nlMoney(custOpenBal(c))}});
+        columns=['Customer','Tag','Open Balance'];
+      } else if(entity==='products'){
+        items=prod.slice();
+        getField=(field,p)=>{switch(field){
+          case 'vendor':return vendName(p).toLowerCase();
+          case 'brand':return String(p.brand||'').toLowerCase();
+          case 'color':return String(p.color||'').toLowerCase();
+          case 'has_image':return prodHasImg(p);
+          case 'cost':return Number(p.nsa_cost)||0;
+          case 'price':return Number(p.retail_price)||0;
+          case 'text':return ((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase();
+          default:return '';}};
+        toRow=(p)=>({entity,id:p.id,_rec:p,cells:{SKU:p.sku||'—',Name:p.name||'—',Brand:p.brand||'—',Color:p.color||'—',Cost:_nlMoney(Number(p.nsa_cost)||0)}});
+        columns=['SKU','Name','Brand','Color','Cost'];
+      } else if(entity==='purchase_orders'){
+        const seen=new Set();
+        sos.forEach(so=>{const c2=custById(so.customer_id);
+          safeItems(so).forEach(it=>safePOs(it).forEach(po=>{if(po.po_id&&!seen.has(po.po_id)){seen.add(po.po_id);items.push({po_id:po.po_id,vendor:po.vendor||'',status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}}));
+          (so.deco_pos||[]).forEach(dp=>{if(dp.po_id&&!seen.has(dp.po_id)){seen.add(dp.po_id);items.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,isDeco:true})}});
+        });
+        (submittedBatches||[]).forEach(sb=>{if(sb.po_number&&!seen.has(sb.po_number)){seen.add(sb.po_number);const src=(sb.source_pos||[])[0];items.push({po_id:sb.po_number,vendor:sb.vendor_name||'',status:sb.status||'waiting',so_id:src?.so_id||'',so:sos.find(x=>x.id===src?.so_id)||null,isBatch:true})}});
+        (invPOs||[]).forEach(ip=>{if(ip.po_number&&!seen.has(ip.po_number)){seen.add(ip.po_number);items.push({po_id:ip.po_number,vendor:ip.vendor_name||'',status:ip.status||'ordered',so_id:'',so:null,isInvPO:true})}});
+        getField=(field,po)=>{switch(field){
+          case 'status':return String(po.status||'').toLowerCase();
+          case 'vendor':return String(po.vendor||'').toLowerCase();
+          case 'so':return String(po.so_id||'').toLowerCase();
+          case 'text':return ((po.po_id||'')+' '+(po.vendor||'')+' '+(po.so_id||'')).toLowerCase();
+          default:return '';}};
+        toRow=(po)=>({entity,id:po.po_id,_rec:po,cells:{PO:po.po_id,Vendor:po.vendor||'—',Order:po.so_id||'—',Status:po.status||'—'}});
+        columns=['PO','Vendor','Order','Status'];
+      } else {
+        items=sos.slice();
+        getField=(field,so)=>{switch(field){
+          case 'status':return soStatus(so);
+          case 'is_open':return soStatus(so)!=='complete';
+          case 'needs_art':return soNeedsArt(so);
+          case 'margin_pct':return marginPct(so);
+          case 'value':return orderValue(so);
+          case 'customer':return custHay(custById(so.customer_id));
+          case 'rep':return repOf(so);
+          case 'text':return ((so.id||'')+' '+(so.memo||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
+          default:return '';}};
+        toRow=(so)=>{const c=custById(so.customer_id);return{entity:'sales_orders',id:so.id,soId:so.id,_rec:so,cells:{Order:so.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(orderValue(so)),Status:_nlStatusLabel(soStatus(so)),Art:soNeedsArt(so)?'Needs Art':'OK',Margin:marginPct(so)+'%'}}};
+        columns=['Order','Customer','Total','Status','Art','Margin'];
       }
-      let list=sos.slice();
-      for(const f of filters){const field=f&&f.field,op=(f&&f.op)||'is',val=f&&f.value;list=list.filter(so=>{
-        switch(field){
-          case 'status':return cmpStr(soStatus(so),op,String(val||'').toLowerCase());
-          case 'is_open':{const open=soStatus(so)!=='complete';return boolVal(val)?open:!open}
-          case 'needs_art':{const na=soNeedsArt(so);return boolVal(val)?na:!na}
-          case 'margin_pct':{const n=numVal(val);return n==null?true:cmpNum(marginPct(so),op,n)}
-          case 'value':{const n=numVal(val);return n==null?true:cmpNum(soValue(so),op,n)}
-          case 'customer':return custHay(custById(so.customer_id)).includes(String(val||'').toLowerCase());
-          case 'rep':{const rid=repOf(so);if(String(val||'').toLowerCase()==='me')return rid===cu.id;return String(rid||'').toLowerCase()===String(val||'').toLowerCase()}
-          case 'text':{const c=custById(so.customer_id);const h=((so.id||'')+' '+(so.memo||'')+' '+custHay(c)).toLowerCase();return h.includes(String(val||'').toLowerCase())}
-          default:return true;
-        }
+      for(const f of filters){const field=f&&f.field,op=(f&&f.op)||'is',val=f&&f.value;items=items.filter(it=>{
+        if(field==='rep')return repMatch(getField('rep',it),val);
+        const fv=getField(field,it);
+        if(typeof fv==='boolean')return boolVal(val)?fv:!fv;
+        if(typeof fv==='number'){const n=numVal(val);return n==null?true:cmpNum(fv,op,n)}
+        return cmpStr(String(fv==null?'':fv),op,String(val==null?'':val).toLowerCase());
       })}
-      const total=list.length;
-      const rows=list.slice(0,limit).map(so=>{const c=custById(so.customer_id);return{entity:'sales_orders',id:so.id,soId:so.id,cells:{Order:so.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(soValue(so)),Status:_nlStatusLabel(soStatus(so)),Art:soNeedsArt(so)?'Needs Art':'OK',Margin:marginPct(so)+'%'}}});
-      return{entity:'sales_orders',total,rows,columns:['Order','Customer','Total','Status','Art','Margin']};
+      if(sort&&sort.field){const sf=sort.field,dir=sort.dir==='asc'?1:-1;items=items.slice().sort((a,b)=>{const av=getField(sf,a),bv=getField(sf,b);if(typeof av==='number'||typeof bv==='number')return((Number(av)||0)-(Number(bv)||0))*dir;return String(av==null?'':av).localeCompare(String(bv==null?'':bv))*dir})}
+      const total=items.length;
+      const rows=items.slice(0,limit).map(toRow);
+      return{entity,total,rows,columns};
     }catch(e){return{entity:(spec&&spec.entity)||'sales_orders',total:0,rows:[],columns:[],error:'Search failed'}}
   }
   function openPortalResult(row){
     try{
       if(!row)return;
-      const so=sos.find(s=>s.id===row.soId);
-      if(!so)return;
-      const c=cust.find(x=>x.id===so.customer_id);
-      if(row.entity==='jobs'){
-        let ji=-1;try{ji=safeJobs(so).findIndex(jj=>jj.id===row.jobId)}catch{ji=-1}
-        setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);
+      const ent=row.entity;
+      if(ent==='sales_orders'||ent==='jobs'){
+        const so=row._rec||sos.find(s=>s.id===row.soId);if(!so)return;
+        const c=cust.find(x=>x.id===so.customer_id);
+        if(ent==='jobs'){let ji=-1;try{ji=safeJobs(so).findIndex(jj=>jj.id===row.jobId)}catch{ji=-1}setESOTab('jobs');setESOScrollJob(ji>=0?ji:null)}
+        setESO(so);setESOC(c);setPg('orders');return;
       }
-      setESO(so);setESOC(c);setPg('orders');
+      if(ent==='invoices'){setViewInvoice(row._rec);setPg('invoices');return}
+      if(ent==='estimates'){const e=row._rec;setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id));setPg('estimates');return}
+      if(ent==='customers'){setSelC(row._rec);setPg('customers');return}
+      if(ent==='products'){setSelP(row._rec);setPg('products');try{setQ('')}catch(e2){}return}
+      if(ent==='purchase_orders'){const po=row._rec;if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){setESOOpenPO(po.po_id);setESO(po.so);setESOC(cust.find(c=>c.id===po.so.customer_id));setPg('orders')}else{setPg('purchase_orders')}return}
     }catch(e){}
   }
   // Assistant entry point: run the spec, switch to the full results page, and

@@ -272,7 +272,9 @@ const IconSend = () => (
 // In-chat summary of a search result set. The full, sortable list renders on
 // the results page (App's rSearch NL mode); this shows the count + a few
 // clickable rows so the answer is right there in the conversation.
-function labelFor(entity) { return entity === 'jobs' ? 'jobs' : 'sales orders'; }
+function labelFor(entity) {
+  return ({ sales_orders: 'sales orders', jobs: 'jobs', invoices: 'invoices', estimates: 'estimates', customers: 'customers', products: 'products', purchase_orders: 'purchase orders' })[entity] || 'results';
+}
 function ResultsCard({ results, onOpen }) {
   const cols = (results.columns || []).slice(0, 3);
   const rows = results.rows || [];
@@ -304,7 +306,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
   });
   const [messages, setMessages] = useState([
-    { id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can find orders and jobs for you, show you around, and walk you through tasks. Try "show me open sales orders for Chase" or "jobs that need art."` },
+    { id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can search orders, jobs, invoices, estimates, customers and products, show you around, and walk you through tasks. Try "unpaid invoices past due 30 days" or "top 10 biggest open orders."` },
   ]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);

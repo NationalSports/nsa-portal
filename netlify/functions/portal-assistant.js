@@ -66,12 +66,18 @@ function normCatalog(raw, fields) {
 const SEARCH_FIELDS = {
   sales_orders: new Set(['status', 'is_open', 'needs_art', 'margin_pct', 'value', 'customer', 'rep', 'text']),
   jobs: new Set(['prod_status', 'art_status', 'needs_art', 'margin_pct', 'customer', 'rep', 'text']),
+  invoices: new Set(['is_open', 'paid', 'status', 'balance', 'days_past_due', 'value', 'customer', 'rep', 'text']),
+  estimates: new Set(['is_open', 'status', 'age_days', 'value', 'customer', 'rep', 'text']),
+  customers: new Set(['rep', 'open_balance', 'has_open_orders', 'text']),
+  products: new Set(['vendor', 'brand', 'color', 'has_image', 'cost', 'price', 'text']),
+  purchase_orders: new Set(['status', 'vendor', 'so', 'text']),
 };
+const SEARCH_ENTITIES = Object.keys(SEARCH_FIELDS);
 const SEARCH_OPS = new Set(['is', 'is_not', 'gt', 'gte', 'lt', 'lte', 'contains']);
 
 function sanitizeSpec(input) {
   const entity = input && input.entity;
-  if (entity !== 'sales_orders' && entity !== 'jobs') return null;
+  if (!SEARCH_FIELDS[entity]) return null;
   const allowed = SEARCH_FIELDS[entity];
   const rawFilters = Array.isArray(input && input.filters) ? input.filters : [];
   const filters = [];
@@ -82,7 +88,14 @@ function sanitizeSpec(input) {
     if (!allowed.has(field) || !SEARCH_OPS.has(op)) continue;
     filters.push({ field, op, value: normStr(f.value, 120) });
   }
-  return { entity, filters };
+  const out = { entity, filters };
+  if (input && input.sort && typeof input.sort === 'object') {
+    const sf = String(input.sort.field || '');
+    if (allowed.has(sf)) out.sort = { field: sf, dir: input.sort.dir === 'asc' ? 'asc' : 'desc' };
+  }
+  const lim = Number(input && input.limit);
+  if (lim && lim > 0) out.limit = Math.min(Math.floor(lim), 300);
+  return out;
 }
 
 // ── System prompt ─────────────────────────────────────────────────────────
@@ -118,10 +131,16 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '- When the user wants to FIND, LIST, FILTER, or COUNT their actual records — "show me…", "which…", "how many…", "find the … order", "jobs that…" — call the `search` tool with a structured filter spec. You do NOT see the results; the app displays them. Give a one-line lead-in ("Here are the open orders for Chase:") and NEVER state specific order/job ids, totals, counts, or margins yourself — the results panel shows them.',
     '- If nothing matches, just answer in words. Only use a tool when it genuinely helps.',
     '',
-    'Structured search — build the `search` spec from these fields ONLY:',
-    '• entity sales_orders — fields: status (booking|need_order|waiting_receive|needs_pull|items_received|in_production|ready_to_invoice|complete), is_open (true/false), needs_art (true/false), margin_pct (integer percent), value (dollars), customer (name text; use op "contains"), rep ("me" or a rep name), text (free text over order#/memo/customer; use op "contains").',
-    '• entity jobs — fields: prod_status (draft|hold|staging|in_process|completed|shipped), art_status (needs_art|waiting_approval|production_files_needed|upload_emb_files|order_dtf_transfers|art_complete), needs_art (true/false), margin_pct (integer percent, from the job\'s order), customer, rep ("me" or a name), text.',
-    'Mapping tips: "open" → is_open=true. "needs art"/"still need art" → needs_art=true. "margin over 40%" → margin_pct op gt value "40". "for <name>" → customer contains <name> (or rep if they clearly mean a salesperson). "my/mine/that I sold/I got" → rep is "me". A named order like "the Dana Hills tee order" → sales_orders with text contains the distinctive words. Use entity jobs when the user says "jobs"; otherwise sales_orders. Combine multiple conditions as multiple filters (AND).',
+    'Structured search — pick ONE entity and build the `search` spec from that entity\'s fields ONLY:',
+    '• sales_orders — status (booking|need_order|waiting_receive|needs_pull|items_received|in_production|ready_to_invoice|complete), is_open (true/false), needs_art (true/false), margin_pct (integer %), value ($), customer (contains), rep ("me" or a name), text (contains).',
+    '• jobs — prod_status (draft|hold|staging|in_process|completed|shipped), art_status (needs_art|waiting_approval|production_files_needed|upload_emb_files|order_dtf_transfers|art_complete), needs_art (true/false), margin_pct (%, from the job\'s order), customer, rep, text.',
+    '• invoices — is_open (true/false = still owed), paid (true/false), status (open|partial|paid), balance ($ owed), days_past_due (number), value ($ total), customer, rep, text.',
+    '• estimates — is_open (true/false = not yet converted), status (draft|approved|converted), age_days (number), value ($), customer, rep, text.',
+    '• customers — rep ("me" or a name), open_balance ($ they owe), has_open_orders (true/false), text (name/tag).',
+    '• products — vendor (contains), brand (contains), color (contains), has_image (true/false), cost ($), price ($), text (sku/name).',
+    '• purchase_orders — status (waiting|ordered|partial|received|shipped), vendor (contains), so (order # contains), text.',
+    'Mapping tips: "open orders" → sales_orders is_open=true. "unpaid / owes us / outstanding" → invoices is_open=true. "past due / overdue 30 days" → invoices days_past_due gt 30. "cold/stale quotes" → estimates is_open=true + age_days gt 7 (stale = 14+). "needs art" → needs_art=true. "margin over 40%" → margin_pct gt 40. "for <name>" → customer contains <name> (or rep if clearly a salesperson). "my/mine/I got/I sold" → rep is "me". "missing image" → products has_image=false. A named record ("the Dana Hills tee order") → text contains the distinctive words. Combine conditions as multiple filters (AND).',
+    'Ranking: "top/biggest/highest/largest" → sort by the money field (value/balance/open_balance/cost) dir desc; "oldest/most overdue" → sort by age_days/days_past_due desc; "smallest/cheapest" → asc. "top N" also sets limit N. The sort field must be one of the chosen entity\'s fields.',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -140,12 +159,11 @@ function buildTools({ tours, targets }) {
   // Always available: structured search over the user's real records.
   tools.push({
     name: 'search',
-    description: "Search the user's real portal data and display the results to them. Use whenever they want to find, list, filter, or count records (sales orders, jobs). You do NOT see the results — the app renders them — so give a short lead-in and never state specific ids, counts, totals, or margins yourself.",
-    strict: true,
+    description: "Search the user's real portal data and display the results to them. Use whenever they want to find, list, filter, count, or rank records (sales orders, jobs, invoices, estimates, customers, products, purchase orders). You do NOT see the results — the app renders them — so give a short lead-in and never state specific ids, counts, totals, or margins yourself.",
     input_schema: {
       type: 'object',
       properties: {
-        entity: { type: 'string', enum: ['sales_orders', 'jobs'] },
+        entity: { type: 'string', enum: ['sales_orders', 'jobs', 'invoices', 'estimates', 'customers', 'products', 'purchase_orders'] },
         filters: {
           type: 'array',
           items: {
@@ -159,6 +177,17 @@ function buildTools({ tours, targets }) {
             additionalProperties: false,
           },
         },
+        sort: {
+          type: 'object',
+          description: 'Optional. Rank results by a numeric field ("top", "biggest", "oldest", "most past due").',
+          properties: {
+            field: { type: 'string' },
+            dir: { type: 'string', enum: ['asc', 'desc'] },
+          },
+          required: ['field', 'dir'],
+          additionalProperties: false,
+        },
+        limit: { type: 'integer', description: 'Optional cap on how many results (e.g. "top 10" -> 10).' },
       },
       required: ['entity', 'filters'],
       additionalProperties: false,
