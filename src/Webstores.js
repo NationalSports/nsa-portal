@@ -4702,7 +4702,7 @@ const BLANK = {
   name: '', slug: '', customer_id: '', rep_id: '', csr_id: '', status: 'draft',
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
-  delivery_mode: 'ship_home',
+  delivery_mode: 'deliver_club',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
