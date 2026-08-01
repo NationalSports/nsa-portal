@@ -33812,7 +33812,10 @@ export default function App(){
       <div style={{marginBottom:16,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
         <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{_nlSpecLabel(nlSpec)}</div>
         <span className="badge badge-gray">{res.total} result{res.total===1?'':'s'}{res.total>res.rows.length?` (showing ${res.rows.length})`:''}</span>
-        <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setNlSpec(null);setGSearchQ('')}}>Clear search</button>
+        <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+          {res.rows&&res.rows.length>0&&<button className="btn btn-secondary" onClick={()=>{try{const esc=v=>{const s=String(v==null?'':v);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};const _l=[cols.map(esc).join(',')];(res.rows||[]).forEach(r=>_l.push(cols.map(cc=>esc(r.cells[cc])).join(',')));const blob=new Blob([_l.join('\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='search-results.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){}}}>Export CSV</button>}
+          <button className="btn btn-secondary" onClick={()=>{setNlSpec(null);setGSearchQ('')}}>Clear search</button>
+        </div>
       </div>
       {res.aggregate&&<div style={{marginBottom:16,padding:'12px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:18,fontWeight:800,color:'#1e40af'}}>{res.aggregate.text}</div>}
       {res.error?<div className="card"><div className="card-body" style={{color:'#b91c1c',padding:20}}>Search failed — try rephrasing in the assistant.</div></div>

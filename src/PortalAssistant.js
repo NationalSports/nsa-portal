@@ -393,16 +393,23 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
   });
-  const [messages, setMessages] = useState([
-    { id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can search orders, jobs, invoices, estimates, customers and products, show you around, and walk you through tasks. Try "unpaid invoices past due 30 days" or "top 10 biggest open orders."` },
-  ]);
+  const greeting = () => ({ id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can search anything, build reports, help with estimates, and walk you through the portal. Try "unpaid invoices past due 30 days", "how much adidas did San Mateo buy this year", or "what needs my attention."` });
+  const [messages, setMessages] = useState(() => [greeting()]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [tour, setTour] = useState(null); // { steps, index }
   const listRef = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => { try { window.sessionStorage.setItem('nsa_assistant_open', open ? '1' : '0'); } catch { /* ignore */ } }, [open]);
   useEffect(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, [messages, busy, open]);
+  useEffect(() => { if (open && inputRef.current) { try { inputRef.current.focus(); } catch (e) { /* ignore */ } } }, [open]);
+  // Cmd/Ctrl+K toggles the assistant open/closed.
+  useEffect(() => {
+    const onKey = (e) => { if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); setOpen((o) => !o); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const startTour = useCallback((tourId) => {
     const t = TOURS.find((x) => x.id === tourId);
@@ -573,6 +580,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
               <h3>Portal Assistant</h3>
               <p>Ask me anything about the portal</p>
             </div>
+            <button className="nsa-as-x" onClick={() => { setMessages([greeting()]); setInput(''); }} aria-label="New conversation" title="New conversation">↺</button>
             <button className="nsa-as-x" onClick={() => setOpen(false)} aria-label="Close">×</button>
           </div>
           <div className="nsa-as-body" ref={listRef}>
@@ -607,6 +615,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
           </div>
           <form className="nsa-as-composer" onSubmit={(e) => { e.preventDefault(); send(input); }}>
             <input
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask a question…"
@@ -616,7 +625,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
           </form>
         </div>
       ) : (
-        <button className="nsa-as-launcher" onClick={() => setOpen(true)} aria-label="Open Portal Assistant" title="Portal Assistant">
+        <button className="nsa-as-launcher" onClick={() => setOpen(true)} aria-label="Open Portal Assistant" title="Portal Assistant (⌘K)">
           <IconChat />
         </button>
       )}
