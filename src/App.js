@@ -10135,7 +10135,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
         <button className="btn" onClick={()=>setAiInvPoWizOpen(true)} style={{background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an inventory PO with AI from a paste, image, or sheet">✨ Build with AI</button>
-        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
+        <button className="btn btn-primary" data-tour-id="inv-new-po-btn" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
@@ -10195,7 +10195,7 @@ export default function App(){
       <button className={`tab ${invTab==='stock'?'active':''}`} onClick={()=>setInvTab('stock')}>Stock</button>
       {isA&&<button className={`tab ${invTab==='clearance'?'active':''}`} onClick={()=>setInvTab('clearance')}>Clearance{prod.filter(p=>p.is_clearance).length>0?' ('+prod.filter(p=>p.is_clearance).length+')':''}</button>}
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
-      <button className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
+      <button data-tour-id="inv-pos-tab" className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
       {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>{setInvTab('b2b');refreshAdidasLastSync()}} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
     </div>
     {invTab==='stock'&&rInvStock()}
@@ -34672,7 +34672,7 @@ export default function App(){
       <div className="modal-body">
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
           <div><label className="form-label">Vendor *</label>
-            <select className="form-select" style={{width:'100%'}} value={invPOModal.vendor_id} onChange={e=>setInvPOModal(x=>({...x,vendor_id:e.target.value}))}>
+            <select className="form-select" data-tour-id="inv-po-vendor-select" style={{width:'100%'}} value={invPOModal.vendor_id} onChange={e=>setInvPOModal(x=>({...x,vendor_id:e.target.value}))}>
               <option value="">Select vendor...</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
           <div><label className="form-label">Expected Date</label>
             <input type="date" className="form-input" style={{width:'100%'}} value={invPOModal.expected_date} onChange={e=>setInvPOModal(x=>({...x,expected_date:e.target.value}))}/></div>
@@ -34690,7 +34690,7 @@ export default function App(){
         {/* Product search & add */}
         <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',position:'relative'}}>
           <label className="form-label">Add Products</label>
-          <div className="search-bar" style={{background:'white'}}><Icon name="search"/><input placeholder="Search by SKU, name, or color..." value={invPOModal.productSearch||''} onChange={e=>setInvPOModal(x=>({...x,productSearch:e.target.value}))}/></div>
+          <div className="search-bar" data-tour-id="inv-po-product-search" style={{background:'white'}}><Icon name="search"/><input placeholder="Search by SKU, name, or color..." value={invPOModal.productSearch||''} onChange={e=>setInvPOModal(x=>({...x,productSearch:e.target.value}))}/></div>
           {(()=>{
             const pq=(invPOModal.productSearch||'').trim().toLowerCase();
             if(!pq)return null;
@@ -34730,7 +34730,7 @@ export default function App(){
               </>}
             </div>;
           })()}
-          <button type="button" style={{marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
+          <button type="button" data-tour-id="inv-po-add-custom-item" style={{marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
             onClick={()=>setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:'',name:'',color:'',available_sizes:['S','M','L','XL','2XL'],sizes:{},nsa_cost:0,_custom:true}]}))}>+ Custom Item</button>
         </div>
 
@@ -34790,7 +34790,7 @@ export default function App(){
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={saveInvPO}>{invPOModal.editId?'Save Changes':'Create PO'}</button>
+        <button className="btn btn-primary" data-tour-id="inv-po-submit-btn" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={saveInvPO}>{invPOModal.editId?'Save Changes':'Create PO'}</button>
       </div>
     </div></div>}
 

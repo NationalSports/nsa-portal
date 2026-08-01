@@ -96,6 +96,14 @@ const SCREEN_TARGETS = [
   { id: 'oe-tab-items', screen: '', label: 'Line Items tab (order/estimate editor)', desc: 'The tab inside an open estimate/order that holds the product lines and their decorations.' },
   { id: 'oe-expand-all', screen: '', label: 'Expand All line items button', desc: 'Expands every line item so the decoration buttons are visible. Only appears when some lines are collapsed.' },
   { id: 'oe-item-add-art', screen: '', label: 'Add decoration (+ Art) on a line item', desc: 'On an expanded line item, adds an art/logo decoration; beside it sit + Numbers, + Names, and + Twill for the other decoration types.' },
+  // Inventory PO flow (restock a vendor, not tied to a sales order). Tab + button live on the
+  // Inventory screen; the rest are inside the "New Inventory PO" modal it opens.
+  { id: 'inv-pos-tab', screen: 'inventory', label: 'Inventory POs tab', desc: 'On the Inventory screen — switches to the inventory purchase-orders list.' },
+  { id: 'inv-new-po-btn', screen: 'inventory', label: '+ New Inventory PO button', desc: 'Opens the modal to create a new inventory (stock) purchase order. On the Inventory POs tab.' },
+  { id: 'inv-po-vendor-select', screen: '', label: 'Vendor dropdown (New Inventory PO modal)', desc: 'Pick the PO\'s vendor — inside the New Inventory PO modal.' },
+  { id: 'inv-po-product-search', screen: '', label: 'Add Products search (New Inventory PO modal)', desc: 'Search by SKU, name, or color and click a result to add a line — inside the New Inventory PO modal.' },
+  { id: 'inv-po-add-custom-item', screen: '', label: '+ Custom Item (New Inventory PO modal)', desc: 'Adds a blank line to type a SKU/name manually — inside the New Inventory PO modal.' },
+  { id: 'inv-po-submit-btn', screen: '', label: 'Create PO button (New Inventory PO modal)', desc: 'Saves the inventory purchase order — the last step in the New Inventory PO modal.' },
 ];
 
 const TARGETS = [...NAV_TARGETS, ...SCREEN_TARGETS];
@@ -234,78 +242,65 @@ function ensureStyles() {
 .nsa-as-confirm-actions{display:flex;gap:8px;justify-content:flex-end;padding:10px 12px;border-top:1px solid #f1f5f9;background:#f8fafc}
 .nsa-as-confirm-done{padding:9px 12px;font-size:12.5px;font-weight:700;color:#166534;background:#f0fdf4;border-top:1px solid #dcfce7}
 .nsa-as-confirm-err{padding:9px 12px;font-size:12.5px;font-weight:600;color:#b91c1c;background:#fef2f2;border-top:1px solid #fee2e2}
+/* Interactive walkthrough: chat stays open (above the dim), each step is a chat card,
+   the target pulses, and clicking it (or Next) advances. */
+.nsa-as-panel.nsa-as-guiding{z-index:100002}
+.nsa-as-guidebar{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#0f172a;color:#fff;border-top:1px solid #1e293b}
+.nsa-as-guidebar-step{font-size:11.5px;font-weight:800;color:#93c5fd;margin-right:auto;letter-spacing:.02em}
+.nsa-as-step{max-width:94%;background:#eff6ff;border:1px solid #bfdbfe;border-left:3px solid #2563eb;border-radius:10px;padding:9px 12px}
+.nsa-as-step-no{font-size:10.5px;font-weight:800;color:#2563eb;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
+.nsa-as-step-title{font-size:13px;font-weight:700;color:#0f172a;margin-bottom:2px}
+.nsa-as-step-body{font-size:12.5px;line-height:1.45;color:#334155}
+.nsa-as-step-hintline{font-size:11px;color:#2563eb;font-weight:600;margin-top:5px}
+.nsa-as-guide-ring{z-index:100000}
+.nsa-as-guide-ring::after{content:'';position:absolute;inset:-4px;border-radius:10px;border:2px solid rgba(37,99,235,.55);animation:nsa-as-pulse 1.4s ease-out infinite}
+@keyframes nsa-as-pulse{0%{transform:scale(1);opacity:.85}100%{transform:scale(1.14);opacity:0}}
+.nsa-as-guide-hint{position:fixed;z-index:100001;background:#2563eb;color:#fff;font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:12px;box-shadow:0 4px 14px rgba(37,99,235,.5);pointer-events:none;white-space:nowrap}
 `;
   document.head.appendChild(el);
 }
 
-// ── Spotlight overlay ─────────────────────────────────────────────────────────
-// Renders the dimmed backdrop with a cut-out ring around the step's target
-// element, plus a callout box. Click-through everywhere except the callout, so
-// the user can still operate the app (e.g. actually click the highlighted link)
-// while being guided.
-function Spotlight({ steps, index, onNext, onPrev, onClose }) {
+// ── Guide spotlight ───────────────────────────────────────────────────────────
+// A pulsing ring + dimmed backdrop around the current step's target element, plus
+// a small "click to continue" hint. NO callout box — the step explanation lives in
+// the chat (which stays open above the dim). Everything here is click-through, so
+// the user actually clicks the highlighted element to advance. If the target isn't
+// on screen (an instruction-only step), it renders nothing and the chat carries it.
+function GuideSpotlight({ target }) {
   const [rect, setRect] = useState(null);
-  const step = steps[index] || {};
-  const total = steps.length;
 
   const measure = useCallback(() => {
-    if (!step.target) { setRect(null); return; }
-    const el = document.querySelector(`[data-tour-id="${step.target}"]`);
+    if (!target) { setRect(null); return; }
+    const el = document.querySelector(`[data-tour-id="${target}"]`);
     if (!el) { setRect(null); return; }
     const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) { setRect(null); return; }
     setRect({ top: r.top, left: r.left, width: r.width, height: r.height });
-  }, [step.target]);
+  }, [target]);
 
   useEffect(() => {
-    const el = step.target ? document.querySelector(`[data-tour-id="${step.target}"]`) : null;
+    const el = target ? document.querySelector(`[data-tour-id="${target}"]`) : null;
     if (el && el.scrollIntoView) {
       try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older browsers */ }
     }
-    // Measure after any scroll settles, then keep it in sync.
     const t = setTimeout(measure, 60);
     measure();
     window.addEventListener('resize', measure);
     window.addEventListener('scroll', measure, true);
-    const iv = setInterval(measure, 400); // catch late layout shifts
+    const iv = setInterval(measure, 300); // catch navigation / late layout shifts
     return () => { clearTimeout(t); clearInterval(iv); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure, true); };
-  }, [measure, step.target]);
+  }, [measure, target]);
 
-  // Escape key closes the tour.
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
+  if (!rect) return null;
   const pad = 6;
-  const ringStyle = rect && {
-    top: rect.top - pad, left: rect.left - pad, width: rect.width + pad * 2, height: rect.height + pad * 2,
-  };
-
-  let calloutStyle;
-  if (!rect) {
-    calloutStyle = { top: '50%', left: '50%', transform: 'translate(-50%,-50%)' };
-  } else {
-    const left = Math.min(Math.max(rect.left, 12), (window.innerWidth || 1200) - 312);
-    const belowSpace = (window.innerHeight || 800) - (rect.top + rect.height);
-    if (belowSpace > 220) calloutStyle = { top: rect.top + rect.height + 12, left };
-    else calloutStyle = { top: rect.top - 12, left, transform: 'translateY(-100%)' };
-  }
-
-  const last = index >= total - 1;
+  const ringStyle = { top: rect.top - pad, left: rect.left - pad, width: rect.width + pad * 2, height: rect.height + pad * 2 };
+  const vh = window.innerHeight || 800;
+  const hintTop = (rect.top + rect.height + 8 < vh - 40) ? rect.top + rect.height + 10 : Math.max(rect.top - 28, 8);
+  const hintLeft = Math.min(Math.max(rect.left, 12), (window.innerWidth || 1200) - 150);
   return createPortal(
     <>
-      {rect ? <div className="nsa-as-spot-ring" style={ringStyle} /> : <div className="nsa-as-spot-dim" />}
-      <div className="nsa-as-callout" style={calloutStyle} role="dialog" aria-live="polite">
-        {step.title && <h4>{step.title}</h4>}
-        <p>{step.body}</p>
-        <div className="nsa-as-foot">
-          {total > 1 && <span className="nsa-as-count">Step {index + 1} of {total}</span>}
-          {index > 0 && <button className="nsa-as-btn ghost" onClick={onPrev}>Back</button>}
-          {!last && <button className="nsa-as-btn ghost" onClick={onClose}>Skip</button>}
-          <button className="nsa-as-btn primary" onClick={last ? onClose : onNext}>{last ? 'Got it' : 'Next'}</button>
-        </div>
-      </div>
+      <div className="nsa-as-spot-ring nsa-as-guide-ring" style={ringStyle} />
+      <div className="nsa-as-guide-hint" style={{ top: hintTop, left: hintLeft }}>Click here to continue →</div>
     </>,
     document.body,
   );
@@ -469,6 +464,9 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   const [tour, setTour] = useState(null); // { steps, index }
   const listRef = useRef(null);
   const inputRef = useRef(null);
+  const tourRef = useRef(null);
+  const advancedFromRef = useRef(-1); // guards against click + Next both advancing the same step
+  useEffect(() => { tourRef.current = tour; }, [tour]);
 
   useEffect(() => { try { window.sessionStorage.setItem('nsa_assistant_open', open ? '1' : '0'); } catch { /* ignore */ } }, [open]);
   useEffect(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, [messages, busy, open]);
@@ -480,19 +478,58 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Post one step as a chat card so the walkthrough reads inline and the user can ask
+  // questions between steps without losing the thread.
+  const postStep = useCallback((step, no, total) => {
+    setMessages((prev) => [...prev, {
+      id: `gs${Date.now()}-${no}`, from: 'bot', kind: 'step', stepNo: no, stepTotal: total,
+      title: step.title, body: step.body, hasTarget: !!step.target,
+    }]);
+  }, []);
+
+  // Start an interactive walkthrough. Unlike the old modal tour, the chat stays OPEN and
+  // docked above the dim; each step is a chat card; the target pulses and the user advances
+  // by clicking it (or Next). Used by AI guides, canned tours, and single highlights alike.
+  const beginGuide = useCallback((intro, steps) => {
+    const list = (steps || [])
+      .filter((s) => s && (s.body || s.target))
+      .map((s) => ({ target: s.target || s.target_id || null, screen: s.screen || null, title: s.title || '', body: s.body || '' }));
+    if (!list.length) return;
+    advancedFromRef.current = -1;
+    setOpen(true);
+    if (intro) setMessages((prev) => [...prev, { id: `gi${Date.now()}`, from: 'bot', text: intro }]);
+    postStep(list[0], 1, list.length);
+    setTour({ steps: list, index: 0 });
+  }, [postStep]);
+
+  const endGuide = useCallback((finished) => {
+    advancedFromRef.current = -1;
+    if (finished) setMessages((prev) => [...prev, { id: `gd${Date.now()}`, from: 'bot', text: "That's the last step — you're all set! Ask me anything else, or I can walk you through something else." }]);
+    setTour(null);
+  }, []);
+
+  const goNext = useCallback(() => {
+    const t = tourRef.current;
+    if (!t) return;
+    if (advancedFromRef.current === t.index) return; // click + Next both fired for this step
+    advancedFromRef.current = t.index;
+    const next = t.index + 1;
+    if (next >= t.steps.length) { endGuide(true); return; }
+    postStep(t.steps[next], next + 1, t.steps.length);
+    setTour({ ...t, index: next });
+  }, [postStep, endGuide]);
+
   const startTour = useCallback((tourId) => {
     const t = TOURS.find((x) => x.id === tourId);
     if (!t || !t.steps.length) return;
-    setOpen(false); // get the chat out of the way while touring
-    setTour({ steps: t.steps, index: 0 });
-  }, []);
+    beginGuide(null, t.steps);
+  }, [beginGuide]);
 
   const highlight = useCallback((targetId) => {
     const tgt = TARGETS.find((x) => x.id === targetId);
     const label = tgt ? tgt.label.replace(/ \(sidebar link\)$/, '') : targetId;
-    setOpen(false);
-    setTour({ steps: [{ target: targetId, screen: (tgt && tgt.screen) || null, title: 'Here it is', body: `This is ${label}.` }], index: 0 });
-  }, []);
+    beginGuide(null, [{ target: targetId, screen: (tgt && tgt.screen) || null, title: 'Here it is', body: `This is ${label}. Click it when you're ready.` }]);
+  }, [beginGuide]);
 
   const doSearch = useCallback((spec) => {
     if (!onSearch) return;
@@ -594,14 +631,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   // element (target_id) and/or move the user to a screen (screen). Reuses the Spotlight engine;
   // the per-step navigation effect below drives onNavigate as the steps advance.
   const doGuide = useCallback((intro, steps) => {
-    const list = (steps || [])
-      .filter((s) => s && s.body)
-      .map((s) => ({ target: s.target_id || null, screen: s.screen || null, title: s.title || '', body: s.body }));
-    if (!list.length) return;
-    if (intro) setMessages((prev) => [...prev, { id: `g${Date.now()}`, from: 'bot', text: intro }]);
-    setOpen(false); // clear the chat so the spotlight has the screen
-    setTour({ steps: list, index: 0 });
-  }, []);
+    beginGuide(intro, steps);
+  }, [beginGuide]);
 
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
@@ -632,6 +663,38 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     const step = tour.steps[tour.index];
     if (step && step.screen && navRef.current) { try { navRef.current(step.screen); } catch (e) { /* ignore */ } }
   }, [tour]);
+
+  // Advance the walkthrough when the user actually clicks the highlighted element. A
+  // document-level capture listener finds the live node each time (robust to re-renders);
+  // we let the real click's action run, then move to the next step. Instruction-only steps
+  // (no target) advance via the Next button in the guide bar instead.
+  const goNextRef = useRef(goNext);
+  useEffect(() => { goNextRef.current = goNext; }, [goNext]);
+  useEffect(() => {
+    if (!tour) return undefined;
+    const step = tour.steps[tour.index];
+    if (!step || !step.target) return undefined;
+    const onClick = (e) => {
+      const el = document.querySelector(`[data-tour-id="${step.target}"]`);
+      if (el && (el === e.target || el.contains(e.target))) {
+        // Clicking a button/tab/link advances. For form fields (a select, a search box),
+        // clicking just focuses them — let the user fill it in and advance with Next instead.
+        const tag = (e.target && e.target.tagName || '').toUpperCase();
+        if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'OPTION') return;
+        setTimeout(() => { if (goNextRef.current) goNextRef.current(); }, 450);
+      }
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, [tour]);
+
+  // Escape ends the walkthrough.
+  useEffect(() => {
+    if (!tour) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') endGuide(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tour, endGuide]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -688,7 +751,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   return (
     <>
       {open ? (
-        <div className={`nsa-as-panel${mCls}`} role="dialog" aria-label="Portal Assistant">
+        <div className={`nsa-as-panel${mCls}${tour ? ' nsa-as-guiding' : ''}`} role="dialog" aria-label="Portal Assistant">
           <div className="nsa-as-head">
             <div className="nsa-as-avatar"><IconChat /></div>
             <div>
@@ -710,6 +773,17 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
                       ? <ReportCard key={m.id} report={m.report} onPrint={onPrintReport} />
                     : m.kind === 'confirm'
                       ? <ConfirmCard key={m.id} draft={m.draft} onCommit={m.commit} />
+                    : m.kind === 'step'
+                      ? (
+                        <div key={m.id} className="nsa-as-row bot">
+                          <div className="nsa-as-step">
+                            <div className="nsa-as-step-no">Step {m.stepNo} of {m.stepTotal}</div>
+                            {m.title && <div className="nsa-as-step-title">{m.title}</div>}
+                            <div className="nsa-as-step-body">{m.body}</div>
+                            {m.hasTarget && <div className="nsa-as-step-hintline">→ I've highlighted it on screen — click it to continue.</div>}
+                          </div>
+                        </div>
+                      )
                       : (
                         <div key={m.id} className={`nsa-as-row ${m.from}`}>
                           <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
@@ -730,6 +804,13 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
               </div>
             )}
           </div>
+          {tour && (
+            <div className="nsa-as-guidebar">
+              <span className="nsa-as-guidebar-step">Step {tour.index + 1} of {tour.steps.length}</span>
+              <button type="button" className="nsa-as-btn ghost" onClick={() => endGuide(false)}>End</button>
+              <button type="button" className="nsa-as-btn primary" onClick={goNext}>{tour.index + 1 >= tour.steps.length ? 'Finish' : 'Next ▸'}</button>
+            </div>
+          )}
           <form className="nsa-as-composer" onSubmit={(e) => { e.preventDefault(); send(input); }}>
             <input
               ref={inputRef}
@@ -747,15 +828,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
         </button>
       )}
 
-      {tour && (
-        <Spotlight
-          steps={tour.steps}
-          index={tour.index}
-          onNext={() => setTour((t) => (t && t.index < t.steps.length - 1 ? { ...t, index: t.index + 1 } : t))}
-          onPrev={() => setTour((t) => (t && t.index > 0 ? { ...t, index: t.index - 1 } : t))}
-          onClose={() => setTour(null)}
-        />
-      )}
+      {tour && <GuideSpotlight target={tour.steps[tour.index] && tour.steps[tour.index].target} />}
     </>
   );
 }
