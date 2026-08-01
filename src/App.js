@@ -33591,8 +33591,22 @@ export default function App(){
       })}
       if(sort&&sort.field){const sf=sort.field,dir=sort.dir==='asc'?1:-1;items=items.slice().sort((a,b)=>{const av=getField(sf,a),bv=getField(sf,b);if(typeof av==='number'||typeof bv==='number')return((Number(av)||0)-(Number(bv)||0))*dir;return String(av==null?'':av).localeCompare(String(bv==null?'':bv))*dir})}
       const total=items.length;
+      let aggregate=null;
+      if(spec&&spec.aggregate&&spec.aggregate.field&&spec.aggregate.op){
+        const af=spec.aggregate.field,aop=spec.aggregate.op;
+        const nums=items.map(it=>Number(getField(af,it))||0);
+        let val=0;
+        if(aop==='sum')val=nums.reduce((a,b)=>a+b,0);
+        else if(aop==='avg')val=nums.length?nums.reduce((a,b)=>a+b,0)/nums.length:0;
+        else if(aop==='min')val=nums.length?Math.min(...nums):0;
+        else if(aop==='max')val=nums.length?Math.max(...nums):0;
+        const MONEY=new Set(['value','balance','open_balance','revenue','cost','price']);
+        const opWord={sum:'Total',avg:'Average',min:'Lowest',max:'Highest'}[aop]||aop;
+        const vtxt=MONEY.has(af)?_nlMoney(val):(af==='margin_pct'?Math.round(val)+'%':(Math.round(val*100)/100).toLocaleString());
+        aggregate={op:aop,field:af,value:val,text:`${opWord} ${af.replace(/_/g,' ')}: ${vtxt}`};
+      }
       const rows=items.slice(0,limit).map(toRow);
-      return{entity,total,rows,columns};
+      return{entity,total,rows,columns,aggregate};
     }catch(e){return{entity:(spec&&spec.entity)||'sales_orders',total:0,rows:[],columns:[],error:'Search failed'}}
   }
   function openPortalResult(row){
@@ -33643,6 +33657,19 @@ export default function App(){
     window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
     return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
   }
+  // "What needs my attention" — runs the key ops queries (scoped to the current user) and
+  // returns a compact summary. Reuses runPortalSearch, so counts/totals match the search page.
+  function handleAssistantBrief(){
+    const B=[
+      {label:'Orders ready to invoice',spec:{entity:'sales_orders',filters:[{field:'ready_to_invoice',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Open orders needing art',spec:{entity:'sales_orders',filters:[{field:'is_open',op:'is',value:'true'},{field:'needs_art',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Orders short on pull',spec:{entity:'sales_orders',filters:[{field:'short_on_pull',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Shipped, not invoiced',spec:{entity:'sales_orders',filters:[{field:'shipped_not_invoiced',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Overdue invoices',money:'balance',spec:{entity:'invoices',filters:[{field:'is_open',op:'is',value:'true'},{field:'days_past_due',op:'gt',value:'0'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Cold quotes (14d+)',spec:{entity:'estimates',filters:[{field:'is_open',op:'is',value:'true'},{field:'age_days',op:'gt',value:'14'},{field:'rep',op:'is',value:'me'}]}},
+    ];
+    return B.map(b=>{const s=b.money?{...b.spec,aggregate:{op:'sum',field:b.money}}:b.spec;let r;try{r=runPortalSearch(s)}catch(e){r={total:0}}return{label:b.label,count:r.total||0,total:b.money&&r.aggregate?_nlMoney(r.aggregate.value):null,spec:b.spec}});
+  }
   // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
   function rNlResults(){
     const res=runPortalSearch(nlSpec);
@@ -33653,6 +33680,7 @@ export default function App(){
         <span className="badge badge-gray">{res.total} result{res.total===1?'':'s'}{res.total>res.rows.length?` (showing ${res.rows.length})`:''}</span>
         <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setNlSpec(null);setGSearchQ('')}}>Clear search</button>
       </div>
+      {res.aggregate&&<div style={{marginBottom:16,padding:'12px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:18,fontWeight:800,color:'#1e40af'}}>{res.aggregate.text}</div>}
       {res.error?<div className="card"><div className="card-body" style={{color:'#b91c1c',padding:20}}>Search failed — try rephrasing in the assistant.</div></div>
       :res.total===0?<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>No matches. Try rephrasing your question in the assistant.</div></div>
       :<div className="card"><div className="card-body" style={{padding:0,overflowX:'auto'}}>
@@ -34807,7 +34835,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief}/>
   </div></AppDataProvider>);
 }
 

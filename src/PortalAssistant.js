@@ -179,6 +179,11 @@ function ensureStyles() {
 .nsa-as-results-cells:hover{background:#eff6ff}
 .nsa-as-reorder{flex-shrink:0;margin-right:8px;background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:8px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap}
 .nsa-as-reorder:hover{background:#2563eb;color:#fff;border-color:#2563eb}
+.nsa-as-agg{padding:10px 12px;background:#eff6ff;border-bottom:1px solid #e2e8f0;font-size:15px;font-weight:800;color:#1e40af}
+.nsa-as-brief-row{display:flex;gap:10px;align-items:center;width:100%;padding:9px 12px;background:none;border:none;border-top:1px solid #f1f5f9;cursor:pointer;text-align:left}
+.nsa-as-brief-row:hover{background:#eff6ff}
+.nsa-as-brief-count{flex-shrink:0;min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:#2563eb;color:#fff;border-radius:8px;font-size:12px;font-weight:800}
+.nsa-as-brief-label{font-size:12.5px;color:#334155;font-weight:600}
 .nsa-as-rc{color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nsa-as-rc:first-child{font-weight:700;color:#1e40af;flex-shrink:0}
 .nsa-as-rc:nth-child(2){flex:1;min-width:0}
@@ -287,6 +292,7 @@ function ResultsCard({ results, onOpen, onReorder }) {
     <div className="nsa-as-row bot">
       <div className="nsa-as-results">
         <div className="nsa-as-results-head">{results.total} {labelFor(results.entity)}{results.error ? ' · search error' : ' · full list shown behind this panel'}</div>
+        {results.aggregate && <div className="nsa-as-agg">{results.aggregate.text}</div>}
         {shown.length > 0 && (
           <div className="nsa-as-results-list">
             {shown.map((r, i) => (
@@ -308,8 +314,28 @@ function ResultsCard({ results, onOpen, onReorder }) {
   );
 }
 
+// "What needs your attention" summary — one clickable row per flagged bucket.
+function BriefCard({ items, onPick }) {
+  const rows = (items || []).filter(Boolean);
+  const active = rows.filter((r) => (r.count || 0) > 0);
+  return (
+    <div className="nsa-as-row bot">
+      <div className="nsa-as-results">
+        <div className="nsa-as-results-head">What needs your attention</div>
+        {active.length === 0 && <div className="nsa-as-results-more">You're all clear — nothing flagged right now. 🎉</div>}
+        {active.map((r, i) => (
+          <button key={i} className="nsa-as-brief-row" onClick={() => onPick && r.spec && onPick(r.spec)}>
+            <span className="nsa-as-brief-count">{r.count}</span>
+            <span className="nsa-as-brief-label">{r.label}{r.total ? ` · ${r.total}` : ''}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -364,6 +390,12 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     }
   }, [onAddLine]);
 
+  const doBrief = useCallback(() => {
+    let items = [];
+    try { items = (onBrief && onBrief()) || []; } catch { items = []; }
+    setMessages((prev) => [...prev, { id: `br${Date.now()}`, from: 'bot', kind: 'brief', brief: items }]);
+  }, [onBrief]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -373,7 +405,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     else if (a.type === 'highlight' && a.target_id) highlight(a.target_id);
     else if (a.type === 'search' && a.spec) doSearch(a.spec);
     else if (a.type === 'add_line' && a.description) doAddLine({ description: a.description, margin_pct: a.margin_pct });
-  }, [startTour, highlight, doSearch, doAddLine]);
+    else if (a.type === 'daily_brief') doBrief();
+  }, [startTour, highlight, doSearch, doAddLine, doBrief]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -421,8 +454,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
 
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [
-    { label: 'Open sales orders', run: () => send('show me open sales orders') },
-    { label: 'Jobs that need art', run: () => send('which jobs still need art?') },
+    { label: 'What needs my attention', run: () => doBrief() },
+    { label: 'Total value of open orders', run: () => send('total value of my open orders') },
     { label: 'Take the portal tour', run: () => startTour('getting-started') },
   ];
 
@@ -442,11 +475,13 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
             {messages.map((m) => (
               m.kind === 'results'
                 ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} onReorder={onReorder} />
-                : (
-                  <div key={m.id} className={`nsa-as-row ${m.from}`}>
-                    <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
-                  </div>
-                )
+                : m.kind === 'brief'
+                  ? <BriefCard key={m.id} items={m.brief} onPick={doSearch} />
+                  : (
+                    <div key={m.id} className={`nsa-as-row ${m.from}`}>
+                      <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
+                    </div>
+                  )
             ))}
             {/* Quick chips shown until the user says something. */}
             {messages.length <= 1 && !busy && (

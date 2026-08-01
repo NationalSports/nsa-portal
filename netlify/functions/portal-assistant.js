@@ -95,6 +95,11 @@ function sanitizeSpec(input) {
   }
   const lim = Number(input && input.limit);
   if (lim && lim > 0) out.limit = Math.min(Math.floor(lim), 300);
+  if (input && input.aggregate && typeof input.aggregate === 'object') {
+    const af = String(input.aggregate.field || '');
+    const aop = String(input.aggregate.op || '');
+    if (allowed.has(af) && ['sum', 'avg', 'min', 'max'].includes(aop)) out.aggregate = { field: af, op: aop };
+  }
   return out;
 }
 
@@ -144,6 +149,8 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '• purchase_orders — status (waiting|ordered|partial|received|shipped), vendor (contains), so (order # contains), text.',
     'Mapping tips: "open orders" → sales_orders is_open=true. "unpaid / owes us / outstanding" → invoices is_open=true. "past due / overdue 30 days" → invoices days_past_due gt 30. "cold/stale quotes" → estimates is_open=true + age_days gt 7 (stale = 14+). "needs art" → needs_art=true. "all the items in / everything received / goods all here" → jobs items_in=true (do NOT use prod_status for this — prod_status is the decoration stage, not receiving). "margin over 40%" → margin_pct gt 40. "for <name>" → customer contains <name> (or rep if clearly a salesperson). "my/mine/I got/I sold" → rep is "me". "missing image" → products has_image=false. "ready to invoice" → sales_orders ready_to_invoice=true. "shipped but not invoiced" → sales_orders shipped_not_invoiced=true. "goods all in / checked in / arrived" → sales_orders checked_in=true. "short on pull / came up short" → sales_orders short_on_pull=true. "unpaid orders" → sales_orders paid=false; "paid orders" → paid=true. "out of stock" → products in_stock=false; "in stock" → products in_stock=true. "dormant / quiet / gone cold / haven\'t ordered in N days" → customers last_order_days gt N. A named record ("the Dana Hills tee order") → text contains the distinctive words, plus a date filter if a timeframe is given. Combine conditions as multiple filters (AND).',
     'Ranking: "top/biggest/highest/largest" → sort by the money field (value/balance/open_balance/cost) dir desc; "oldest/most overdue" → sort by age_days/days_past_due desc; "smallest/cheapest" → asc. "top N" also sets limit N. The sort field must be one of the chosen entity\'s fields.',
+    'Aggregates: for "how much / total / average / highest / lowest" add aggregate {op, field} — "total value of open orders" → sales_orders is_open=true + aggregate {op:"sum", field:"value"}; "total AR past due" → invoices is_open=true + days_past_due gt 0 + aggregate {op:"sum", field:"balance"}; "average margin on my orders" → sales_orders rep "me" + aggregate {op:"avg", field:"margin_pct"}. "How many …" needs only filters — the count shows automatically. Do not state the number yourself; the app computes it.',
+    'When the user asks what needs their attention / a daily brief / what\'s on their plate / what to work on, call the daily_brief tool (no input).',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -191,10 +198,26 @@ function buildTools({ tours, targets }) {
           additionalProperties: false,
         },
         limit: { type: 'integer', description: 'Optional cap on how many results (e.g. "top 10" -> 10).' },
+        aggregate: {
+          type: 'object',
+          description: 'Optional. Compute one number over the matches instead of just listing them ("how much / total / average"). op on a numeric field.',
+          properties: {
+            op: { type: 'string', enum: ['sum', 'avg', 'min', 'max'] },
+            field: { type: 'string' },
+          },
+          required: ['op', 'field'],
+          additionalProperties: false,
+        },
       },
       required: ['entity', 'filters'],
       additionalProperties: false,
     },
+  });
+  // "What needs my attention" summary.
+  tools.push({
+    name: 'daily_brief',
+    description: "Show the user a 'what needs my attention' summary — their orders ready to invoice, orders needing art, orders short on pull, shipped-not-invoiced, overdue invoices, and cold quotes. Use when they ask what needs attention / what's on their plate / a daily briefing / what's on fire / what should I work on.",
+    input_schema: { type: 'object', properties: {}, required: [], additionalProperties: false },
   });
   // Add a product line to the estimate the user has open (write, reviewed before save).
   tools.push({
@@ -294,6 +317,9 @@ async function runAssistant({ client, catalogs, messages }) {
         const spec = sanitizeSpec(tu.input);
         if (spec) { actions.push({ type: 'search', spec }); out = { ok: true }; }
         else out = { error: 'Invalid search spec' };
+      } else if (tu.name === 'daily_brief') {
+        actions.push({ type: 'daily_brief' });
+        out = { ok: true };
       } else if (tu.name === 'add_line') {
         const description = normStr(tu.input && tu.input.description, 200);
         const mp = Number(tu.input && tu.input.margin_pct);
