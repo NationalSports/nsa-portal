@@ -7854,6 +7854,8 @@ export default function App(){
     const _fmtTodoDate=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);if(days<1)return'Today';if(days===1)return'Yesterday';if(days<14)return days+'d ago';return(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(-2)}catch{return''}};
     // Due-date helpers — due_date is a plain YYYY-MM-DD; compare against local today without timezone drift.
     const _todayStr=(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+    // Local YYYY-MM-DD `days` from today — used by the reminder quick-picks (Today / Tomorrow / Next week).
+    const _dateOffsetStr=(days=0)=>{const d=new Date();d.setDate(d.getDate()+days);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
     const _fmtDueDate=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_todayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');if(isNaN(dt))return ds;const days=Math.round((dt-new Date(_todayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
     const _todoDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_todayStr)return'#dc2626';if(ds===_todayStr)return'#d97706';return'#2563eb'};
     const _todoComplete=(id,note)=>{
