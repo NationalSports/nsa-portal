@@ -91,6 +91,11 @@ const SCREEN_TARGETS = [
   { id: 'po-scan-btn', screen: 'purchase_orders', label: 'PO Scan button', desc: 'Opens the barcode scanner to receive goods against a PO.' },
   { id: 'oe-add-product', screen: '', label: 'Add Product button (order/estimate editor)', desc: 'Adds a product line — visible inside an OPEN estimate or sales order with a customer set.' },
   { id: 'oe-convert-so', screen: 'estimates', label: 'Convert to Sales Order button (estimate editor)', desc: 'Converts an OPEN, approved estimate into a sales order — visible inside the open estimate.' },
+  { id: 'oe-actions-toggle', screen: '', label: 'Actions menu button (order/estimate editor)', desc: 'At the top of an OPEN estimate or order — opens the menu that holds Apply Promo Funds and Apply Credit.' },
+  { id: 'oe-promo-apply', screen: '', label: 'Apply Promo Funds (in the Actions menu)', desc: 'Applies the customer\'s promo funds to the open estimate/order. In the Actions menu; only appears when the customer has promo funds available.' },
+  { id: 'oe-tab-items', screen: '', label: 'Line Items tab (order/estimate editor)', desc: 'The tab inside an open estimate/order that holds the product lines and their decorations.' },
+  { id: 'oe-expand-all', screen: '', label: 'Expand All line items button', desc: 'Expands every line item so the decoration buttons are visible. Only appears when some lines are collapsed.' },
+  { id: 'oe-item-add-art', screen: '', label: 'Add decoration (+ Art) on a line item', desc: 'On an expanded line item, adds an art/logo decoration; beside it sit + Numbers, + Names, and + Twill for the other decoration types.' },
 ];
 
 const TARGETS = [...NAV_TARGETS, ...SCREEN_TARGETS];

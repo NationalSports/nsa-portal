@@ -3898,7 +3898,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
         {/* Actions dropdown */}
         <div style={{position:'relative'}}>
-          <button ref={actionsRef} className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
+          <button ref={actionsRef} data-tour-id="oe-actions-toggle" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
           {showActionsDD&&(()=>{const r=actionsRef.current?.getBoundingClientRect();
             // Build the printable/downloadable doc options. Shared by Print and Download.
             const _makeDocOpts=()=>{
@@ -4035,7 +4035,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when the customer has drawable funds: a funded period (incl. a one-time
                 manual allocation with no program) or an active fixed program to auto-allocate from. */}
-            {cust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+            {cust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} data-tour-id="oe-promo-apply" onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
               const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
@@ -4335,7 +4335,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div></div>
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
-      <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
+      <button data-tour-id="oe-tab-items" className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
@@ -4357,7 +4357,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
         {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
         {_anyCollapsed
-          ?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
+          ?<button data-tour-id="oe-expand-all" className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
           :<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
       </div>}
       {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
@@ -5099,7 +5099,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Art</button>
+            <button data-tour-id="oe-item-add-art" className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Art</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addTwillDeco(idx)}>🧵 + Twill</button>
