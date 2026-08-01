@@ -12523,11 +12523,11 @@ function DecoStat({ label, value }) {
 // line_status stages that already drive the order-level badge and the parent
 // tracking page; a line reads 'Shipped' once shipped_qty covers its quantity.
 const WS_LINE_STAGE = {
-  pending: { label: 'On order', tone: 'slate' },
-  on_order: { label: 'On order', tone: 'slate' },
+  pending: { label: 'Waiting', tone: 'gray' },
+  on_order: { label: 'On order', tone: 'amber' },
   received: { label: 'Received', tone: 'blue' },
   in_production: { label: 'In deco', tone: 'violet' },
-  bagging: { label: 'Bagging', tone: 'amber' },
+  bagging: { label: 'Bagging', tone: 'slate' },
   shipped: { label: 'Shipped', tone: 'green' },
   complete: { label: 'Complete', tone: 'green' },
   cancelled: { label: 'Cancelled', tone: 'gray' },
