@@ -191,6 +191,11 @@ function ensureStyles() {
 .nsa-as-stock-cell .sz{font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase}
 .nsa-as-stock-cell .qty{font-size:14px;font-weight:800;color:#166534}
 .nsa-as-stock-cell.zero .qty{color:#94a3b8}
+.nsa-as-report-line{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid #f1f5f9;font-size:12.5px;color:#334155}
+.nsa-as-report-line:first-of-type{border-top:none}
+.nsa-as-report-line strong{color:#0f172a}
+.nsa-as-print-btn{display:block;margin:10px 12px;background:#2563eb;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12.5px;font-weight:700;cursor:pointer}
+.nsa-as-print-btn:hover{background:#1d4ed8}
 .nsa-as-rc{color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nsa-as-rc:first-child{font-weight:700;color:#1e40af;flex-shrink:0}
 .nsa-as-rc:nth-child(2){flex:1;min-width:0}
@@ -366,8 +371,24 @@ function StockCard({ stock }) {
   );
 }
 
+// A computed customer report — headline metrics + a Print/PDF button for the full document.
+function ReportCard({ report, onPrint }) {
+  return (
+    <div className="nsa-as-row bot">
+      <div className="nsa-as-results">
+        <div className="nsa-as-results-head">{report.title}</div>
+        {(report.summary || []).map((s, i) => (
+          <div key={i} className="nsa-as-report-line"><span>{s.label}</span><strong>{s.value}</strong></div>
+        ))}
+        {report.note && <div className="nsa-as-results-more">{report.note}</div>}
+        {report.doc && <button className="nsa-as-print-btn" onClick={() => onPrint && onPrint(report.doc)}>🖨 Print / Save PDF</button>}
+      </div>
+    </div>
+  );
+}
+
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -465,6 +486,16 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     }
   }, [onStartEstimate]);
 
+  const doReport = useCallback(async (spec) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `rp${Date.now()}`, from: 'bot', text: t }]);
+    if (!onReport) { pushBot("I can't generate reports yet."); return; }
+    let res = null;
+    try { res = await onReport(spec); } catch { res = null; }
+    if (!res || res.error === 'no_customer') { pushBot('Which customer is the report for?'); return; }
+    if (res.error === 'customer_not_found') { pushBot(`I couldn't find a customer matching "${spec.customer}".`); return; }
+    if (res.ok) { setMessages((prev) => [...prev, { id: `rp${Date.now()}`, from: 'bot', kind: 'report', report: res }]); }
+  }, [onReport]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -478,7 +509,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     else if (a.type === 'customer_360' && a.customer) doCustomer360(a.customer);
     else if (a.type === 'vendor_stock' && a.query) doVendorStock(a.query);
     else if (a.type === 'start_estimate' && a.customer) doStartEstimate({ customer: a.customer, items: a.items });
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate]);
+    else if (a.type === 'report' && a.report) doReport(a.report);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -551,11 +583,13 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
                   ? <BriefCard key={m.id} items={m.brief} onPick={doSearch} title={m.briefTitle} showAll={m.briefAll} />
                   : m.kind === 'stock'
                     ? <StockCard key={m.id} stock={m.stock} />
-                    : (
-                      <div key={m.id} className={`nsa-as-row ${m.from}`}>
-                        <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
-                      </div>
-                    )
+                    : m.kind === 'report'
+                      ? <ReportCard key={m.id} report={m.report} onPrint={onPrintReport} />
+                      : (
+                        <div key={m.id} className={`nsa-as-row ${m.from}`}>
+                          <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
+                        </div>
+                      )
             ))}
             {/* Quick chips shown until the user says something. */}
             {messages.length <= 1 && !busy && (

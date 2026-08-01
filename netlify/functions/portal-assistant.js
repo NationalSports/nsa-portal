@@ -154,6 +154,7 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     'When the user asks what needs their attention / a daily brief / what\'s on their plate / what to work on, call the daily_brief tool (no input).',
     'For "everything for <customer>" / a customer snapshot / overview / "how are things with <customer>", call the customer_360 tool with the customer name.',
     'For "is <X> in stock (at the vendor) / available / when is the next delivery", call the vendor_stock tool with the SKU or description. (This is live vendor availability — different from our own warehouse stock, which is the products `stock`/`in_stock` search fields.)',
+    '- For a customer REPORT — brand dollars bought ("how much adidas did San Mateo buy this year"), average days-to-pay ("average days to pay for Santa Barbara football"), a printable invoices-with-items list, or a customer snapshot — call the report tool with type (brand_spend|days_to_pay|invoice_detail|customer_summary), customer, brand (for brand_spend), and timeframe (this_year|last_year|last_12_months|all_time; default this_year).',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -249,6 +250,22 @@ function buildTools({ tours, targets }) {
         },
       },
       required: ['customer'],
+      additionalProperties: false,
+    },
+  });
+  // Customer-centric report (computed + printable).
+  tools.push({
+    name: 'report',
+    description: "Generate a customer-centric report. Use for: dollars of a BRAND a customer bought in a period ('how much adidas did San Mateo College buy this year' -> type brand_spend, brand adidas), average days-to-pay ('average days to pay for Santa Barbara football' -> days_to_pay), a printable list of a customer's invoices with line items ('show <customer>'s invoices with items' -> invoice_detail), or an overall customer snapshot (customer_summary). The app computes it from real data and shows a summary the user can print/PDF; do not state the numbers yourself.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['brand_spend', 'days_to_pay', 'invoice_detail', 'customer_summary'] },
+        customer: { type: 'string', description: 'Customer name or tag.' },
+        brand: { type: 'string', description: 'Brand for brand_spend (e.g. "adidas", "under armour").' },
+        timeframe: { type: 'string', enum: ['this_year', 'last_year', 'last_12_months', 'all_time'] },
+      },
+      required: ['type', 'customer'],
       additionalProperties: false,
     },
   });
@@ -375,6 +392,13 @@ async function runAssistant({ client, catalogs, messages }) {
         }).filter((it) => it.description);
         if (customer) { actions.push({ type: 'start_estimate', customer, items }); out = { ok: true }; }
         else out = { error: 'No customer' };
+      } else if (tu.name === 'report') {
+        const rtype = normStr(tu.input && tu.input.type, 40);
+        const rcustomer = normStr(tu.input && tu.input.customer, 120);
+        const rbrand = normStr(tu.input && tu.input.brand, 60);
+        const tframe = normStr(tu.input && tu.input.timeframe, 40);
+        if (rtype && rcustomer) { actions.push({ type: 'report', report: { type: rtype, customer: rcustomer, brand: rbrand || null, timeframe: tframe || null } }); out = { ok: true }; }
+        else out = { error: 'type and customer required' };
       } else if (tu.name === 'highlight') {
         const id = String(tu.input?.target_id || '');
         if (targetIds.has(id)) { actions.push({ type: 'highlight', target_id: id }); out = { ok: true }; }

@@ -33750,6 +33750,60 @@ export default function App(){
       {label:'Lifetime orders',count:allO.total||0,total:allO.aggregate?_nlMoney(allO.aggregate.value):null,spec:drill('sales_orders',[])},
     ]};
   }
+  // Customer-centric reports. Computes from real data (invoices billed = revenue; brand $ from
+  // each invoice's linked SO items since invoice lines carry no brand; days-to-pay = last payment
+  // date − invoice date, the CommissionsPage formula) and returns a summary + a buildDocHtml doc
+  // the widget can print/PDF via printDoc. Read-only.
+  async function handleAssistantReport({type,customer,brand,timeframe}){
+    const cq=String(customer||'').trim().toLowerCase();
+    if(!cq)return {error:'no_customer'};
+    const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
+    if(!matches.length)return {error:'customer_not_found',customer};
+    const c=[...matches.filter(m=>!m.parent_id),...matches.filter(m=>m.parent_id)][0];
+    const fam=new Set([c.id,...cust.filter(x=>x.parent_id===c.id).map(x=>x.id)]);
+    const tf=timeframe||'this_year';const now=new Date();
+    const pd=(ds)=>{if(!ds)return null;const s=String(ds);let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);if(m)return new Date(+m[1],+m[2]-1,+m[3]);m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=+m[3];if(y<100)y+=2000;return new Date(y,+m[1]-1,+m[2])}const d=new Date(s);return isNaN(d)?null:d};
+    const inRange=(ds)=>{const d=pd(ds);if(!d)return tf==='all_time';if(tf==='all_time')return true;if(tf==='this_year')return d.getFullYear()===now.getFullYear();if(tf==='last_year')return d.getFullYear()===now.getFullYear()-1;if(tf==='last_12_months')return (now-d)<=366*86400000;return true};
+    const tfLabel={this_year:'this year',last_year:'last year',last_12_months:'last 12 months',all_time:'all time'}[tf]||tf;
+    const money=(n)=>_nlMoney(n);const soById=(id)=>id?sos.find(s=>s.id===id):null;
+    const prodBrand=(sku)=>{const p=prod.find(x=>String(x.sku||'').toLowerCase()===String(sku||'').toLowerCase());return p?p.brand:''};
+    const wantBrand=String(brand||'').trim().toLowerCase();
+    const brandMatch=(b)=>{if(!wantBrand)return true;const l=String(b||'').toLowerCase();if(wantBrand==='adidas')return l==='adidas'||l==='agron';return l.includes(wantBrand)};
+    const itemQty=(it)=>{const sz=Object.values(it.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);return sz>0?sz:(Number(it.est_qty)||Number(it.qty)||0)};
+    const invLines=(i)=>{const so=soById(i.so_id);if(so){return safeItems(so).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||prodBrand(it.sku),qty:itemQty(it),amount:(Number(it.unit_sell)||0)*itemQty(it)}))}return (i.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:prodBrand(it.sku),qty:Number(it.qty)||0,amount:(Number(it.total)||((Number(it.unit_price)||0)*(Number(it.qty)||0)))}))};
+    const cInvs=invs.filter(i=>fam.has(i.customer_id)&&(i.type||'invoice')==='invoice'&&inRange(i.date));
+    const custLabel=c.name||c.alpha_tag||'Customer';
+    const brandLabel=brand?(brand.charAt(0).toUpperCase()+brand.slice(1)):'';
+    const _fullyPaid=(i)=>{try{return opsFullyPaid(i)}catch(e){return i.status==='paid'}};
+    if(type==='days_to_pay'){
+      const paid=cInvs.filter(_fullyPaid);const rows=[];let sum=0,n=0;
+      paid.forEach(i=>{const invD=pd(i.date);const pays=i.payments||[];const payD=pays.length?pd(pays[pays.length-1].date):null;if(invD&&payD){const days=Math.round((payD-invD)/86400000);if(days>=0){sum+=days;n++;rows.push({cells:[{value:i.id},{value:i.date},{value:pays[pays.length-1].date},{value:String(days),style:'text-align:right'}]})}}});
+      const avg=n?Math.round(sum/n):null;
+      const doc={title:`Days to Pay — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]},{label:'Avg Days to Pay',lines:[avg!=null?String(avg):'—']}],tables:[{title:'Paid invoices',headers:['Invoice','Invoiced','Paid','Days'],aligns:['left','left','left','right'],rows}]};
+      return {ok:true,title:`Days to pay — ${custLabel}`,summary:[{label:'Average days to pay',value:avg!=null?`${avg} days`:'no paid invoices'},{label:'Paid invoices',value:String(n)},{label:'Period',value:tfLabel}],doc};
+    }
+    if(type==='brand_spend'){
+      let total=0;const rows=[];
+      cInvs.forEach(i=>{invLines(i).filter(l=>brandMatch(l.brand)).forEach(l=>{total+=l.amount;rows.push({cells:[{value:i.id},{value:i.date},{value:l.sku},{value:l.name},{value:String(l.qty),style:'text-align:center'},{value:money(l.amount),style:'text-align:right'}]})})});
+      rows.push({cells:[{value:''},{value:''},{value:''},{value:''},{value:'Total',style:'font-weight:700;text-align:right'},{value:money(total),style:'font-weight:700;text-align:right'}]});
+      const doc={title:`${brandLabel||'Product'} Purchases — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Brand',lines:[brandLabel||'All']},{label:'Period',lines:[tfLabel]}],tables:[{title:`${brandLabel||''} line items`,headers:['Invoice','Date','SKU','Item','Qty','Amount'],aligns:['left','left','left','left','center','right'],rows}]};
+      return {ok:true,title:`${brandLabel||'Product'} purchases — ${custLabel}`,summary:[{label:`${brandLabel||'Product'} spend (${tfLabel})`,value:money(total)},{label:'Invoices in range',value:String(cInvs.length)}],note:'Based on invoiced orders; line brands resolved from order items / catalog.',doc};
+    }
+    if(type==='customer_summary'){
+      const rev=cInvs.reduce((a,i)=>a+(Number(i.total)||0),0);
+      const paid=cInvs.filter(_fullyPaid);let sum=0,n=0;
+      paid.forEach(i=>{const invD=pd(i.date),pays=i.payments||[],payD=pays.length?pd(pays[pays.length-1].date):null;if(invD&&payD){const dd=Math.round((payD-invD)/86400000);if(dd>=0){sum+=dd;n++;}}});
+      const avgDTP=n?Math.round(sum/n):null;let openBal=0;
+      try{invs.forEach(i=>{if(fam.has(i.customer_id)&&opsOpenInvoice(i))openBal+=Number(opsInvoiceBalance(i))||0})}catch(e){}
+      const doc={title:`Customer Summary — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]}],tables:[{title:'Summary',headers:['Metric','Value'],aligns:['left','right'],rows:[{cells:[{value:'Revenue (invoiced)'},{value:money(rev),style:'text-align:right'}]},{cells:[{value:'Invoices'},{value:String(cInvs.length),style:'text-align:right'}]},{cells:[{value:'Avg days to pay'},{value:avgDTP!=null?String(avgDTP):'—',style:'text-align:right'}]},{cells:[{value:'Open balance'},{value:money(openBal),style:'text-align:right'}]}]}]};
+      return {ok:true,title:`Summary — ${custLabel}`,summary:[{label:`Revenue (${tfLabel})`,value:money(rev)},{label:'Invoices',value:String(cInvs.length)},{label:'Avg days to pay',value:avgDTP!=null?`${avgDTP} days`:'—'},{label:'Open balance',value:money(openBal)}],doc};
+    }
+    // invoice_detail (default)
+    let grand=0;const tables=[];
+    cInvs.slice().sort((a,b)=>(pd(a.date)||0)-(pd(b.date)||0)).forEach(i=>{const lines=invLines(i);const sub=lines.reduce((a,l)=>a+l.amount,0);grand+=Number(i.total)||sub;const rows=lines.map(l=>({cells:[{value:String(l.qty),style:'text-align:center'},{value:l.sku},{value:l.name},{value:money(l.amount),style:'text-align:right'}]}));rows.push({cells:[{value:''},{value:''},{value:'Invoice total',style:'font-weight:700;text-align:right'},{value:money(Number(i.total)||sub),style:'font-weight:700;text-align:right'}]});tables.push({title:`Invoice ${i.id} · ${i.date||''}`,headers:['Qty','SKU','Item','Amount'],aligns:['center','left','left','right'],rows})});
+    const doc={title:`Invoices — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]},{label:'Total',lines:[money(grand)]}],tables:tables.length?tables:[{title:'No invoices in range',headers:['—'],aligns:['left'],rows:[]}]};
+    return {ok:true,title:`Invoices — ${custLabel}`,summary:[{label:'Invoices',value:String(cInvs.length)},{label:`Total (${tfLabel})`,value:money(grand)}],doc};
+  }
   // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
   function rNlResults(){
     const res=runPortalSearch(nlSpec);
@@ -34915,7 +34969,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}}/>
   </div></AppDataProvider>);
 }
 
