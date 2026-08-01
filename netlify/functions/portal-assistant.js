@@ -152,6 +152,7 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     'Aggregates: for "how much / total / average / highest / lowest" add aggregate {op, field} — "total value of open orders" → sales_orders is_open=true + aggregate {op:"sum", field:"value"}; "total AR past due" → invoices is_open=true + days_past_due gt 0 + aggregate {op:"sum", field:"balance"}; "average margin on my orders" → sales_orders rep "me" + aggregate {op:"avg", field:"margin_pct"}. "How many …" needs only filters — the count shows automatically. Do not state the number yourself; the app computes it.',
     'When the user asks what needs their attention / a daily brief / what\'s on their plate / what to work on, call the daily_brief tool (no input).',
     'For "everything for <customer>" / a customer snapshot / overview / "how are things with <customer>", call the customer_360 tool with the customer name.',
+    'For "is <X> in stock (at the vendor) / available / when is the next delivery", call the vendor_stock tool with the SKU or description. (This is live vendor availability — different from our own warehouse stock, which is the products `stock`/`in_stock` search fields.)',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -225,6 +226,12 @@ function buildTools({ tours, targets }) {
     name: 'customer_360',
     description: "Show a one-glance snapshot for a single customer — their open orders, open estimates, unpaid invoices, and lifetime totals. Use when the user asks for 'everything for <customer>', a customer overview/snapshot/summary, or 'how are things with <customer>'.",
     input_schema: { type: 'object', properties: { customer: { type: 'string', description: 'The customer name or tag.' } }, required: ['customer'], additionalProperties: false },
+  });
+  // Live vendor B2B stock + next delivery.
+  tools.push({
+    name: 'vendor_stock',
+    description: "Check live vendor B2B stock and next delivery for a product (Adidas, Agron, Under Armour, Nike). Use when the user asks whether something is in stock at the vendor, its availability, or when the next delivery is — for a SKU or a product description.",
+    input_schema: { type: 'object', properties: { query: { type: 'string', description: 'A product SKU (e.g. IQ2728) or a description (e.g. "adidas navy pregame tee").' } }, required: ['query'], additionalProperties: false },
   });
   // Add a product line to the estimate the user has open (write, reviewed before save).
   tools.push({
@@ -331,6 +338,10 @@ async function runAssistant({ client, catalogs, messages }) {
         const customer = normStr(tu.input && tu.input.customer, 120);
         if (customer) { actions.push({ type: 'customer_360', customer }); out = { ok: true }; }
         else out = { error: 'No customer' };
+      } else if (tu.name === 'vendor_stock') {
+        const query = normStr(tu.input && tu.input.query, 120);
+        if (query) { actions.push({ type: 'vendor_stock', query }); out = { ok: true }; }
+        else out = { error: 'No query' };
       } else if (tu.name === 'add_line') {
         const description = normStr(tu.input && tu.input.description, 200);
         const mp = Number(tu.input && tu.input.margin_pct);

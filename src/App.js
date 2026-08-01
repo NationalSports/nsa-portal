@@ -33673,6 +33673,23 @@ export default function App(){
     ];
     return B.map(b=>{const s=b.money?{...b.spec,aggregate:{op:'sum',field:b.money}}:b.spec;let r;try{r=runPortalSearch(s)}catch(e){r={total:0}}return{label:b.label,count:r.total||0,total:b.money&&r.aggregate?_nlMoney(r.aggregate.value):null,spec:b.spec}});
   }
+  // Vendor B2B stock lookup — reads the inventory_unified view (Adidas/Agron/UA/Nike) with the
+  // user's Supabase session (RLS allows read). Resolves a SKU or description to a product first.
+  async function handleAssistantVendorStock(query){
+    const q=String(query||'').trim();
+    if(!q)return {error:'no_query'};
+    let p=prod.find(x=>String(x.sku||'').toLowerCase()===q.toLowerCase());
+    if(!p){try{const r=await _searchProductsServer(q,{},0,1);p=(r&&r.products&&r.products[0])||null;}catch(e){p=null;}}
+    const sku=p?p.sku:q;
+    if(!supabase)return {error:'no_db'};
+    let rows=[];
+    try{const{data}=await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',[sku,String(sku).toUpperCase()]);rows=data||[];}catch(e){rows=[];}
+    if(!rows.length)return {error:'no_stock',sku,name:p?p.name:null};
+    const sizes={};let nextDate=null,nextQty=0,onHand=0,lastSynced=null;
+    rows.forEach(r=>{const sz=r.size||'?';const qty=Number(r.stock_qty)||0;const fq=Number(r.future_delivery_qty)||0;onHand+=qty;const s=sizes[sz]||(sizes[sz]={qty:0,futureQty:0,futureDate:null});s.qty+=qty;s.futureQty+=fq;if(r.future_delivery_date&&fq>0){if(!s.futureDate||r.future_delivery_date<s.futureDate)s.futureDate=r.future_delivery_date;if(!nextDate||r.future_delivery_date<nextDate)nextDate=r.future_delivery_date;nextQty+=fq;}if(r.last_synced&&(!lastSynced||r.last_synced>lastSynced))lastSynced=r.last_synced;});
+    const sizeList=Object.keys(sizes).map(sz=>({size:sz,qty:sizes[sz].qty,futureQty:sizes[sz].futureQty,futureDate:sizes[sz].futureDate}));
+    return {ok:true,sku,name:p?p.name:null,brand:p?p.brand:null,color:p?p.color:null,onHand,sizes:sizeList,nextDelivery:nextDate?{date:nextDate,qty:nextQty}:null,lastSynced};
+  }
   // Customer 360 — one-glance snapshot for a single customer (open orders, open estimates,
   // unpaid invoices, lifetime). Scoped by customer_id via runPortalSearch, so numbers match.
   function handleAssistantCustomer360(customerText){
@@ -34860,7 +34877,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock}/>
   </div></AppDataProvider>);
 }
 

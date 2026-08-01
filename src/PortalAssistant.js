@@ -184,6 +184,13 @@ function ensureStyles() {
 .nsa-as-brief-row:hover{background:#eff6ff}
 .nsa-as-brief-count{flex-shrink:0;min-width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:#2563eb;color:#fff;border-radius:8px;font-size:12px;font-weight:800}
 .nsa-as-brief-label{font-size:12.5px;color:#334155;font-weight:600}
+.nsa-as-stock-name{padding:2px 12px 8px;font-size:12px;color:#64748b}
+.nsa-as-stock-grid{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px}
+.nsa-as-stock-cell{display:flex;flex-direction:column;align-items:center;min-width:38px;padding:5px 6px;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:8px}
+.nsa-as-stock-cell.zero{border-color:#e2e8f0;background:#f8fafc}
+.nsa-as-stock-cell .sz{font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase}
+.nsa-as-stock-cell .qty{font-size:14px;font-weight:800;color:#166534}
+.nsa-as-stock-cell.zero .qty{color:#94a3b8}
 .nsa-as-rc{color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nsa-as-rc:first-child{font-weight:700;color:#1e40af;flex-shrink:0}
 .nsa-as-rc:nth-child(2){flex:1;min-width:0}
@@ -335,8 +342,32 @@ function BriefCard({ items, onPick, title, showAll }) {
   );
 }
 
+// Live vendor stock for one product — per-size on-hand grid + next delivery.
+function StockCard({ stock }) {
+  const sizes = (stock.sizes || []).filter((s) => s.qty > 0 || s.futureQty > 0);
+  return (
+    <div className="nsa-as-row bot">
+      <div className="nsa-as-results">
+        <div className="nsa-as-results-head">{stock.sku}{stock.color ? ` · ${stock.color}` : ''} — {stock.onHand > 0 ? `${stock.onHand} in stock at vendor` : 'out of stock at vendor'}</div>
+        {stock.name && <div className="nsa-as-stock-name">{stock.name}</div>}
+        {sizes.length > 0 && (
+          <div className="nsa-as-stock-grid">
+            {sizes.map((s, i) => (
+              <div key={i} className={`nsa-as-stock-cell${s.qty > 0 ? '' : ' zero'}`}>
+                <span className="sz">{s.size}</span>
+                <span className="qty">{s.qty}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {stock.nextDelivery && <div className="nsa-as-results-more">Next delivery: {stock.nextDelivery.qty} unit{stock.nextDelivery.qty === 1 ? '' : 's'} around {stock.nextDelivery.date}</div>}
+      </div>
+    </div>
+  );
+}
+
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360 }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -407,6 +438,17 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     if (res.ok) { setMessages((prev) => [...prev, { id: `c${Date.now()}`, from: 'bot', kind: 'brief', brief: res.lines, briefTitle: `${res.name}${res.tag ? ` · ${res.tag}` : ''}`, briefAll: true }]); }
   }, [onCustomer360]);
 
+  const doVendorStock = useCallback(async (query) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `s${Date.now()}`, from: 'bot', text: t }]);
+    if (!onVendorStock) { pushBot("I can't check vendor stock yet."); return; }
+    let res = null;
+    try { res = await onVendorStock(query); } catch { res = null; }
+    if (!res || res.error === 'no_query') { pushBot('Which product? Give me a SKU or a description.'); return; }
+    if (res.error === 'no_db') { pushBot("I can't reach the inventory data right now — try again in a moment."); return; }
+    if (res.error === 'no_stock') { pushBot(`No vendor stock on file for ${res.sku || query}${res.name ? ` (${res.name})` : ''} — it may not be a synced vendor item.`); return; }
+    if (res.ok) { setMessages((prev) => [...prev, { id: `s${Date.now()}`, from: 'bot', kind: 'stock', stock: res }]); }
+  }, [onVendorStock]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -418,7 +460,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
     else if (a.type === 'add_line' && a.description) doAddLine({ description: a.description, margin_pct: a.margin_pct });
     else if (a.type === 'daily_brief') doBrief();
     else if (a.type === 'customer_360' && a.customer) doCustomer360(a.customer);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360]);
+    else if (a.type === 'vendor_stock' && a.query) doVendorStock(a.query);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -489,11 +532,13 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
                 ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} onReorder={onReorder} />
                 : m.kind === 'brief'
                   ? <BriefCard key={m.id} items={m.brief} onPick={doSearch} title={m.briefTitle} showAll={m.briefAll} />
-                  : (
-                    <div key={m.id} className={`nsa-as-row ${m.from}`}>
-                      <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
-                    </div>
-                  )
+                  : m.kind === 'stock'
+                    ? <StockCard key={m.id} stock={m.stock} />
+                    : (
+                      <div key={m.id} className={`nsa-as-row ${m.from}`}>
+                        <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
+                      </div>
+                    )
             ))}
             {/* Quick chips shown until the user says something. */}
             {messages.length <= 1 && !busy && (
