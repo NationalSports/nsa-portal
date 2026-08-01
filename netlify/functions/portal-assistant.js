@@ -59,6 +59,32 @@ function normCatalog(raw, fields) {
   return out;
 }
 
+// ── Structured-search vocabulary ───────────────────────────────────────────
+// The AI may only build a `search` spec from these fields/ops. This MUST stay
+// in lockstep with the executor (runPortalSearch) in src/App.js — same field
+// names, same entities. Kept small and stable on purpose.
+const SEARCH_FIELDS = {
+  sales_orders: new Set(['status', 'is_open', 'needs_art', 'margin_pct', 'value', 'customer', 'rep', 'text']),
+  jobs: new Set(['prod_status', 'art_status', 'needs_art', 'margin_pct', 'customer', 'rep', 'text']),
+};
+const SEARCH_OPS = new Set(['is', 'is_not', 'gt', 'gte', 'lt', 'lte', 'contains']);
+
+function sanitizeSpec(input) {
+  const entity = input && input.entity;
+  if (entity !== 'sales_orders' && entity !== 'jobs') return null;
+  const allowed = SEARCH_FIELDS[entity];
+  const rawFilters = Array.isArray(input && input.filters) ? input.filters : [];
+  const filters = [];
+  for (const f of rawFilters) {
+    if (!f || typeof f !== 'object') continue;
+    const field = String(f.field || '');
+    const op = String(f.op || '');
+    if (!allowed.has(field) || !SEARCH_OPS.has(op)) continue;
+    filters.push({ field, op, value: normStr(f.value, 120) });
+  }
+  return { entity, filters };
+}
+
 // ── System prompt ─────────────────────────────────────────────────────────
 // The catalogs are interpolated, so this string varies per request and will
 // not get ephemeral-cache prefix hits across different screens — that's fine;
@@ -89,7 +115,13 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
     '- Ground every factual claim in the screen list, tutorial list, or a tutorial you launch. Do NOT invent specific button names, menu locations, prices, policies, keyboard shortcuts, or step-by-step instructions you were not given. If you do not know a specific detail, say so plainly and suggest where they might look or that they ask a teammate or manager.',
     '- When the user asks where something is, or to be shown a screen or link, call the `highlight` tool with the matching target id — then say one short sentence pointing at it.',
     '- When the user wants a walkthrough or asks "how do I …" and an available tutorial matches, call the `start_tutorial` tool with that tour id. Do not also type out all the steps — the tutorial guides them on screen. Give a one-line lead-in instead.',
+    '- When the user wants to FIND, LIST, FILTER, or COUNT their actual records — "show me…", "which…", "how many…", "find the … order", "jobs that…" — call the `search` tool with a structured filter spec. You do NOT see the results; the app displays them. Give a one-line lead-in ("Here are the open orders for Chase:") and NEVER state specific order/job ids, totals, counts, or margins yourself — the results panel shows them.',
     '- If nothing matches, just answer in words. Only use a tool when it genuinely helps.',
+    '',
+    'Structured search — build the `search` spec from these fields ONLY:',
+    '• entity sales_orders — fields: status (booking|need_order|waiting_receive|needs_pull|items_received|in_production|ready_to_invoice|complete), is_open (true/false), needs_art (true/false), margin_pct (integer percent), value (dollars), customer (name text; use op "contains"), rep ("me" or a rep name), text (free text over order#/memo/customer; use op "contains").',
+    '• entity jobs — fields: prod_status (draft|hold|staging|in_process|completed|shipped), art_status (needs_art|waiting_approval|production_files_needed|upload_emb_files|order_dtf_transfers|art_complete), needs_art (true/false), margin_pct (integer percent, from the job\'s order), customer, rep ("me" or a name), text.',
+    'Mapping tips: "open" → is_open=true. "needs art"/"still need art" → needs_art=true. "margin over 40%" → margin_pct op gt value "40". "for <name>" → customer contains <name> (or rep if they clearly mean a salesperson). "my/mine/that I sold/I got" → rep is "me". A named order like "the Dana Hills tee order" → sales_orders with text contains the distinctive words. Use entity jobs when the user says "jobs"; otherwise sales_orders. Combine multiple conditions as multiple filters (AND).',
     '',
     'Portal screens (id — label: what it is for):',
     screenLines,
@@ -105,6 +137,33 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
 // ── Tools (strict JSON schemas, ids constrained to what the client sent) ───
 function buildTools({ tours, targets }) {
   const tools = [];
+  // Always available: structured search over the user's real records.
+  tools.push({
+    name: 'search',
+    description: "Search the user's real portal data and display the results to them. Use whenever they want to find, list, filter, or count records (sales orders, jobs). You do NOT see the results — the app renders them — so give a short lead-in and never state specific ids, counts, totals, or margins yourself.",
+    strict: true,
+    input_schema: {
+      type: 'object',
+      properties: {
+        entity: { type: 'string', enum: ['sales_orders', 'jobs'] },
+        filters: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              field: { type: 'string' },
+              op: { type: 'string', enum: ['is', 'is_not', 'gt', 'gte', 'lt', 'lte', 'contains'] },
+              value: { type: 'string' },
+            },
+            required: ['field', 'op', 'value'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['entity', 'filters'],
+      additionalProperties: false,
+    },
+  });
   if (targets.length) {
     tools.push({
       name: 'highlight',
@@ -185,7 +244,11 @@ async function runAssistant({ client, catalogs, messages }) {
     const results = [];
     for (const tu of toolUses) {
       let out;
-      if (tu.name === 'highlight') {
+      if (tu.name === 'search') {
+        const spec = sanitizeSpec(tu.input);
+        if (spec) { actions.push({ type: 'search', spec }); out = { ok: true }; }
+        else out = { error: 'Invalid search spec' };
+      } else if (tu.name === 'highlight') {
         const id = String(tu.input?.target_id || '');
         if (targetIds.has(id)) { actions.push({ type: 'highlight', target_id: id }); out = { ok: true }; }
         else out = { error: 'Unknown target_id' };

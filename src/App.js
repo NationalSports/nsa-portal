@@ -4441,7 +4441,7 @@ export default function App(){
   React.useEffect(()=>{if(selV)addRecent('vendor',selV.id,selV.name)},[selV?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');const[nlSpec,setNlSpec]=useState(null);
   // Supplier invoices (si_documents) aren't held in memory — the Sports Inc queue is lazy-loaded on
   // demand — so global search reaches them with its own debounced DB query. The longest query token
   // drives an ilike across the PO#/supplier/invoice#/matched-PO columns; rSearch then applies the
@@ -33400,8 +33400,128 @@ export default function App(){
     imgEl.src=url;
   }
 
+  // ── Natural-language search (Portal Assistant-driven) ───────────────────
+  // The assistant translates a plain-language query into a structured filter
+  // spec; this executes it over the SAME in-memory data and derived-field
+  // logic the rest of the portal uses (calcSOStatus, calcOrderMargin, buildJobs,
+  // commissionRepId) — no reimplementation, so results match everywhere else.
+  // Read-only. Entities: sales_orders, jobs. Keep the field list in lockstep
+  // with SEARCH_FIELDS in netlify/functions/portal-assistant.js.
+  const _nlMoney=(n)=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const _nlStatusLabel=(st)=>({booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items In',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[st]||st||'—');
+  const _nlArtLabel=(st)=>({needs_art:'Needs Art',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',upload_emb_files:'Upload EMB',order_dtf_transfers:'Order DTF',art_complete:'Art Complete'}[st]||st||'—');
+  const _nlCell=(col,val)=>{
+    if(col==='Order'||col==='Job')return <span style={{fontWeight:700,color:'#1e40af'}}>{val}</span>;
+    if(col==='Art')return <span style={{color:(val==='Needs Art'||val==='Needs art')?'#b45309':'#166534',fontWeight:600}}>{val}</span>;
+    return val;
+  };
+  const _nlSpecLabel=(spec)=>{
+    if(!spec)return 'Search';
+    const ent=spec.entity==='jobs'?'Jobs':'Sales orders';
+    const parts=(spec.filters||[]).map(f=>{const o=f.op==='gt'?'>':f.op==='gte'?'≥':f.op==='lt'?'<':f.op==='lte'?'≤':f.op==='is_not'?'≠':f.op==='contains'?'~':'=';return `${f.field} ${o} ${f.value}`});
+    return ent+(parts.length?' · '+parts.join(' · '):'');
+  };
+  function runPortalSearch(spec){
+    try{
+      const entity=(spec&&spec.entity)||'sales_orders';
+      const filters=Array.isArray(spec&&spec.filters)?spec.filters:[];
+      const limit=Math.min(Math.max(Number(spec&&spec.limit)||200,1),300);
+      const custById=(id)=>cust.find(c=>c.id===id);
+      const custHay=(c)=>{if(!c)return'';const par=c.parent_id?cust.find(x=>x.id===c.parent_id):null;return((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
+      const repOf=(so)=>{try{return commissionRepId(custById(so.customer_id),so)}catch{return null}};
+      const _mCache=new Map();
+      const marginPct=(so)=>{if(_mCache.has(so.id))return _mCache.get(so.id);let p=0;try{p=Number(calcOrderMargin(so)?.pct)||0}catch{p=0}_mCache.set(so.id,p);return p};
+      const _sCache=new Map();
+      const soStatus=(so)=>{if(_sCache.has(so.id))return _sCache.get(so.id);let st='';try{st=calcSOStatus(so)}catch{st=''}_sCache.set(so.id,st);return st};
+      const soJobsOf=(so)=>{try{return buildJobs(so)||[]}catch{return[]}};
+      const soNeedsArt=(so)=>soJobsOf(so).some(j=>j.art_status&&j.art_status!=='art_complete');
+      const soValue=(so)=>{try{return Number(calcOrderTotals(so)?.grand)||0}catch{return 0}};
+      const numVal=(v)=>{const n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''));return isNaN(n)?null:n};
+      const boolVal=(v)=>{const s=String(v==null?'':v).toLowerCase();return s==='true'||s==='yes'||s==='1'};
+      const cmpNum=(a,op,b)=>op==='gt'?a>b:op==='gte'?a>=b:op==='lt'?a<b:op==='lte'?a<=b:op==='is_not'?a!==b:a===b;
+      const cmpStr=(a,op,b)=>op==='is_not'?a!==b:op==='contains'?a.includes(b):a===b;
+      if(entity==='jobs'){
+        let list=[];
+        sos.forEach(so=>{soJobsOf(so).forEach(j=>list.push({job:j,so}))});
+        for(const f of filters){const field=f&&f.field,op=(f&&f.op)||'is',val=f&&f.value;list=list.filter(({job,so})=>{
+          switch(field){
+            case 'prod_status':return cmpStr(String(job.prod_status||'').toLowerCase(),op,String(val||'').toLowerCase());
+            case 'art_status':return cmpStr(String(job.art_status||'').toLowerCase(),op,String(val||'').toLowerCase());
+            case 'needs_art':{let na=(job.art_status&&job.art_status!=='art_complete');if(!na){try{na=jobHasUnresolvedArt(job,so)}catch{na=false}}return boolVal(val)?na:!na}
+            case 'margin_pct':{const n=numVal(val);return n==null?true:cmpNum(marginPct(so),op,n)}
+            case 'customer':return custHay(custById(so.customer_id)).includes(String(val||'').toLowerCase());
+            case 'rep':{const rid=repOf(so);const rv=String(val||'').toLowerCase();if(rv==='me')return rid===cu.id;const _rids=(DEFAULT_REPS||[]).filter(r=>String(r.name||'').toLowerCase().includes(rv)||String(r.id||'').toLowerCase()===rv).map(r=>r.id);if(_rids.length)return _rids.includes(rid);return String(rid||'').toLowerCase()===rv}
+            case 'text':{const c=custById(so.customer_id);const h=((job.id||'')+' '+(job.art_name||'')+' '+(job.deco_type||'')+' '+(so.id||'')+' '+custHay(c)).toLowerCase();return h.includes(String(val||'').toLowerCase())}
+            default:return true;
+          }
+        })}
+        const total=list.length;
+        const rows=list.slice(0,limit).map(({job,so})=>{const c=custById(so.customer_id);return{entity:'jobs',id:(job.id||'')+so.id,soId:so.id,jobId:job.id,cells:{Job:job.id,Customer:c?.name||c?.alpha_tag||'—',Order:so.id,Deco:job.deco_type||'—',Art:_nlArtLabel(job.art_status),Prod:job.prod_status||'—',Margin:marginPct(so)+'%'}}});
+        return{entity:'jobs',total,rows,columns:['Job','Customer','Order','Deco','Art','Prod','Margin']};
+      }
+      let list=sos.slice();
+      for(const f of filters){const field=f&&f.field,op=(f&&f.op)||'is',val=f&&f.value;list=list.filter(so=>{
+        switch(field){
+          case 'status':return cmpStr(soStatus(so),op,String(val||'').toLowerCase());
+          case 'is_open':{const open=soStatus(so)!=='complete';return boolVal(val)?open:!open}
+          case 'needs_art':{const na=soNeedsArt(so);return boolVal(val)?na:!na}
+          case 'margin_pct':{const n=numVal(val);return n==null?true:cmpNum(marginPct(so),op,n)}
+          case 'value':{const n=numVal(val);return n==null?true:cmpNum(soValue(so),op,n)}
+          case 'customer':return custHay(custById(so.customer_id)).includes(String(val||'').toLowerCase());
+          case 'rep':{const rid=repOf(so);if(String(val||'').toLowerCase()==='me')return rid===cu.id;return String(rid||'').toLowerCase()===String(val||'').toLowerCase()}
+          case 'text':{const c=custById(so.customer_id);const h=((so.id||'')+' '+(so.memo||'')+' '+custHay(c)).toLowerCase();return h.includes(String(val||'').toLowerCase())}
+          default:return true;
+        }
+      })}
+      const total=list.length;
+      const rows=list.slice(0,limit).map(so=>{const c=custById(so.customer_id);return{entity:'sales_orders',id:so.id,soId:so.id,cells:{Order:so.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(soValue(so)),Status:_nlStatusLabel(soStatus(so)),Art:soNeedsArt(so)?'Needs Art':'OK',Margin:marginPct(so)+'%'}}});
+      return{entity:'sales_orders',total,rows,columns:['Order','Customer','Total','Status','Art','Margin']};
+    }catch(e){return{entity:(spec&&spec.entity)||'sales_orders',total:0,rows:[],columns:[],error:'Search failed'}}
+  }
+  function openPortalResult(row){
+    try{
+      if(!row)return;
+      const so=sos.find(s=>s.id===row.soId);
+      if(!so)return;
+      const c=cust.find(x=>x.id===so.customer_id);
+      if(row.entity==='jobs'){
+        let ji=-1;try{ji=safeJobs(so).findIndex(jj=>jj.id===row.jobId)}catch{ji=-1}
+        setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);
+      }
+      setESO(so);setESOC(c);setPg('orders');
+    }catch(e){}
+  }
+  // Assistant entry point: run the spec, switch to the full results page, and
+  // hand a compact summary back to the chat.
+  function handleAssistantSearch(spec){
+    const res=runPortalSearch(spec);
+    setNlSpec(spec);setPg('search');
+    return res;
+  }
+  // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
+  function rNlResults(){
+    const res=runPortalSearch(nlSpec);
+    const cols=res.columns||[];
+    return(<>
+      <div style={{marginBottom:16,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{_nlSpecLabel(nlSpec)}</div>
+        <span className="badge badge-gray">{res.total} result{res.total===1?'':'s'}{res.total>res.rows.length?` (showing ${res.rows.length})`:''}</span>
+        <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setNlSpec(null);setGSearchQ('')}}>Clear search</button>
+      </div>
+      {res.error?<div className="card"><div className="card-body" style={{color:'#b91c1c',padding:20}}>Search failed — try rephrasing in the assistant.</div></div>
+      :res.total===0?<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>No matches. Try rephrasing your question in the assistant.</div></div>
+      :<div className="card"><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+          <thead><tr style={{textAlign:'left'}}>{cols.map(c=><th key={c} style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',color:'#64748b',fontSize:11,textTransform:'uppercase',letterSpacing:'.03em'}}>{c}</th>)}</tr></thead>
+          <tbody>{res.rows.map((r,ri)=><tr key={(r.id||'')+ri} onClick={()=>openPortalResult(r)} style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}}>{cols.map(c=><td key={c} style={{padding:'10px 14px'}}>{_nlCell(c,r.cells[c])}</td>)}</tr>)}</tbody>
+        </table>
+      </div></div>}
+    </>);
+  }
+
   // GLOBAL SEARCH RESULTS PAGE
   function rSearch(){
+    if(nlSpec)return rNlResults();
     const q=(gSearchQ||'').trim();
     if(!q||q.length<2){
       return <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>
@@ -33636,7 +33756,7 @@ export default function App(){
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const _toks=s.split(/\s+/).filter(Boolean);
             const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
@@ -33685,7 +33805,7 @@ export default function App(){
                 {ri.map(inv=><a key={inv.id} href={_newTabHref({inv:inv.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setViewInvoice(inv);setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></a>)}</>}
               {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
                 {rv.map(v=><a key={v.id} href={_newTabHref({vend:v.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</a>)}</>}
-              <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}} onClick={()=>{setGSearchQ(gQ.trim());setPg('search');setGOpen(false)}}><Icon name="search" size={12}/>See all results for "{gQ}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>
+              <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}} onClick={()=>{setGSearchQ(gQ.trim());setNlSpec(null);setPg('search');setGOpen(false)}}><Icon name="search" size={12}/>See all results for "{gQ}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
@@ -34542,7 +34662,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={openPortalResult}/>
   </div></AppDataProvider>);
 }
 

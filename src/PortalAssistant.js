@@ -170,6 +170,16 @@ function ensureStyles() {
 .nsa-as-btn{border:none;border-radius:7px;padding:7px 13px;font-size:12.5px;font-weight:600;cursor:pointer}
 .nsa-as-btn.primary{background:#2563eb;color:#fff}
 .nsa-as-btn.ghost{background:#f1f5f9;color:#475569}
+.nsa-as-results{max-width:94%;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
+.nsa-as-results-head{padding:8px 12px;font-size:12px;font-weight:700;color:#0f172a;background:#f8fafc;border-bottom:1px solid #e2e8f0}
+.nsa-as-results-list{display:flex;flex-direction:column}
+.nsa-as-results-row{display:flex;gap:8px;align-items:center;padding:8px 12px;background:none;border:none;border-top:1px solid #f1f5f9;cursor:pointer;text-align:left;font-size:12.5px;width:100%}
+.nsa-as-results-row:first-child{border-top:none}
+.nsa-as-results-row:hover{background:#eff6ff}
+.nsa-as-rc{color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nsa-as-rc:first-child{font-weight:700;color:#1e40af;flex-shrink:0}
+.nsa-as-rc:nth-child(2){flex:1;min-width:0}
+.nsa-as-results-more{padding:8px 12px;font-size:11.5px;color:#64748b;background:#f8fafc;border-top:1px solid #f1f5f9}
 `;
   document.head.appendChild(el);
 }
@@ -259,14 +269,42 @@ const IconSend = () => (
   </svg>
 );
 
+// In-chat summary of a search result set. The full, sortable list renders on
+// the results page (App's rSearch NL mode); this shows the count + a few
+// clickable rows so the answer is right there in the conversation.
+function labelFor(entity) { return entity === 'jobs' ? 'jobs' : 'sales orders'; }
+function ResultsCard({ results, onOpen }) {
+  const cols = (results.columns || []).slice(0, 3);
+  const rows = results.rows || [];
+  const shown = rows.slice(0, 6);
+  return (
+    <div className="nsa-as-row bot">
+      <div className="nsa-as-results">
+        <div className="nsa-as-results-head">{results.total} {labelFor(results.entity)}{results.error ? ' · search error' : ' · full list shown behind this panel'}</div>
+        {shown.length > 0 && (
+          <div className="nsa-as-results-list">
+            {shown.map((r, i) => (
+              <button key={(r.id || '') + i} className="nsa-as-results-row" onClick={() => onOpen && onOpen(r)}>
+                {cols.map((c) => <span key={c} className="nsa-as-rc">{r.cells[c]}</span>)}
+              </button>
+            ))}
+          </div>
+        )}
+        {results.total > shown.length && <div className="nsa-as-results-more">+{results.total - shown.length} more in the results page →</div>}
+        {results.total === 0 && !results.error && <div className="nsa-as-results-more">No matches — try rephrasing.</div>}
+      </div>
+    </div>
+  );
+}
+
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName }) {
+export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult }) {
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
   });
   const [messages, setMessages] = useState([
-    { id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can show you around, point you to things, and walk you through tasks. What can I help with?` },
+    { id: 'greet', from: 'bot', text: `Hi${userName ? ` ${String(userName).split(' ')[0]}` : ''}! I'm your Portal Assistant. I can find orders and jobs for you, show you around, and walk you through tasks. Try "show me open sales orders for Chase" or "jobs that need art."` },
   ]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -290,6 +328,14 @@ export default function PortalAssistant({ pg, screenTitle, userName }) {
     setTour({ steps: [{ target: targetId, title: 'Here it is', body: `This is ${label}. Click it to go there.` }], index: 0 });
   }, []);
 
+  const doSearch = useCallback((spec) => {
+    if (!onSearch) return;
+    let res = null;
+    try { res = onSearch(spec); } catch { res = null; }
+    if (!res) return;
+    setMessages((prev) => [...prev, { id: `r${Date.now()}`, from: 'bot', kind: 'results', results: res }]);
+  }, [onSearch]);
+
   const runActions = useCallback((actions) => {
     if (!Array.isArray(actions)) return;
     // One UI action per turn is plenty; take the first meaningful one.
@@ -297,7 +343,8 @@ export default function PortalAssistant({ pg, screenTitle, userName }) {
     if (!a) return;
     if (a.type === 'start_tutorial' && a.tour_id) startTour(a.tour_id);
     else if (a.type === 'highlight' && a.target_id) highlight(a.target_id);
-  }, [startTour, highlight]);
+    else if (a.type === 'search' && a.spec) doSearch(a.spec);
+  }, [startTour, highlight, doSearch]);
 
   const send = useCallback(async (rawText) => {
     const text = String(rawText || '').trim();
@@ -345,9 +392,9 @@ export default function PortalAssistant({ pg, screenTitle, userName }) {
 
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [
+    { label: 'Open sales orders', run: () => send('show me open sales orders') },
+    { label: 'Jobs that need art', run: () => send('which jobs still need art?') },
     { label: 'Take the portal tour', run: () => startTour('getting-started') },
-    { label: 'How do I create an estimate?', run: () => send('How do I create an estimate?') },
-    { label: 'Where are invoices?', run: () => send('Where are invoices?') },
   ];
 
   return (
@@ -364,9 +411,13 @@ export default function PortalAssistant({ pg, screenTitle, userName }) {
           </div>
           <div className="nsa-as-body" ref={listRef}>
             {messages.map((m) => (
-              <div key={m.id} className={`nsa-as-row ${m.from}`}>
-                <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
-              </div>
+              m.kind === 'results'
+                ? <ResultsCard key={m.id} results={m.results} onOpen={openResult} />
+                : (
+                  <div key={m.id} className={`nsa-as-row ${m.from}`}>
+                    <div className={`nsa-as-bubble ${m.from}`}>{m.text}</div>
+                  </div>
+                )
             ))}
             {/* Quick chips shown until the user says something. */}
             {messages.length <= 1 && !busy && (
