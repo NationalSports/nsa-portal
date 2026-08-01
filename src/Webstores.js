@@ -10509,25 +10509,53 @@ async function swapColorToBlob(url, fromHex, toHex, tol = 78) {
 // art becomes placeable & recolorable — on this store, future stores, and orders.
 function WebLogoSlot({ art, onAttach, compact }) {
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [err, setErr] = useState('');
   const ref = useRef();
   const has = !!(art?.web_logo_url || (Array.isArray(art?.web_logos) && art.web_logos.some((w) => w && w.url)));
   const pick = async (file) => {
     if (!file || !onAttach) return;
     const ok = file.type?.startsWith('image/') || /\.(svg|png)$/i.test(file.name || '');
-    if (!ok) return;
-    setBusy(true);
-    try { const url = await cloudUpload(file, 'nsa-store-art'); await onAttach(art, url); }
+    if (!ok) { setErr('That file isn’t an image — attach a transparent PNG or SVG.'); return; }
+    setErr(''); setBusy(true);
+    try { const url = await cloudUpload(file, 'nsa-store-art'); await onAttach(art, url); setOpen(false); }
     catch (e) { /* cloudUpload surfaces errors via toast */ }
     setBusy(false);
   };
   return (
     <>
-      <button onClick={(e) => { e.stopPropagation(); ref.current && ref.current.click(); }} disabled={busy}
+      <button onClick={(e) => { e.stopPropagation(); setErr(''); setOpen(true); }} disabled={busy}
         title={has ? 'Replace the web logo — the clean PNG/SVG used to place this art on garments' : 'Add a clean transparent PNG/SVG so this art can be placed & recolored on garments'}
         style={{ fontSize: compact ? 9.5 : 10.5, padding: compact ? '2px 6px' : '3px 8px', fontWeight: 800, borderRadius: 6, lineHeight: 1.3, cursor: busy ? 'wait' : 'pointer', border: has ? '1px solid #166534' : '1px dashed #2563eb', background: has ? '#ecfdf5' : '#eff6ff', color: has ? '#166534' : '#1d4ed8', whiteSpace: 'nowrap' }}>
         {busy ? '…' : has ? 'web ✓' : '+ web logo'}
       </button>
       <input ref={ref} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) pick(f); e.target.value = ''; }} />
+      {open && (
+        <div onClick={(e) => { e.stopPropagation(); if (!busy) setOpen(false); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 20, width: 420, maxWidth: '92vw', boxShadow: '0 20px 50px rgba(0,0,0,.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{has ? 'Replace web logo' : 'Add a web logo'}</div>
+              <button onClick={() => !busy && setOpen(false)} style={{ border: 'none', background: 'none', fontSize: 20, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+            </div>
+            <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 12 }}>A clean transparent <b>PNG</b> or <b>SVG</b> — the web-ready cutout used to place &amp; recolor <b>{art?.name || 'this logo'}</b> on garments.</div>
+            <div
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragOver) setDragOver(true); }}
+              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
+              onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = e.dataTransfer?.files && e.dataTransfer.files[0]; if (f) pick(f); }}
+              onClick={() => { if (!busy && ref.current) ref.current.click(); }}
+              style={{ border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), background: dragOver ? '#eff6ff' : '#f8fafc', borderRadius: 12, padding: '30px 16px', textAlign: 'center', cursor: busy ? 'wait' : 'pointer', transition: 'border-color .12s, background .12s' }}>
+              {busy ? <div style={{ fontWeight: 700, color: '#1d4ed8' }}>Uploading…</div>
+                : (<>
+                  <div style={{ fontSize: 26, marginBottom: 6 }}>⬆️</div>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, color: '#334155' }}>Drag &amp; drop your file here</div>
+                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>or <span style={{ color: '#2563eb', fontWeight: 700 }}>browse</span> — PNG or SVG</div>
+                </>)}
+            </div>
+            {err && <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>{err}</div>}
+          </div>
+        </div>
+      )}
     </>
   );
 }
