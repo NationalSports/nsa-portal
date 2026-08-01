@@ -122,6 +122,9 @@ function ensureStyles() {
   background:#2563eb;color:#fff;border:none;cursor:pointer;box-shadow:0 6px 20px rgba(37,99,235,.4);
   display:flex;align-items:center;justify-content:center;transition:transform .15s ease,box-shadow .15s ease}
 .nsa-as-launcher:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(37,99,235,.5)}
+/* Mobile: lift the launcher and panel above the bottom tab bar (~56px + safe area). */
+.nsa-as-launcher.nsa-as-m{bottom:calc(72px + env(safe-area-inset-bottom));width:52px;height:52px}
+.nsa-as-panel.nsa-as-m{bottom:calc(70px + env(safe-area-inset-bottom));max-height:calc(100vh - 96px)}
 .nsa-as-panel{position:fixed;right:20px;bottom:20px;z-index:9000;width:392px;height:600px;
   max-width:calc(100vw - 32px);max-height:calc(100vh - 40px);background:#fff;border-radius:16px;
   box-shadow:0 16px 50px rgba(15,23,42,.28);display:flex;flex-direction:column;overflow:hidden;
@@ -425,7 +428,8 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
+export default function PortalAssistant({ pg, screenTitle, userName, variant, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
+  const mCls = variant === 'mobile' ? ' nsa-as-m' : '';
   ensureStyles();
   const [open, setOpen] = useState(() => {
     try { return window.sessionStorage.getItem('nsa_assistant_open') === '1'; } catch { return false; }
@@ -630,7 +634,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
   return (
     <>
       {open ? (
-        <div className="nsa-as-panel" role="dialog" aria-label="Portal Assistant">
+        <div className={`nsa-as-panel${mCls}`} role="dialog" aria-label="Portal Assistant">
           <div className="nsa-as-head">
             <div className="nsa-as-avatar"><IconChat /></div>
             <div>
@@ -684,7 +688,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, onSearch, o
           </form>
         </div>
       ) : (
-        <button className="nsa-as-launcher" onClick={() => setOpen(true)} aria-label="Open Portal Assistant" title="Portal Assistant (⌘K)">
+        <button className={`nsa-as-launcher${mCls}`} onClick={() => setOpen(true)} aria-label="Open Portal Assistant" title="Portal Assistant (⌘K)">
           <IconChat />
         </button>
       )}

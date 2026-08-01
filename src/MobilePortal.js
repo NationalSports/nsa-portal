@@ -98,6 +98,24 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     window.addEventListener('popstate',onPop);
     return()=>window.removeEventListener('popstate',onPop);
   },[tab,moreSubPage]);
+  // Portal Assistant → open a search result in the mobile detail view. The assistant lives in
+  // App scope (desktop nav via openPortalResult won't drive mobile state), so it dispatches this
+  // event and we route it into MobilePortal's own detail router. _rec is the underlying record
+  // (an SO for sales_orders/jobs; see runPortalSearch toRow in App.js).
+  useEffect(()=>{
+    const open=(e)=>{
+      const row=e&&e.detail;if(!row)return;
+      const ent=row.entity,rec=row._rec;
+      setNewEst(null);
+      if(ent==='sales_orders'||ent==='jobs'){const so=rec||sos.find(s=>s.id===row.soId);if(so){setDetail({type:'order',data:so});setTab('orders');}}
+      else if(ent==='estimates'&&rec)setDetail({type:'estimate',data:rec});
+      else if(ent==='invoices'&&rec)setDetail({type:'invoice',data:rec});
+      else if(ent==='customers'&&rec){setDetail({type:'customer',data:rec});setTab('customers');}
+      else if(nf)nf('Open '+(row.id||'that')+' on desktop for full details','info');
+    };
+    window.addEventListener('nsa:mobile-open-result',open);
+    return()=>window.removeEventListener('nsa:mobile-open-result',open);
+  },[sos,nf]);
   const[scope,setScope]=useState('mine'); // mine | all — default reps see their own work first
   const[reportScope,setReportScope]=useState('mine'); // mine | all
   // Jobs filters
