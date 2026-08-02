@@ -137,7 +137,7 @@ function sanitizeGuide(input, screenIds, targetIds) {
 // not get ephemeral-cache prefix hits across different screens — that's fine;
 // the catalogs are small and the win is grounding the model in exactly what
 // exists right now.
-function buildSystemPrompt({ screen, screens, tours, targets }) {
+function buildSystemPrompt({ screen, screens, tours, targets, openRecord }) {
   const _today = (() => { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } })();
   const screenLines = screens.length
     ? screens.map((s) => `- ${s.id} — ${s.label}${s.desc ? `: ${s.desc}` : ''}`).join('\n')
@@ -151,11 +151,16 @@ function buildSystemPrompt({ screen, screens, tours, targets }) {
   const here = screen && screen.id
     ? `${screen.id}${screen.title ? ` (“${screen.title}”)` : ''}`
     : 'unknown';
+  const _recTypeLabel = { sales_order: 'sales order', estimate: 'estimate', invoice: 'invoice', customer: 'customer', product: 'product' };
+  const openLine = (openRecord && openRecord.id)
+    ? `The user currently has this ${_recTypeLabel[openRecord.type] || openRecord.type || 'record'} OPEN on screen: ${openRecord.id}${openRecord.customer ? ` (customer: ${openRecord.customer})` : ''}. When they say "this", "this order/estimate/invoice/customer", "the current one", "here", "it", or "the one I'm looking at", they mean THIS record — use its id/customer in your tool calls (e.g. add_note ref, report/customer_360 customer, search text, set_reminder so/customer). If they ask about "this" and no tool fits, you still know which record they mean.`
+    : 'The user does not have a specific record open right now (they are on a list or overview). If they say "this", ask which record they mean.';
 
   return [
     "You are the Portal Assistant for National Sports Apparel's internal staff portal. Your users are NSA employees. You help them find their way around the portal, understand what each screen is for, and learn how to do things — including by launching short interactive on-screen tutorials.",
     '',
     `The user is currently on the "${here}" screen.`,
+    openLine,
     '',
     'Hard rules:',
     '- Keep answers short, friendly and plain — a sentence or three, everyday language, no markdown headings or bullet dumps.',
@@ -565,6 +570,14 @@ exports.handler = async (event) => {
     screens: normCatalog(body.screens, [['label', 120], ['desc', 400]]),
     tours: normCatalog(body.tours, [['title', 120], ['desc', 400]]),
     targets: normCatalog(body.targets, [['label', 120], ['screen', 80], ['desc', 200]]),
+    openRecord: (() => {
+      const r = body.openRecord;
+      if (!r || typeof r !== 'object') return null;
+      const type = normStr(r.type, 20);
+      const id = normStr(r.id, 60);
+      if (!id || !['sales_order', 'estimate', 'invoice', 'customer', 'product'].includes(type)) return null;
+      return { type, id, customer: normStr(r.customer, 120) };
+    })(),
   };
 
   try {

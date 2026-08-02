@@ -516,7 +516,7 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, variant, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
+export default function PortalAssistant({ pg, screenTitle, userName, variant, openRecord, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
   const mCls = variant === 'mobile' ? ' nsa-as-m' : '';
   ensureStyles();
   const [open, setOpen] = useState(() => {
@@ -812,6 +812,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
         body: JSON.stringify({
           messages: apiMessages,
           screen: { id: pg || '', title: screenTitle || '' },
+          openRecord: openRecord || null,
           screens: SCREENS,
           tours: TOURS.map((t) => ({ id: t.id, title: t.title, desc: t.desc })),
           targets: TARGETS,
@@ -835,7 +836,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     } finally {
       setBusy(false);
     }
-  }, [busy, messages, pg, screenTitle, runActions]);
+  }, [busy, messages, pg, screenTitle, openRecord, runActions]);
 
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [
