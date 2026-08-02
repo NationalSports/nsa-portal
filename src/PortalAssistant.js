@@ -104,6 +104,13 @@ const SCREEN_TARGETS = [
   { id: 'inv-po-product-search', screen: '', label: 'Add Products search (New Inventory PO modal)', desc: 'Search by SKU, name, or color and click a result to add a line — inside the New Inventory PO modal.' },
   { id: 'inv-po-add-custom-item', screen: '', label: '+ Custom Item (New Inventory PO modal)', desc: 'Adds a blank line to type a SKU/name manually — inside the New Inventory PO modal.' },
   { id: 'inv-po-submit-btn', screen: '', label: 'Create PO button (New Inventory PO modal)', desc: 'Saves the inventory purchase order — the last step in the New Inventory PO modal.' },
+  // Webstore "extend" flow (change a club store's close/end date). Row button is on the
+  // Webstores list; the rest appear as the user opens the store and its settings form.
+  { id: 'ws-row-open-store', screen: 'webstores', label: 'Open store button (Store →)', desc: 'On the Webstores list — opens a store\'s detail view. One per store row; open the store you want to extend.' },
+  { id: 'ws-launch-store', screen: '', label: '🚀 Launch store button', desc: 'In a store\'s detail header — relaunches a closed or scheduled store so it accepts orders again. Only shown when the store is not currently open.' },
+  { id: 'ws-detail-settings', screen: '', label: '⚙ Settings button (store detail)', desc: 'In a store\'s detail header — opens the store settings form, where the close date lives.' },
+  { id: 'ws-close-date', screen: '', label: 'Close date field (store settings)', desc: 'The store\'s end date — change it to extend how long the store stays open. On the Setup page of the store settings form.' },
+  { id: 'ws-save', screen: '', label: 'Save changes button (store settings)', desc: 'Saves the store settings, including the new close date — the last step of extending a store.' },
 ];
 
 const TARGETS = [...NAV_TARGETS, ...SCREEN_TARGETS];

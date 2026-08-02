@@ -4316,6 +4316,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                               }
                             </button>
                             <button
+                              data-tour-id="ws-row-open-store"
                               onClick={(e) => { e.stopPropagation(); onOpen(s); }}
                               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#192853', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
                             >
@@ -4923,7 +4924,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
-          <Row label="Close date (optional)"><input className="form-input" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
+          <Row label="Close date (optional)"><input className="form-input" data-tour-id="ws-close-date" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
         </div>
         <Row label="Decoration">
           <div style={{ display: 'flex', gap: 8 }}>
@@ -5125,7 +5126,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         {page === 'setup'
           ? <button type="button" onClick={() => setPage('delivery')} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>Next: Delivery &amp; branding →</button>
           : <button type="button" onClick={() => setPage('setup')} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>← Back to setup</button>}
-        <button disabled={busy || uploading > 0} onClick={submit} style={{ background: (busy || uploading > 0) ? '#6A7180' : (page === 'delivery' ? '#191919' : '#fff'), color: (page === 'delivery' || busy || uploading > 0) ? '#fff' : '#191919', border: (page === 'delivery' || busy || uploading > 0) ? 'none' : '1px solid #191919', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: (busy || uploading > 0) ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : uploading > 0 ? 'Uploading…' : store ? 'Save changes' : 'Create store'}</button>
+        <button data-tour-id="ws-save" disabled={busy || uploading > 0} onClick={submit} style={{ background: (busy || uploading > 0) ? '#6A7180' : (page === 'delivery' ? '#191919' : '#fff'), color: (page === 'delivery' || busy || uploading > 0) ? '#fff' : '#191919', border: (page === 'delivery' || busy || uploading > 0) ? 'none' : '1px solid #191919', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: (busy || uploading > 0) ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : uploading > 0 ? 'Uploading…' : store ? 'Save changes' : 'Create store'}</button>
         <button disabled={busy} onClick={onCancel} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>Cancel</button>
       </div>
     </div>
@@ -5664,9 +5665,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           ]} />
           {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
           {onSetStatus && !s.is_template && (s.status !== 'open'
-            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
+            ? <button data-tour-id="ws-launch-store" className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
-          <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
+          <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
       {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
