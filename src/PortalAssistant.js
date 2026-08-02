@@ -746,7 +746,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
       if (el && (el === e.target || el.contains(e.target))) {
         // Clicking a button/tab/link advances. For form fields (a select, a search box),
         // clicking just focuses them — let the user fill it in and advance with Next instead.
-        const tag = (e.target && e.target.tagName || '').toUpperCase();
+        const tag = ((e.target && e.target.tagName) || '').toUpperCase();
         if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'OPTION') return;
         setTimeout(() => { if (goNextRef.current) goNextRef.current(); }, 450);
       }
