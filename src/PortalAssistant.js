@@ -334,7 +334,6 @@ function resolveStepEl(step) {
 // on screen (an instruction-only step), it renders nothing and the chat carries it.
 function GuideSpotlight({ step }) {
   const [rect, setRect] = useState(null);
-  const key = (step && (step.target || step.find)) || '';
 
   const measure = useCallback(() => {
     const el = resolveStepEl(step);
@@ -355,8 +354,7 @@ function GuideSpotlight({ step }) {
     window.addEventListener('scroll', measure, true);
     const iv = setInterval(measure, 300); // catch navigation / late layout shifts
     return () => { clearTimeout(t); clearInterval(iv); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure, true); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [measure, key]);
+  }, [measure, step]);
 
   if (!rect) return null;
   const pad = 6;
