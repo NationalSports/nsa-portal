@@ -218,7 +218,7 @@ function buildTools({ tours, targets, screens }) {
     if (targetEnum.length) stepProps.target_id = { type: 'string', enum: targetEnum, description: 'An on-screen element to spotlight for this step, from the provided targets. Omit if you have no matching element — the instruction still shows.' };
     tools.push({
       name: 'guide',
-      description: "Build a custom, step-by-step ON-SCREEN walkthrough that answers a 'how do I…' / 'walk me through…' question by guiding the user through the portal one step at a time. Each step shows an instruction and can move the user to the right screen (screen) and/or spotlight a known element (target_id). Use this for procedural questions when no single predefined tutorial fits — YOU compose the steps. Ground every step in the screens and targets you were given; never invent a button, field, menu, or location. If you don't have an element id for a step, omit target_id and just write the instruction.",
+      description: "Build a step-by-step ON-SCREEN walkthrough for ANY 'how do I…' / 'how do you…' / 'walk me through…' / 'how to…' procedural question. This is the REQUIRED tool for every procedure — always at least 2 steps, walking the user ALL THE WAY to the final goal (e.g. all the way into the settings and the actual change), not just to the section. Each step has an instruction and can move the user to a screen (screen) and/or spotlight an element (target_id). Compose the full click-path in order. You do NOT need an element target for every step: for parts you have no instrumented target (opening a specific record, a field deep in a page), still include the step with a clear written instruction and omit target_id — never stop early or drop to a single highlight just because later elements aren't in your target list. Ground spotlights only in the given screens/targets; never invent element ids, but you MAY describe standard actions in words.",
       input_schema: {
         type: 'object',
         properties: {
@@ -382,7 +382,7 @@ function buildTools({ tours, targets, screens }) {
   if (targets.length) {
     tools.push({
       name: 'highlight',
-      description: 'Visually spotlight one element on the portal screen for the user (e.g. a sidebar link) so they can see exactly where it is. Use when they ask where to find something or to be shown a screen.',
+      description: "Spotlight ONE element for a pure 'where is X' location question (e.g. 'where's the estimates link', 'show me the search box'). Do NOT use this for any 'how do I / how to / walk me through' procedure — those ALWAYS use the guide tool with multiple steps, even if you lack element targets for the later steps. If the request involves doing a task (more than one action), it is a guide, not a highlight.",
       strict: true,
       input_schema: {
         type: 'object',
