@@ -272,26 +272,80 @@ function ensureStyles() {
   document.head.appendChild(el);
 }
 
+// ── Element resolution (data-tour-id OR visible label) ─────────────────────────
+// A guide step points at an element either by `target` (a data-tour-id we instrumented)
+// or by `find` (the element's visible on-screen text). The label path lets the assistant
+// spotlight controls across the whole portal without every one being pre-tagged: it scans
+// visible buttons/tabs/links and matches their caption. It fails safe — a weak/ambiguous
+// match returns nothing, so the step degrades to a written instruction rather than ringing
+// the wrong thing.
+function normLabel(s) {
+  return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function findByLabel(query) {
+  const want = normLabel(query);
+  if (!want || want.length < 2 || typeof document === 'undefined') return null;
+  let nodes;
+  try { nodes = document.querySelectorAll('button, a[href], [role="button"], .tab, .btn, input[type="submit"], input[type="button"], select'); }
+  catch (e) { return null; }
+  const scored = [];
+  nodes.forEach((el) => {
+    if (el.closest && el.closest('.nsa-as-panel')) return; // never our own chat UI
+    let r; try { r = el.getBoundingClientRect(); } catch (e) { return; }
+    if (!r || (r.width === 0 && r.height === 0)) return; // must be visible
+    const cands = [];
+    const txt = (el.textContent || '').trim(); if (txt && txt.length <= 40) cands.push(txt);
+    if (el.getAttribute) { ['aria-label', 'title', 'value', 'placeholder'].forEach((a) => { const v = el.getAttribute(a); if (v) cands.push(v); }); }
+    let best = 0;
+    cands.forEach((raw) => {
+      const cand = normLabel(raw);
+      if (!cand) return;
+      let score = 0;
+      if (cand === want) score = 100;
+      else if (cand.startsWith(want) || want.startsWith(cand)) score = 82 - Math.min(Math.abs(cand.length - want.length), 20);
+      else if (cand.includes(want)) score = 60 - Math.min(cand.length - want.length, 20);
+      else if (want.includes(cand) && cand.length >= 3) score = 48;
+      if (score > best) best = score;
+    });
+    if (best > 0) scored.push({ el, score: best, len: (el.textContent || '').trim().length || 99, top: r.top });
+  });
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.score - a.score || a.len - b.len || a.top - b.top);
+  // Ambiguity guard: a weak match that several elements share is unreliable — bail to the
+  // written instruction instead of highlighting a guess.
+  const top = scored[0];
+  if (top.score < 55) return null;
+  if (top.score < 82 && scored.filter((s) => s.score === top.score).length > 1) return null;
+  return top.el;
+}
+// Resolve a step's element: prefer the instrumented data-tour-id, then fall back to the label.
+function resolveStepEl(step) {
+  if (!step) return null;
+  if (step.target) { try { const el = document.querySelector(`[data-tour-id="${step.target}"]`); if (el) return el; } catch (e) { /* bad selector */ } }
+  if (step.find) return findByLabel(step.find);
+  return null;
+}
+
 // ── Guide spotlight ───────────────────────────────────────────────────────────
 // A pulsing ring + dimmed backdrop around the current step's target element, plus
 // a small "click to continue" hint. NO callout box — the step explanation lives in
 // the chat (which stays open above the dim). Everything here is click-through, so
 // the user actually clicks the highlighted element to advance. If the target isn't
 // on screen (an instruction-only step), it renders nothing and the chat carries it.
-function GuideSpotlight({ target }) {
+function GuideSpotlight({ step }) {
   const [rect, setRect] = useState(null);
+  const key = (step && (step.target || step.find)) || '';
 
   const measure = useCallback(() => {
-    if (!target) { setRect(null); return; }
-    const el = document.querySelector(`[data-tour-id="${target}"]`);
+    const el = resolveStepEl(step);
     if (!el) { setRect(null); return; }
     const r = el.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) { setRect(null); return; }
     setRect({ top: r.top, left: r.left, width: r.width, height: r.height });
-  }, [target]);
+  }, [step]);
 
   useEffect(() => {
-    const el = target ? document.querySelector(`[data-tour-id="${target}"]`) : null;
+    const el = resolveStepEl(step);
     if (el && el.scrollIntoView) {
       try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older browsers */ }
     }
@@ -301,7 +355,8 @@ function GuideSpotlight({ target }) {
     window.addEventListener('scroll', measure, true);
     const iv = setInterval(measure, 300); // catch navigation / late layout shifts
     return () => { clearTimeout(t); clearInterval(iv); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure, true); };
-  }, [measure, target]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measure, key]);
 
   if (!rect) return null;
   const pad = 6;
@@ -504,8 +559,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   // by clicking it (or Next). Used by AI guides, canned tours, and single highlights alike.
   const beginGuide = useCallback((intro, steps) => {
     const list = (steps || [])
-      .filter((s) => s && (s.body || s.target))
-      .map((s) => ({ target: s.target || s.target_id || null, screen: s.screen || null, title: s.title || '', body: s.body || '' }));
+      .filter((s) => s && (s.body || s.target || s.target_id || s.find))
+      .map((s) => ({ target: s.target || s.target_id || null, find: s.find || null, screen: s.screen || null, title: s.title || '', body: s.body || '' }));
     if (!list.length) return;
     advancedFromRef.current = -1;
     setOpen(true);
@@ -685,9 +740,9 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   useEffect(() => {
     if (!tour) return undefined;
     const step = tour.steps[tour.index];
-    if (!step || !step.target) return undefined;
+    if (!step || !(step.target || step.find)) return undefined;
     const onClick = (e) => {
-      const el = document.querySelector(`[data-tour-id="${step.target}"]`);
+      const el = resolveStepEl(step);
       if (el && (el === e.target || el.contains(e.target))) {
         // Clicking a button/tab/link advances. For form fields (a select, a search box),
         // clicking just focuses them — let the user fill it in and advance with Next instead.
@@ -708,21 +763,23 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   const [targetPresent, setTargetPresent] = useState(false);
   useEffect(() => {
     if (!tour) { setTargetPresent(false); return undefined; }
-    const isVisible = (id) => {
-      if (!id) return false;
-      const el = document.querySelector(`[data-tour-id="${id}"]`);
+    const stepVisible = (step) => {
+      const el = resolveStepEl(step);
       if (!el) return false;
       const r = el.getBoundingClientRect();
       return !(r.width === 0 && r.height === 0);
     };
+    const hasSpec = (step) => !!(step && (step.target || step.find));
     const check = () => {
       const t = tourRef.current;
       if (!t) return;
       const step = t.steps[t.index];
-      setTargetPresent(isVisible(step && step.target));
-      if (step && !step.target) {
+      setTargetPresent(hasSpec(step) && stepVisible(step));
+      // Instruction-only step (no element to point at): auto-advance the moment the NEXT
+      // step's element appears — i.e. the user did the thing and revealed it.
+      if (step && !hasSpec(step)) {
         const nxt = t.steps[t.index + 1];
-        if (nxt && nxt.target && isVisible(nxt.target) && goNextRef.current) goNextRef.current();
+        if (hasSpec(nxt) && stepVisible(nxt) && goNextRef.current) goNextRef.current();
       }
     };
     check();
@@ -848,9 +905,10 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
           {tour && (() => {
             const cur = tour.steps[tour.index] || {};
             const last = tour.index + 1 >= tour.steps.length;
+            const curHasSpec = !!(cur.target || cur.find);
             let status;
             if (targetPresent) status = 'Highlighted on screen — click it, or press Next.';
-            else if (cur.target) status = "Do the step above to get there — I'll highlight it the moment it's on screen.";
+            else if (curHasSpec) status = "Do the step above to get there — I'll highlight it the moment it's on screen.";
             else status = last ? 'Do this, then press Finish.' : 'Do this on screen — it moves on by itself, or press Next.';
             return (
               <div className="nsa-as-guidebar">
@@ -880,7 +938,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
         </button>
       )}
 
-      {tour && <GuideSpotlight target={tour.steps[tour.index] && tour.steps[tour.index].target} />}
+      {tour && <GuideSpotlight step={tour.steps[tour.index]} />}
     </>
   );
 }
