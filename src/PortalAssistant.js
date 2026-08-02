@@ -245,8 +245,13 @@ function ensureStyles() {
 /* Interactive walkthrough: chat stays open (above the dim), each step is a chat card,
    the target pulses, and clicking it (or Next) advances. */
 .nsa-as-panel.nsa-as-guiding{z-index:100002}
-.nsa-as-guidebar{display:flex;align-items:center;gap:8px;padding:9px 12px;background:#0f172a;color:#fff;border-top:1px solid #1e293b}
+.nsa-as-guidebar{display:flex;flex-direction:column;gap:6px;padding:9px 12px;background:#0f172a;color:#fff;border-top:1px solid #1e293b}
+.nsa-as-guidebar-row{display:flex;align-items:center;gap:8px}
 .nsa-as-guidebar-step{font-size:11.5px;font-weight:800;color:#93c5fd;margin-right:auto;letter-spacing:.02em}
+.nsa-as-guidebar-status{font-size:11px;line-height:1.35;color:#cbd5e1;display:flex;align-items:center;gap:6px}
+.nsa-as-guidebar-status.on{color:#86efac}
+.nsa-as-guidebar-dot{width:7px;height:7px;border-radius:50%;background:#64748b;flex-shrink:0}
+.nsa-as-guidebar-status.on .nsa-as-guidebar-dot{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.25)}
 .nsa-as-step{max-width:94%;background:#eff6ff;border:1px solid #bfdbfe;border-left:3px solid #2563eb;border-radius:10px;padding:9px 12px}
 .nsa-as-step-no{font-size:10.5px;font-weight:800;color:#2563eb;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px}
 .nsa-as-step-title{font-size:13px;font-weight:700;color:#0f172a;margin-bottom:2px}
@@ -688,6 +693,36 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     return () => document.removeEventListener('click', onClick, true);
   }, [tour]);
 
+  // Live tracker: while a walkthrough is active, poll for whether the current step's element
+  // is actually on screen (so the guide bar tells the truth instead of claiming a highlight
+  // that isn't there). And when a step is instruction-only ("open the estimate"), auto-advance
+  // the moment the NEXT step's element appears — i.e. the user did the thing and revealed it.
+  // That's what makes the guide move as you move through the portal.
+  const [targetPresent, setTargetPresent] = useState(false);
+  useEffect(() => {
+    if (!tour) { setTargetPresent(false); return undefined; }
+    const isVisible = (id) => {
+      if (!id) return false;
+      const el = document.querySelector(`[data-tour-id="${id}"]`);
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return !(r.width === 0 && r.height === 0);
+    };
+    const check = () => {
+      const t = tourRef.current;
+      if (!t) return;
+      const step = t.steps[t.index];
+      setTargetPresent(isVisible(step && step.target));
+      if (step && !step.target) {
+        const nxt = t.steps[t.index + 1];
+        if (nxt && nxt.target && isVisible(nxt.target) && goNextRef.current) goNextRef.current();
+      }
+    };
+    check();
+    const iv = setInterval(check, 400);
+    return () => clearInterval(iv);
+  }, [tour]);
+
   // Escape ends the walkthrough.
   useEffect(() => {
     if (!tour) return undefined;
@@ -780,7 +815,6 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
                             <div className="nsa-as-step-no">Step {m.stepNo} of {m.stepTotal}</div>
                             {m.title && <div className="nsa-as-step-title">{m.title}</div>}
                             <div className="nsa-as-step-body">{m.body}</div>
-                            {m.hasTarget && <div className="nsa-as-step-hintline">→ I've highlighted it on screen — click it to continue.</div>}
                           </div>
                         </div>
                       )
@@ -804,13 +838,24 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
               </div>
             )}
           </div>
-          {tour && (
-            <div className="nsa-as-guidebar">
-              <span className="nsa-as-guidebar-step">Step {tour.index + 1} of {tour.steps.length}</span>
-              <button type="button" className="nsa-as-btn ghost" onClick={() => endGuide(false)}>End</button>
-              <button type="button" className="nsa-as-btn primary" onClick={goNext}>{tour.index + 1 >= tour.steps.length ? 'Finish' : 'Next ▸'}</button>
-            </div>
-          )}
+          {tour && (() => {
+            const cur = tour.steps[tour.index] || {};
+            const last = tour.index + 1 >= tour.steps.length;
+            let status;
+            if (targetPresent) status = 'Highlighted on screen — click it, or press Next.';
+            else if (cur.target) status = "Do the step above to get there — I'll highlight it the moment it's on screen.";
+            else status = last ? 'Do this, then press Finish.' : 'Do this on screen — it moves on by itself, or press Next.';
+            return (
+              <div className="nsa-as-guidebar">
+                <div className="nsa-as-guidebar-row">
+                  <span className="nsa-as-guidebar-step">Step {tour.index + 1} of {tour.steps.length}</span>
+                  <button type="button" className="nsa-as-btn ghost" onClick={() => endGuide(false)}>End</button>
+                  <button type="button" className="nsa-as-btn primary" onClick={goNext}>{last ? 'Finish' : 'Next ▸'}</button>
+                </div>
+                <div className={`nsa-as-guidebar-status${targetPresent ? ' on' : ''}`}><span className="nsa-as-guidebar-dot" />{status}</div>
+              </div>
+            );
+          })()}
           <form className="nsa-as-composer" onSubmit={(e) => { e.preventDefault(); send(input); }}>
             <input
               ref={inputRef}
