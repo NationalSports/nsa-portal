@@ -350,10 +350,23 @@ describe('garmentsNeedingMockCheck — legacy general mock / sew-out proof is no
     expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toEqual([]);
   });
 
-  test('a displayable sew-out proof in prod_files satisfies the garment too', () => {
+  test('a sew-out proof does NOT satisfy — the prior approved mock is surfaced for reuse', () => {
+    // Policy (SO-1661): a digitizer sew-out proof in prod_files is not a garment mockup and can't
+    // pass the approval gate (skusMissingMockups rejects it). So reused art carrying only a proof
+    // must still surface any prior approved mock — the rep should be offered the ACTUAL mockup to
+    // confirm or redo, not left with the raw proof + "send to artist". Aligns garmentsNeedingMockCheck
+    // with the gate; the shared mockup_files bucket (a real mock) is still honored above.
     const art = { id: 'af-proof', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
     const { job, so } = legacyCase(art);
-    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toEqual([]);
+    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toHaveLength(1);
+  });
+
+  test('a sew-out proof with NO prior mock to offer does not nag', () => {
+    // The check only surfaces when there is a concrete prior mock to reuse — a proof-only garment
+    // with nothing to offer must NOT produce a "Check Mock" nag (there would be nothing to pick).
+    const art = { id: 'af-proof-only', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
+    const { job, so } = legacyCase(art);
+    expect(garmentsNeedingMockCheck(job, so, {})).toEqual([]);
   });
 
   test('a dismissed proof does NOT satisfy — the garment still needs its mock checked', () => {
@@ -384,5 +397,51 @@ describe('garmentsNeedingMockCheck — legacy general mock / sew-out proof is no
     const res = garmentsNeedingMockCheck(job, so);
     expect(res).toHaveLength(1);
     expect(res[0].sku).toBe('JX4452');
+  });
+});
+
+// SO-1131 repro: an art-SPLIT garment carries one art decoration per design (Friars / 2 Col /
+// Attack), each owned by a different sibling job via deco_idxs. The per-design gate must look ONLY
+// at the decoration THIS job owns — otherwise the 2-Col job pulls in the Attack/Friars art and
+// surfaces (and gates on) the wrong design's mockups ("the 2-Col job is showing Attack Everything").
+describe('split-art garment — mock check is scoped to the decoration the job owns (deco_idxs)', () => {
+  // JX4452 Black/White: 3 art decos in one split family — deco 0 Friars, deco 1 2-Col, deco 2 Attack.
+  const splitSO = () => ({
+    items: [{
+      sku: 'JX4452', color: 'Black/White',
+      decorations: [
+        { kind: 'art', art_file_id: 'af-friars', split_group: 'sg1', split_sizes: { M: 11 } },
+        { kind: 'art', art_file_id: 'af-2col', split_group: 'sg1', split_sizes: { M: 11 } },
+        { kind: 'art', art_file_id: 'af-attack', split_group: 'sg1', split_sizes: { M: 11 } },
+      ],
+    }],
+    art_files: [
+      { id: 'af-friars', name: '10.5in FRIARS BASKETBALL', deco_type: 'screen_print', item_mockups: {} },
+      { id: 'af-2col', name: '11in Servite Basketball 2 Col', deco_type: 'screen_print', item_mockups: { 'JX4452|Black/White': [{ url: 'http://x/2col.png' }] } },
+      { id: 'af-attack', name: '11in Attack Everything', deco_type: 'screen_print', item_mockups: {} },
+    ],
+  });
+  // The 2-Col job owns ONLY deco index 1.
+  const twoColJob = { _art_ids: ['af-2col'], art_file_id: 'af-2col', items: [{ item_idx: 0, deco_idxs: [1], sku: 'JX4452', color: 'Black/White' }] };
+  // The Attack job owns ONLY deco index 2.
+  const attackJob = { _art_ids: ['af-attack'], art_file_id: 'af-attack', items: [{ item_idx: 0, deco_idxs: [2], sku: 'JX4452', color: 'Black/White' }] };
+
+  test('2-Col job (its own art is mocked) does NOT surface the sibling Attack/Friars designs', () => {
+    // Prior mocks exist for BOTH sibling designs — none may leak onto the 2-Col job.
+    const prior = {
+      '11in attack everything||screen_print': [{ from: 'KV2197|Heather Grey', files: [{ url: 'http://x/attack.png' }] }],
+      '10.5in friars basketball||screen_print': [{ from: 'JX4476|Black/White', files: [{ url: 'http://x/friars.png' }] }],
+    };
+    expect(garmentsNeedingMockCheck(twoColJob, splitSO(), prior)).toEqual([]);
+    expect(skusMissingMockups(twoColJob, splitSO())).toEqual([]);
+  });
+
+  test('Attack job needs its OWN mock — a sibling design\'s mock (2-Col) does not satisfy it', () => {
+    // Before the deco_idxs scope, the 2-Col mock leaked in and falsely satisfied the Attack gate.
+    expect(skusMissingMockups(attackJob, splitSO())).toEqual(['JX4452']);
+    const prior = { '11in attack everything||screen_print': [{ from: 'KV2197|Heather Grey', files: [{ url: 'http://x/attack.png' }] }] };
+    const rc = garmentsNeedingMockCheck(attackJob, splitSO(), prior);
+    expect(rc).toHaveLength(1);
+    expect(rc[0].artFiles.map(a => a.art_file_id)).toEqual(['af-attack']);
   });
 });

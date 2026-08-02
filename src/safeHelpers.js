@@ -43,6 +43,30 @@ export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
 };
+// The set of art files a job owns across its garments. Seeded from the job's declared art
+// (_art_ids / art_file_id) and augmented with the art files referenced by the decorations the
+// job actually owns (jobItemDecoIdxs). Scoping to owned decos is load-bearing: on an art-split
+// line each sibling job owns ONE of the line's art decorations, so scanning EVERY deco pulls in
+// the sibling designs' art files. That over-broad set then (a) leaks a sibling design's mock into
+// this job's display and (b) — because the SO-page "×" passes this set as the mock-removal scope
+// (removeMockFromArtFiles artFileIds) — lets a removal under one design wipe the shared sku|color
+// mock off the sibling designs on the same garment, reverting their Check Mock (SO-1023: clearing
+// the Attack Everything mock on JX4452 emptied the 2 Col / Friars jobs' JX4452 mocks). Mirrors the
+// job-art gathering already in skusMissingMockups / garmentsNeedingMockCheck so the four can't drift.
+export const jobArtFileIds = (job, soItems) => {
+  const ids = new Set(safeArr(job?._art_ids).filter(Boolean));
+  if (ids.size === 0 && job?.art_file_id) ids.add(job.art_file_id);
+  safeArr(job?.items).forEach(gi => {
+    const it = safeArr(soItems)[gi?.item_idx];
+    if (!it) return;
+    const dis = jobItemDecoIdxs(gi);
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
+      if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') ids.add(d.art_file_id);
+    });
+  });
+  return ids;
+};
 // Does this job's artwork fail to resolve to a real art file? True only when the job's declared
 // art (art_file_id/_art_ids — a '__tbd' placeholder counts as declaring) includes NO live design
 // AND an art decoration the job owns has no live art file behind it. Numbers/names-only jobs and
@@ -352,6 +376,42 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
 // opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
 // SKU, so callers must pass false when another live line still carries the old SKU in a
 // different color — moving the bare bucket would steal that line's legacy fallback.
+// Strip a mockup image (by URL) from art files, scoped to ONE garment on the art files a job owns.
+// The SO-page "×" lives on a single garment's mock card inside a single job's panel, so a removal
+// must only clear THAT garment's mock keys on the art files the job owns. The old order-wide strip
+// removed the url from EVERY art file and EVERY item_mockups key — and because confirming a reused
+// mock copies the SAME url onto several garments, removing one garment's mock silently wiped the
+// identical image off sibling garments/jobs that reused it, reverting their Check Mock (SO-1023:
+// clearing a mock under the Attack Everything job emptied the Friars job's KV2196 / JX4452 mocks).
+// scope = { sku, color, artFileIds }. artFileIds null/omitted => every art file; sku null/omitted
+// => every item_mockups key (both preserve the legacy order-wide behavior for callers that pass no
+// scope). mockup_files (the design-level bucket, not garment-keyed) is stripped within the scoped
+// art files only. Source art (files / prod_files) is never touched.
+export const removeMockFromArtFiles = (artFiles, url, scope = {}) => {
+  if (!url) return safeArr(artFiles);
+  const urlOf = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
+  const strip = (arr) => safeArr(arr).filter((f) => urlOf(f) !== url);
+  const ids = Array.isArray(scope.artFileIds) ? new Set(scope.artFileIds.filter(Boolean)) : null;
+  const mk = scope.sku != null ? scope.sku + '|' + (scope.color || '') : null;
+  const ownKey = (k) => mk == null || k === mk || k === scope.sku || k.startsWith(mk + '|');
+  return safeArr(artFiles).map((a) => {
+    if (!a) return a;
+    if (ids && !ids.has(a.id)) return a;
+    const im = { ...(a.item_mockups || {}) };
+    let changed = false;
+    Object.keys(im).forEach((k) => {
+      if (!ownKey(k)) return;
+      const before = im[k] || [];
+      const after = strip(before);
+      if (after.length !== before.length) { im[k] = after; changed = true; }
+    });
+    const mf = strip(a.mockup_files);
+    if (mf.length !== safeArr(a.mockup_files).length) changed = true;
+    if (!changed) return a;
+    return { ...a, item_mockups: im, mockup_files: mf };
+  });
+};
+
 export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor, opts) => {
   const moveBareSku = !opts || opts.moveBareSku !== false;
   const fromKey = mockLinkKeyOf(fromSku, fromColor);
@@ -582,15 +642,10 @@ export const skusMissingMockups = (job, so) => {
   // below looks at the right art file instead of falling back to the job's
   // primary art and falsely reporting a missing mockup. Mirrors the approval
   // renderer at OrderEditor.js:6568.
-  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
-  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
-  items.forEach(gi => {
-    const it = soItems[gi?.item_idx];
-    if (!it) return;
-    safeDecos(it).forEach(d => {
-      if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id);
-    });
-  });
+  // Scope to the decorations THIS job item owns (deco_idxs) — on an art-split line pulling in the
+  // sibling designs' art would let their mockups satisfy (or mis-report) this design's gate. Shared
+  // with the OrderEditor mock panels via jobArtFileIds so the two can't drift.
+  const jobArtIds = jobArtFileIds(job, soItems);
   const missing = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
@@ -598,8 +653,9 @@ export const skusMissingMockups = (job, so) => {
     // mockup screen drops these too (App.js itemDetails: `if(!it)return null`), so
     // gating on a garment that can't be shown or mocked would deadlock approval.
     if (!it) return;
+    const dis = jobItemDecoIdxs(gi);
     const decoArtIds = [...new Set(safeDecos(it)
-      .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
@@ -693,22 +749,19 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
   if (items.length === 0) return [];
   const allArt = safeArt(so);
   const soItems = safeItems(so);
-  // Mirror skusMissingMockups: gather every art file this job's items reference, since a
-  // job's _art_ids only carry the first item's art.
-  const jobArtIds = new Set(safeArr(job?._art_ids).filter(Boolean));
-  if (jobArtIds.size === 0 && job?.art_file_id) jobArtIds.add(job.art_file_id);
-  items.forEach(gi => {
-    const it = soItems[gi?.item_idx];
-    if (!it) return;
-    safeDecos(it).forEach(d => { if (d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd') jobArtIds.add(d.art_file_id); });
-  });
+  // Every art file this job's items reference, scoped to the decorations the job owns (an art-split
+  // garment carries one art deco per design; swallowing the siblings would gate on the WRONG
+  // design's mocks — SO-1131). Shared with skusMissingMockups / the OrderEditor mock panels via
+  // jobArtFileIds so the set can't drift.
+  const jobArtIds = jobArtFileIds(job, soItems);
   const urlOf = f => typeof f === 'string' ? f : (f?.url || '');
   const out = [];
   items.forEach(gi => {
     const it = soItems[gi?.item_idx];
     if (!it) return; // live SO line gone (deleted/reindexed) — nothing to mock
+    const dis = jobItemDecoIdxs(gi);
     const decoArtIds = [...new Set(safeDecos(it)
-      .filter(d => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
@@ -734,17 +787,23 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
       const im = a?.item_mockups || {};
       const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
       if (hasOwn) return;
-      // Legacy single-design art carries ONE mock in the shared mockup_files bucket (or a
-      // displayable sew-out proof in prod_files) that stands in for every garment — the same
-      // fallback skusMissingMockups accepts and every mock-display surface renders. That mock is
-      // already shown and approved on this order, so the garment is NOT missing one: don't nag
-      // "Check Mock" just because the SAME design was later mocked per-garment on another order
-      // (which arrives via priorByArtKey / this order's other-garment keys). Without this, a
-      // fully-approved legacy mock kept re-surfacing "Check Mock" that normal approval could never
-      // clear — there was nothing per-item to write. artProofFallback returns [] the moment the
-      // art has ANY per-item mock, so genuinely reused art (per-item mocks for siblings, none for
-      // this garment) still falls through and flags below.
-      if (artProofFallback(a).length > 0) return;
+      // A real general mock in the shared mockup_files/files bucket stands in for every garment,
+      // satisfies the approval gate (skusMissingMockups accepts it), and is already shown/approved
+      // on this order — so the garment is NOT missing one: don't nag "Check Mock" just because the
+      // SAME design was later mocked per-garment on another order (SO-1023). BUT the digitizer's
+      // sew-out proof in prod_files does NOT satisfy the gate (skusMissingMockups rejects it —
+      // SO-1661): reused art carrying only a proof still needs a real garment mockup, so surface any
+      // prior approved mock here (from priorByArtKey / this order's other-garment keys) — the whole
+      // point of "reuse previous artwork" is to offer that ACTUAL mockup for confirm-or-redo instead
+      // of leaving the rep with just the raw proof and a "send to artist" button. proof_dismissed
+      // clears the general mock too. A per-item mock for a sibling garment makes the general bucket
+      // ambiguous (wrong-colorway class), so it stops standing in and this garment falls through to
+      // flag below (mirrors artProofFallback, which returns [] the moment ANY per-item mock exists).
+      if (!a?.proof_dismissed) {
+        const hasPerItem = Object.values(im).some(v => safeArr(v).length > 0);
+        const genMock = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
+        if (!hasPerItem && genMock.length > 0) return;
+      }
       // Gather candidate prior mocks, grouped by where they were approved (each group keeps its
       // front/back together), deduped by URL across all sources for this art file.
       const seen = new Set();

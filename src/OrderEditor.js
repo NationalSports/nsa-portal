@@ -5,8 +5,8 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isTopstarLine } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isTopstarLine } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -126,11 +126,6 @@ const ssCdnImg=u=>{
 // a refill as "within a week" in that tooltip and keeps it out of the
 // Backordered summary strip. Past/stale dates are ignored.
 const RESTOCK_SOON_DAYS=7;
-// Same "does this art file actually have anything to review" check the approval-card UI uses (App.js
-// totalMocks) — mirrors businessLogic.js's buildJobs copy. An art file can carry a stale 'needs_approval'
-// status with 0 files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as
-// waiting_approval or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
-const _hasMockupContent=(af)=>Math.max((af.mockup_files||af.files||[]).length,Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0))>0;
 const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)return null;if(/^\d{4}-\d{2}-\d{2}$/.test(str))str+='T00:00';const d=new Date(str);return isNaN(d.getTime())?null:d;};
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
@@ -249,6 +244,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const updated={...o,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
     setO(updated);onSave(updated);setDirty(false);
     nf('Art recalled — set up the new design (🎨 Set up job), or use '+updateLabel+' to message the artist'+(wasInProd?' · ⚠️ Production put back on hold':'')+(sibs?' · ⚠️ '+sibs+' related job(s) held':''),(wasInProd||sibs)?'error':'success');
+  };
+  // Send a job's art back to the artist for a NEW/redone mockup — the reused mock is wrong or the
+  // rep wants a change. The design identity stays (unlike Recall); the art returns to art_requested
+  // and its files to waiting_for_art, clearing coach-send/approval residue and staling seps so the
+  // redo can't skip the production-file re-check. Resets the whole split family (siblings share the
+  // design). Component-level so the art_complete Check-Mock banner and the waiting_approval panel
+  // share ONE implementation instead of two hand-synced copies.
+  const _sendArtBackToArtist=(ji,reason)=>{
+    const j=safeJobs(o)[ji];if(!j)return;
+    const _revAt=new Date().toISOString();
+    const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
+    const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+    const _revFamIdx=new Set(_artFamilyIdxs(ji));
+    const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+    const updArt2=safeArt(o).map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
+    saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
   };
   // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
   // convention where gi.sizes carries only that job's subset of the SO item's sizes.
@@ -512,9 +523,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _tgtM=_cwMatchForItem(_afObj,_item,cg.color);
     const _tgtCw=(_tgtM&&_tgtM.exact&&(_cws.find(c=>c.id===_tgtM.id)||{}).garment_color)||'';
     const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const cls=garmentColorClass(col);const m=cls?_cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return (m&&m.garment_color)||''};
-    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCw&&x._cw===_tgtCw)?0:1)-((_tgtCw&&y._cw===_tgtCw)?0:1));
-    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-      {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
+    // The SAME design is often approved on many garments, so a reused-art garment can offer a dozen
+    // near-identical mocks (all the same logo/shade). Rank best-first — shade-matched, then a source
+    // garment that IS this SKU — and show only the top few by default, with a toggle for the rest, so
+    // the rep isn't wading through ten copies of the same logo just to confirm one.
+    const _rank=g=>((_tgtCw&&g._cw===_tgtCw)?0:2)+((String(g.from||'').split('|')[0]===cg.sku)?0:1);
+    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>_rank(x)-_rank(y));
+    const _ek=jobIdForApply+'|'+cg.sku+'|'+(cg.color||'')+'|'+af2.art_file_id;
+    const _cap=2;const _isExp=!!expandedMockGroups[_ek];const _shown=_isExp?_grps:_grps.slice(0,_cap);const _hidden=_grps.length-_shown.length;
+    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      {_shown.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
         return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
         {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'zoom-in'}} onClick={()=>setMockupLightbox(pm.url)}/>:<div key={pi} title="Click to enlarge" onClick={()=>setMockupLightbox(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'zoom-in'}}>📄</div>)}
         <div style={{minWidth:92}}>
@@ -526,6 +544,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             :<button className="btn btn-sm" style={{fontSize:9,background:'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} title="This mock was approved on a different garment shade — eyeball it before using" onClick={_apply}>Use for {cg.color||cg.sku} — confirm</button>}
         </div>
       </div>})}
+      {(_hidden>0||_isExp)&&_grps.length>_cap&&<button onClick={e=>{e.stopPropagation();setExpandedMockGroups(p=>({...p,[_ek]:!p[_ek]}))}} style={{fontSize:10,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',border:'1px dashed #c4b5fd',borderRadius:6,padding:'5px 10px',cursor:'pointer',alignSelf:'stretch'}} title="These are all the same design approved on other garments">{_isExp?'Show fewer':'+ '+_hidden+' more mock'+(_hidden>1?'s':'')}</button>}
     </div>;
   });
   // Add a Previous Artwork group to this order WITHOUT auto-applying its mockups. Production files,
@@ -781,6 +800,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
+  const[expandedMockGroups,setExpandedMockGroups]=useState({});// {jobId|sku|color|artFileId:true} — reveal ALL reuse-mock candidates for one garment; default shows only the best couple (the same design was often mocked on many garments — see priorMockCards).
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
@@ -2811,7 +2831,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Remove a single mockup image (by URL) from the artwork's item_mockups / mockup_files so a rep
   // can clear stale or wrong mockups from a job. Source art (files/prod_files) is left untouched.
   // Persists immediately so the deletion survives a page refresh.
-  const removeMockupUrl=url=>{if(!url)return;const _u=f=>typeof f==='string'?f:(f&&f.url)||'';const _strip=arr=>(arr||[]).filter(f=>_u(f)!==url);const updated={...o,art_files:safeArt(o).map(a=>{const im={...(a.item_mockups||{})};let changed=false;Object.keys(im).forEach(k=>{const before=im[k]||[];const after=_strip(before);if(after.length!==before.length){im[k]=after;changed=true}});const mf=_strip(a.mockup_files);if(mf.length!==(a.mockup_files||[]).length)changed=true;if(!changed)return a;return{...a,item_mockups:im,mockup_files:mf}}),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf('Mockup removed')};
+  // scope = {sku,color,artFileIds} — the × sits on ONE garment's card in ONE job's panel, so only
+  // clear that garment's keys on the art files the job owns. Order-wide-by-url removal wiped the same
+  // image off sibling garments/jobs that reused it (SO-1023). See removeMockFromArtFiles.
+  const removeMockupUrl=(url,scope)=>{if(!url)return;const updated={...o,art_files:removeMockFromArtFiles(safeArt(o),url,scope||{}),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf('Mockup removed')};
   // Side a mockup represents (front/back), from the stored tag or the filename suffix.
   const _mockSide=f=>{const s=typeof f!=='string'&&f&&f.side;if(s==='front'||s==='back')return s;const n=(typeof f!=='string'&&(f?.name||f?.url))||(typeof f==='string'?f:'');if(/-front\.png/i.test(n))return 'front';if(/-back\.png/i.test(n))return 'back';return ''};
   // Display order for a mockup: explicit ord if set, else front before back before others.
@@ -3061,7 +3084,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     };
     // Per-art job art_status, shared by the Step-3 builder and the frozen-job art heal below so
     // the two derivations can't drift apart.
-    const _artStForFile=(artF,fallbackDt)=>artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||fallbackDt)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
+    // Shared derivation (constants.artStatusForFile) — MUST match buildJobs. This copy previously
+    // omitted the 'uploaded' branch, regressing artist-uploaded proofs to needs_art on save (F5).
+    const _artStForFile=(artF,fallbackDt)=>artStatusForFile(artF,fallbackDt);
     // Live-art resolver for healFrozenJobArtDrift. Mirrors _liveDecoType's hydration-safety
     // convention: 'unresolved' (art deco whose file isn't loaded) aborts the heal, while null
     // (deleted line, non-art deco, TBD/unassigned, outsourced) just contributes nothing.
@@ -9670,8 +9695,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:18}}>🔍</span>
                   <span style={{fontWeight:800,fontSize:15,color:'#854d0e'}}>Check Mock — art reused on a different garment</span>
                 </div>
-                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>This art was approved on a different color/style, so there's no mock for <b>{_gLabels}</b> yet. Set up the job to pick an approved mock (color-way matched) or send it to the artist for a new one.</div>
-                <button className="btn btn-sm" style={{fontSize:12,background:'#7c3aed',color:'white',border:'none',fontWeight:700,padding:'6px 14px'}} onClick={_openSetup}>🎨 Set up job</button>
+                <div style={{fontSize:12,color:'#92400e',marginBottom:10}}>This art was approved on a different color/style, so there's no confirmed mock for <b>{_gLabels}</b> yet. If the mock below is right, approve it as-is — or request a new mock from the artist.</div>
+                {/* Approve-as-is: the prior approved mocks render right here (color-way matched) so the rep
+                    can confirm one in a click — no wizard. Same picker the Set up job wizard uses. */}
+                {_mockCheckGarments.map((cg,ci)=><div key={ci} style={{marginBottom:8}} onClick={e=>e.stopPropagation()}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#0f172a',marginBottom:4}}>{cg.color?cg.color+' · ':''}{cg.sku}</div>
+                  {priorMockCards(cg,j.id)}
+                </div>)}
+                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:4}} onClick={e=>e.stopPropagation()}>
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'5px 12px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
+                    title="None of these mocks are right — pull the art back and have the artist build a new mockup for this garment"
+                    onClick={()=>{const _who=REPS.find(r=>r.id===j.assigned_artist)?.name||'the artist';if(!window.confirm('Send "'+(j.art_name||'this art')+'" to '+_who+' for a new mockup on '+_gLabels+'?\n\nThe art goes back to Waiting for Art and any coach-approval state on this job is cleared.'))return;_sendArtBackToArtist(ji,'Need a new mock for '+_gLabels+' — reused art, rep requested a fresh mockup.')}}>🎨 Request a new mock</button>
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'5px 10px',background:'none',color:'#7c3aed',border:'none',fontWeight:700,textDecoration:'underline',cursor:'pointer'}} title="Open the full job setup (reassign artist, notes, split)" onClick={_openSetup}>Set up job…</button>
+                </div>
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
@@ -9727,8 +9763,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Coach/rep change-request — keep the reviewed mockup + feedback visible while the art is back with the artist.
                 The Art Dashboard shows the mockup regardless of status; this mirrors it so the job view doesn't go blank. */}
             {(j.art_status==='art_requested'||j.art_status==='art_in_progress')&&(j.coach_rejected||(j.rejections||[]).length>0)&&(()=>{
-              const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-              (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+              const _jobArtIds=jobArtFileIds(j,safeItems(o));
               const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
               const _seen=new Set();
               const mockups=(()=>{const _m=[..._filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])),..._filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()))];const _all=_m.length>0?_m:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));return _all.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true})})();
@@ -9763,7 +9798,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=jobArtFileIds(j,safeItems(o));const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
               // Reused / previously-approved art parks here (waiting_approval) but has no garment
               // mockup for THIS order yet — so it can't be approved or sent to the coach, it needs
               // SETTING UP first. Same gate the Send-to-Coach button and the review-art to-do use
@@ -9781,17 +9816,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // rather than "In Progress" (nobody has started the redo yet). The artist board's
               // Waiting-for-Art column includes art_requested, so the job stays visible there,
               // with its Start Working button moving it to In Progress when the artist picks it up.
-              const _sendBackToArtist=(reason)=>{
-                const _revAt=new Date().toISOString();
-                const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
-                const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                // Reset the whole split family — slices share the design, so a redo on one must reset
-                // its siblings too or they stay Art Complete on art that's being redrawn.
-                const _revFamIdx=new Set(_artFamilyIdxs(ji));
-                const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
-                const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
-                saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
-              };
+              const _sendBackToArtist=(reason)=>_sendArtBackToArtist(ji,reason);
               return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':_needsSetup?'🎨':'⚠️'}</span>
@@ -9919,7 +9944,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU).
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
-                    const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr))));
+                    // Scope the mock lookup to the decorations THIS job owns (deco_idxs), same as the spec
+                    // rows below. On an art-split line the sibling designs (Friars / 2 Col) sit on the same
+                    // garment but belong to other jobs — without this scope, _gf's base-key fallback pulled a
+                    // sibling design's mock onto this job's garment (the 2-Col logo rendering under the Attack
+                    // Everything job on a shared JX4452 line, SO-1023). Each deco keeps its index in the FULL
+                    // art-deco list (ai) so the positional discriminator key ('d1','d2') is unchanged.
+const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr))));
                     const _genPack=perSkuMocks.length===0?(()=>{const _g=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so show it rather than a dead 'No mockup uploaded yet' */return _g.length>0?{files:_g,proof:false}:{files:_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.prod_files||[])),proof:true}})():{files:[],proof:false};
                     const generalMocks=_genPack.files;
                     // Everything shown is a prod-file sew-out proof, not a garment mockup. Label it,
@@ -9967,23 +9998,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           </div>
                           <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLinkOE(_linkArtId,gi.sku+'|'+(gi.color||''),null)}>Unlink</button>
                         </div>;})()
-                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<><div style={{padding:10}}>
+                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));
+                        // A sew-out proof is NOT a garment mockup — render it small, grey-bordered and
+                        // labeled "production reference" so it never reads as the approved mockup. Real
+                        // mockups keep the prominent 280px orange frame.
+                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#cbd5e1':'#f59e0b';
+                        return<><div style={{padding:10}}>
                         {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from this art's production files — not a garment mockup. Pick an option below: reuse an approved mock or send to the artist for one.</div>}
-                        <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
-                          {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
-                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white'}}>
-                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url)}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
+                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
+                        <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
+                          {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
+                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px '+(_proofOnly?'dashed':'solid')+' '+_mkBd,overflow:'hidden',background:'white',opacity:_proofOnly?0.92:1}}>
+                              {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
+                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{sku:gi.sku,color:gi.color,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
                               <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
                                 <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
                                   <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:_mkH,background:'#fafafa'}}>
                                 <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                               </div>
-                              <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                              <div style={{padding:'4px 10px',borderTop:'1px solid '+(_proofOnly?'#e2e8f0':'#fde68a'),fontSize:11,color:_proofOnly?'#64748b':'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
                                 <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
                                   {_ordered.length>1&&<>
                                     <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #fcd34d',background:'#fffbeb',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
@@ -10163,8 +10200,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             {(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&(()=>{
                 // Per-item layout: mockup + decoration spec + size grid + production files (mirrors Art Dashboard).
-                const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-                (j.items||[]).forEach(_gi=>{const _it=safeItems(o)[_gi.item_idx];if(!_it)return;safeDecos(_it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});
+                const _jArtIds=jobArtFileIds(j,safeItems(o));
                 const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 if(itemDetails.length===0)return null;
                 // Mock links render read-only here (art is already approved): a linked garment
@@ -10182,7 +10218,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     const _seen=new Set();
                     const _mk=gi.sku+'|'+(gi.color||'');
-                    const _decosSorted=it?safeDecos(it).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap((d,i)=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr))));
+                    // Scope the mock lookup to the decorations THIS job owns (deco_idxs), same as the spec
+                    // rows below. On an art-split line the sibling designs (Friars / 2 Col) sit on the same
+                    // garment but belong to other jobs — without this scope, _gf's base-key fallback pulled a
+                    // sibling design's mock onto this job's garment (the 2-Col logo rendering under the Attack
+                    // Everything job on a shared JX4452 line, SO-1023). Each deco keeps its index in the FULL
+                    // art-deco list (ai) so the positional discriminator key ('d1','d2') is unchanged.
+const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr))));
                     const _genPack=perSkuMocks.length===0?(()=>{const _g=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so show it rather than a dead 'No mockup uploaded yet' */return _g.length>0?{files:_g,proof:false}:{files:_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.prod_files||[])),proof:true}})():{files:[],proof:false};
                     const generalMocks=_genPack.files;
                     // Proof-only garments: label the files as sew-out proofs and drop the × —
@@ -10224,23 +10266,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                            :<div style={{width:54,height:54,borderRadius:6,border:'1px dashed #86efac',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🖼️</div>}
                           <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>🔗 Same mockup as {_myLinkSrc.split('|')[0]}</div>
                         </div>;})()
-                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<div style={{padding:10}}>
+                      :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));
+                        // Parity with the editable panel: a sew-out proof is NOT a garment mockup, so
+                        // render it small, grey, dashed and badged — never as the approved green mockup.
+                        const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#cbd5e1':'#86efac';
+                        return<div style={{padding:10}}>
                         {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#166534',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from this art's production files — not a garment mockup.</div>}
-                        <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
-                          {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
-                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #86efac',overflow:'hidden',background:'white'}}>
-                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url)}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
+                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. Use the Check Mock panel above to confirm the real approved mockup or send it to the artist.</div>}
+                        <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
+                          {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
+                            return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px '+(_proofOnly?'dashed':'solid')+' '+_mkBd,overflow:'hidden',background:'white',opacity:_proofOnly?0.92:1}}>
+                              {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
+                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{sku:gi.sku,color:gi.color,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
                               <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:280,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
-                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:280,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                              {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                              :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                                {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
                                 <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
                                   <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,color:'#1e40af'}}>{name}</span></div></div>
-                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:280,background:'#fafafa'}}>
+                              :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:_mkH,background:'#fafafa'}}>
                                 <span style={{fontSize:20}}>📄</span><span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                               </div>
-                              <div style={{padding:'4px 10px',borderTop:'1px solid #bbf7d0',fontSize:11,color:'#166534',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
+                              <div style={{padding:'4px 10px',borderTop:'1px solid '+(_proofOnly?'#e2e8f0':'#bbf7d0'),fontSize:11,color:_proofOnly?'#64748b':'#166534',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}}>
                                 <span style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
                                   {_ordered.length>1&&<>
                                     <button title="Move earlier" disabled={fi===0} onClick={e=>{e.stopPropagation();moveMock(_ou,fi,-1)}} style={{border:'1px solid #bbf7d0',background:'#f0fdf4',borderRadius:4,fontSize:11,lineHeight:1,padding:'2px 5px',cursor:fi===0?'default':'pointer',opacity:fi===0?0.4:1}}>◀</button>
@@ -11214,7 +11261,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const _scopedJob=g._existingJobId?safeJobs(o).find(jj=>jj.id===g._existingJobId):null;
               if(!_scopedJob||!(_scopedJob.art_status==='art_complete'||PROD_FILES_STATUSES.includes(_scopedJob.art_status)))return null;
               const _aids=[...new Set(_gi2.map(it=>it.art_file_id).filter(Boolean))];
-              const _pseudo={_art_ids:_aids,art_file_id:_aids[0],items:_gi2.map(it=>({item_idx:it.item_idx,sku:it.sku,color:it.color,name:it.name}))};
+              // Carry each wizard item's deco_idxs into the pseudo-job so garmentsNeedingMockCheck
+              // scopes an art-split garment to THIS group's design only. Without it the split
+              // garment's sibling designs (e.g. Attack Everything on a 2-Col job) leak in as
+              // "reuse an approved mock" cards for the wrong artwork (SO-1131).
+              const _pseudo={_art_ids:_aids,art_file_id:_aids[0],items:_gi2.map(it=>({item_idx:it.item_idx,deco_idx:it.deco_idx,deco_idxs:Array.isArray(it.deco_idxs)&&it.deco_idxs.length?it.deco_idxs:(it.deco_idx!=null?[it.deco_idx]:undefined),sku:it.sku,color:it.color,name:it.name}))};
               const _rc=garmentsNeedingMockCheck(_pseudo,o,priorMocks);
               if(!_rc.length)return null;
               return<div style={{marginBottom:10,padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
