@@ -334,6 +334,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // dead "Convert to SO" button that would spawn a second SO (and double-spend promo/credit funds).
   const linkedSO=isE?(allOrders||[]).find(s=>s.estimate_id===o.id):null;
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[editingRep,setEditingRep]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
+  // Portal Assistant → "add a line to the open estimate". The assistant runs at App scope and
+  // cannot reach this editor's local `o` (the sync effect below intentionally ignores external
+  // item additions), so it hands us a fully-formed, already-priced line via a window event and
+  // we append it here, marking dirty. Estimate editor only; the user reviews before saving.
+  React.useEffect(()=>{
+    if(!isE)return;
+    const h=(ev)=>{const line=ev&&ev.detail&&ev.detail.line;if(!line)return;setO(prev=>({...prev,items:[...(prev.items||[]),line],updated_at:new Date().toISOString()}));setDirty(true);};
+    window.addEventListener('nsa:assistant-add-line',h);
+    return ()=>window.removeEventListener('nsa:assistant-add-line',h);
+  },[isE]);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -3684,7 +3694,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {o.memo&&<span className="oe2-tb-chip">{o.memo}</span>}
       <span style={{flex:1}}/>
       {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
-      <button ref={actionsRef} className="btn btn-secondary" style={{fontSize:13,padding:'8px 13px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
+      <button ref={actionsRef} data-tour-id="oe-actions-toggle" className="btn btn-secondary" style={{fontSize:13,padding:'8px 13px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
       <button className="oe2-cta" onClick={()=>{
         if(!cust){nf('Select a customer first','error');return}
         const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
@@ -3709,7 +3719,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <span style={{fontWeight:800,fontSize:14,color:'#166534'}}>Coach Approved This Estimate</span>
           {o.approved_at&&<span style={{fontSize:11,color:'#15803d',marginLeft:8}}>{new Date(o.approved_at).toLocaleDateString()}</span>}
         </div>
-        {onConvertSO&&<button className="btn btn-sm" style={{fontSize:11,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>{const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});if(validItems.length===0){nf('Add items first','error');return}onConvertSO(o)}}>Convert to Sales Order</button>}
+        {onConvertSO&&<button className="btn btn-sm" data-tour-id="oe-convert-so" style={{fontSize:11,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>{const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});if(validItems.length===0){nf('Add items first','error');return}onConvertSO(o)}}>Convert to Sales Order</button>}
       </div>
     </div>}
     {/* UPDATE REQUESTS BANNER — shows when coach has requested changes */}
@@ -4005,7 +4015,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when the customer has drawable funds: a funded period (incl. a one-time
                 manual allocation with no program) or an active fixed program to auto-allocate from. */}
-            {cust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+            {cust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} data-tour-id="oe-promo-apply" onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
               const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
@@ -4323,7 +4333,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     </div></div>
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
-      <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
+      <button data-tour-id="oe-tab-items" className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
@@ -4336,7 +4346,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={sortByDeco} title="Group line items together by their decoration">↕ Sort by Decoration</button>
         {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,background:'#FEF3C7',color:'#92400E',border:'1px solid #FDE68A'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
         {safeItems(o).some((_,i)=>collapsedItems[i])
-          ?<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
+          ?<button data-tour-id="oe-expand-all" className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
           :<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
       </div>}
     </div>
@@ -5095,7 +5105,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>}</div>)}
             return null})}
           <div style={{display:'flex',gap:7,marginTop:12,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #EEF1F6',paddingTop:11}}>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> Add Art</button>
+            <button data-tour-id="oe-item-add-art" className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> Add Art</button>
             {/* Routing (item-level): In-house ⇄ Outside soft toggle. Shown on estimates AND SOs (it's a
                 planning flag, carried through conversion). Deco-PO creation/linking stays SO-only below. */}
             {(()=>{const artDecos=safeDecos(item).filter(d=>d.kind==='art');const _dp=isSO?(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).includes(idx)):null;if(artDecos.length===0&&!_dp)return null;const _outside=!!_dp||artDecos.some(d=>d.fulfillment==='outside');return<>
@@ -5188,7 +5198,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>)})}
     {/* ADD PRODUCT */}
     <div className="card"><div style={{padding:'14px 18px'}}>
-      {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
+      {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" data-tour-id="oe-add-product" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto',background:'#7c3aed',color:'white',borderColor:'#6d28d9'}} onClick={()=>setAiBuild({step:'input',inputMode:'text',text:'',images:[],url:'',loading:false,error:null,parsed:[],warnings:[],build_id:null})} disabled={!cust} title="Use AI to parse a coach's order (text, image, or Google Sheets link) into line items">✨ Build with AI</button></div>

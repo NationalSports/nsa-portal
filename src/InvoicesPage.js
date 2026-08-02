@@ -1343,7 +1343,7 @@ export default function InvoicesPage(){
 
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
+        <div className="search-bar" data-tour-id="invoices-search" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={invF.rep} onChange={e=>setInvF(f=>({...f,rep:e.target.value}))}>
           <option value="all">All Reps</option><option value="_me_">My Invoices</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>

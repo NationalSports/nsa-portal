@@ -37,6 +37,7 @@ import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/r
 import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { AppDataProvider } from './AppContext';
+import PortalAssistant from './PortalAssistant';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -135,15 +136,20 @@ const computeOmgSoSync=(so)=>{
   // actually covered by pulled picks + PO receipts, and holds the rest at
   // on-order — this is what makes the guide's "backordered sizes stay at On
   // order" real during the receiving window (audit fix #4).
-  const storeStage=
+  let storeStage=
     (soStatus==='ready_to_invoice'||soStatus==='complete')?'bagging':
     (soStatus==='in_production')?'in_production':
     (soStatus==='items_received'||soStatus==='waiting_receive'||soStatus==='needs_pull')?'received':
-    null; // need_order / booking → leave parents at on-order
-  // Per-SKU+size received qty = pulled picks + PO receipts (matches calcSOStatus).
+    null; // need_order / booking → nothing received/produced yet (see on-order floor below)
+  // Two per-SKU+size pools:
+  //  • recvBySkuSize = goods in hand: pulled picks + PO receipts (matches calcSOStatus).
+  //  • commBySkuSize = units SECURED but maybe not in hand: every pick line +
+  //    PO-ordered minus cancelled. Mirrors the Jobs board's deriveJobItemStatus
+  //    coverage so a webstore line reads "On order" exactly when a PO/allocation
+  //    exists for it, and "Waiting" until then.
   // aliasKeys maps alternate lookup keys (e.g. name-based) → the canonical
   // SKU|SIZE bucket so allocation always draws from ONE quantity pool.
-  const recvBySkuSize={};const aliasKeys={};
+  const recvBySkuSize={};const commBySkuSize={};const aliasKeys={};
   safeItems(so).forEach(it=>{
     const sk=_wsNormSku(it.sku);if(!sk)return;
     const nm=_wsNormName(it.name);
@@ -152,11 +158,18 @@ const computeOmgSoSync=(so)=>{
       const k=sk+'|'+szN;
       const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      const allPicked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       recvBySkuSize[k]=(recvBySkuSize[k]||0)+pulled+rcvd;
+      commBySkuSize[k]=(commBySkuSize[k]||0)+Math.max(0,allPicked+poOrd);
       if(nm){const ak='N:'+nm+'|'+szN;if(!(ak in aliasKeys))aliasKeys[ak]=k}
     });
   });
-  return { soId:so.id, soStatus, storeStage, recvBySkuSize, aliasKeys };
+  // A PO (or stock allocation) exists but the SO hasn't reached a receiving
+  // status yet → surface covered parents at 'on order' instead of leaving the
+  // sync a no-op. Uncovered lines still fall back to 'pending' (Waiting).
+  if(!storeStage&&Object.values(commBySkuSize).some(v=>v>0))storeStage='on_order';
+  return { soId:so.id, soStatus, storeStage, recvBySkuSize, commBySkuSize, aliasKeys };
 };
 // Auto-push the computed OMG status onto the linked parent order items. Called
 // from savSO whenever an OMG-linked SO changes (receiving, jobs, picks), so the
@@ -164,8 +177,8 @@ const computeOmgSoSync=(so)=>{
 // portal's syncFromSO allocation: store moves together to the SO stage, but an
 // item whose SKU+size isn't fully received holds at on-order (backorder).
 // Never downgrades, never touches shipped/cancelled. Best-effort + silent.
-const _OMG_STAGE_ORD = { pending:0, on_order:0, received:1, in_production:2, bagging:3, shipped:4, complete:4 };
-const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shipped'];
+const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
+const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
 // set of webstore_order_items and advance their line_status. Shared by the OMG
 // shadow-store sync and the native webstore sync. Monotonic — only advances a
@@ -173,8 +186,10 @@ const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shippe
 // received SKU/size at on-order so backordered lines don't jump ahead.
 const _applyWebstoreStageSync=async(sync,items)=>{
   const storeIdx=_OMG_STAGE_ORD[sync.storeStage]??0;
+  const onOrderIdx=_OMG_STAGE_ORD.on_order;
   const aliases=sync.aliasKeys||{};
-  const used={};const byLs={};
+  const comm=sync.commBySkuSize||{};
+  const usedRecv={};const usedComm={};const byLs={};
   (items||[]).forEach(i=>{
     if(i.line_status==='shipped'||i.line_status==='cancelled')return; // ShipStation/cancel own these
     // Resolve the line to its canonical SO SKU|SIZE bucket through the key
@@ -186,9 +201,15 @@ const _applyWebstoreStageSync=async(sync,items)=>{
     }
     const qty=i.qty||1;
     const recvAvail=k?(sync.recvBySkuSize[k]||0):0;
-    if(k)used[k]=used[k]||0;
-    const isReceived=k?(used[k]+qty)<=recvAvail:false;if(k)used[k]+=qty;
-    const targetIdx=isReceived?storeIdx:0; // not received/unmatched → hold at on-order
+    const commAvail=k?(comm[k]||0):0;
+    if(k){usedRecv[k]=usedRecv[k]||0;usedComm[k]=usedComm[k]||0;}
+    // Allocate goods-in-hand first (a received unit also consumes the committed
+    // pool so it isn't double-counted), then remaining committed units → on order;
+    // anything unsecured stays at pending (Waiting).
+    let targetIdx;
+    if(k&&(usedRecv[k]+qty)<=recvAvail){usedRecv[k]+=qty;usedComm[k]+=qty;targetIdx=storeIdx;}
+    else if(k&&(usedComm[k]+qty)<=commAvail){usedComm[k]+=qty;targetIdx=onOrderIdx;}
+    else{targetIdx=0;}
     const curIdx=_OMG_STAGE_ORD[i.line_status]??0;
     if(targetIdx>curIdx){const ls=_OMG_STAGE_LABEL[targetIdx];(byLs[ls]=byLs[ls]||[]).push(i.id)}
   });
@@ -4441,7 +4462,7 @@ export default function App(){
   React.useEffect(()=>{if(selV)addRecent('vendor',selV.id,selV.name)},[selV?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');const[nlSpec,setNlSpec]=useState(null);
   // Supplier invoices (si_documents) aren't held in memory — the Sports Inc queue is lazy-loaded on
   // demand — so global search reaches them with its own debounced DB query. The longest query token
   // drives an ilike across the PO#/supplier/invoice#/matched-PO columns; rSearch then applies the
@@ -6460,6 +6481,28 @@ export default function App(){
       return clone}),_artIdMap);
     const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
+  // Reorder: clone a past SO (or estimate) into a NEW draft estimate and open it. Promoted from
+  // the inline Quick Reorder handler so the Portal Assistant can reuse it. Mirrors
+  // copyEstimate/copySalesOrder (hydration heal + item strip + qty_only preserve). When
+  // opts.persist===false the draft opens in the editor WITHOUT being added to `ests`, so it is
+  // NOT saved until the user hits Save (same as the "New Estimate" flow); the default persists
+  // immediately, matching the existing Quick Reorder button.
+  const cloneToEstimate=async(source,opts={})=>{
+    if(!source)return;
+    if(source._itemsHydrated===false||source._decosHydrated===false){
+      if(!supabase){nf("This order hasn't finished loading — reload the page and try again before reordering.",'error');return;}
+      const isSO=('estimate_id' in source)||source.order_type!==undefined;
+      try{source=isSO?await _refetchSOForCopy(source):await _refetchEstimateForConvert(source);}
+      catch(e){console.error('[cloneToEstimate] decoration re-fetch failed:',e);nf("Couldn't load this order's decorations to reorder it — reload the page and try again.",'error');return;}
+    }
+    const c=cust.find(x=>x.id===source.customer_id);
+    const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(source.art_files);
+    const clonedItems=remapItemArtIds(safeItems(source).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;return clone}),_artIdMap);
+    const estId=nextEstId(ests);
+    const ne={id:estId,customer_id:source.customer_id,memo:(source.memo||'')+' (reorder)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:source.default_markup||c?.custom_multiplier||1.65,shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,ship_to_id:source.ship_to_id||'default',email_status:null,art_files:clonedArt,items:clonedItems};
+    if(opts.persist===false){setEEst(ne);setEEstC(c);setPg('estimates');nf(`Draft ${estId} ready from ${source.id} — review and Save to keep it`);}
+    else{setEsts(prev=>[ne,...prev]);setEEst(ne);setEEstC(c);setPg('estimates');nf(`Created ${estId} — reordered ${clonedItems.length} items from ${source.id}`);}
+  };
   const revertSOToEst=so=>{
     // Check for open POs or IFs (pick lines) — if any exist, block the revert
     const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
@@ -9385,14 +9428,14 @@ export default function App(){
       </div>
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
+        <div className="search-bar" data-tour-id="estimates-search" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={estF.rep} onChange={e=>setEstF(f=>({...f,rep:e.target.value}))}>
           <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
         {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
-        <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
+        <button className="btn btn-primary" data-tour-id="new-estimate-btn" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Created</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===(c?.primary_rep_id||e.created_by));const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;const _openEst=()=>{setEEst(e);setEEstC(c)};const RL=({children,style})=><RowLink params={{est:e.id}} onOpen={_openEst} style={style}>{children}</RowLink>;return(<tr key={e.id} style={{cursor:'pointer'}}>
@@ -9453,7 +9496,7 @@ export default function App(){
 
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
+        <div className="search-bar" data-tour-id="orders-search" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
           <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
@@ -10525,7 +10568,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
         <button className="btn" onClick={()=>setAiInvPoWizOpen(true)} style={{background:'linear-gradient(135deg,#7c3aed,#6d28d9)',color:'white',border:'none',fontWeight:700,boxShadow:'0 1px 3px rgba(124,58,237,0.3)'}} title="Build an inventory PO with AI from a paste, image, or sheet">✨ Build with AI</button>
-        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
+        <button className="btn btn-primary" data-tour-id="inv-new-po-btn" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
@@ -10585,7 +10628,7 @@ export default function App(){
       <button className={`tab ${invTab==='stock'?'active':''}`} onClick={()=>setInvTab('stock')}>Stock</button>
       {isA&&<button className={`tab ${invTab==='clearance'?'active':''}`} onClick={()=>setInvTab('clearance')}>Clearance{prod.filter(p=>p.is_clearance).length>0?' ('+prod.filter(p=>p.is_clearance).length+')':''}</button>}
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
-      <button className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
+      <button data-tour-id="inv-pos-tab" className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
       {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>{setInvTab('b2b');refreshAdidasLastSync()}} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
     </div>
     {invTab==='stock'&&rInvStock()}
@@ -12351,8 +12394,8 @@ export default function App(){
       </div>}
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
-        <button onClick={()=>setScanModalOpen(true)} style={{background:'#0f172a',border:'2px solid #334155',borderRadius:8,padding:'6px 12px',cursor:'pointer',color:'#22c55e',display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700}} title="Scan barcode"><Icon name="scan" size={16}/> Scan</button>
-        <div className="search-bar" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
+        <button data-tour-id="po-scan-btn" onClick={()=>setScanModalOpen(true)} style={{background:'#0f172a',border:'2px solid #334155',borderRadius:8,padding:'6px 12px',cursor:'pointer',color:'#22c55e',display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700}} title="Scan barcode"><Icon name="scan" size={16}/> Scan</button>
+        <div className="search-bar" data-tour-id="po-search" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
         <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
         <select className="form-select" style={{width:140}} value={poF.rep} onChange={e=>setPOF(f=>({...f,rep:e.target.value}))}>
@@ -20991,7 +21034,7 @@ export default function App(){
           <option value="all">All Artists</option><option value="">Unassigned</option>
           {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>}
-        <input className="form-input" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
+        <input className="form-input" data-tour-id="art-search" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artistJobs.length} job{artistJobs.length!==1?'s':''}</span>
       </div>
 
@@ -33068,21 +33111,6 @@ export default function App(){
             const custEsts=ests.filter(e=>e.customer_id===reorderCust).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
             const c=cust.find(x=>x.id===reorderCust);
             if(!custSOs.length&&!custEsts.length)return<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No previous orders or estimates found for {c?.name}.</div>;
-            const cloneToEstimate=(source)=>{
-              const estId=nextEstId(ests);
-              // Fresh art ids on the clone (and re-point decorations) so the reorder never shares
-              // art_file ids with the source order — see reidArtFiles.
-              const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(source.art_files);
-              const clonedItems=remapItemArtIds((source.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||'',color:it.color||'',
-                  nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,notes:it.notes||null,
-                  decorations:(it.decorations||[]).map(d=>({...d}))})),_artIdMap);
-              const newEst={id:estId,customer_id:reorderCust,status:'draft',default_markup:c?.custom_multiplier||1.65,
-                shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,
-                items:clonedItems,
-                art_files:clonedArt,created_at:new Date().toISOString()};
-              setEsts(prev=>[newEst,...prev]);nf('Created '+estId+' — cloned '+((source.items||[]).length)+' items');
-              setEEst(newEst);setPg('estimates');
-            };
             return<div>
               {custSOs.length>0&&<><h3 style={{fontSize:14,marginBottom:8}}>Recent Sales Orders ({custSOs.length})</h3>
                 <table className="data-table" style={{fontSize:12,marginBottom:16}}><thead><tr><th>SO #</th><th>Items</th><th>Date</th><th>Status</th><th></th></tr></thead>
@@ -33793,8 +33821,500 @@ export default function App(){
     imgEl.src=url;
   }
 
+  // ── Natural-language search (Portal Assistant-driven) ───────────────────
+  // The assistant translates a plain-language query into a structured filter
+  // spec; this executes it over the SAME in-memory data and derived-field
+  // logic the rest of the portal uses (calcSOStatus, calcOrderMargin, buildJobs,
+  // commissionRepId) — no reimplementation, so results match everywhere else.
+  // Read-only. Entities: sales_orders, jobs. Keep the field list in lockstep
+  // with SEARCH_FIELDS in netlify/functions/portal-assistant.js.
+  const _nlMoney=(n)=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const _nlStatusLabel=(st)=>({booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items In',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[st]||st||'—');
+  const _nlArtLabel=(st)=>({needs_art:'Needs Art',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',upload_emb_files:'Upload EMB',order_dtf_transfers:'Order DTF',art_complete:'Art Complete'}[st]||st||'—');
+  const _nlCell=(col,val)=>{
+    if(['Order','Job','Invoice','Estimate','PO','SKU'].includes(col))return <span style={{fontWeight:700,color:'#1e40af'}}>{val}</span>;
+    if(col==='Art')return <span style={{color:(val==='Needs Art'||val==='Needs art')?'#b45309':'#166534',fontWeight:600}}>{val}</span>;
+    return val;
+  };
+  const _nlSpecLabel=(spec)=>{
+    if(!spec)return 'Search';
+    const _names={sales_orders:'Sales orders',jobs:'Jobs',invoices:'Invoices',estimates:'Estimates',customers:'Customers',products:'Products',purchase_orders:'Purchase orders'};
+    const ent=_names[spec.entity]||'Results';
+    const parts=(spec.filters||[]).map(f=>{if(f.field==='customer_id'){const cc=cust.find(x=>String(x.id).toLowerCase()===String(f.value).toLowerCase());return 'customer: '+(cc?(cc.name||cc.alpha_tag||f.value):f.value)}const o=f.op==='gt'?'>':f.op==='gte'?'≥':f.op==='lt'?'<':f.op==='lte'?'≤':f.op==='is_not'?'≠':f.op==='contains'?'~':'=';return `${f.field} ${o} ${f.value}`});
+    let s=ent+(parts.length?' · '+parts.join(' · '):'');
+    if(spec.sort&&spec.sort.field)s+=` · by ${spec.sort.field} ${spec.sort.dir==='asc'?'↑':'↓'}`;
+    return s;
+  };
+  function runPortalSearch(spec){
+    try{
+      const entity=(spec&&spec.entity)||'sales_orders';
+      const filters=Array.isArray(spec&&spec.filters)?spec.filters:[];
+      const sort=spec&&spec.sort;
+      const limit=Math.min(Math.max(Number(spec&&spec.limit)||200,1),300);
+      const custById=(id)=>cust.find(c=>c.id===id);
+      const soById=(id)=>id?sos.find(s=>s.id===id):null;
+      const custHay=(c)=>{if(!c)return'';const par=c.parent_id?cust.find(x=>x.id===c.parent_id):null;return((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
+      const repOf=(so)=>{try{return commissionRepId(custById(so&&so.customer_id),so)}catch{return null}};
+      const repMatch=(rid,val)=>{const rv=String(val==null?'':val).toLowerCase();if(rv==='me')return rid===cu.id;const ids=(DEFAULT_REPS||[]).filter(r=>String(r.name||'').toLowerCase().includes(rv)||String(r.id||'').toLowerCase()===rv).map(r=>r.id);if(ids.length)return ids.includes(rid);return String(rid||'').toLowerCase()===rv};
+      const _mC=new Map();const marginPct=(so)=>{if(_mC.has(so.id))return _mC.get(so.id);let p=0;try{p=Number(calcOrderMargin(so)?.pct)||0}catch{p=0}_mC.set(so.id,p);return p};
+      const _sC=new Map();const soStatus=(so)=>{if(_sC.has(so.id))return _sC.get(so.id);let st='';try{st=calcSOStatus(so)}catch{st=''}_sC.set(so.id,st);return st};
+      const soJobsOf=(so)=>{try{return buildJobs(so)||[]}catch{return[]}};
+      const soNeedsArt=(so)=>soJobsOf(so).some(j=>j.art_status&&j.art_status!=='art_complete');
+      const orderValue=(o)=>{try{return Number(calcOrderTotals(o)?.grand)||0}catch{return 0}};
+      const numVal=(v)=>{const s=String(v==null?'':v).trim();let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);if(m)return (+m[1])*10000+(+m[2])*100+(+m[3]);m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(m){let y=+m[3];if(y<100)y+=2000;return y*10000+(+m[1])*100+(+m[2])}const n=parseFloat(s.replace(/[^0-9.\-]/g,''));return isNaN(n)?null:n};
+      const boolVal=(v)=>{const s=String(v==null?'':v).toLowerCase();return s==='true'||s==='yes'||s==='1'};
+      const cmpNum=(a,op,b)=>op==='gt'?a>b:op==='gte'?a>=b:op==='lt'?a<b:op==='lte'?a<=b:op==='is_not'?a!==b:a===b;
+      const cmpStr=(a,op,b)=>op==='is_not'?a!==b:op==='contains'?a.includes(b):a===b;
+      const _todayYmd=(()=>{try{return new Date().toLocaleDateString('en-CA')}catch{return''}})();
+      const invBal=(i)=>{try{return Number(opsInvoiceBalance(i))||0}catch{return 0}};
+      const invDpd=(i)=>{try{const d=opsInvoiceDaysPastDue(i,_todayYmd);return d==null?0:Number(d)||0}catch{return 0}};
+      const _obC=new Map();const custOpenBal=(c)=>{if(_obC.has(c.id))return _obC.get(c.id);let b=0;try{invs.forEach(i=>{if(i.customer_id===c.id&&opsOpenInvoice(i))b+=invBal(i)})}catch{b=0}_obC.set(c.id,b);return b};
+      const custOpenOrders=(c)=>{try{return sos.some(s=>s.customer_id===c.id&&soStatus(s)!=='complete')}catch{return false}};
+      const prodHasImg=(p)=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
+      const vendName=(p)=>{const v=vend.find(x=>x.id===p.vendor_id);return((v&&v.name)||p.manufacturer||'')};
+      const estAge=(e)=>{try{const d=opsQuoteAgeDays(e);return d==null?0:Number(d)||0}catch{return 0}};
+      const ymdInt=(dstr)=>{if(!dstr)return 0;const s=String(dstr);let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return (+m[1])*10000+(+m[2])*100+(+m[3]);m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=+m[3];if(y<100)y+=2000;return y*10000+(+m[1])*100+(+m[2])}const d=new Date(s);return isNaN(d)?0:d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate()};
+      const _ffC=new Map();const ffOf=(so)=>{if(_ffC.has(so.id))return _ffC.get(so.id);let f=null;try{f=opsFulfillment(so)}catch{f=null}_ffC.set(so.id,f);return f};
+      const soHasNonVoidInv=(so)=>invs.some(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
+      const prodQty=(p)=>{try{return Object.values(p._inv||{}).reduce((a,q)=>a+(Number(q)||0),0)}catch{return 0}};
+      const _nowMs=(()=>{try{return Date.now()}catch{return 0}})();
+      let items=[];let getField=()=>'';let toRow=()=>({});let columns=[];
+      if(entity==='jobs'){
+        const jobItems=(job,so)=>{try{return String(deriveJobItemStatus(job,so)||'').toLowerCase()}catch{return ''}};
+        const _itemsLbl=(st)=>({items_received:'All In',partially_received:'Partial',waiting_receive:'Waiting',on_order:'On Order',need_to_order:'Need Order'}[st]||st||'—');
+        sos.forEach(so=>soJobsOf(so).forEach(j=>items.push({job:j,so})));
+        getField=(field,it)=>{const {job,so}=it;switch(field){
+          case 'prod_status':return String(job.prod_status||'').toLowerCase();
+          case 'art_status':return String(job.art_status||'').toLowerCase();
+          case 'needs_art':{let na=!!(job.art_status&&job.art_status!=='art_complete');if(!na){try{na=jobHasUnresolvedArt(job,so)}catch{na=false}}return na}
+          case 'item_status':return jobItems(job,so);
+          case 'items_in':return jobItems(job,so)==='items_received';
+          case 'margin_pct':return marginPct(so);
+          case 'customer':return custHay(custById(so.customer_id));
+          case 'rep':return repOf(so);
+          case 'text':return ((job.id||'')+' '+(job.art_name||'')+' '+(job.deco_type||'')+' '+(so.id||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
+          default:return '';}};
+        toRow=(it)=>{const {job,so}=it;const c=custById(so.customer_id);return{entity,id:(job.id||'')+so.id,soId:so.id,jobId:job.id,_rec:so,cells:{Job:job.id,Customer:c?.name||c?.alpha_tag||'—',Order:so.id,Deco:job.deco_type||'—',Art:_nlArtLabel(job.art_status),Items:_itemsLbl(jobItems(job,so)),Prod:job.prod_status||'—',Margin:marginPct(so)+'%'}}};
+        columns=['Job','Customer','Order','Deco','Art','Items','Prod','Margin'];
+      } else if(entity==='invoices'){
+        items=invs.slice();
+        getField=(field,i)=>{switch(field){
+          case 'is_open':return !!opsOpenInvoice(i);
+          case 'paid':{try{return !!opsFullyPaid(i)}catch{return false}}
+          case 'status':return String(i.status||'').toLowerCase();
+          case 'balance':return invBal(i);
+          case 'days_past_due':return invDpd(i);
+          case 'value':return Number(i.total)||0;
+          case 'date':return ymdInt(i.date);
+          case 'due_date':return ymdInt(i.due_date);
+          case 'customer':return custHay(custById(i.customer_id));
+          case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id));
+          case 'customer_id':return String(i.customer_id||'').toLowerCase();
+          case 'text':return ((i.id||'')+' '+(i.memo||'')+' '+(custById(i.customer_id)?.name||'')).toLowerCase();
+          default:return '';}};
+        toRow=(i)=>{const c=custById(i.customer_id);const d=invDpd(i);return{entity,id:i.id,_rec:i,cells:{Invoice:i.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(Number(i.total)||0),Balance:_nlMoney(invBal(i)),Status:(i.status||'—'),'Past Due':d>0?d+'d':'—'}}};
+        columns=['Invoice','Customer','Total','Balance','Status','Past Due'];
+      } else if(entity==='estimates'){
+        items=ests.slice();
+        getField=(field,e)=>{switch(field){
+          case 'is_open':return String(e.status||'').toLowerCase()!=='converted';
+          case 'status':return String(e.status||'').toLowerCase();
+          case 'age_days':return estAge(e);
+          case 'value':return orderValue(e);
+          case 'created_date':return ymdInt(e.created_at);
+          case 'customer':return custHay(custById(e.customer_id));
+          case 'rep':return (custById(e.customer_id)?.primary_rep_id)||e.created_by||null;
+          case 'customer_id':return String(e.customer_id||'').toLowerCase();
+          case 'text':return ((e.id||'')+' '+(e.memo||'')+' '+(custById(e.customer_id)?.name||'')).toLowerCase();
+          default:return '';}};
+        toRow=(e)=>{const c=custById(e.customer_id);return{entity,id:e.id,_rec:e,cells:{Estimate:e.id,Customer:c?.name||c?.alpha_tag||'—',Value:_nlMoney(orderValue(e)),Status:(e.status||'—'),Age:estAge(e)+'d'}}};
+        columns=['Estimate','Customer','Value','Status','Age'];
+      } else if(entity==='customers'){
+        items=cust.slice();
+        const _agg={};sos.forEach(so=>{const id=so.customer_id;if(!id)return;const a=_agg[id]||(_agg[id]={count:0,revenue:0,lastMs:0});a.count++;a.revenue+=orderValue(so);const ms=Date.parse(so.created_at||'');if(!isNaN(ms)&&ms>a.lastMs)a.lastMs=ms});
+        const lastDays=(c)=>{const ms=_agg[c.id]?.lastMs||0;return ms?Math.floor((_nowMs-ms)/86400000):99999};
+        getField=(field,c)=>{switch(field){
+          case 'rep':return c.primary_rep_id||null;
+          case 'open_balance':return custOpenBal(c);
+          case 'has_open_orders':return custOpenOrders(c);
+          case 'order_count':return _agg[c.id]?.count||0;
+          case 'revenue':return _agg[c.id]?.revenue||0;
+          case 'last_order_days':return lastDays(c);
+          case 'text':return custHay(c);
+          default:return '';}};
+        toRow=(c)=>{const d=lastDays(c);return{entity,id:c.id,_rec:c,cells:{Customer:c.name||'—',Tag:c.alpha_tag||'—',Orders:_agg[c.id]?.count||0,Revenue:_nlMoney(_agg[c.id]?.revenue||0),'Open Balance':_nlMoney(custOpenBal(c)),'Last Order':d>=99999?'never':d+'d ago'}}};
+        columns=['Customer','Tag','Orders','Revenue','Open Balance','Last Order'];
+      } else if(entity==='products'){
+        items=prod.slice();
+        getField=(field,p)=>{switch(field){
+          case 'vendor':return vendName(p).toLowerCase();
+          case 'brand':return String(p.brand||'').toLowerCase();
+          case 'color':return String(p.color||'').toLowerCase();
+          case 'has_image':return prodHasImg(p);
+          case 'in_stock':return prodQty(p)>0;
+          case 'stock':return prodQty(p);
+          case 'cost':return Number(p.nsa_cost)||0;
+          case 'price':return Number(p.retail_price)||0;
+          case 'text':return ((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase();
+          default:return '';}};
+        toRow=(p)=>({entity,id:p.id,_rec:p,cells:{SKU:p.sku||'—',Name:p.name||'—',Brand:p.brand||'—',Color:p.color||'—',Stock:prodQty(p),Cost:_nlMoney(Number(p.nsa_cost)||0)}});
+        columns=['SKU','Name','Brand','Color','Stock','Cost'];
+      } else if(entity==='purchase_orders'){
+        const seen=new Set();
+        sos.forEach(so=>{const c2=custById(so.customer_id);
+          safeItems(so).forEach(it=>safePOs(it).forEach(po=>{if(po.po_id&&!seen.has(po.po_id)){seen.add(po.po_id);items.push({po_id:po.po_id,vendor:po.vendor||'',status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}}));
+          (so.deco_pos||[]).forEach(dp=>{if(dp.po_id&&!seen.has(dp.po_id)){seen.add(dp.po_id);items.push({po_id:dp.po_id,vendor:dp.vendor||'',status:dp.status||'waiting',so_id:so.id,so,isDeco:true})}});
+        });
+        (submittedBatches||[]).forEach(sb=>{if(sb.po_number&&!seen.has(sb.po_number)){seen.add(sb.po_number);const src=(sb.source_pos||[])[0];items.push({po_id:sb.po_number,vendor:sb.vendor_name||'',status:sb.status||'waiting',so_id:src?.so_id||'',so:sos.find(x=>x.id===src?.so_id)||null,isBatch:true})}});
+        (invPOs||[]).forEach(ip=>{if(ip.po_number&&!seen.has(ip.po_number)){seen.add(ip.po_number);items.push({po_id:ip.po_number,vendor:ip.vendor_name||'',status:ip.status||'ordered',so_id:'',so:null,isInvPO:true})}});
+        getField=(field,po)=>{switch(field){
+          case 'status':return String(po.status||'').toLowerCase();
+          case 'vendor':return String(po.vendor||'').toLowerCase();
+          case 'so':return String(po.so_id||'').toLowerCase();
+          case 'text':return ((po.po_id||'')+' '+(po.vendor||'')+' '+(po.so_id||'')).toLowerCase();
+          default:return '';}};
+        toRow=(po)=>({entity,id:po.po_id,_rec:po,cells:{PO:po.po_id,Vendor:po.vendor||'—',Order:po.so_id||'—',Status:po.status||'—'}});
+        columns=['PO','Vendor','Order','Status'];
+      } else {
+        items=sos.slice();
+        getField=(field,so)=>{switch(field){
+          case 'status':return soStatus(so);
+          case 'is_open':return soStatus(so)!=='complete';
+          case 'needs_art':return soNeedsArt(so);
+          case 'margin_pct':return marginPct(so);
+          case 'value':return orderValue(so);
+          case 'created_date':return ymdInt(so.created_at);
+          case 'expected_date':return ymdInt(so.expected_date||so.expected_ship_date);
+          case 'ready_to_invoice':{try{return !!opsReadyToInvoice(so,ffOf(so))&&!soHasNonVoidInv(so)}catch{return false}}
+          case 'shipped':{try{return !!opsShippedOut(so,ffOf(so))}catch{return false}}
+          case 'shipped_not_invoiced':{try{return !!opsShippedNotInvoiced(so,ffOf(so))&&!soHasNonVoidInv(so)}catch{return false}}
+          case 'checked_in':{try{return !!opsCheckedIn(so,ffOf(so))}catch{return false}}
+          case 'short_on_pull':{try{return !!opsShortOnPull(so)}catch{return false}}
+          case 'paid':{const si=invs.filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);return si.length>0&&!si.some(i=>opsOpenInvoice(i))}
+          case 'customer':return custHay(custById(so.customer_id));
+          case 'rep':return repOf(so);
+          case 'customer_id':return String(so.customer_id||'').toLowerCase();
+          case 'text':return ((so.id||'')+' '+(so.memo||'')+' '+custHay(custById(so.customer_id))).toLowerCase();
+          default:return '';}};
+        toRow=(so)=>{const c=custById(so.customer_id);return{entity:'sales_orders',id:so.id,soId:so.id,_rec:so,cells:{Order:so.id,Customer:c?.name||c?.alpha_tag||'—',Total:_nlMoney(orderValue(so)),Status:_nlStatusLabel(soStatus(so)),Art:soNeedsArt(so)?'Needs Art':'OK',Margin:marginPct(so)+'%'}}};
+        columns=['Order','Customer','Total','Status','Art','Margin'];
+      }
+      for(const f of filters){const field=f&&f.field,op=(f&&f.op)||'is',val=f&&f.value;items=items.filter(it=>{
+        if(field==='rep')return repMatch(getField('rep',it),val);
+        const fv=getField(field,it);
+        if(typeof fv==='boolean')return boolVal(val)?fv:!fv;
+        if(typeof fv==='number'){const n=numVal(val);return n==null?true:cmpNum(fv,op,n)}
+        return cmpStr(String(fv==null?'':fv),op,String(val==null?'':val).toLowerCase());
+      })}
+      if(sort&&sort.field){const sf=sort.field,dir=sort.dir==='asc'?1:-1;items=items.slice().sort((a,b)=>{const av=getField(sf,a),bv=getField(sf,b);if(typeof av==='number'||typeof bv==='number')return((Number(av)||0)-(Number(bv)||0))*dir;return String(av==null?'':av).localeCompare(String(bv==null?'':bv))*dir})}
+      const total=items.length;
+      let aggregate=null;
+      if(spec&&spec.aggregate&&spec.aggregate.field&&spec.aggregate.op){
+        const af=spec.aggregate.field,aop=spec.aggregate.op;
+        const nums=items.map(it=>Number(getField(af,it))||0);
+        let val=0;
+        if(aop==='sum')val=nums.reduce((a,b)=>a+b,0);
+        else if(aop==='avg')val=nums.length?nums.reduce((a,b)=>a+b,0)/nums.length:0;
+        else if(aop==='min')val=nums.length?Math.min(...nums):0;
+        else if(aop==='max')val=nums.length?Math.max(...nums):0;
+        const MONEY=new Set(['value','balance','open_balance','revenue','cost','price']);
+        const opWord={sum:'Total',avg:'Average',min:'Lowest',max:'Highest'}[aop]||aop;
+        const vtxt=MONEY.has(af)?_nlMoney(val):(af==='margin_pct'?Math.round(val)+'%':(Math.round(val*100)/100).toLocaleString());
+        aggregate={op:aop,field:af,value:val,text:`${opWord} ${af.replace(/_/g,' ')}: ${vtxt}`};
+      }
+      const rows=items.slice(0,limit).map(toRow);
+      return{entity,total,rows,columns,aggregate};
+    }catch(e){return{entity:(spec&&spec.entity)||'sales_orders',total:0,rows:[],columns:[],error:'Search failed'}}
+  }
+  function openPortalResult(row){
+    try{
+      if(!row)return;
+      const ent=row.entity;
+      if(ent==='sales_orders'||ent==='jobs'){
+        const so=row._rec||sos.find(s=>s.id===row.soId);if(!so)return;
+        const c=cust.find(x=>x.id===so.customer_id);
+        if(ent==='jobs'){let ji=-1;try{ji=safeJobs(so).findIndex(jj=>jj.id===row.jobId)}catch{ji=-1}setESOTab('jobs');setESOScrollJob(ji>=0?ji:null)}
+        setESO(so);setESOC(c);setPg('orders');return;
+      }
+      if(ent==='invoices'){setViewInvoice(row._rec);setPg('invoices');return}
+      if(ent==='estimates'){const e=row._rec;setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id));setPg('estimates');return}
+      if(ent==='customers'){setSelC(row._rec);setPg('customers');return}
+      if(ent==='products'){setSelP(row._rec);setPg('products');try{setQ('')}catch(e2){}return}
+      if(ent==='purchase_orders'){const po=row._rec;if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){setESOOpenPO(po.po_id);setESO(po.so);setESOC(cust.find(c=>c.id===po.so.customer_id));setPg('orders')}else{setPg('purchase_orders')}return}
+    }catch(e){}
+  }
+  // Assistant entry point: run the spec, switch to the full results page, and
+  // hand a compact summary back to the chat.
+  function handleAssistantSearch(spec){
+    const res=runPortalSearch(spec);
+    setNlSpec(spec);setPg('search');
+    return res;
+  }
+  // Build one estimate line from a resolved catalog product, priced to a target margin
+  // (unit_sell = cost/(1-margin)) or the default markup, or retail when no cost is on file.
+  // Shared by add-to-open-estimate and start-estimate-from-words so the pricing stays identical.
+  function _assistantLine(p,margin_pct,markup){
+    const nsa=Number(p.nsa_cost)||0;
+    const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
+    let unit_sell,applied=false;
+    if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
+    else if(nsa>0){unit_sell=Math.round((nsa*(markup||1.65))*100)/100;}
+    else{unit_sell=Number(p.retail_price)||0;}
+    const bl=String(p.brand||''),nm=String(p.name||'');
+    const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
+    return {line:{product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true},applied,noCost:(m!=null&&nsa<=0)};
+  }
+  // Start a NEW draft estimate for a customer, optionally pre-filled with resolved items. Builds
+  // the whole draft at once (no window-event timing) and opens it unsaved for review — mirrors
+  // the New Estimate flow, so nothing persists until the user saves.
+  async function handleAssistantStartEstimate({customer,items}){
+    const cq=String(customer||'').trim().toLowerCase();
+    if(!cq)return {error:'no_customer'};
+    const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
+    if(!matches.length)return {error:'customer_not_found',customer};
+    const c=[...matches.filter(m=>!m.parent_id),...matches.filter(m=>m.parent_id)][0];
+    const reqItems=Array.isArray(items)?items:[];
+    const lines=[],added=[],notFound=[];
+    for(const it of reqItems){
+      const desc=String((it&&it.description)||'').trim();if(!desc)continue;
+      let p=prod.find(x=>String(x.sku||'').toLowerCase()===desc.toLowerCase());
+      if(!p){try{const r=await _searchProductsServer(desc,{},0,1);p=(r&&r.products&&r.products[0])||null;}catch(e){p=null;}}
+      if(!p){notFound.push(desc);continue;}
+      const{line}=_assistantLine(p,Number(it&&it.margin_pct),c.custom_multiplier||1.65);
+      lines.push(line);added.push({sku:p.sku,name:line.name});
+    }
+    const estId=nextEstId(ests);
+    const ne={id:estId,customer_id:c.id,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:c.custom_multiplier||1.65,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items:lines};
+    setEEst(ne);setEEstC(c);setPg('estimates');
+    return {ok:true,name:c.name||'',estId,added,notFound};
+  }
+  // Assistant "add a line to the open estimate". Resolves the product via the same server
+  // catalog search the editor uses, prices it here (money math stays out of the AI), and hands a
+  // fully-formed line to the open estimate editor via a window event (see OrderEditor listener).
+  // Per-line margin basis matches the editor's own display: (unit_sell - nsa_cost)/unit_sell.
+  async function handleAssistantAddLine({description,margin_pct}){
+    if(pg!=='estimates'||!eEst)return {error:'no_estimate_open'};
+    const desc=String(description||'').trim();
+    if(!desc)return {error:'not_found',description:desc};
+    let products=[];
+    try{const res=await _searchProductsServer(desc,{},0,5);products=(res&&res.products)||[];}catch(e){products=[];}
+    if(!products.length)return {error:'not_found',description:desc};
+    const p=products[0];
+    const nsa=Number(p.nsa_cost)||0;
+    const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
+    let unit_sell,applied=false;
+    if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
+    else if(nsa>0){unit_sell=Math.round((nsa*(eEst.default_markup||1.65))*100)/100;}
+    else{unit_sell=Number(p.retail_price)||0;}
+    const bl=String(p.brand||''),nm=String(p.name||'');
+    const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
+    const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true};
+    window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
+    return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
+  }
+  // "What needs my attention" — runs the key ops queries (scoped to the current user) and
+  // returns a compact summary. Reuses runPortalSearch, so counts/totals match the search page.
+  function handleAssistantBrief(){
+    const B=[
+      {label:'Orders ready to invoice',spec:{entity:'sales_orders',filters:[{field:'ready_to_invoice',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Open orders needing art',spec:{entity:'sales_orders',filters:[{field:'is_open',op:'is',value:'true'},{field:'needs_art',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Orders short on pull',spec:{entity:'sales_orders',filters:[{field:'short_on_pull',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Shipped, not invoiced',spec:{entity:'sales_orders',filters:[{field:'shipped_not_invoiced',op:'is',value:'true'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Overdue invoices',money:'balance',spec:{entity:'invoices',filters:[{field:'is_open',op:'is',value:'true'},{field:'days_past_due',op:'gt',value:'0'},{field:'rep',op:'is',value:'me'}]}},
+      {label:'Cold quotes (14d+)',spec:{entity:'estimates',filters:[{field:'is_open',op:'is',value:'true'},{field:'age_days',op:'gt',value:'14'},{field:'rep',op:'is',value:'me'}]}},
+    ];
+    return B.map(b=>{const s=b.money?{...b.spec,aggregate:{op:'sum',field:b.money}}:b.spec;let r;try{r=runPortalSearch(s)}catch(e){r={total:0}}return{label:b.label,count:r.total||0,total:b.money&&r.aggregate?_nlMoney(r.aggregate.value):null,spec:b.spec}});
+  }
+  // Vendor B2B stock lookup — reads the inventory_unified view (Adidas/Agron/UA/Nike) with the
+  // user's Supabase session (RLS allows read). Resolves a SKU or description to a product first.
+  async function handleAssistantVendorStock(query){
+    const q=String(query||'').trim();
+    if(!q)return {error:'no_query'};
+    let p=prod.find(x=>String(x.sku||'').toLowerCase()===q.toLowerCase());
+    if(!p){try{const r=await _searchProductsServer(q,{},0,1);p=(r&&r.products&&r.products[0])||null;}catch(e){p=null;}}
+    const sku=p?p.sku:q;
+    if(!supabase)return {error:'no_db'};
+    let rows=[];
+    try{const{data}=await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',[sku,String(sku).toUpperCase()]);rows=data||[];}catch(e){rows=[];}
+    if(!rows.length)return {error:'no_stock',sku,name:p?p.name:null};
+    const sizes={};let nextDate=null,nextQty=0,onHand=0,lastSynced=null;
+    rows.forEach(r=>{const sz=r.size||'?';const qty=Number(r.stock_qty)||0;const fq=Number(r.future_delivery_qty)||0;onHand+=qty;const s=sizes[sz]||(sizes[sz]={qty:0,futureQty:0,futureDate:null});s.qty+=qty;s.futureQty+=fq;if(r.future_delivery_date&&fq>0){if(!s.futureDate||r.future_delivery_date<s.futureDate)s.futureDate=r.future_delivery_date;if(!nextDate||r.future_delivery_date<nextDate)nextDate=r.future_delivery_date;nextQty+=fq;}if(r.last_synced&&(!lastSynced||r.last_synced>lastSynced))lastSynced=r.last_synced;});
+    const sizeList=Object.keys(sizes).map(sz=>({size:sz,qty:sizes[sz].qty,futureQty:sizes[sz].futureQty,futureDate:sizes[sz].futureDate}));
+    return {ok:true,sku,name:p?p.name:null,brand:p?p.brand:null,color:p?p.color:null,onHand,sizes:sizeList,nextDelivery:nextDate?{date:nextDate,qty:nextQty}:null,lastSynced};
+  }
+  // Customer 360 — one-glance snapshot for a single customer (open orders, open estimates,
+  // unpaid invoices, lifetime). Scoped by customer_id via runPortalSearch, so numbers match.
+  function handleAssistantCustomer360(customerText){
+    const q=String(customerText||'').trim().toLowerCase();
+    if(!q)return {error:'no_customer'};
+    const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(q));
+    if(!matches.length)return {error:'not_found',customer:customerText};
+    const c=[...matches.filter(m=>!m.parent_id),...matches.filter(m=>m.parent_id)][0];
+    const cid=String(c.id).toLowerCase();
+    const run=(entity,extra,aggField)=>{try{return runPortalSearch({entity,filters:[{field:'customer_id',op:'is',value:cid},...extra],aggregate:aggField?{op:'sum',field:aggField}:undefined});}catch(e){return {total:0};}};
+    const drill=(entity,extra)=>({entity,filters:[{field:'customer_id',op:'is',value:cid},...extra]});
+    const openO=run('sales_orders',[{field:'is_open',op:'is',value:'true'}],'value');
+    const allO=run('sales_orders',[],'value');
+    const openE=run('estimates',[{field:'is_open',op:'is',value:'true'}],'value');
+    const unpaidI=run('invoices',[{field:'is_open',op:'is',value:'true'}],'balance');
+    return {ok:true,name:c.name||'',tag:c.alpha_tag||'',lines:[
+      {label:'Open orders',count:openO.total||0,total:openO.aggregate?_nlMoney(openO.aggregate.value):null,spec:drill('sales_orders',[{field:'is_open',op:'is',value:'true'}])},
+      {label:'Open estimates',count:openE.total||0,total:openE.aggregate?_nlMoney(openE.aggregate.value):null,spec:drill('estimates',[{field:'is_open',op:'is',value:'true'}])},
+      {label:'Unpaid invoices',count:unpaidI.total||0,total:unpaidI.aggregate?_nlMoney(unpaidI.aggregate.value):null,spec:drill('invoices',[{field:'is_open',op:'is',value:'true'}])},
+      {label:'Lifetime orders',count:allO.total||0,total:allO.aggregate?_nlMoney(allO.aggregate.value):null,spec:drill('sales_orders',[])},
+    ]};
+  }
+  // Customer-centric reports. Computes from real data (invoices billed = revenue; brand $ from
+  // each invoice's linked SO items since invoice lines carry no brand; days-to-pay = last payment
+  // date − invoice date, the CommissionsPage formula) and returns a summary + a buildDocHtml doc
+  // the widget can print/PDF via printDoc. Read-only.
+  async function handleAssistantReport({type,customer,brand,timeframe}){
+    const cq=String(customer||'').trim().toLowerCase();
+    if(!cq)return {error:'no_customer'};
+    const matches=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
+    if(!matches.length)return {error:'customer_not_found',customer};
+    const c=[...matches.filter(m=>!m.parent_id),...matches.filter(m=>m.parent_id)][0];
+    const fam=new Set([c.id,...cust.filter(x=>x.parent_id===c.id).map(x=>x.id)]);
+    const tf=timeframe||'this_year';const now=new Date();
+    const pd=(ds)=>{if(!ds)return null;const s=String(ds);let m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);if(m)return new Date(+m[1],+m[2]-1,+m[3]);m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=+m[3];if(y<100)y+=2000;return new Date(y,+m[1]-1,+m[2])}const d=new Date(s);return isNaN(d)?null:d};
+    const inRange=(ds)=>{const d=pd(ds);if(!d)return tf==='all_time';if(tf==='all_time')return true;if(tf==='this_year')return d.getFullYear()===now.getFullYear();if(tf==='last_year')return d.getFullYear()===now.getFullYear()-1;if(tf==='last_12_months')return (now-d)<=366*86400000;return true};
+    const tfLabel={this_year:'this year',last_year:'last year',last_12_months:'last 12 months',all_time:'all time'}[tf]||tf;
+    const money=(n)=>_nlMoney(n);const soById=(id)=>id?sos.find(s=>s.id===id):null;
+    const prodBrand=(sku)=>{const p=prod.find(x=>String(x.sku||'').toLowerCase()===String(sku||'').toLowerCase());return p?p.brand:''};
+    const wantBrand=String(brand||'').trim().toLowerCase();
+    const brandMatch=(b)=>{if(!wantBrand)return true;const l=String(b||'').toLowerCase();if(wantBrand==='adidas')return l==='adidas'||l==='agron';return l.includes(wantBrand)};
+    const itemQty=(it)=>{const sz=Object.values(it.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);return sz>0?sz:(Number(it.est_qty)||Number(it.qty)||0)};
+    const invLines=(i)=>{const so=soById(i.so_id);if(so){return safeItems(so).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||prodBrand(it.sku),qty:itemQty(it),amount:(Number(it.unit_sell)||0)*itemQty(it)}))}return (i.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:prodBrand(it.sku),qty:Number(it.qty)||0,amount:(Number(it.total)||((Number(it.unit_price)||0)*(Number(it.qty)||0)))}))};
+    const cInvs=invs.filter(i=>fam.has(i.customer_id)&&(i.type||'invoice')==='invoice'&&inRange(i.date));
+    const custLabel=c.name||c.alpha_tag||'Customer';
+    const brandLabel=brand?(brand.charAt(0).toUpperCase()+brand.slice(1)):'';
+    const _fullyPaid=(i)=>{try{return opsFullyPaid(i)}catch(e){return i.status==='paid'}};
+    if(type==='days_to_pay'){
+      const paid=cInvs.filter(_fullyPaid);const rows=[];let sum=0,n=0;
+      paid.forEach(i=>{const invD=pd(i.date);const pays=i.payments||[];const payD=pays.length?pd(pays[pays.length-1].date):null;if(invD&&payD){const days=Math.round((payD-invD)/86400000);if(days>=0){sum+=days;n++;rows.push({cells:[{value:i.id},{value:i.date},{value:pays[pays.length-1].date},{value:String(days),style:'text-align:right'}]})}}});
+      const avg=n?Math.round(sum/n):null;
+      const doc={title:`Days to Pay — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]},{label:'Avg Days to Pay',lines:[avg!=null?String(avg):'—']}],tables:[{title:'Paid invoices',headers:['Invoice','Invoiced','Paid','Days'],aligns:['left','left','left','right'],rows}]};
+      return {ok:true,title:`Days to pay — ${custLabel}`,summary:[{label:'Average days to pay',value:avg!=null?`${avg} days`:'no paid invoices'},{label:'Paid invoices',value:String(n)},{label:'Period',value:tfLabel}],doc};
+    }
+    if(type==='brand_spend'){
+      let total=0;const rows=[];
+      cInvs.forEach(i=>{invLines(i).filter(l=>brandMatch(l.brand)).forEach(l=>{total+=l.amount;rows.push({cells:[{value:i.id},{value:i.date},{value:l.sku},{value:l.name},{value:String(l.qty),style:'text-align:center'},{value:money(l.amount),style:'text-align:right'}]})})});
+      rows.push({cells:[{value:''},{value:''},{value:''},{value:''},{value:'Total',style:'font-weight:700;text-align:right'},{value:money(total),style:'font-weight:700;text-align:right'}]});
+      const doc={title:`${brandLabel||'Product'} Purchases — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Brand',lines:[brandLabel||'All']},{label:'Period',lines:[tfLabel]}],tables:[{title:`${brandLabel||''} line items`,headers:['Invoice','Date','SKU','Item','Qty','Amount'],aligns:['left','left','left','left','center','right'],rows}]};
+      return {ok:true,title:`${brandLabel||'Product'} purchases — ${custLabel}`,summary:[{label:`${brandLabel||'Product'} spend (${tfLabel})`,value:money(total)},{label:'Invoices in range',value:String(cInvs.length)}],note:'Based on invoiced orders; line brands resolved from order items / catalog.',doc};
+    }
+    if(type==='customer_summary'){
+      const rev=cInvs.reduce((a,i)=>a+(Number(i.total)||0),0);
+      const paid=cInvs.filter(_fullyPaid);let sum=0,n=0;
+      paid.forEach(i=>{const invD=pd(i.date),pays=i.payments||[],payD=pays.length?pd(pays[pays.length-1].date):null;if(invD&&payD){const dd=Math.round((payD-invD)/86400000);if(dd>=0){sum+=dd;n++;}}});
+      const avgDTP=n?Math.round(sum/n):null;let openBal=0;
+      try{invs.forEach(i=>{if(fam.has(i.customer_id)&&opsOpenInvoice(i))openBal+=Number(opsInvoiceBalance(i))||0})}catch(e){}
+      const doc={title:`Customer Summary — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]}],tables:[{title:'Summary',headers:['Metric','Value'],aligns:['left','right'],rows:[{cells:[{value:'Revenue (invoiced)'},{value:money(rev),style:'text-align:right'}]},{cells:[{value:'Invoices'},{value:String(cInvs.length),style:'text-align:right'}]},{cells:[{value:'Avg days to pay'},{value:avgDTP!=null?String(avgDTP):'—',style:'text-align:right'}]},{cells:[{value:'Open balance'},{value:money(openBal),style:'text-align:right'}]}]}]};
+      return {ok:true,title:`Summary — ${custLabel}`,summary:[{label:`Revenue (${tfLabel})`,value:money(rev)},{label:'Invoices',value:String(cInvs.length)},{label:'Avg days to pay',value:avgDTP!=null?`${avgDTP} days`:'—'},{label:'Open balance',value:money(openBal)}],doc};
+    }
+    // invoice_detail (default)
+    let grand=0;const tables=[];
+    cInvs.slice().sort((a,b)=>(pd(a.date)||0)-(pd(b.date)||0)).forEach(i=>{const lines=invLines(i);const sub=lines.reduce((a,l)=>a+l.amount,0);grand+=Number(i.total)||sub;const rows=lines.map(l=>({cells:[{value:String(l.qty),style:'text-align:center'},{value:l.sku},{value:l.name},{value:money(l.amount),style:'text-align:right'}]}));rows.push({cells:[{value:''},{value:''},{value:'Invoice total',style:'font-weight:700;text-align:right'},{value:money(Number(i.total)||sub),style:'font-weight:700;text-align:right'}]});tables.push({title:`Invoice ${i.id} · ${i.date||''}`,headers:['Qty','SKU','Item','Amount'],aligns:['center','left','left','right'],rows})});
+    const doc={title:`Invoices — ${custLabel}`,docType:'REPORT',date:now.toLocaleDateString(),infoBoxes:[{label:'Customer',lines:[custLabel]},{label:'Period',lines:[tfLabel]},{label:'Total',lines:[money(grand)]}],tables:tables.length?tables:[{title:'No invoices in range',headers:['—'],aligns:['left'],rows:[]}]};
+    return {ok:true,title:`Invoices — ${custLabel}`,summary:[{label:'Invoices',value:String(cInvs.length)},{label:`Total (${tfLabel})`,value:money(grand)}],doc};
+  }
+  // Assistant reminders & notes. Both are WRITE actions: each handler RESOLVES the draft
+  // (customer / order lookup) and returns a preview + a `commit` thunk the widget only calls
+  // after the user confirms in the chat. Writes reuse the existing state setters
+  // (setAssignedTodos / setMsgs / setSOs / savC) so the diff-save engine persists them — no
+  // hand-rolled Supabase inserts (see the save-path audits).
+  function _rmDateLabel(d){try{const p=String(d).split('-').map(Number);return new Date(p[0],p[1]-1,p[2]).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});}catch(e){return String(d);}}
+  function handleAssistantSetReminder({title,due_date,customer,so,priority}){
+    const t=String(title||'').trim();
+    if(!t)return {error:'What should the reminder say?'};
+    let cRec=null;
+    if(customer){const cq=String(customer).trim().toLowerCase();const ms=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));if(ms.length)cRec=[...ms.filter(m=>!m.parent_id),...ms.filter(m=>m.parent_id)][0];}
+    let soRec=null;
+    if(so){const sq=String(so).trim().toLowerCase();soRec=sos.find(s=>String(s.id||'').toLowerCase()===sq)||sos.find(s=>String(s.id||'').toLowerCase().includes(sq))||null;}
+    if(soRec&&!cRec&&soRec.customer_id)cRec=cust.find(c=>c.id===soRec.customer_id)||null;
+    const dd=/^\d{4}-\d{2}-\d{2}$/.test(String(due_date||''))?due_date:null;
+    const hi=priority==='high';
+    const lines=[{label:'Reminder',value:t}];
+    if(dd)lines.push({label:'Due',value:_rmDateLabel(dd)});
+    if(cRec)lines.push({label:'Customer',value:cRec.name||cRec.alpha_tag||''});
+    if(soRec)lines.push({label:'Order',value:soRec.id});
+    lines.push({label:'For',value:cu?.name||'me'});
+    if(hi)lines.push({label:'Priority',value:'High'});
+    const commit=async()=>{
+      const nowIso=new Date().toISOString();
+      const todo={id:'todo-'+Date.now(),title:t,description:'Set via Portal Assistant.',created_by:cu?.id||null,assigned_to:cu?.id||null,so_id:soRec?soRec.id:null,customer_id:cRec?cRec.id:null,priority:hi?1:2,status:'open',due_date:dd,created_at:nowIso,updated_at:nowIso,comments:[]};
+      try{setAssignedTodos(prev=>[todo,...prev]);}catch(e){return {ok:false,message:"Couldn't save the reminder — try again."};}
+      return {ok:true,message:`Reminder added to your Assigned Tasks${dd?` · due ${_rmDateLabel(dd)}`:''}.`};
+    };
+    return {ok:true,title:'Reminder — confirm to save',lines,commit};
+  }
+  function handleAssistantAddNote({target,ref,text}){
+    const body=String(text||'').trim();
+    if(!body)return {error:'What should the note say?'};
+    const rf=String(ref||'').trim();
+    const stampLine=`${new Date().toLocaleDateString()} — ${body} (${cu?.name||'staff'})`;
+    if(target==='customer'){
+      const cq=rf.toLowerCase();
+      const ms=cust.filter(c=>(((c.name||'')+' '+(c.alpha_tag||'')+' '+((c.search_tags||[]).join(' '))).toLowerCase()).includes(cq));
+      if(!ms.length)return {error:`I couldn't find a customer matching "${ref}".`};
+      const c=[...ms.filter(m=>!m.parent_id),...ms.filter(m=>m.parent_id)][0];
+      const commit=async()=>{
+        const existing=String(c.notes||'').trim();
+        const notes=existing?existing+'\n'+stampLine:stampLine;
+        try{await savC({...c,notes,updated_at:new Date().toISOString()});}catch(e){return {ok:false,message:"Couldn't save the note — try again."};}
+        return {ok:true,message:`Note saved to ${c.name||c.alpha_tag||'the customer'}'s record.`};
+      };
+      return {ok:true,title:'Customer note — confirm to save',lines:[{label:'Customer',value:c.name||c.alpha_tag||''},{label:'Note',value:body}],commit};
+    }
+    const sq=rf.toLowerCase();
+    const so=sos.find(s=>String(s.id||'').toLowerCase()===sq)||sos.find(s=>String(s.id||'').toLowerCase().includes(sq));
+    if(!so)return {error:`I couldn't find an order matching "${ref}".`};
+    const c=cust.find(cc=>cc.id===so.customer_id);
+    if(target==='production'){
+      const commit=async()=>{
+        const existing=String(so.production_notes||'').trim();
+        const production_notes=existing?existing+'\n'+stampLine:stampLine;
+        try{setSOs(prev=>prev.map(s=>s.id===so.id?{...s,production_notes,updated_at:new Date().toISOString()}:s));}catch(e){return {ok:false,message:"Couldn't save the note — try again."};}
+        return {ok:true,message:`Production note added to ${so.id} — it reaches job tickets & vendor exports.`};
+      };
+      return {ok:true,title:'Production note — confirm to save',lines:[{label:'Order',value:so.id},{label:'Customer',value:c?.name||c?.alpha_tag||''},{label:'Production note',value:body}],commit};
+    }
+    const commit=async()=>{
+      const rep=so.created_by&&so.created_by!==cu.id?[so.created_by]:[];
+      const soMsg={id:'m'+Date.now(),so_id:so.id,author_id:cu.id,text:body,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'general',tagged_members:rep,entity_type:'so',entity_id:so.id};
+      try{setMsgs(prev=>[...prev,soMsg]);}catch(e){return {ok:false,message:"Couldn't post the note — try again."};}
+      return {ok:true,message:`Note posted to ${so.id}'s message thread.`};
+    };
+    return {ok:true,title:'Order note — confirm to save',lines:[{label:'Order',value:so.id},{label:'Customer',value:c?.name||c?.alpha_tag||''},{label:'Note',value:body}],commit};
+  }
+  // Full results page for an active NL spec (rendered by rSearch when nlSpec set).
+  function rNlResults(){
+    const res=runPortalSearch(nlSpec);
+    const cols=res.columns||[];
+    return(<>
+      <div style={{marginBottom:16,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{_nlSpecLabel(nlSpec)}</div>
+        <span className="badge badge-gray">{res.total} result{res.total===1?'':'s'}{res.total>res.rows.length?` (showing ${res.rows.length})`:''}</span>
+        <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+          {res.rows&&res.rows.length>0&&<button className="btn btn-secondary" onClick={()=>{try{const esc=v=>{const s=String(v==null?'':v);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};const _l=[cols.map(esc).join(',')];(res.rows||[]).forEach(r=>_l.push(cols.map(cc=>esc(r.cells[cc])).join(',')));const blob=new Blob([_l.join('\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='search-results.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){}}}>Export CSV</button>}
+          <button className="btn btn-secondary" onClick={()=>{setNlSpec(null);setGSearchQ('')}}>Clear search</button>
+        </div>
+      </div>
+      {res.aggregate&&<div style={{marginBottom:16,padding:'12px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,fontSize:18,fontWeight:800,color:'#1e40af'}}>{res.aggregate.text}</div>}
+      {res.error?<div className="card"><div className="card-body" style={{color:'#b91c1c',padding:20}}>Search failed — try rephrasing in the assistant.</div></div>
+      :res.total===0?<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>No matches. Try rephrasing your question in the assistant.</div></div>
+      :<div className="card"><div className="card-body" style={{padding:0,overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
+          <thead><tr style={{textAlign:'left'}}>{cols.map(c=><th key={c} style={{padding:'10px 14px',borderBottom:'1px solid #e2e8f0',color:'#64748b',fontSize:11,textTransform:'uppercase',letterSpacing:'.03em'}}>{c}</th>)}</tr></thead>
+          <tbody>{res.rows.map((r,ri)=><tr key={(r.id||'')+ri} onClick={()=>openPortalResult(r)} style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}}>{cols.map(c=><td key={c} style={{padding:'10px 14px'}}>{_nlCell(c,r.cells[c])}</td>)}</tr>)}</tbody>
+        </table>
+      </div></div>}
+    </>);
+  }
+
   // GLOBAL SEARCH RESULTS PAGE
   function rSearch(){
+    if(nlSpec)return rNlResults();
     const q=(gSearchQ||'').trim();
     if(!q||q.length<2){
       return <div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>
@@ -33981,7 +34501,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -34024,12 +34544,12 @@ export default function App(){
         const _myKeys=item.id==='messages'?_buildMyConvoKeys(_sidebarMsgs):null;
         const ubadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_myKeys.has(_convoKeyOf(m))).length:0;
         const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_msgMentionsMe(m)).length:0;
-        return<a key={item.id} href={item.external?item.href:_newTabHref({pg:item.id})} target={item.external?'_blank':undefined} rel={item.external?'noreferrer':undefined} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
+        return<a key={item.id} data-tour-id={`nav-${item.id}`} href={item.external?item.href:_newTabHref({pg:item.id})} target={item.external?'_blank':undefined} rel={item.external?'noreferrer':undefined} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
           onClick={ev=>{if(item.external)return;if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const _toks=s.split(/\s+/).filter(Boolean);
             const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
@@ -34078,7 +34598,7 @@ export default function App(){
                 {ri.map(inv=><a key={inv.id} href={_newTabHref({inv:inv.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setViewInvoice(inv);setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></a>)}</>}
               {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
                 {rv.map(v=><a key={v.id} href={_newTabHref({vend:v.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</a>)}</>}
-              <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}} onClick={()=>{setGSearchQ(gQ.trim());setPg('search');setGOpen(false)}}><Icon name="search" size={12}/>See all results for "{gQ}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>
+              <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc',cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}} onClick={()=>{setGSearchQ(gQ.trim());setNlSpec(null);setPg('search');setGOpen(false)}}><Icon name="search" size={12}/>See all results for "{gQ}" <span style={{color:'#94a3b8',fontWeight:400,marginLeft:'auto'}}>Press Enter ↵</span></div>
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
@@ -34566,7 +35086,7 @@ export default function App(){
       <div className="modal-body">
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
           <div><label className="form-label">Vendor *</label>
-            <select className="form-select" style={{width:'100%'}} value={invPOModal.vendor_id} onChange={e=>setInvPOModal(x=>({...x,vendor_id:e.target.value}))}>
+            <select className="form-select" data-tour-id="inv-po-vendor-select" style={{width:'100%'}} value={invPOModal.vendor_id} onChange={e=>setInvPOModal(x=>({...x,vendor_id:e.target.value}))}>
               <option value="">Select vendor...</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
           <div><label className="form-label">Expected Date</label>
             <input type="date" className="form-input" style={{width:'100%'}} value={invPOModal.expected_date} onChange={e=>setInvPOModal(x=>({...x,expected_date:e.target.value}))}/></div>
@@ -34584,7 +35104,7 @@ export default function App(){
         {/* Product search & add */}
         <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',position:'relative'}}>
           <label className="form-label">Add Products</label>
-          <div className="search-bar" style={{background:'white'}}><Icon name="search"/><input placeholder="Search by SKU, name, or color..." value={invPOModal.productSearch||''} onChange={e=>setInvPOModal(x=>({...x,productSearch:e.target.value}))}/></div>
+          <div className="search-bar" data-tour-id="inv-po-product-search" style={{background:'white'}}><Icon name="search"/><input placeholder="Search by SKU, name, or color..." value={invPOModal.productSearch||''} onChange={e=>setInvPOModal(x=>({...x,productSearch:e.target.value}))}/></div>
           {(()=>{
             const pq=(invPOModal.productSearch||'').trim().toLowerCase();
             if(!pq)return null;
@@ -34624,7 +35144,7 @@ export default function App(){
               </>}
             </div>;
           })()}
-          <button type="button" style={{marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
+          <button type="button" data-tour-id="inv-po-add-custom-item" style={{marginTop:6,fontSize:11,padding:'3px 8px',border:'1px dashed #94a3b8',borderRadius:4,background:'white',color:'#64748b',cursor:'pointer'}}
             onClick={()=>setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:null,sku:'',name:'',color:'',available_sizes:['S','M','L','XL','2XL'],sizes:{},nsa_cost:0,_custom:true}]}))}>+ Custom Item</button>
         </div>
 
@@ -34684,7 +35204,7 @@ export default function App(){
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={saveInvPO}>{invPOModal.editId?'Save Changes':'Create PO'}</button>
+        <button className="btn btn-primary" data-tour-id="inv-po-submit-btn" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={saveInvPO}>{invPOModal.editId?'Save Changes':'Create PO'}</button>
       </div>
     </div></div>}
 
@@ -34935,6 +35455,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/>
   </div></AppDataProvider>);
 }
 
