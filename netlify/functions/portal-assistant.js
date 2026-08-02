@@ -192,6 +192,7 @@ function buildSystemPrompt({ screen, screens, tours, targets, openRecord }) {
     'For "everything for <customer>" / a customer snapshot / overview / "how are things with <customer>", call the customer_360 tool with the customer name.',
     'For "is <X> in stock (at the vendor) / available / when is the next delivery", call the vendor_stock tool with the SKU or description. (This is live vendor availability — different from our own warehouse stock, which is the products `stock`/`in_stock` search fields.)',
     '- For a customer REPORT — brand dollars bought ("how much adidas did San Mateo buy this year"), average days-to-pay ("average days to pay for Santa Barbara football"), a printable invoices-with-items list, or a customer snapshot — call the report tool with type (brand_spend|days_to_pay|invoice_detail|customer_summary), customer, brand (for brand_spend), and timeframe (this_year|last_year|last_12_months|all_time; default this_year).',
+    '- To find PRODUCTS/BLANKS to send a coach as options — "find black fleece sweatpants our cost under $20 with good stock", "adidas navy polos in stock", "cheap cotton tees under $8" — call the find_products tool. Put the style words in `keywords`, and set color/category/brand/vendor/cost_max/cost_min/min_stock when stated ("our cost under $20" -> cost_max 20; "good stock" -> min_stock ~24; "in stock" -> min_stock 1). This searches the FULL catalog (SanMar, S&S, Adidas, Momentec, etc.) with live vendor stock and shows priced options with a coach-PDF download — use it instead of the `search` products entity whenever the intent is pulling product options/pricing for a customer or coach.',
     `- To set a personal reminder/task ("remind me to …", "follow up with <customer> on Friday", "add a task …"), call the set_reminder tool. It is assigned to the current user and appears in their Assigned Tasks. Convert any relative due date to an absolute YYYY-MM-DD using today (${_today}). Mark priority "high" only if they signal urgency.`,
     '- To leave a note ("add a note …", "note on SO-1727: …", "note for <customer>: …"), call the add_note tool. Use target=order for a normal timestamped note on an order, target=production for a spec note that must reach vendors/job tickets, and target=customer for a note on the customer record. Pass ref = the order number (order/production) or customer name (customer).',
     'Both set_reminder and add_note are WRITE actions: the app shows the user a draft they must confirm before anything saves. Do not say it is saved or done — say you have drafted it for their confirmation.',
@@ -338,6 +339,27 @@ function buildTools({ tours, targets, screens }) {
         timeframe: { type: 'string', enum: ['this_year', 'last_year', 'last_12_months', 'all_time'] },
       },
       required: ['type', 'customer'],
+      additionalProperties: false,
+    },
+  });
+  // Coach product finder — full-catalog search with live vendor stock + quote pricing.
+  tools.push({
+    name: 'find_products',
+    description: "Find CATALOG PRODUCTS to pull options for a coach — across ALL vendors including SanMar, S&S Activewear, Adidas, and Momentec. Use for requests like 'black fleece sweatpants our cost under $20 with good stock', 'adidas navy polos in stock', 'cheap cotton tees'. The app searches the full catalog, checks LIVE vendor stock, and shows priced options (marked-up quote price) the user can download as a coach PDF. This is DIFFERENT from the `search` tool's products entity, which only covers in-house/warehouse items. Do not state specific products, stock, or prices yourself — the app shows them.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        keywords: { type: 'string', description: 'The product type/style words, e.g. "fleece sweatpants", "quarter zip", "polo". The distinctive noun(s).' },
+        color: { type: 'string', description: 'Color if specified (e.g. "black", "navy").' },
+        category: { type: 'string', description: 'Product category if clear (e.g. "pants", "polos", "hoodies", "tees", "shorts").' },
+        brand: { type: 'string', description: 'Brand if specified (e.g. "adidas", "under armour").' },
+        vendor: { type: 'string', description: 'Vendor/source if specified: sanmar, s&s, adidas, momentec, ua, nike, agron.' },
+        cost_max: { type: 'number', description: 'Max OUR cost in dollars ("our cost under $20" -> 20).' },
+        cost_min: { type: 'number', description: 'Min our cost if a range is given.' },
+        min_stock: { type: 'number', description: 'Minimum live vendor stock to require. "good stock" -> ~24; "in stock" -> 1; omit if stock was not mentioned.' },
+        limit: { type: 'integer', description: 'Max options to show (default 40).' },
+      },
+      required: ['keywords'],
       additionalProperties: false,
     },
   });
@@ -504,6 +526,23 @@ async function runAssistant({ client, catalogs, messages }) {
         const tframe = normStr(tu.input && tu.input.timeframe, 40);
         if (rtype && rcustomer) { actions.push({ type: 'report', report: { type: rtype, customer: rcustomer, brand: rbrand || null, timeframe: tframe || null } }); out = { ok: true }; }
         else out = { error: 'type and customer required' };
+      } else if (tu.name === 'find_products') {
+        const keywords = normStr(tu.input && tu.input.keywords, 80);
+        if (keywords) {
+          const num = (v) => { const n = Number(v); return (n > 0 && n < 1e7) ? n : null; };
+          const spec = {
+            keywords,
+            color: normStr(tu.input && tu.input.color, 40),
+            category: normStr(tu.input && tu.input.category, 40),
+            brand: normStr(tu.input && tu.input.brand, 40),
+            vendor: normStr(tu.input && tu.input.vendor, 40),
+            cost_max: num(tu.input && tu.input.cost_max),
+            cost_min: num(tu.input && tu.input.cost_min),
+            min_stock: num(tu.input && tu.input.min_stock),
+            limit: (() => { const n = Number(tu.input && tu.input.limit); return (n > 0) ? Math.min(Math.floor(n), 60) : null; })(),
+          };
+          actions.push({ type: 'find_products', spec }); out = { ok: true };
+        } else out = { error: 'keywords required' };
       } else if (tu.name === 'set_reminder') {
         const title = normStr(tu.input && tu.input.title, 160);
         const due = normStr(tu.input && tu.input.due_date, 10);
