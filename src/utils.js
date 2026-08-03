@@ -53,7 +53,7 @@ const _brevoProxy = '/.netlify/functions/brevo-proxy';
 export const _absLogoUrl=(companyInfo)=>{
   const raw=companyInfo?.logoUrl||(_NSA_CONST&&_NSA_CONST.logoUrl)||'/nsa-logo.svg';
   if(/^https?:/i.test(raw))return raw;
-  const origin=(typeof window!=='undefined'&&window.location?.origin)||'https://nsa-portal.netlify.app';
+  const origin=(typeof window!=='undefined'&&window.location?.origin)||'https://connect.nationalsportsapparel.com';
   return origin+raw;
 };
 
