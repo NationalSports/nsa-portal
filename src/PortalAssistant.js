@@ -516,7 +516,7 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, variant, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote }) {
+export default function PortalAssistant({ pg, screenTitle, userName, variant, openRecord, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote, onFindProducts }) {
   const mCls = variant === 'mobile' ? ' nsa-as-m' : '';
   ensureStyles();
   const [open, setOpen] = useState(() => {
@@ -695,6 +695,19 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
   // A dynamic, AI-composed walkthrough. Each step carries an instruction and may spotlight an
   // element (target_id) and/or move the user to a screen (screen). Reuses the Spotlight engine;
   // the per-step navigation effect below drives onNavigate as the steps advance.
+  const doFindProducts = useCallback(async (spec) => {
+    const pushBot = (t) => setMessages((prev) => [...prev, { id: `fp${Date.now()}`, from: 'bot', text: t }]);
+    if (!onFindProducts) { pushBot("I can't pull product options here yet — try it on desktop."); return; }
+    let res = null;
+    try { res = await onFindProducts(spec); } catch { res = null; }
+    if (!res || res.error === 'no_db') { pushBot("I can't reach the product data right now — try again in a moment."); return; }
+    if (res.error) { pushBot("That product search didn't work — try different words, a color, or a cost cap."); return; }
+    if (res.ok) {
+      if (!res.total) { pushBot('No products matched that. Try different words, a color, or a higher cost cap.'); return; }
+      pushBot(`Found ${res.total} option${res.total === 1 ? '' : 's'}${res.shown < res.total ? ` (showing ${res.shown})` : ''} — they're on the results page behind this chat, with live vendor stock. Adjust the markup and hit “Download Coach PDF” to send them.`);
+    }
+  }, [onFindProducts]);
+
   const doGuide = useCallback((intro, steps) => {
     beginGuide(intro, steps);
   }, [beginGuide]);
@@ -716,7 +729,8 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     else if (a.type === 'set_reminder' && a.reminder) doSetReminder(a.reminder);
     else if (a.type === 'add_note' && a.note) doAddNote(a.note);
     else if (a.type === 'guide' && a.steps) doGuide(a.intro, a.steps);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide]);
+    else if (a.type === 'find_products' && a.spec) doFindProducts(a.spec);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide, doFindProducts]);
 
   // As a guided walkthrough advances, move the user to each step's screen (desktop nav).
   // onNavigate is kept in a ref so this fires only when the step changes — not on every
@@ -812,6 +826,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
         body: JSON.stringify({
           messages: apiMessages,
           screen: { id: pg || '', title: screenTitle || '' },
+          openRecord: openRecord || null,
           screens: SCREENS,
           tours: TOURS.map((t) => ({ id: t.id, title: t.title, desc: t.desc })),
           targets: TARGETS,
@@ -835,7 +850,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, on
     } finally {
       setBusy(false);
     }
-  }, [busy, messages, pg, screenTitle, runActions]);
+  }, [busy, messages, pg, screenTitle, openRecord, runActions]);
 
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [

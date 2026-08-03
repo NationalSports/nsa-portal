@@ -4461,7 +4461,7 @@ export default function App(){
   React.useEffect(()=>{if(selV)addRecent('vendor',selV.id,selV.name)},[selV?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');const[nlSpec,setNlSpec]=useState(null);
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');const[nlSpec,setNlSpec]=useState(null);const[coachFinder,setCoachFinder]=useState(null);
   // Supplier invoices (si_documents) aren't held in memory — the Sports Inc queue is lazy-loaded on
   // demand — so global search reaches them with its own debounced DB query. The longest query token
   // drives an ilike across the PO#/supplier/invoice#/matched-PO columns; rSearch then applies the
@@ -33638,8 +33638,138 @@ export default function App(){
   // hand a compact summary back to the chat.
   function handleAssistantSearch(spec){
     const res=runPortalSearch(spec);
-    setNlSpec(spec);setPg('search');
+    setNlSpec(spec);setCoachFinder(null);setPg('search');
     return res;
+  }
+  // Coach product finder — searches the FULL catalog (incl. API-catalog vendors that the
+  // in-memory `prod` excludes: SanMar, S&S, Adidas/CLICK, Momentec, UA, Nike) directly in
+  // Supabase, joins LIVE vendor stock from inventory_unified by SKU, and returns priced
+  // options for a coach. Read-only. Quote price = cost × markup (default 1.65, adjustable
+  // on the results page / at PDF export).
+  async function handleAssistantFindProducts(spec){
+    if(!supabase)return {error:'no_db'};
+    const kw=String((spec&&spec.keywords)||'').trim();
+    const color=String((spec&&spec.color)||'').trim();
+    const category=String((spec&&spec.category)||'').trim();
+    const brand=String((spec&&spec.brand)||'').trim();
+    const vendor=String((spec&&spec.vendor)||'').trim().toLowerCase();
+    const costMax=Number(spec&&spec.cost_max)>0?Number(spec.cost_max):null;
+    const costMin=Number(spec&&spec.cost_min)>0?Number(spec.cost_min):null;
+    const minStock=Number(spec&&spec.min_stock)>0?Number(spec.min_stock):null;
+    const limit=Math.min(Math.max(Number(spec&&spec.limit)||40,1),60);
+    const vendMap={sanmar:'sanmar','s&s':'ss_activewear',ss:'ss_activewear','s&s activewear':'ss_activewear','s and s':'ss_activewear',adidas:'click',click:'click',momentec:'momentec',ua:'ua','under armour':'ua',nike:'nike',agron:'agron',richardson:'richardson'};
+    const source=vendMap[vendor]||null;
+    // The PRODUCT TYPE (usually the last noun) MUST match name/category — otherwise a descriptor
+    // like "cotton" pulls in tees when the user asked for hoods. Stem so "hoods/hoodie" -> "hood"
+    // matches "Hooded Sweatshirt" and category "Hoods". Descriptors ("cotton","fleece") only rank.
+    const _stop=new Set(['our','cost','costs','under','over','with','good','great','stock','stocked','the','and','for','of','to','in','on','cheap','cheapest','plenty','lots','available','options','option','dollar','dollars','price','priced']);
+    const stemOf=(w)=>String(w||'').replace(/(ies|ie|es|s)$/,'');
+    const words=kw.toLowerCase().split(/\s+/).map(w=>w.replace(/[^a-z0-9]/g,'')).filter(w=>w.length>2&&!_stop.has(w));
+    const typeWord=words.length?stemOf(words[words.length-1]):(category?stemOf(category.toLowerCase().split(/\s+/).filter(Boolean).pop()||''):'');
+    let q=supabase.from('products').select('id,sku,name,brand,color,category,nsa_cost,clearance_cost,is_clearance,available_sizes,image_front_url,image_flat_front_url,inventory_source').not('is_active','is',false).not('is_archived','is',true);
+    if(source)q=q.eq('inventory_source',source);
+    if(costMax!=null)q=q.lte('nsa_cost',costMax);
+    if(costMin!=null)q=q.gte('nsa_cost',costMin);
+    if(color)q=q.ilike('color','%'+color+'%');
+    if(brand)q=q.ilike('brand','%'+brand+'%');
+    if(typeWord)q=q.or(`name.ilike.%${typeWord}%,category.ilike.%${typeWord}%`); // keeps hoods from returning tees
+    else if(category)q=q.ilike('category','%'+category+'%');
+    q=q.order('nsa_cost',{ascending:true}).limit(600);
+    let rows=[];
+    try{const{data,error}=await q;if(error){console.error('[findProducts]',error.message);return {error:'query_failed'};}rows=data||[];}catch(e){return {error:'query_failed'};}
+    // Live vendor stock by sku (per colorway), batched.
+    const skus=[...new Set(rows.map(p=>p.sku).filter(Boolean))].slice(0,600);
+    const stockBySku={};
+    for(let i=0;i<skus.length;i+=300){const batch=skus.slice(i,i+300);try{const{data:inv}=await supabase.from('inventory_unified').select('sku,stock_qty,future_delivery_date,future_delivery_qty').in('sku',batch);(inv||[]).forEach(r=>{const k=r.sku;if(!stockBySku[k])stockBySku[k]={total:0,nextDate:null};const s=stockBySku[k];s.total+=(Number(r.stock_qty)||0);const fq=Number(r.future_delivery_qty)||0;if(r.future_delivery_date&&fq>0){if(!s.nextDate||r.future_delivery_date<s.nextDate)s.nextDate=r.future_delivery_date;}});}catch(e){}}
+    const otherStems=words.slice(0,-1).map(stemOf).filter(Boolean);
+    const scoreOf=(name,cat)=>{const hay=((name||'')+' '+(cat||'')).toLowerCase();return otherStems.reduce((a,w)=>a+(hay.includes(w)?1:0),0);};
+    // Collapse colorways of the same style into ONE card (name is identical across colors).
+    const groups=new Map();
+    rows.forEach(p=>{
+      const key=(p.brand||'').toLowerCase()+'|'+(p.name||'').toLowerCase();
+      const cost=(p.is_clearance&&Number(p.clearance_cost)>0)?Number(p.clearance_cost):(Number(p.nsa_cost)||0);
+      const st=stockBySku[p.sku]||null;const stk=st?st.total:0;
+      let g=groups.get(key);
+      if(!g){g={sku:p.sku,name:p.name||'',brand:p.brand||'',category:p.category||'',image:p.image_front_url||p.image_flat_front_url||null,sizes:new Set(),colors:new Set(),colorsInStock:new Set(),stockTotal:0,anyStock:false,cost:cost>0?cost:0,nextDate:st?st.nextDate:null,score:scoreOf(p.name,p.category)};groups.set(key,g);}
+      if(p.color)g.colors.add(p.color);
+      (Array.isArray(p.available_sizes)?p.available_sizes:[]).forEach(s=>g.sizes.add(s));
+      g.stockTotal+=stk;if(stk>0){g.anyStock=true;if(p.color)g.colorsInStock.add(p.color);}
+      if(cost>0&&(g.cost<=0||cost<g.cost))g.cost=cost;
+      if(!g.image&&(p.image_front_url||p.image_flat_front_url))g.image=p.image_front_url||p.image_flat_front_url;
+      if(!g.nextDate&&st&&st.nextDate)g.nextDate=st.nextDate;
+    });
+    let styles=[...groups.values()].map(g=>({sku:g.sku,name:g.name,brand:g.brand,category:g.category,image:g.image,sizes:[...g.sizes],colors:[...g.colors],colorCount:g.colors.size,inStockColors:g.colorsInStock.size,stockTotal:g.stockTotal,anyStock:g.anyStock,cost:g.cost,nextDate:g.nextDate,score:g.score}));
+    if(minStock!=null)styles=styles.filter(s=>s.stockTotal>=minStock); // "good stock" = enough total live stock for the style
+    styles.sort((a,b)=>(b.score-a.score)||((b.anyStock?1:0)-(a.anyStock?1:0))||(a.cost-b.cost));
+    const total=styles.length;
+    styles=styles.slice(0,limit);
+    setCoachFinder({products:styles,spec:{keywords:kw,color,category,brand,vendor,cost_max:costMax,min_stock:minStock},markup:1.65,total});
+    setNlSpec(null);setPg('search');
+    return {ok:true,total,shown:styles.length};
+  }
+  // Coach-facing options sheet → browser print (Save as PDF). Images are absolute CDN URLs.
+  function printCoachPdf(finder){
+    try{
+      const f=finder||coachFinder;if(!f||!f.products||!f.products.length)return;
+      const markup=Number(f.markup)||1.65;const money=(n)=>_nlMoney(n);
+      const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      const cards=f.products.map(p=>{
+        const quote=p.cost>0?money(Math.round(p.cost*markup*100)/100):'—';
+        const stock=p.anyStock?'In stock':'Out of stock';
+        const colorsLine=p.colorCount>0?(p.colorCount+' color'+(p.colorCount===1?'':'s')):'';
+        const sizes=(p.sizes||[]).slice(0,12).join(' · ');
+        const img=p.image?('<img src="'+esc(p.image)+'" alt="">'):'<div class="noimg">No image</div>';
+        return '<div class="card"><div class="imgwrap">'+img+'</div><div class="body"><div class="name">'+esc(p.name)+'</div><div class="meta">'+esc(p.brand)+(p.category?' · '+esc(p.category):'')+'</div>'+(colorsLine?'<div class="colors">'+esc(colorsLine)+'</div>':'')+'<div class="sizes">'+esc(sizes)+'</div><div class="prow"><span class="stock '+(p.anyStock?'ok':'no')+'">'+esc(stock)+'</span><span class="price">'+quote+'</span></div></div></div>';
+      }).join('');
+      const html='<!doctype html><html><head><meta charset="utf-8"><title>Product Options</title><style>'
+        +'@page{size:letter;margin:0.5in}*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1e293b;margin:0}'
+        +'.head{background:#0f172a;color:#fff;padding:16px 20px;border-radius:10px;margin-bottom:16px}.head h1{margin:0;font-size:20px}.head p{margin:4px 0 0;color:#cbd5e1;font-size:12px}'
+        +'.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}.card{border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;break-inside:avoid}'
+        +'.imgwrap{height:150px;background:#f8fafc;display:flex;align-items:center;justify-content:center}.imgwrap img{max-width:100%;max-height:150px;object-fit:contain}.noimg{color:#94a3b8;font-size:11px}'
+        +'.body{padding:9px 11px}.name{font-size:12px;font-weight:700;color:#0f172a;line-height:1.25}.meta{font-size:11px;color:#64748b;margin-top:2px}.colors{font-size:10px;color:#475569;margin-top:3px}.sizes{font-size:10px;color:#94a3b8;margin-top:4px}'
+        +'.prow{display:flex;justify-content:space-between;align-items:center;margin-top:8px}.stock{font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px}.stock.ok{background:#f0fdf4;color:#166534}.stock.no{background:#fef2f2;color:#b91c1c}.price{font-size:15px;font-weight:800;color:#1e40af}'
+        +'.foot{margin-top:14px;color:#94a3b8;font-size:10px;text-align:center}</style></head><body>'
+        +'<div class="head"><h1>Product Options</h1><p>'+esc(f.products.length)+' option'+(f.products.length===1?'':'s')+' · National Sports Apparel</p></div>'
+        +'<div class="grid">'+cards+'</div>'
+        +'<div class="foot">Prices are estimates and subject to change. Stock shown is live vendor availability at time of printing.</div></body></html>';
+      const w=window.open('','_blank');if(!w){try{nf('Allow pop-ups to download the PDF','error')}catch(e){}return;}
+      w.document.write(html);w.document.close();
+      setTimeout(()=>{try{w.focus();w.print();}catch(e){}},700);
+    }catch(e){console.error('[coachPdf]',e);}
+  }
+  // Results page for the coach product finder (rendered by rSearch when coachFinder set).
+  function rCoachFinder(){
+    const f=coachFinder;const markup=Number(f.markup)||1.65;const money=(n)=>_nlMoney(n);
+    return(<>
+      <div style={{marginBottom:16,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>Product options{f.spec&&f.spec.keywords?` · "${f.spec.keywords}"`:''}</div>
+        <span className="badge badge-gray">{f.total} match{f.total===1?'':'es'}{f.total>f.products.length?` (showing ${f.products.length})`:''}</span>
+        <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          <label style={{fontSize:12,color:'#64748b'}}>Markup ×<input type="number" step="0.05" min="1" value={markup} onChange={e=>{const m=Number(e.target.value)||1.65;setCoachFinder(cf=>cf?{...cf,markup:m}:cf);}} style={{width:66,marginLeft:6,padding:'4px 6px',border:'1px solid #e2e8f0',borderRadius:6,fontSize:12}}/></label>
+          <button className="btn btn-primary" onClick={()=>printCoachPdf(coachFinder)}>🖨 Download Coach PDF</button>
+          <button className="btn btn-secondary" onClick={()=>setCoachFinder(null)}>Clear</button>
+        </div>
+      </div>
+      {f.products.length===0?<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#64748b'}}>No products matched. Try different words, a color, or a higher cost cap.</div></div>
+      :<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:14}}>
+        {f.products.map((p,i)=>{const quote=p.cost>0?money(Math.round(p.cost*markup*100)/100):'—';return(
+          <div key={(p.sku||'')+i} className="card" style={{overflow:'hidden'}}>
+            <div style={{height:170,background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>{p.image?<img src={p.image} alt="" style={{maxWidth:'100%',maxHeight:170,objectFit:'contain'}}/>:<span style={{color:'#94a3b8',fontSize:12}}>No image</span>}</div>
+            <div style={{padding:'10px 12px'}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#0f172a',lineHeight:1.25}}>{p.name}</div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{p.brand}{p.category?' · '+p.category:''}</div>
+              <div style={{fontSize:10.5,color:'#475569',marginTop:3}}>{p.colorCount>0?`${p.colorCount} color${p.colorCount===1?'':'s'}${p.inStockColors>0&&p.inStockColors<p.colorCount?` · ${p.inStockColors} in stock`:''}`:''}</div>
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:3}}>{(p.sizes||[]).slice(0,12).join(' · ')}</div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}}>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:10,background:p.anyStock?'#f0fdf4':'#fef2f2',color:p.anyStock?'#166534':'#b91c1c'}}>{p.anyStock?'In stock':'Out of stock'}</span>
+                <span style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>{quote}</span>
+              </div>
+              {p.nextDate&&!p.anyStock&&<div style={{fontSize:10,color:'#64748b',marginTop:4}}>Next delivery: {p.nextDate}</div>}
+            </div>
+          </div>
+        );})}
+      </div>}
+    </>);
   }
   // Build one estimate line from a resolved catalog product, priced to a target margin
   // (unit_sell = cost/(1-margin)) or the default markup, or retail when no cost is on file.
@@ -33905,6 +34035,7 @@ export default function App(){
 
   // GLOBAL SEARCH RESULTS PAGE
   function rSearch(){
+    if(coachFinder)return rCoachFinder();
     if(nlSpec)return rNlResults();
     const q=(gSearchQ||'').trim();
     if(!q||q.length<2){
@@ -34140,7 +34271,7 @@ export default function App(){
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <div className="search-bar" data-tour-id="global-search" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(e.key==='Enter'){const q=gQ.trim();if(q.length>=2){setGSearchQ(q);setNlSpec(null);setCoachFinder(null);setPg('search');setGOpen(false)}}else if(e.key==='Escape'){setGOpen(false)}}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const _toks=s.split(/\s+/).filter(Boolean);
             const _custHay=(cc)=>{if(!cc)return'';const par=cc.parent_id?cust.find(x=>x.id===cc.parent_id):null;return((cc.name||'')+' '+(cc.alpha_tag||'')+' '+((cc.search_tags||[]).join(' '))+' '+((par?.search_tags||[]).join(' '))).toLowerCase()};
@@ -35046,7 +35177,13 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/>
+    <PortalAssistant pg={pg} screenTitle={titles[pg]||'Dashboard'} userName={cu?.name} openRecord={(()=>{try{
+      if(pg==='estimates'&&eEst){const c=eEstC||cust.find(x=>x.id===eEst.customer_id);return{type:'estimate',id:eEst.id,customer:c?.name||c?.alpha_tag||''};}
+      if(pg==='orders'&&eSO){const c=eSOC||cust.find(x=>x.id===eSO.customer_id);return{type:'sales_order',id:eSO.id,customer:c?.name||c?.alpha_tag||''};}
+      if(pg==='invoices'&&viewInvoice){const c=cust.find(x=>x.id===viewInvoice.customer_id);return{type:'invoice',id:viewInvoice.id,customer:c?.name||c?.alpha_tag||''};}
+      if(pg==='customers'&&selC){return{type:'customer',id:selC.id,customer:selC.name||selC.alpha_tag||''};}
+      if(pg==='products'&&selP){return{type:'product',id:selP.sku||selP.id,customer:''};}
+    }catch(e){}return null;})()} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote} onFindProducts={handleAssistantFindProducts}/>
   </div></AppDataProvider>);
 }
 
