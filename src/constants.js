@@ -350,6 +350,10 @@ export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
 // embroidery/DTF get rep-owned statuses so they read clearly and filter on their own.
 export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers','upload_emb_files'];
+// Prod statuses meaning a job has already entered decoration (staging=In Line, in_process=On Press)
+// or moved past it (completed, shipped). Once here, the warehouse "All items received" hand-off
+// notification is stale — the job has moved through that process — so it should no longer surface.
+export const DECO_OR_LATER_STATUSES=['staging','in_process','completed','shipped'];
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
