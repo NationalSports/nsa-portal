@@ -141,7 +141,7 @@ export default function InvoicesPage(){
         const shipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
         const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
-        const poNum=inv._po_number||so?.po_number;
+        const poNum=inv.po_number||inv._po_number||so?.po_number;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',date:inv.date,
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
@@ -258,6 +258,7 @@ export default function InvoicesPage(){
                   memo:inv.memo||'',
                   date:inv.date||'',
                   due_date:inv.due_date||'',
+                  po_number:inv.po_number||inv._po_number||so?.po_number||'',
                   billing_name:inv.billing_name||'',
                   billing_address:inv.billing_address||'',
                   billing_custom:_billingCustom,
@@ -315,7 +316,7 @@ export default function InvoicesPage(){
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Bill To</div>
                 {inv.billing_name?<><div style={{fontSize:14,fontWeight:700}}>{inv.billing_name}</div><div style={{fontSize:11,color:'#64748b'}}>{inv.billing_address||''}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div></>
                 :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}{ic?.billing_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.billing_address_line1}{ic.billing_city?', '+ic.billing_city:''}{ic.billing_state?' '+ic.billing_state:''}{ic.billing_zip?' '+ic.billing_zip:''}</div>}</>}
-                {(inv._po_number||so?.po_number)&&<div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginTop:4,fontFamily:'monospace'}}>PO# {inv._po_number||so?.po_number}</div>}
+                {(inv.po_number||inv._po_number||so?.po_number)&&<div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginTop:4,fontFamily:'monospace'}}>PO# {inv.po_number||inv._po_number||so?.po_number}</div>}
                 {(()=>{const parentCust2=ic?.parent_id?cust.find(c=>c.id===ic.parent_id):ic;const altAddrs2=(parentCust2?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
                   return altAddrs2.length>0&&<select className="form-select" style={{fontSize:10,marginTop:4,padding:'2px 4px',width:'auto'}} value={inv.billing_name?JSON.stringify({label:inv.billing_name,street:(inv.billing_address||'').split(',')[0]?.trim(),city:(inv.billing_address||'').split(',')[1]?.trim(),state:(inv.billing_address||'').split(',')[2]?.trim(),zip:(inv.billing_address||'').split(',')[3]?.trim()}):''} onChange={e=>{const v=e.target.value;const upd=v?{...inv,billing_name:JSON.parse(v).label,billing_address:[JSON.parse(v).street,JSON.parse(v).city,JSON.parse(v).state,JSON.parse(v).zip].filter(Boolean).join(', ')}:{...inv,billing_name:null,billing_address:null};setInvs(prev=>prev.map(i=>i.id===inv.id?upd:i));setViewInvoice(upd)}}>
                     <option value="">Bill to: {ic?.name}</option>
@@ -745,6 +746,11 @@ export default function InvoicesPage(){
               </div>}
             </div>
 
+            {/* School PO # — customer's purchase order, shows on the invoice PDF (mirrors the SO field). */}
+            <div style={{width:180,marginBottom:14}}>
+              <label className="form-label">School PO #</label>
+              <input className="form-input" value={em.po_number||''} onChange={e=>setInvEditModal(s=>({...s,po_number:e.target.value}))} placeholder="e.g. PO-12345" style={{fontFamily:'monospace',fontWeight:600}}/></div>
+
             {/* Memo + Invoice Date + Due Date + Shipping + Tax */}
             <div style={{display:'grid',gridTemplateColumns:'1fr 140px 140px 120px 120px',gap:10,marginBottom:14}}>
               <div><label className="form-label">Memo</label>
@@ -856,6 +862,7 @@ export default function InvoicesPage(){
                 memo:em.memo,
                 date:em.date,
                 due_date:em.due_date,
+                po_number:em.po_number?em.po_number.trim():null,
                 billing_name:em.billing_name||null,
                 billing_address:em.billing_address||null,
                 shipping_name:em.shipping_name||null,
@@ -959,7 +966,7 @@ export default function InvoicesPage(){
                 const siBal=siInv.total-(siInv.paid||0);
                 const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
                 const siRepObj=REPS.find(r=>r.id===(siCust?.primary_rep_id||siSo?.created_by))||null;
-                const siPoNum=siInv._po_number||siSo?.po_number;
+                const siPoNum=siInv.po_number||siInv._po_number||siSo?.po_number;
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
                 const siShipName=siInv.shipping_name||(!siInv.shipping_address?resolveOrderShipTo(siSo,siCust)?.name:null)||siCust?.name||'—';
@@ -1408,7 +1415,7 @@ export default function InvoicesPage(){
                 const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
                 const fShipName=inv.shipping_name||(!inv.shipping_address?resolveOrderShipTo(so,ic)?.name:null)||ic?.name||'—';
                 const fShipAddr=(inv.shipping_name||inv.shipping_address?(inv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(so,ic)||custShipAddrSub(ic);
-                const fPoNum=inv._po_number||so?.po_number;
+                const fPoNum=inv.po_number||inv._po_number||so?.po_number;
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const fStoredLi=inv.line_items||[];
                 const {rows:fRows,subtotal:fSubTotal}=buildInvoicePdfRows(inv,so,_$f);
@@ -1578,7 +1585,7 @@ export default function InvoicesPage(){
             // Build statement HTML — every past-due invoice for this customer.
             const stmtRows=t.invoices.map(inv=>{
               const memo=inv.memo||'—';
-              const po=inv._po_number||(sos.find(s=>s.id===inv.so_id)?.po_number)||'—';
+              const po=inv.po_number||inv._po_number||(sos.find(s=>s.id===inv.so_id)?.po_number)||'—';
               const date=inv.date||inv.invoice_date||'—';
               const due=inv.due_date||'—';
               return '<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-weight:600">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+memo+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:11px">'+po+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+date+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+due+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#b91c1c;font-weight:600">'+_$(inv._bal)+'</td></tr>';

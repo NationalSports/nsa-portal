@@ -7452,7 +7452,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const rBillAddr=rBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
         const rShipName=ir.shipping_name||ic?.name||'—';
         const rShipAddr=(ir.shipping_name||ir.shipping_address?(ir.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(irSO,ic)||custShipAddrSub(ic);
-        const rPoNum=ir._po_number||irSO?.po_number;
+        const rPoNum=ir.po_number||ir._po_number||irSO?.po_number;
         // Build rows with decoration detail from SO items
         const rows=[];let subTotal=0;
         const soItems=irSO?safeItems(irSO):[];const soArt=irSO?safeArt(irSO):[];
@@ -7675,7 +7675,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Build PDF attachment
             const _$e=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
             const irBillName=ir.billing_name||ic?.name||'—';const irBal=ir.total-(ir.paid||0);
-            const irPoNum=ir._po_number||irSO?.po_number;
+            const irPoNum=ir.po_number||ir._po_number||irSO?.po_number;
             const eBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
             const eBillAddr=eBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
             const eShipName=ir.shipping_name||ic?.name||'—';
