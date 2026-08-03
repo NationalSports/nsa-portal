@@ -1952,7 +1952,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const downloadInvPdf=()=>{
         const _$=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         const _rep=(REPS||[]).find(r=>r.id===customer?.primary_rep_id);
-        const poNum=inv._po_number||linkedSO?.po_number;
+        const poNum=inv.po_number||inv._po_number||linkedSO?.po_number;
         const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
         const rows=[];let subTotal=0;
         const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
