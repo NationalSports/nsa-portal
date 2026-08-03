@@ -473,6 +473,7 @@ import {
   _setOnOutboxConflict,
   _dbSaveFailedErrors,
   _clearSaveError,
+  _permDenialParked,
   _onFailedIdsChange,
   _persistFailedIds,
   _dbSavePendingIds,
@@ -4122,7 +4123,7 @@ export default function App(){
         // Tab returning — immediately retry failed saves instead of waiting for backoff timer
         // Reset backoff since user is actively using the tab
         _retryBackoff.current=60000;
-        const shouldRetry=id=>_dbSaveFailedIds.has(id)&&!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000);
+        const shouldRetry=id=>_dbSaveFailedIds.has(id)&&!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id);
         const retryIds=[..._dbSaveFailedIds].filter(shouldRetry).slice(0,10);
         if(retryIds.length){
           console.log('[DB] Tab visible — retrying',retryIds.length,'failed saves');
@@ -4159,7 +4160,7 @@ export default function App(){
       const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
       if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
-      const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
+      const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)&&!_permDenialParked(id));
       if(!retryIds.length){scheduleRetry();return}
       // Cap retries at 10 IDs per cycle to avoid spiking CPU/network
       const batch=retryIds.slice(0,10);

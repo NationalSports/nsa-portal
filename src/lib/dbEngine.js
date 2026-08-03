@@ -2467,8 +2467,23 @@ const _isPermissionDenied=(err)=>{
 // Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
 // restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
 const _authFailLoggedAt=new Map();// entity id → last auth_save_failed telemetry ts (10-min throttle)
+// Terminal-denial retry cap (root-caused 2026-08-03). A perm=true failure — the anon/wrong role hitting
+// a staff-only RLS policy — can NEVER be fixed by a token refresh, so the background retry drivers would
+// otherwise replay the write every 60s→4min forever: a single zombie/anon tab looped the SO-save graph
+// against RLS for 16+ hours, ~5k rejected inserts/day. After _PERM_DENIAL_CAP consecutive perm denials
+// for an id we PARK it — the retry drivers (App.js doRetry / onVis) skip parked ids, so the doomed write
+// stops going out. The edit is NOT lost: the id stays in _dbSaveFailedIds (still surfaced as unsaved),
+// its payload is held in the outbox, and the recorded save-error tells the rep to contact an admin. The
+// streak is in-memory, so a page reload re-arms the retry; a successful save or _clearSaveError() resets
+// it. The counter only advances on perm=true — transient/expiry/version failures retry as before.
+const _PERM_DENIAL_CAP=5;
+const _permDenialStreak=new Map();// id → consecutive perm=true failures
+const _permDenialParked=(id)=>(_permDenialStreak.get(id)||0)>=_PERM_DENIAL_CAP;
 const _handleAuthSaveFailure=(id,err)=>{
   const perm=_isPermissionDenied(err);
+  // perm=true streak advances toward the park cap; a recoverable expiry (perm=false) resets it so a
+  // flapping-then-recovering session never accumulates its way to a park.
+  if(id){if(perm)_permDenialStreak.set(id,(_permDenialStreak.get(id)||0)+1);else _permDenialStreak.delete(id)}
   // perm=true → a live account lacking rights (won't self-heal); perm=false → expired/zombie session
   // (recoverable). This row is what separates the two in the client_events dashboard. Event name must
   // stay in the anon INSERT whitelist (migration client_events_anon_auth_failure_telemetry); sent
@@ -3012,7 +3027,7 @@ const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_sa
 // instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
 const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
 const _recordSaveError=(id,msg)=>{if(!id)return;_dbSaveFailedErrors.set(id,{msg:String(msg||'unknown error').slice(0,400),ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}};
-const _clearSaveError=(id)=>{if(!id)return;if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
+const _clearSaveError=(id)=>{if(!id)return;_permDenialStreak.delete(id);if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
 // On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
@@ -3274,6 +3289,8 @@ export {
   _dbSaveFailedIds,
   _dbSaveFailedErrors,
   _clearSaveError,
+  _permDenialParked,
+  _handleAuthSaveFailure,
   _outboxAdd,
   _outboxRemove,
   _outboxRemoveById,
