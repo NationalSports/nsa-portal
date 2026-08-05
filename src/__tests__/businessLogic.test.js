@@ -150,8 +150,9 @@ describe('Screen Print Pricing — spP()', () => {
   });
 
   test('returns null-based price as 0 for small qty + high colors', () => {
-    // Bracket 0 (qty 1-11), colors 4 and 5 are null in the matrix
-    expect(BL.spP(5, 4)).toBe(0);
+    // Bracket 0 (qty 1-11): 4 colors is now the $100 flat charge; 5 colors is still blank.
+    // A blank cell prices at 0 — dP flags it as _unpriced so it can't bill silently (SO-1727).
+    expect(BL.spP(5, 4)).toBe(100);
     expect(BL.spP(5, 5)).toBe(0);
   });
 

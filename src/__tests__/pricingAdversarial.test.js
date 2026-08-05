@@ -190,14 +190,15 @@ describe('dP numbers branch — negative qty regression', () => {
   });
 });
 
-// 5. screen_print with a negative color count silently prices at $0/$0 instead of
-//    erroring — spP's c<1||c>5 guard rejects the color count but the caller doesn't
-//    surface that as a failure. Pinned to keep this silent-zero behavior visible.
+// 5. screen_print with a negative color count still prices at $0/$0 — spP's c<1||c>5 guard
+//    rejects the color count and there's nothing sensible to charge. It is no longer SILENT:
+//    dP stamps _unpriced so the deco row flags it instead of showing a legitimate $0.00
+//    (SO-1727 — see unpricedScreenPrint.test.js). Pinned so the flag can't regress away.
 describe('dP screen_print — negative colors characterization', () => {
-  test('colors: -1 silently returns {sell: 0, cost: 0}', () => {
+  test('colors: -1 returns {sell: 0, cost: 0}, flagged as unpriced', () => {
     const d = { type: 'screen_print', colors: -1 };
     const r = DP.dP(T, d, 10);
-    expect(r).toEqual({ sell: 0, cost: 0 });
+    expect(r).toEqual({ sell: 0, cost: 0, _unpriced: true });
   });
 });
 
