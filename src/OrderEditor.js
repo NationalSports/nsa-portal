@@ -459,12 +459,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _cwMatchForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return{id:deco.color_way_id,exact:true};const cls=garmentColorClass(garmentColor);const byLD=cls?cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return byLD?{id:byLD.id,exact:true}:{id:cws[0].id,exact:false}};
   // Open the existing "Send to Coach for Approval" modal for a job index (same initializer as
   // the waiting-approval banner's Send to Coach button).
-  const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;
+  // Reads the order through oOverride/oRef.current, NOT the render closure's `o`: both callers
+  // reach here after an async gap (applyPriorMock awaits its save; the todo-nav path sits behind
+  // a setTimeout), so the closure order predates the mock that was just applied — the gate then
+  // re-reports the garment as unmocked (SO-1727: error bar over a visibly mocked KH0086) and the
+  // send modal never opens. applyPriorMock passes its saved order explicitly so the gate is
+  // deterministic even if the post-save re-render hasn't committed oRef yet.
+  const openCoachSend=(jIdx,oOverride)=>{const co=oOverride||oRef.current||o;const jb0=safeJobs(co)[jIdx];if(!jb0)return;
     // Same per-garment mock gate as the Send-to-Coach button — this opener is also reached
     // from applyPriorMock, which may have mocked only one of the job's garments.
-    const _mmO=skusMissingMockups(jb0,o);
+    const _mmO=skusMissingMockups(jb0,co);
     if(_mmO.length>0){nf(missingMockupsMsg('send to coach',_mmO),'error');return}
-    const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c2.alpha_tag)+'&so='+o.id+'&job='+jb0.id):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
+    const c2=ic||allCustomers?.find?.(x=>x.id===co.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c2.alpha_tag)+'&so='+co.id+'&job='+jb0.id):'';const _label=(co.memo&&co.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
   // Apply a chosen prior mock to a garment on this order's art file, tagged with the CW inherited
   // from the item. sendToCoach=true also moves the job to Waiting Approval and opens the send
   // modal; otherwise the art stays approved/complete.
@@ -503,7 +509,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const ok=await saveSONow(updated,'Reused mock',null);
     if(ok){
       const _cwNote=cwLabel?' · CW: '+cwLabel:cwUnconf?' · color-way unconfirmed — verify the mock matches this garment':'';
-      if(sendToCoach){nf('Mock applied'+_cwNote+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
+      if(sendToCoach){nf('Mock applied'+_cwNote+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx,updated);}
       else if(newJobStatus)nf('Mock applied'+_cwNote+' — art stays approved');
       else nf('Mock applied'+_cwNote+' — this design is approved; the job advances once its other designs are approved too');
     }
