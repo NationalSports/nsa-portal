@@ -522,7 +522,26 @@ export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','
 // instead of dropping them. A plain `SZ_ORD.filter(...)` silently omits every label not in
 // SZ_ORD, which hid ordered units from the Sales Order / Production Sheet / Invoice printouts
 // (a line ordered S/M/L/Womens-XL/Womens-2XL printed only S/M/L while the total still read 12).
-const _szCompare=(a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return (ia===-1?999:ia)-(ib===-1?999:ib)};
+// Adidas B2B labels the half shoe size with a trailing dash ("10-" = 10.5) and runs past 17 (18,
+// 19). Neither form is in SZ_ORD, so both landed in the unknown-label bucket and piled up at the
+// end of a size row — a shoe grid read 4,7,8,…,12,4-,5-,…,14-,18,19 instead of by number. Rank
+// those numerically inside the footwear block so a run reads 9, 9-, 10, 10-, 11 … left to right.
+// Ordering only: unrecognized labels still sort last, and nothing here changes size membership.
+const _FW_NUM=/^(\d{1,2})(\.5|-|½)?$/;
+const _I17=SZ_ORD.indexOf('17');
+export const szRank=(s)=>{
+  const i=SZ_ORD.indexOf(s);
+  if(i>=0)return i;
+  const m=_FW_NUM.exec(String(s).trim());
+  if(m){
+    const n=Number(m[1])+(m[2]?0.5:0);
+    const j=SZ_ORD.indexOf(String(n));// "10-" ranks alongside "10.5"
+    if(j>=0)return j;
+    if(n>17&&n<=20)return _I17+(n-17)/100;// 18/19 sit just past 17, ahead of the waist run
+  }
+  return 999;
+};
+const _szCompare=(a,b)=>szRank(a)-szRank(b);
 // Union of the size labels present across one or more size maps (pass their flattened keys),
 // ordered for display with custom/unrecognized labels last.
 export const orderedSizeKeys=(keys)=>[...new Set(keys)].sort(_szCompare);
