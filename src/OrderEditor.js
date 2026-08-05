@@ -764,10 +764,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // state (not the DB — the editor may hold unsaved edits the rep is looking at), then
     // stamps the returned job # + URL on the PO and flips waiting/planned → ordered.
     // The PO number goes over VERBATIM — the bill parser matches their invoice by it.
+    // baseOrder: when chained right after Create Deco PO, the closure's `o` doesn't hold
+    // the new PO yet — the caller must pass the order object it just built, or the stamp
+    // update here would map over the stale deco_pos and drop the brand-new entry on save.
+    const _isSilverScreenDp=dp=>!!dp&&(dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||''));
     const[sspSending,setSspSending]=useState(false);
-    const sendSilverScreenJob=async(dp)=>{
+    const sendSilverScreenJob=async(dp,baseOrder)=>{
       if(sspSending)return;
-      const soItems=safeItems(o);
+      const cur=baseOrder||o;
+      const soItems=safeItems(cur);
       const rows=(dp.item_idxs||[]).map(ii=>{const it=soItems[ii];if(!it)return null;
         const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
         const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
@@ -781,7 +786,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       setSspSending(true);
       try{
         const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action:'create',so_id:o.id,customer:cust?.name||cust?.alpha_tag||'',memo:o.memo||'',
+          body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',
             po:{po_id:dp.po_id,deco_type:dp.deco_type,qty:dp.qty,unit_cost:dp.unit_cost,expected_date:dp.expected_date,notes:dp.notes,drop_ship:!!dp.drop_ship},
             items:rows,deco_instructions})});
         const j=await r.json().catch(()=>({}));
@@ -789,7 +794,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const updatedDp={...dp,
           status:(!dp.status||dp.status==='planned'||dp.status==='waiting')?'ordered':dp.status,
           _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString()};
-        const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+        const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);
         setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
         nf('🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''));
@@ -8213,6 +8218,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(!preexistingPO)setPOCounter(c=>c+1);
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
               nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
+              // Silver Screen: offer to create the job on their portal right away (skip
+              // preexisting POs — those already exist in their system). Deferred so the
+              // modal closes before the confirm dialog appears.
+              if(!preexistingPO&&_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
             }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO for '+decoVendor}</button>
             {dv&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
               if(_poCreatingRef.current)return;
@@ -8266,6 +8275,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               } else {
                 nf('🎨 '+effectiveDpoId+' for '+decoVendor+' + 📦 '+blanksPOId+' blanks PO created');
               }
+              // Silver Screen: create their portal job for the new deco PO too. The API
+              // ordering modal may be open on top — the confirm dialog still works over it.
+              if(_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
             }}>🎨📦 Create Deco PO + Order Blanks</button>}
           </div>
         </div></div>;
@@ -13211,8 +13223,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
-                const _isSSP=dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||'');
-                if(!_isSSP||editingPo)return null;
+                if(!_isSilverScreenDp(dp)||editingPo)return null;
                 if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>;
                 if(dp.status==='received'||dp.status==='billed')return null;
                 return <button className="btn btn-sm btn-primary" disabled={sspSending} style={{fontSize:11,background:'#475569',borderColor:'#475569'}} onClick={()=>sendSilverScreenJob(dp)} title="Create this job on the Silver Screen account portal — sends the PO number and all covered items with size breakdowns">{sspSending?'Sending…':'🖨 Send to Silver Screen'}</button>;
