@@ -2069,6 +2069,43 @@ const RowLink=React.memo(function RowLink({params,onOpen,children,style,classNam
   return(<a href={_buildTabHref(params)} onClick={handler} className={className} title={title} style={{color:'inherit',textDecoration:'none',display:inline?'inline':'block',cursor:'pointer',...(style||{})}}>{children}</a>);
 });
 
+// Vendor picker for the product editor. Was a plain <select> over the eight seed
+// vendors (D_V), so distributors that only exist in the vendors table — Agron, A4,
+// Twin City… — could never be applied to a product. This is a type-to-filter search
+// over every vendor in the system; picking one applies it, clearing it unsets the vendor.
+function VendorSearchSelect({vendors,value,onPick}){
+  const list=useMemo(()=>(vendors||[]).filter(v=>v&&v.id&&v.name).slice().sort((a,b)=>a.name.localeCompare(b.name)),[vendors]);
+  const sel=list.find(v=>v.id===value)||null;
+  const[q,setQ]=useState('');const[open,setOpen]=useState(false);const[hi,setHi]=useState(0);
+  const wrap=useRef(null);
+  useEffect(()=>{if(!open)return;const h=e=>{if(wrap.current&&!wrap.current.contains(e.target))setOpen(false)};document.addEventListener('mousedown',h);return()=>document.removeEventListener('mousedown',h)},[open]);
+  const matches=useMemo(()=>{const s=q.trim().toLowerCase();return(s?list.filter(v=>v.name.toLowerCase().includes(s)):list).slice(0,80)},[q,list]);
+  const pick=v=>{onPick(v?v.id:'',v||null);setQ('');setOpen(false)};
+  const key=e=>{
+    if(e.key==='ArrowDown'){e.preventDefault();setOpen(true);setHi(h=>Math.min(h+1,matches.length-1))}
+    else if(e.key==='ArrowUp'){e.preventDefault();setHi(h=>Math.max(h-1,0))}
+    else if(e.key==='Enter'){if(open&&matches[hi]){e.preventDefault();pick(matches[hi])}}
+    else if(e.key==='Escape'){setOpen(false);setQ('')}
+  };
+  return(<div ref={wrap} style={{position:'relative'}}>
+    <div style={{display:'flex',alignItems:'center',gap:4}}>
+      <input className="form-input" autoComplete="off" placeholder={sel?sel.name:'Search vendors…'} title={sel?'Vendor: '+sel.name:'Search all vendors'}
+        value={open?q:(sel?sel.name:'')} style={{flex:1,minWidth:0}}
+        onFocus={()=>{setQ('');setHi(0);setOpen(true)}}
+        onChange={e=>{setQ(e.target.value);setHi(0);setOpen(true)}}
+        onKeyDown={key}/>
+      {sel&&<button type="button" className="btn btn-sm" title="Clear vendor" style={{padding:'2px 8px',lineHeight:1.2}} onClick={()=>pick(null)}>×</button>}
+    </div>
+    {open&&<div style={{position:'absolute',zIndex:60,top:'100%',left:0,right:0,maxHeight:260,overflowY:'auto',background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,boxShadow:'0 8px 24px rgba(15,23,42,.14)',marginTop:2}}>
+      {matches.length===0?<div style={{padding:'8px 10px',fontSize:12,color:'#94a3b8'}}>No vendor matches “{q}”</div>:matches.map((v,i)=>
+        <div key={v.id} onMouseDown={e=>{e.preventDefault();pick(v)}} onMouseEnter={()=>setHi(i)}
+          style={{padding:'6px 10px',fontSize:13,cursor:'pointer',background:i===hi?'#eff6ff':(v.id===value?'#f8fafc':'#fff'),fontWeight:v.id===value?700:500}}>
+          {v.name}{v.vendor_type==='api'&&<span style={{marginLeft:6,fontSize:10,color:'#0e7490'}}>API</span>}
+        </div>)}
+    </div>}
+  </div>);
+}
+
 export default function App(){
   // /auth/setup and /auth/reset short-circuit the entire app — they live behind their own
   // landing page that completes the magic-link / password reset flow before bouncing to /.
@@ -9392,6 +9429,9 @@ export default function App(){
       return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);doSave()};
     },[editing]);
     const v=vend.find(x=>x.id===ep.vendor_id);
+    // Vendor options for the editor: the live vendors table, plus any seed vendor the
+    // table hasn't been loaded with yet (offline / first paint), so nothing disappears.
+    const _vendorOpts=vend&&vend.length?[...vend,...D_V.filter(d=>!vend.some(x=>x.id===d.id))]:D_V;
     // Find all orders this product appears on
     const pEsts=ests.filter(e=>e.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
     const pSOs=sos.filter(s=>s.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
@@ -9505,7 +9545,17 @@ export default function App(){
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
-                <div><label className="form-label">Vendor</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div><label className="form-label">Vendor</label>
+                  {/* Search over every vendor in the system, not just the seed list — distributors
+                      like Agron carry adidas product and have to be applicable here. Brand only
+                      follows the vendor when it was already in sync with it, so an Agron item keeps
+                      brand "Adidas" (the adidas stock lookups match on that brand). */}
+                  <VendorSearchSelect vendors={_vendorOpts} value={ep.vendor_id||''} onPick={(id,v)=>setEp(x=>{
+                    const prevV=_vendorOpts.find(o=>o.id===x.vendor_id);
+                    const brandFollowsVendor=!x.brand||(prevV&&(x.brand||'').toLowerCase()===(prevV.name||'').toLowerCase());
+                    return{...x,vendor_id:id||null,brand:(v&&brandFollowsVendor)?v.name:x.brand};
+                  })}/>
+                </div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
