@@ -2783,9 +2783,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     await saveArtFilesNow(next,'Stitches');
     nf((verb||'Read')+' '+n.toLocaleString()+' stitches'+(srcName?' from '+srcName:''));
   };
-  // Manual "Read from PDF": staff pick the proof file; we extract + apply.
-  const readStitchesFromPdf=(folderId)=>{
+  // PDFs already attached to the art folder (production files first, then source art). The proof
+  // is usually ALREADY on the job — uploaded before this feature existed, from the Art Dashboard,
+  // or alongside the DST — so the stitch count can be read off the stored URL instead of asking
+  // staff to re-pick a file they already gave us. Stale files (retired by an art update) are
+  // skipped so a redone design can't be priced off the old proof.
+  const _artPdfEntries=art=>[...(art?.prod_files||[]),...(art?.files||[])]
+    .filter(f=>f&&!isStaleFile(f)&&_isPdfUrl(typeof f==='string'?f:(f.url||''),f))
+    .map(f=>({url:typeof f==='string'?f:(f.url||''),name:fileDisplayName(f)}))
+    .filter(f=>/^https?:\/\//i.test(f.url));
+  // Fetch a stored PDF and hand the bytes to the same pdf.js extractor a picked File goes through
+  // (Cloudinary serves delivery URLs CORS-open; a Blob has arrayBuffer() just like a File).
+  // Never throws — a blocked/failed fetch just reads as "no count found".
+  const _readStitchesFromPdfUrl=async(url)=>{
+    try{const r=await fetch(url,{mode:'cors'});if(!r.ok)return null;return await _readStitchesFromPdfFile(await r.blob());}catch(e){return null;}
+  };
+  // Try each attached PDF in turn; the first one carrying a stitch count wins.
+  const _readStitchesFromAttached=async(folderId,verb)=>{
+    for(const p of _artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId))){
+      const n=await _readStitchesFromPdfUrl(p.url);
+      if(n){await _applyArtStitches(folderId,n,p.name,verb);return n}
+    }
+    return null;
+  };
+  // Folders whose attached PDFs were already tried and came up empty — the next click on
+  // "Read from PDF" goes straight to the file picker instead of re-reading the same dud proof.
+  const _stitchPdfMissed=useRef(new Set());
+  // "Read from PDF": use the PDF already on the folder when there is one, else pick a file.
+  // The picker is only opened on the synchronous path — after an await the browser has lost the
+  // click's user activation and would block it.
+  const readStitchesFromPdf=async(folderId)=>{
     if(!extractPdfText){nf('PDF reading is unavailable here','error');return;}
+    const attached=_artPdfEntries((oRef.current.art_files||[]).find(a=>a.id===folderId));
+    if(attached.length&&!_stitchPdfMissed.current.has(folderId)){
+      nf('Reading stitch count…');
+      const n=await _readStitchesFromAttached(folderId,'Read');
+      if(n)return;
+      _stitchPdfMissed.current.add(folderId);
+      nf('No stitch count in '+attached.map(p=>p.name).join(', ')+' — click again to pick another PDF, or type it in','error');
+      return;
+    }
     const inp=document.createElement('input');inp.type='file';inp.accept='.pdf';
     inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;nf('Reading stitch count…');
       const n=await _readStitchesFromPdfFile(f);
@@ -2805,6 +2842,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const n=await _readStitchesFromPdfFile(pdf);
     if(n)await _applyArtStitches(folderId,n,pdf.name,'Auto-read');
   };
+  // Auto-read on open: any embroidery folder with no stitch count but a proof PDF already
+  // attached fills itself in, so a PDF that landed before this feature existed (or came in via
+  // the Art Dashboard) doesn't sit there waiting for someone to click the button. One attempt
+  // per folder per session, silent on a miss (image-only proof) — the field/button still work.
+  // Skipped once the SO has been invoiced: the stitch count moves the EM price tier, and an
+  // already-billed order must not silently re-price itself in the background.
+  const _autoStitchTried=useRef(new Set());
+  useEffect(()=>{
+    if(!extractPdfText)return;
+    if((allInvoices||[]).some(inv=>inv&&inv.so_id===o.id))return;
+    const targets=(o.art_files||[]).filter(a=>a&&(a.deco_type||'')==='embroidery'&&!a.stitches
+      &&!_autoStitchTried.current.has(a.id)&&_artPdfEntries(a).length>0);
+    if(!targets.length)return;
+    let cancelled=false;
+    (async()=>{for(const a of targets){if(cancelled)break;_autoStitchTried.current.add(a.id);await _readStitchesFromAttached(a.id,'Auto-read')}})();
+    return()=>{cancelled=true};
+  },[o.art_files,o.id,allInvoices,extractPdfText]);
   // The customer whose library this order's art should be promoted into. Library art lives on
   // the *parent* account and cascades to every sub-customer ("applies to all"), so a logo
   // created on one team's order can be made reusable program-wide. If this order's customer is
