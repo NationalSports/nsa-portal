@@ -400,6 +400,13 @@ async function replayOrder(order) {
       // Paid between the two submits — finalize/webhook will flip it; tell the client to skip the card form.
       return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, intentId: pi.id, replayed: true, alreadyPaid: true }) };
     }
+    // ACH mid-settlement (or awaiting micro-deposit verification): the bank debit is
+    // already underway — never hand back a payment form for it. The client lands on
+    // the order page, which shows the processing / verify notice.
+    const bankVerify = pi && pi.status === 'requires_action' && pi.next_action && pi.next_action.type === 'verify_with_microdeposits';
+    if (pi && (pi.status === 'processing' || bankVerify)) {
+      return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, intentId: pi.id, replayed: true, paymentProcessing: true, bankVerify: !!bankVerify }) };
+    }
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, clientSecret: pi.client_secret, intentId: pi.id, replayed: true }) };
   }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, replayed: true }) };

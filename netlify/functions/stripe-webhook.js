@@ -244,6 +244,58 @@ exports.handler = async (event) => {
           }
         }
       }
+      // ACH bounce on an automatic-payment-methods intent — storefront orders,
+      // club orders, and teamshop card-mode orders alike (any webstore_orders
+      // row whose intent is not ACH-only; all are unconverted while
+      // pending_payment, so cancelling is equally safe). Previously these fell
+      // through the teamshop-only guard above and the order sat in
+      // 'pending_payment' forever with the buyer believing it was placed.
+      // Scope guards:
+      //   * last_payment_error must carry BOTH a failed charge id AND a
+      //     us_bank_account payment method — i.e. a real bank DEBIT was
+      //     initiated and bounced (async, days after checkout). A card decline
+      //     (type 'card') or a pre-debit validation failure (no charge) never
+      //     matches, so a buyer retrying in an open Payment Element can't
+      //     cancel their own live order.
+      //   * pending_payment only, via compare-and-set — paid/refunded orders
+      //     are never touched, and a redelivered event no-ops.
+      if (sb && pi && pi.id && !isAchOnly) {
+        const lpe = pi.last_payment_error;
+        const achDebitBounced = !!(lpe && lpe.charge && lpe.payment_method && lpe.payment_method.type === 'us_bank_account');
+        if (achDebitBounced) {
+          const { data: _wRows } = await sb.from('webstore_orders')
+            .select('id,status').eq('stripe_pi_id', pi.id).limit(1);
+          const _wOrd = _wRows && _wRows[0];
+          if (_wOrd && _wOrd.status === 'pending_payment') {
+            const failMsg = lpe.message || 'The bank payment could not be completed.';
+            const { data: _wClaimed, error: _wErr } = await sb.from('webstore_orders')
+              .update({ status: 'cancelled' })
+              .eq('id', _wOrd.id).eq('status', 'pending_payment')
+              .select('id').limit(1);
+            // Best-effort like the teamshop branch (no hardFailure/retry), but a real
+            // write error must at least leave a trace — a CAS-miss returns [] with no error.
+            if (_wErr) console.error('[stripe-webhook] ACH-bounce cancel write failed for order', _wOrd.id, '-', _wErr.message);
+            if (_wClaimed && _wClaimed.length) {
+              // Same best-effort thread note the teamshop branch writes — it shows on
+              // the buyer's order tracker page and in the staff Messages center.
+              try {
+                const now = new Date();
+                await sb.from('messages').insert({
+                  id: 'm' + now.getTime() + Math.random().toString(36).slice(2, 7),
+                  entity_type: 'webstore_order', entity_id: String(_wOrd.id),
+                  so_id: null, author_id: null, author: 'NSA Payments',
+                  text: 'Bank transfer (ACH) payment failed — the order was cancelled. Stripe reason: ' + failMsg + ' You can place the order again with another payment method.',
+                  ts: now.toLocaleString(), dept: 'store',
+                  tagged_members: [], from_customer: false, read_by_staff: false,
+                });
+              } catch (e) {
+                console.error('[stripe-webhook] storefront ACH failure note failed (order already cancelled):', e.message);
+              }
+              console.error('[stripe-webhook] storefront ACH payment failed — order cancelled:', JSON.stringify({ order: _wOrd.id, pi: pi.id, reason: failMsg }));
+            }
+          }
+        }
+      }
     } else if (evt.type === 'charge.refunded') {
       // A refund issued from the Stripe dashboard (or the app). Record each refund
       // against the matching webstore order; apply_webstore_refund dedupes on the

@@ -2088,12 +2088,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div style={{padding:'20px 28px'}}>
 
         {/* Payment success banner */}
-        {portalPaySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
-          <div style={{fontSize:32,marginBottom:8}}>&#10003;</div>
-          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
-          <div style={{fontSize:14,color:'#166534'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{portalPaySuccess.fee>0?' + $'+portalPaySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to the customer's email.</div>
-        </div>}
+        {portalPaySuccess&&(portalPaySuccess.processing
+          ?<div style={{padding:16,background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+            <div style={{fontSize:32,marginBottom:8}}>&#9203;</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#92400e',marginBottom:4}}>Bank Payment Processing</div>
+            <div style={{fontSize:14,color:'#92400e'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} submitted by bank (ACH) — settles in 1&#8211;4 business days.</div>
+            <div style={{fontSize:12,color:'#92400e',marginTop:4}}>The invoice stays open until it clears — <b>don't collect this payment again</b>.</div>
+          </div>
+          :<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+            <div style={{fontSize:32,marginBottom:8}}>&#10003;</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
+            <div style={{fontSize:14,color:'#166534'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{portalPaySuccess.fee>0?' + $'+portalPaySuccess.fee.toFixed(2)+' processing fee':''}</div>
+            <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to the customer's email.</div>
+          </div>)}
 
         {/* Pay Now button */}
         {totalDue>0&&<div style={{marginBottom:16}}>
@@ -2273,7 +2280,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       customerName={customer.name}
       customerEmail={(customer.contacts||[])[0]?.email||''}
       alphaTag={customer.alpha_tag}
-      onSuccess={(result)=>{setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});setPortalShowPay(null);setPortalInvView(null);setPortalPayLoading(false)}}
+      onSuccess={(result)=>{
+        // An ACH/bank payment comes back 'processing' — submitted but NOT settled, and the
+        // invoice stays open until the Stripe webhook confirms it days later. Only a
+        // settled ('succeeded') payment gets the server-side reconcile; the banner must
+        // never say "paid" for a processing debit or staff will collect twice.
+        if(result.status==='succeeded'&&result.intentId){
+          fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
+        }
+        setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,processing:result.status==='processing'});
+        setPortalShowPay(null);setPortalInvView(null);setPortalPayLoading(false)
+      }}
       onClose={()=>{setPortalShowPay(null);setPortalPayLoading(false)}}
     />}
     </div>})()}
