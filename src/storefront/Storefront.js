@@ -1821,6 +1821,16 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
 
+  // Bank (ACH) debit initiated but not yet settled — no finalize (the server
+  // requires a succeeded intent; the Stripe webhook flips the order to paid on
+  // settlement). Land on the order page, which shows the processing notice, so
+  // the buyer never retries and stacks duplicate bank debits.
+  const confirmProcessing = async () => {
+    if (!pendingOrder) return;
+    clearOrderRef();
+    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+  };
+
   return (
     <div style={{ paddingTop: 24, maxWidth: 640 }}>
       <BackLink store={store} theme={theme} />
@@ -1891,7 +1901,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
           clientSecret ? (
             <>
               <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-                <CardForm theme={theme} onPaid={confirmPaid} />
+                <CardForm theme={theme} onPaid={confirmPaid} onProcessing={confirmProcessing} />
               </Elements>
               {/* Escape hatch: go back to change the cart/coupon/details. Resuming with the
                   same order reuses its PaymentIntent (idempotent clientRef) — no duplicate. */}
@@ -1907,7 +1917,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   );
 }
 
-function CardForm({ theme, onPaid }) {
+function CardForm({ theme, onPaid, onProcessing }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -1918,6 +1928,10 @@ function CardForm({ theme, onPaid }) {
     const { error, paymentIntent } = await stripe.confirmPayment({ elements, redirect: 'if_required' });
     if (error) { setErr(error.message || 'Payment failed.'); setBusy(false); return; }
     if (paymentIntent && paymentIntent.status === 'succeeded') { await onPaid(paymentIntent.id); }
+    // A US bank account (ACH) debit confirms as 'processing' — the debit IS initiated
+    // and settles in 1–4 business days (the webhook flips the order to paid then).
+    // Treating it as a failure here made buyers re-submit and stack real bank debits.
+    else if (paymentIntent && paymentIntent.status === 'processing' && onProcessing) { await onProcessing(paymentIntent.id); }
     else { setErr('Payment not completed.'); setBusy(false); }
   };
   return (
@@ -1985,6 +1999,10 @@ function OrderStatusPage({ store, theme, orderId }) {
 
   // Financials
   const paid = order.payment_mode === 'paid';
+  // A card order settles instantly, but an ACH bank debit leaves the order in
+  // pending_payment for 1–4 business days until the webhook confirms settlement.
+  const achPending = paid && order.status === 'pending_payment';
+  const wasCancelled = ['cancelled', 'refunded', 'void'].includes(order.status);
   const discount = Number(order.discount_amt) || 0;
   const shipping = Number(order.shipping_fee) || 0;
   const processing = Number(order.processing_fee) || 0;
@@ -2053,10 +2071,20 @@ function OrderStatusPage({ store, theme, orderId }) {
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 34, lineHeight: 1, textTransform: 'uppercase', color: P, margin: '0 0 5px' }}>Order Confirmed</h1>
-          <p style={{ fontSize: 14.5, color: SUB, margin: 0 }}>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <strong style={{ color: INK }}>{order.buyer_email}</strong></p>
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 34, lineHeight: 1, textTransform: 'uppercase', color: P, margin: '0 0 5px' }}>{wasCancelled ? 'Order Cancelled' : achPending ? 'Order Placed' : 'Order Confirmed'}</h1>
+          <p style={{ fontSize: 14.5, color: SUB, margin: 0 }}>
+            {wasCancelled ? <>This order is no longer active — see the messages below or contact us with any questions.</>
+              : achPending ? <>Bank payment processing · we’ll email your confirmation to <strong style={{ color: INK }}>{order.buyer_email}</strong> once it clears</>
+              : <>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <strong style={{ color: INK }}>{order.buyer_email}</strong></>}
+          </p>
         </div>
       </div>
+
+      {achPending && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '13px 16px', fontSize: 13.5, lineHeight: 1.55, marginBottom: 18 }}>
+          Your bank (ACH) payment is processing — this typically takes 1–4 business days. Your order is placed and your bank debit is underway, so <b>please don’t pay again</b>. If the bank payment can’t be completed, we’ll post a note here.
+        </div>
+      )}
 
       {/* Meta strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', background: P, borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
