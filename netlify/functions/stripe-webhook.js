@@ -244,11 +244,13 @@ exports.handler = async (event) => {
           }
         }
       }
-      // Storefront ACH bounce. Storefront intents are created with
-      // automatic_payment_methods (never ACH-only), so a buyer who paid by US
-      // bank account and whose debit later failed falls through the teamshop
-      // guard above — the order sat in 'pending_payment' forever with the buyer
-      // believing it was placed. Scope guards:
+      // ACH bounce on an automatic-payment-methods intent — storefront orders,
+      // club orders, and teamshop card-mode orders alike (any webstore_orders
+      // row whose intent is not ACH-only; all are unconverted while
+      // pending_payment, so cancelling is equally safe). Previously these fell
+      // through the teamshop-only guard above and the order sat in
+      // 'pending_payment' forever with the buyer believing it was placed.
+      // Scope guards:
       //   * last_payment_error must carry BOTH a failed charge id AND a
       //     us_bank_account payment method — i.e. a real bank DEBIT was
       //     initiated and bounced (async, days after checkout). A card decline
@@ -266,10 +268,13 @@ exports.handler = async (event) => {
           const _wOrd = _wRows && _wRows[0];
           if (_wOrd && _wOrd.status === 'pending_payment') {
             const failMsg = lpe.message || 'The bank payment could not be completed.';
-            const { data: _wClaimed } = await sb.from('webstore_orders')
+            const { data: _wClaimed, error: _wErr } = await sb.from('webstore_orders')
               .update({ status: 'cancelled' })
               .eq('id', _wOrd.id).eq('status', 'pending_payment')
               .select('id').limit(1);
+            // Best-effort like the teamshop branch (no hardFailure/retry), but a real
+            // write error must at least leave a trace — a CAS-miss returns [] with no error.
+            if (_wErr) console.error('[stripe-webhook] ACH-bounce cancel write failed for order', _wOrd.id, '-', _wErr.message);
             if (_wClaimed && _wClaimed.length) {
               // Same best-effort thread note the teamshop branch writes — it shows on
               // the buyer's order tracker page and in the staff Messages center.

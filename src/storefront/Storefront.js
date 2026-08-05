@@ -1804,6 +1804,13 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
       return;
     }
+    if (r.paymentProcessing) {
+      // Replay of an order whose ACH debit is mid-settlement (or awaiting micro-deposit
+      // verification) — the money is already in motion, so never re-show a payment form.
+      clearOrderRef();
+      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}${r.bankVerify ? '?bankverify=1' : ''}`);
+      return;
+    }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
     setPendingOrder(r.order);
     setClientSecret(r.clientSecret);
@@ -1824,11 +1831,12 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // Bank (ACH) debit initiated but not yet settled — no finalize (the server
   // requires a succeeded intent; the Stripe webhook flips the order to paid on
   // settlement). Land on the order page, which shows the processing notice, so
-  // the buyer never retries and stacks duplicate bank debits.
-  const confirmProcessing = async () => {
-    if (!pendingOrder) return;
+  // the buyer never retries and stacks duplicate bank debits. `verifying` =
+  // micro-deposit verification still pending (no debit yet) — different notice.
+  const confirmProcessing = async (paymentIntentId, verifying) => {
+    if (!pendingOrder) { setErr('Order reference lost — your bank payment was submitted. Please contact us and we’ll confirm your order.'); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}${verifying ? '?bankverify=1' : ''}`);
   };
 
   return (
@@ -1931,7 +1939,13 @@ function CardForm({ theme, onPaid, onProcessing }) {
     // A US bank account (ACH) debit confirms as 'processing' — the debit IS initiated
     // and settles in 1–4 business days (the webhook flips the order to paid then).
     // Treating it as a failure here made buyers re-submit and stack real bank debits.
-    else if (paymentIntent && paymentIntent.status === 'processing' && onProcessing) { await onProcessing(paymentIntent.id); }
+    else if (paymentIntent && paymentIntent.status === 'processing' && onProcessing) { await onProcessing(paymentIntent.id, false); }
+    // Manually-entered bank account: Stripe first verifies it with two micro-deposits
+    // (no debit yet). Also NOT a failure — the buyer finishes via Stripe's emailed
+    // verification link, so land them on the order page with that explanation.
+    else if (paymentIntent && paymentIntent.status === 'requires_action'
+      && paymentIntent.next_action && paymentIntent.next_action.type === 'verify_with_microdeposits'
+      && onProcessing) { await onProcessing(paymentIntent.id, true); }
     else { setErr('Payment not completed.'); setBusy(false); }
   };
   return (
@@ -2001,7 +2015,13 @@ function OrderStatusPage({ store, theme, orderId }) {
   const paid = order.payment_mode === 'paid';
   // A card order settles instantly, but an ACH bank debit leaves the order in
   // pending_payment for 1–4 business days until the webhook confirms settlement.
+  // The data model doesn't record which method was attempted (a card order can
+  // also sit briefly in pending_payment before finalize/webhook lands), so the
+  // notice copy below stays method-conditional ("if you paid by bank…").
   const achPending = paid && order.status === 'pending_payment';
+  // Set when checkout routed here after a manual bank entry: Stripe still needs
+  // the buyer to verify two micro-deposits before the debit starts.
+  const bankVerify = achPending && new URLSearchParams(window.location.search).get('bankverify') === '1';
   const wasCancelled = ['cancelled', 'refunded', 'void'].includes(order.status);
   const discount = Number(order.discount_amt) || 0;
   const shipping = Number(order.shipping_fee) || 0;
@@ -2074,7 +2094,7 @@ function OrderStatusPage({ store, theme, orderId }) {
           <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 34, lineHeight: 1, textTransform: 'uppercase', color: P, margin: '0 0 5px' }}>{wasCancelled ? 'Order Cancelled' : achPending ? 'Order Placed' : 'Order Confirmed'}</h1>
           <p style={{ fontSize: 14.5, color: SUB, margin: 0 }}>
             {wasCancelled ? <>This order is no longer active — see the messages below or contact us with any questions.</>
-              : achPending ? <>Bank payment processing · we’ll email your confirmation to <strong style={{ color: INK }}>{order.buyer_email}</strong> once it clears</>
+              : achPending ? <>Payment processing · we’ll email your confirmation to <strong style={{ color: INK }}>{order.buyer_email}</strong> once it clears</>
               : <>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <strong style={{ color: INK }}>{order.buyer_email}</strong></>}
           </p>
         </div>
@@ -2082,7 +2102,9 @@ function OrderStatusPage({ store, theme, orderId }) {
 
       {achPending && (
         <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '13px 16px', fontSize: 13.5, lineHeight: 1.55, marginBottom: 18 }}>
-          Your bank (ACH) payment is processing — this typically takes 1–4 business days. Your order is placed and your bank debit is underway, so <b>please don’t pay again</b>. If the bank payment can’t be completed, we’ll post a note here.
+          {bankVerify
+            ? <>Almost done — Stripe emailed you a link to verify two small deposits in your bank account. Your payment starts once you verify (bank debits then take 1–4 business days to clear). Your order is saved, so <b>please don’t pay again</b>.</>
+            : <>Your payment is still processing. If you paid by US bank account (ACH), this typically takes 1–4 business days — your order is placed and the debit is underway, so <b>please don’t pay again</b>. If the payment can’t be completed, we’ll post a note here.</>}
         </div>
       )}
 
