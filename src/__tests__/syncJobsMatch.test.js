@@ -9,8 +9,10 @@ import {
   dropMismatchedFrozenClaims,
   healFrozenJobArtDrift,
   inheritJobWorkflowFields,
+  isClosedJob,
   isPureArtExpansion,
   matchExistingJob,
+  splitClosedJobAdditions,
 } from '../lib/syncJobsMatch';
 
 const pantsRejection = {
@@ -423,5 +425,70 @@ describe('isPureArtExpansion — added location must not wipe approval status', 
   });
   test('false when the "expansion" replaced one original even though the count grew', () => {
     expect(isPureArtExpansion(['afA', 'afB'], ['afA', 'afC', 'afD'])).toBe(false); // afB dropped
+  });
+});
+
+/**
+ * Garments added to a CLOSED job (SO-1514 / JOB-1514-02).
+ *
+ * The auto-builder groups every live decoration sharing a signature into one job, so 9 replacement
+ * tees added after the job shipped landed on it: 26/26 Items Received became 26/35 Partially
+ * Received. Added garments are a new press run — splitClosedJobAdditions is the rule syncJobs uses
+ * to carve them off.
+ */
+describe('isClosedJob', () => {
+  test('completed and shipped runs are closed', () => {
+    expect(isClosedJob({ prod_status: 'completed' })).toBe(true);
+    expect(isClosedJob({ prod_status: 'shipped' })).toBe(true);
+  });
+  test('a job still in line or on press is NOT closed — the floor can still add to that run', () => {
+    ['hold', 'draft', 'staging', 'in_process'].forEach((s) => {
+      expect(isClosedJob({ prod_status: s })).toBe(false);
+    });
+    expect(isClosedJob({})).toBe(false);
+    expect(isClosedJob(null)).toBe(false);
+  });
+});
+
+describe('splitClosedJobAdditions', () => {
+  // JOB-1514-02: 26 Gildan 5000 shipped on line 0; line 2 is the 9-piece misprint reprint.
+  const shipped = [{ item_idx: 0, sku: '5000', units: 26, fulfilled: 26 }];
+  const reprint = { item_idx: 2, sku: '5000', units: 9, fulfilled: 0 };
+
+  test('a garment the closed run never held is an addition — same sku, different line', () => {
+    const { keep, added } = splitClosedJobAdditions([...shipped, reprint], shipped);
+    expect(keep).toEqual(shipped);
+    expect(added).toEqual([reprint]);
+  });
+
+  test('nothing added when the rebuild matches the closed run', () => {
+    expect(splitClosedJobAdditions(shipped, shipped).added).toEqual([]);
+  });
+
+  test('converges: once the slice owns the row, the parent rebuild has nothing left to carve', () => {
+    // Next sync — sliceOwned drops the carved row before this rule runs.
+    const { keep, added } = splitClosedJobAdditions(shipped, shipped);
+    expect(added).toEqual([]);
+    expect(keep).toEqual(shipped);
+  });
+
+  test('a quantity bump on a garment the run already printed is NOT carved (no per-size baseline)', () => {
+    const grown = [{ item_idx: 0, sku: '5000', units: 35, fulfilled: 26 }];
+    const { keep, added } = splitClosedJobAdditions(grown, shipped);
+    expect(added).toEqual([]);
+    expect(keep).toEqual(grown);
+  });
+
+  test('rows are matched on line AND sku — a swapped garment on the same line is an addition', () => {
+    const swapped = { item_idx: 0, sku: 'JX4461', units: 12, fulfilled: 0 };
+    const { keep, added } = splitClosedJobAdditions([...shipped, swapped], shipped);
+    expect(added).toEqual([swapped]);
+    expect(keep).toEqual(shipped);
+  });
+
+  test('tolerates missing/garbage rows', () => {
+    expect(splitClosedJobAdditions(null, null)).toEqual({ keep: [], added: [] });
+    expect(splitClosedJobAdditions([null, reprint], undefined).added).toEqual([reprint]);
+    expect(splitClosedJobAdditions(shipped, [null]).added).toEqual(shipped);
   });
 });

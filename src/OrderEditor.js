@@ -23,7 +23,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
@@ -3355,6 +3355,63 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         nj._hasSplitOverrides=true;
       }
     });
+    // ── Garments added to a CLOSED job get their own job (auto-split) ──
+    // A completed/shipped job is a finished press run, but the auto-builder groups by decoration
+    // signature — so a garment added to the SO afterward (a reprint for misprinted pieces, a late
+    // add-on) lands on that finished job and re-opens it: JOB-1514-02 went from 26/26 Items
+    // Received + shipped back to 26/35 Partially Received when 9 replacement tees were added, and
+    // the design re-billed at the 35-pc tier. Carve the added garments into their own job instead
+    // — the same thing a rep does by hand with ✂️ Split, done automatically.
+    // The slice carries split_from, so from the NEXT sync on the parent's own rebuild drops that
+    // row via sliceOwned (above) and this pass sees no addition — it converges and can never
+    // re-carve the same garment twice.
+    const autoSplitAdds=[];
+    newJobs.forEach(nj=>{
+      // Key match only, and only when this rebuild IS that job (same id). matchExistingJob's
+      // art-id fallback can hand back a sibling that merely shares the logo, and carving against
+      // another job's roster would split off garments the closed run never held.
+      const existing=existingJobMap[nj.key];
+      if(!existing||existing.id!==nj.id||!isClosedJob(existing))return;
+      if(!Array.isArray(existing.items)||!existing.items.length)return;
+      const {keep,added}=splitClosedJobAdditions(nj.items,existing.items);
+      // No additions, or NONE of the closed run's garments are on this rebuild — the latter is a
+      // deleted line / index drift, not an addition, so leave it to the existing heals.
+      if(!added.length||!keep.length)return;
+      const _sum=(rows,f)=>rows.reduce((a,gi)=>a+safeNum(gi[f]),0);
+      const _itemSt=(f,t)=>f>=t&&t>0?'items_received':f>0?'partially_received':'need_to_order';
+      // -A / -A2 / … : a manual by-SKU split already owns -B and a backorder split -S (whose
+      // '__split__S' key suffix isOpenSplitSlice matches — this run is not a backorder).
+      let addId=null,addKey=null;
+      for(let _n=1;_n<=50;_n++){const sfx='A'+(_n>1?_n:'');const cand=nj.id+'-'+sfx;
+        if(_reserved.has(cand)||_usedIds.has(cand))continue;
+        addId=cand;addKey=nj.key+'__split__'+sfx;break}
+      // No free slice id (never seen in practice). Bail rather than mint a duplicate: the dedupe
+      // at the return keeps the first job with that id, so a colliding slice would be dropped and
+      // the added garment would disappear from the board entirely. Growing the closed job is wrong,
+      // but losing the garment is worse.
+      if(!addId)return;
+      _usedIds.add(addId);
+      const addUnits=_sum(added,'units'),addFul=_sum(added,'fulfilled');
+      // Art carries over (same approved design — a reprint doesn't go back through approval), but
+      // the append-only logs are deep-copied so the two jobs can't share arrays. Separate press
+      // run → separate qty-tier pricing, exactly like every manual split (see splitJobPricing);
+      // a warehouse-fault reprint gets combined pricing back through the override request.
+      const _cl=v=>v?JSON.parse(JSON.stringify(v)):v;
+      autoSplitAdds.push({...nj,id:addId,key:addKey,split_from:nj.id,items:added,
+        total_units:addUnits,fulfilled_units:addFul,item_status:_itemSt(addFul,addUnits),
+        prod_status:'hold',priced_separately:true,price_override:null,
+        created_at:new Date().toLocaleDateString(),
+        assigned_machine:null,assigned_to:null,counted_at:null,counted_by:null,count_discrepancy:null,
+        run_order:null,run1_done:false,run2_done:false,numbers_done:false,
+        art_requests:_cl(nj.art_requests)||[],art_messages:_cl(nj.art_messages)||[],
+        sent_history:_cl(nj.sent_history),rejections:_cl(nj.rejections),
+        _art_ids:[...(nj._art_ids||[])]});
+      const keepUnits=_sum(keep,'units'),keepFul=_sum(keep,'fulfilled');
+      nj.items=keep;nj.total_units=keepUnits;nj.fulfilled_units=keepFul;nj.item_status=_itemSt(keepFul,keepUnits);
+      // Totals are derived from the kept rows now — stop the split-subtraction pass below from
+      // taking the slice's units off a second time.
+      nj._hasSplitOverrides=true;
+    });
     // Preserve manually split jobs — they won't be auto-generated from decorations. Exclude jobs
     // that were later released or merged: those are already preserved by releasedJobs/mergedJobs
     // above, so counting them here too would emit the same job twice (a slice that gets merged
@@ -3496,7 +3553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // artist request. This state is self-perpetuating (the rebuild above inherits art_requests while
     // re-deriving art_status), so without this heal a stuck job never recovers and every re-submit
     // path stays blocked. Runs after _healUnresolvedArt so a genuinely unresolved design still wins.
-    const _kept=[...newJobs,...splitJobs,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
+    const _kept=[...newJobs,...splitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
