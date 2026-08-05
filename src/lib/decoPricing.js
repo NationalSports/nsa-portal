@@ -40,9 +40,13 @@ const auCostMult=(brand,isFootwear)=>{const adi=isAdidasPriced(brand);return isF
 // ── Default pricing tables ──
 // _v bumps when default values change so cached localStorage from older versions is ignored.
 // _v 3: bracket-0 3-color raised 70→80 and bracket 0 now BILLS as an all-in flat charge (see spFlatShare).
+// _v 4: bracket-0 4-color filled in at $100 flat. It was blank, so a 4-color run under 12 pieces
+//       priced at $0 cost AND $0 sell with no warning — SO-1727 (9 pcs) and SO-1199 (3 pcs) both
+//       billed nothing for the print. Blank cells that remain (bracket-0 5c, bracket-1 5c) now
+//       surface as an "Unpriced" flag on the deco row instead of a silent $0 — see spUnpriced.
 // NOTE: the object literals below are kept byte-identical to the local copies in
 // src/App.js — the pricingDrift test compares the source text, so edit both together.
-const SP={_v:3,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,null,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
+const SP={_v:4,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,100,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
 const EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 const NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};
@@ -123,6 +127,25 @@ function decoSplitRuns(d,pq){
   if(tot*rm===pq)return runs.map(r=>r*rm);
   if(tot===pq)return runs; // caller convention without the reversible ×2
   return null}
+// ── Unpriced screen-print combinations ──
+// A (qty × colors) pair the SP matrix has no price for: the cell is blank (bracket 0 carries no
+// 5-color price, bracket 1 no 5-color price) or the ink count is off the table entirely (a 6+
+// color colorway). spP and spFlatShare both answer $0 there, which rendered as a legitimate
+// $0.00 deco and flowed straight into margin — SO-1727 billed a 9-piece 4-color print at nothing.
+// dP stamps `_unpriced:true` on those results so the UI can flag them; sell/cost are unchanged,
+// so every existing caller that only reads .sell/.cost behaves exactly as before.
+function spUnpriced(T,q,c){const SP=T.SP;if(!(q>0))return false;if(!(c>=1&&c<=5))return true;const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0)return true;return SP.pr[bi]?.[c-1]==null}
+// Screen-print price for one design: split-job run blend → under-12 flat charge → tier rate.
+// Shared by all three screen-print branches of dP (art file, ART TBD, legacy d.type) so the
+// unpriced flag can't drift between them. useSplit is false for the legacy branch, which has
+// never carried split_runs. Behavior is otherwise identical to the inline code it replaced.
+function spDecoPrice(T,d,pq,nc,useSplit){
+  const SP=T.SP;const u=d.underbase?1+SP.ub:1;
+  const mark=(r,runs)=>{const un=runs?runs.some(r2=>spUnpriced(T,r2,nc)):spUnpriced(T,pq,nc);if(un)r._unpriced=true;return r};
+  if(useSplit){const sr=decoSplitRuns(d,pq);if(sr){const b=spRunBlend(T,sr,nc,u);if(b)return mark({sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost},sr)}}
+  const f=spFlatShare(T,pq,nc,u);if(f)return mark({sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost});
+  const c=rQ(spP(T,pq,nc,false)*u);return mark({sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c});
+}
 function dP(T,d,q,artFiles,cq){
   // Split-art designs bill at their own per-size allocation. cq (the combined tier qty) is
   // already summed per design by the artQty builders, so price the design at its share, then
@@ -139,19 +162,19 @@ function _dPInner(T,d,q,artFiles,cq){
   // Synced with App.js dP / businessLogic.js dP.
   // (Object.assign, not object spread — this file is CJS; see the NOTE at the top.)
   if(d&&d.sell_override!=null&&!Number.isFinite(Number(d.sell_override)))d=Object.assign({},d,{sell_override:null});
-  const SP=T.SP,EM=T.EM,DTF=T.DTF;
+  const EM=T.EM,DTF=T.DTF; // SP is read inside spDecoPrice, which owns every screen-print branch
   const _revMult=d.reversible?2:1;
   // cq (from artQty) already incorporates the reversible ×2; only apply _revMult as fallback
   const pq=cq!=null?cq:q*_revMult;
   if(d.kind==='art'&&d.art_file_id&&artFiles){
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
-      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(T,_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+      if(tType==='screen_print')return spDecoPrice(T,d,pq,d.tbd_colors||1,true);
       if(tType==='embroidery'){const c=emP(T,d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
-    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(T,_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);return spDecoPrice(T,d,pq,nc,true)}
     if(art.deco_type==='embroidery'){const c=emP(T,art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
     // Heat-transfer designs (transfer_code decos, batched club/team stores) carry their
     // real cost-of-record on cost_each (webstore_transfers.unit_cost, 00204) — prefer it
@@ -165,7 +188,7 @@ function _dPInner(T,d,q,artFiles,cq){
   // (b) re-add a phantom matrix/DTF sell. Consumed by calcGP/calcOrderMargin/OrderEditor
   // totals — keep byte-identical to the App.js and businessLogic.js dP copies.
   if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
-  if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+  if(d.type==='screen_print')return spDecoPrice(T,d,q,d.colors||1,false);
   if(d.type==='embroidery'){const c=emP(T,d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
   if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
     // Tackle twill numbers: flat per-application price from TWN (by num_size × two_color), NOT the
@@ -184,4 +207,4 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
-module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, decoSplitQty, dP };
+module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, spRunBlend, spUnpriced, decoSplitRuns, emP, npP, twaP, twnP, decoSplitQty, dP };
