@@ -15,7 +15,7 @@ import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
-import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
+import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, OTHER_POS, artPosView, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -151,6 +151,21 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
       </button>
     </div>
   </div>;
+}
+
+// Art location picker — the POSITIONS list plus "Other", which opens a box for a one-off placement
+// (e.g. "Under bill", "Hip"). onChange(position, isCustom): the typed text is the position itself,
+// so everything downstream prints it as-is. See artPosView in pricing.js for the display rules.
+function ArtPosSelect({value,custom,onChange,selectStyle,inputStyle}){
+  const {showBox,options,selectValue,boxValue}=artPosView(value,custom);
+  return<>
+    <select className="form-select" style={selectStyle} title="Art location" value={selectValue} onChange={e=>{const v=e.target.value;onChange(v,v===OTHER_POS)}}>
+      {options.map(p=><option key={p} value={p}>{p}</option>)}
+    </select>
+    {showBox&&<input className="form-input" style={inputStyle} value={boxValue} placeholder="Type location…"
+      title="Where this art goes — this is what prints on the work order and job ticket"
+      onChange={e=>{const t=e.target.value;onChange(t.trim()?t:OTHER_POS,true)}}/>}
+  </>;
 }
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
@@ -2614,26 +2629,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const full={};Object.entries(safeSizes(it)).forEach(([sz,v])=>{if(safeNum(v)>0)full[sz]=safeNum(v)});
     let designs;
     if(splitArts.length>=2){
-      designs=splitArts.slice(0,3).map(d=>({art_file_id:d.art_file_id||'',position:d.position||'Front Center',sizes:{...(d.split_sizes||{})}}));
+      designs=splitArts.slice(0,3).map(d=>({art_file_id:d.art_file_id||'',position:d.position||'Front Center',position_custom:!!d.position_custom,sizes:{...(d.split_sizes||{})}}));
     }else{
       const cur=arts[0];
-      designs=[{art_file_id:cur?.art_file_id||'',position:cur?.position||'Front Center',sizes:{...full}},
-        {art_file_id:'',position:cur?.position||'Front Center',sizes:{}}];
+      designs=[{art_file_id:cur?.art_file_id||'',position:cur?.position||'Front Center',position_custom:!!cur?.position_custom,sizes:{...full}},
+        {art_file_id:'',position:cur?.position||'Front Center',position_custom:!!cur?.position_custom,sizes:{}}];
     }
     setSplitArtModal({itemIdx:idx,designs});
   };
   const applySplitArt=()=>{
     const m=splitArtModal;if(!m)return;const it=safeItems(o)[m.itemIdx];if(!it)return;
-    const active=m.designs.map(d=>{const sizes={};Object.entries(d.sizes||{}).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)sizes[sz]=n});return{art_file_id:d.art_file_id||null,position:d.position||'Front Center',sizes,total:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(d=>d.total>0);
+    const active=m.designs.map(d=>{const sizes={};Object.entries(d.sizes||{}).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)sizes[sz]=n});return{art_file_id:d.art_file_id||null,position:d.position||'Front Center',position_custom:!!d.position_custom,sizes,total:Object.values(sizes).reduce((a,v)=>a+v,0)}}).filter(d=>d.total>0);
     if(active.length===0){nf('Assign pieces to at least one design first','error');return}
     const rev=itemIsReversible(m.itemIdx);
     const keepNonArt=safeDecos(it).filter(d=>d.kind!=='art');
     let artDecos;
     if(active.length===1){
-      const d=active[0];artDecos=[{kind:'art',position:d.position,art_file_id:d.art_file_id,sell_override:null,...(rev?{reversible:true}:{})}];
+      const d=active[0];artDecos=[{kind:'art',position:d.position,...(d.position_custom?{position_custom:true}:{}),art_file_id:d.art_file_id,sell_override:null,...(rev?{reversible:true}:{})}];
     }else{
       const sg='sg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-      artDecos=active.map(d=>({kind:'art',position:d.position,art_file_id:d.art_file_id,sell_override:null,split_group:sg,split_sizes:{...d.sizes},...(rev?{reversible:true}:{})}));
+      artDecos=active.map(d=>({kind:'art',position:d.position,...(d.position_custom?{position_custom:true}:{}),art_file_id:d.art_file_id,sell_override:null,split_group:sg,split_sizes:{...d.sizes},...(rev?{reversible:true}:{})}));
     }
     setO(e=>({...e,items:safeItems(e).map((x,i)=>i===m.itemIdx?{...x,no_deco:false,decorations:[...artDecos,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
     setDirty(true);setSplitArtModal(null);
@@ -2646,7 +2661,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const otherArts=safeDecos(it).filter(d=>d.kind==='art'&&!d.split_group);
     const keepNonArt=safeDecos(it).filter(d=>d.kind!=='art');
     const first=splitArts[0];
-    const merged={kind:'art',position:first.position||'Front Center',art_file_id:first.art_file_id||null,sell_override:null,...(first.reversible?{reversible:true}:{})};
+    const merged={kind:'art',position:first.position||'Front Center',...(first.position_custom?{position_custom:true}:{}),art_file_id:first.art_file_id||null,sell_override:null,...(first.reversible?{reversible:true}:{})};
     setO(e=>({...e,items:safeItems(e).map((x,i)=>i===idx?{...x,decorations:[merged,...otherArts,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
     setDirty(true);nf('Split removed — first design kept on all pieces');
   };
@@ -4560,7 +4575,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <option value="__new_tbd">➕ New Art TBD...</option>
                         {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
-                      <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                      <ArtPosSelect value={d.position||''} custom={d.position_custom} onChange={(v,c)=>uDM(idx,di,{position:v,position_custom:c})}
+                        selectStyle={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}}
+                        inputStyle={{fontSize:10,padding:'1px 4px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}}/>
                     </span>;
                   });
                 })()}
@@ -4929,7 +4946,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {deco.art_tbd_type==='embroidery'&&<select className="form-select" style={{width:110,fontSize:10}} value={deco.tbd_stitches||8000} onChange={e=>uDM(idx,di,{tbd_stitches:parseInt(e.target.value),sell_override:null})}>
                     <option value={8000}>≤10k st</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
                   <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
-                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                  <ArtPosSelect value={deco.position} custom={deco.position_custom} onChange={(v,c)=>uDM(idx,di,{position:v,position_custom:c})}
+                    selectStyle={{width:120,fontSize:12}} inputStyle={{width:130,fontSize:12}}/>
                   {deco.split_group&&(()=>{const ss=deco.split_sizes||{};const tot=Object.values(ss).reduce((a,v)=>a+safeNum(v),0);const ordd=sz=>{const i=SZ_ORD.indexOf(sz);return i===-1?99:i};const summ=Object.entries(ss).filter(([,v])=>safeNum(v)>0).sort((a,b)=>ordd(a[0])-ordd(b[0])).map(([sz,v])=>sz+' '+v).join(' · ');return<span onClick={()=>openSplitArt(idx)} title={'Split — '+(summ||'none yet')+' · click to edit'} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:5,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>✂️ Split {tot}/{qty}</span>})()}
                   {artF&&<>{(()=>{const afi=af.findIndex(f=>f.id===artF.id);const isTbd=artF.name&&artF.name.startsWith('ART TBD');
                       if(isTbd)return<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={artF.deco_type||'screen_print'} onChange={e=>{uArt(afi,'deco_type',e.target.value);uD(idx,di,'sell_override',null)}}><option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
@@ -9185,7 +9203,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const activeCount=designs.filter((d,di)=>dTotal(di)>0).length;
       const setSz=(di,sz,val)=>{const lq=safeNum(safeSizes(it)[sz]);let n=Math.max(0,parseInt(val,10)||0);if(n>lq)n=lq;setSplitArtModal(mm=>{const ds=mm.designs.map((d,i)=>i===di?{...d,sizes:{...d.sizes,[sz]:n}}:d);const last=ds.length-1;if(ds.length===2){const other=di===0?1:0;ds[other]={...ds[other],sizes:{...ds[other].sizes,[sz]:Math.max(0,lq-n)}};}else if(di!==last){const used=ds.reduce((a,d,i)=>i===last?a:a+safeNum(d.sizes?.[sz]),0);ds[last]={...ds[last],sizes:{...ds[last].sizes,[sz]:Math.max(0,lq-used)}};}return{...mm,designs:ds}})};
       const setArt=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,art_file_id:v}:d)}));
-      const setPos=(di,v)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,position:v}:d)}));
+      const setPos=(di,v,c)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>i===di?{...d,position:v,position_custom:!!c}:d)}));
       const fillEven=()=>setSplitArtModal(mm=>{const ds=mm.designs.map(d=>({...d,sizes:{}}));const n=ds.length||1;lineSizes.forEach(([sz,v])=>{const tot=safeNum(v);const base=Math.floor(tot/n);const rem=tot-base*n;ds.forEach((d,i)=>{d.sizes[sz]=base+(i<rem?1:0)})});return{...mm,designs:ds}});
       const fillAll=(di)=>setSplitArtModal(mm=>({...mm,designs:mm.designs.map((d,i)=>{if(i!==di)return{...d,sizes:{}};const sizes={};lineSizes.forEach(([sz,v])=>{sizes[sz]=safeNum(v)});return{...d,sizes}})}));
       const addDesign=()=>setSplitArtModal(mm=>mm.designs.length>=3?mm:({...mm,designs:[...mm.designs,{art_file_id:'',position:mm.designs[0]?.position||'Front Center',sizes:{}}]}));
@@ -9208,7 +9226,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <option value="">⚠️ Choose art (or assign later)…</option>
                   {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                 </select>
-                <select className="form-select" style={{width:140,fontSize:12}} value={d.position||'Front Center'} onChange={e=>setPos(di,e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <ArtPosSelect value={d.position||'Front Center'} custom={d.position_custom} onChange={(v,c)=>setPos(di,v,c)}
+                  selectStyle={{width:140,fontSize:12}} inputStyle={{width:140,fontSize:12}}/>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>fillAll(di)} title="Put every piece on this design">All →</button>
                 {designs.length>2&&<button className="btn btn-sm btn-secondary" style={{fontSize:13,lineHeight:1,color:'#dc2626',padding:'2px 8px'}} onClick={()=>removeDesign(di)} title="Remove this design">×</button>}
               </div>)}
