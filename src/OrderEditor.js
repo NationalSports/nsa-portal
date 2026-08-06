@@ -9284,6 +9284,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       jobs.forEach((j,i)=>{const k=_jobArtKey(j);if(!_jobBuckets.has(k)){_jobBuckets.set(k,[]);_jobOrder.push(k)}_jobBuckets.get(k).push({j,oi:i})});
       const _clustered=_jobOrder.flatMap(k=>_jobBuckets.get(k));
 
+      // Outsourced decorations riding the SAME garments as a job — excluded from in-house jobs by
+      // design (a deco PO routes them to the vendor), but without them the job reads as the garment's
+      // whole story (SO-1660: the screen front went out to Astra Sport and the job showed DTF-only,
+      // as if the front didn't exist). Display context only — never a claim. Only meaningful for jobs
+      // with explicit deco ownership (deco_idxs); legacy claim-everything jobs already list every deco.
+      const _outMapJobs=outsourcedDecoTypes(o);
+      const _jobOutsideDecos=(j)=>{
+        const firstGi=(j.items||[])[0];if(!firstGi)return[];
+        const _mine=jobItemDecoIdxs(firstGi);if(!_mine)return[];
+        const it=safeItems(o)[firstGi.item_idx];if(!it)return[];
+        const out=[];const seen=new Set();
+        safeDecos(it).forEach((d,di)=>{
+          if(_mine.includes(di))return;// claimed by this job — already shown as its own line
+          if(!(d.kind==='art'||d.kind==='numbers'||d.kind==='names'))return;
+          if(!isDecoOutsourced(o,firstGi.item_idx,d,_outMapJobs))return;
+          const artF2=d.kind==='art'&&d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
+          const dt=decoConcreteType(o,d)||'screen_print';
+          const dp=(o.deco_pos||[]).find(p=>(p.item_idxs||[]).includes(firstGi.item_idx)&&p.deco_type===dt)||(o.deco_pos||[]).find(p=>(p.item_idxs||[]).includes(firstGi.item_idx));
+          const row={name:artF2?.name||(d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':''),dt,position:safeStr(d.position),vendor:dp?.vendor||d.vendor||''};
+          const k=row.name+'|'+row.dt+'|'+row.position;
+          if(!seen.has(k)){seen.add(k);out.push(row)}
+        });
+        return out;
+      };
+      const _outsideDecoText=(ol)=>(ol.name?ol.name+' — ':'')+ol.dt.replace(/_/g,' ')+' · '+(ol.position||'—')+' · Outside'+(ol.vendor?' ('+ol.vendor+')':'');
+
       // Manual refresh — rebuild jobs from current items/decorations and persist. Preserves
       // merged/split/released jobs; picks up any newly added items that don't yet have a job.
       const refreshJobs=()=>{const synced=syncJobs();const updated=stampSplitRuns({...o,jobs:synced,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s'))};
@@ -9682,6 +9708,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </>}
                 </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                {(()=>{const _outLines=_jobOutsideDecos(j);if(!_outLines.length)return null;
+                  return<div style={{fontSize:11,color:'#7c3aed',marginTop:2}} title="These decorations are on the same garments but are produced by an outside vendor — not part of this in-house job">🏭 Also on these garments: {_outLines.map(_outsideDecoText).join(' · ')}</div>})()}
                 {(()=>{// Art-split slices of the same line are disjoint garment batches, not a multi-job item — jobsShareGarments filters them.
                   const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&jobsShareGarments(j,j2));
                   if(siblings.length===0)return null;
@@ -11644,8 +11672,13 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                   const _myIdxs=firstGi?(Array.isArray(firstGi.deco_idxs)&&firstGi.deco_idxs.length?firstGi.deco_idxs:(firstGi.deco_idx!=null?[firstGi.deco_idx]:null)):null;
                   const jDecos=jIt?safeDecos(jIt).filter((d,di)=>(d.kind==='art'||d.kind==='numbers')&&(!_myIdxs||_myIdxs.includes(di))):[];
                   const _labels=[...new Set(jDecos.map(d=>{const artF2=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;const dt=artF2?.deco_type||d.deco_type||'screen_print';return dt.replace(/_/g,' ')+' · '+(d.position||'—')}))];
-                  if(_labels.length>1)return<div style={{fontSize:10,color:'#64748b'}}>{_labels.map((lbl,i)=><div key={i}>{lbl}</div>)}</div>;
-                  return<div style={{fontSize:10,color:'#64748b'}}>{_labels[0]||((j.deco_type?.replace(/_/g,' ')||'')+' · '+(j.positions||''))}</div>})()}</td>
+                  // Outsourced decos on the same garments render as extra context lines (violet) so
+                  // the row shows the garment's full decoration picture, not just the in-house share.
+                  const _outLines=_jobOutsideDecos(j);
+                  return<div style={{fontSize:10,color:'#64748b'}}>
+                    {(_labels.length?_labels:[(j.deco_type?.replace(/_/g,' ')||'')+' · '+(j.positions||'')]).map((lbl,i)=><div key={i}>{lbl}</div>)}
+                    {_outLines.map((ol,i)=><div key={'out'+i} style={{color:'#7c3aed'}}>{_outsideDecoText(ol)}</div>)}
+                  </div>})()}</td>
               <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
               <td style={{fontWeight:700}}>{jFul}/{jTot}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
