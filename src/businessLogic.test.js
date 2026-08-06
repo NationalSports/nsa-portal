@@ -987,7 +987,7 @@ describe('Job Building', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test('numbers and names decorations each generate their own production job', () => {
+  test('numbers and names on the same garment combine into one mixed-media job', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -999,11 +999,12 @@ describe('Job Building', () => {
       jobs: [],
     });
     const jobs = buildJobs(so);
-    // Numbers (heat transfer) and names (heat press) are distinct production
-    // applications, so each gets its own job.
-    expect(jobs).toHaveLength(2);
-    expect(jobs.some(j => j.art_name.includes('Numbers'))).toBe(true);
-    expect(jobs.some(j => j.art_name.includes('Names'))).toBe(true);
+    // Numbers (heat transfer) and names (heat press) on one garment travel production
+    // together — one job, one tech sheet — with both methods declared in deco_types.
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_name.includes('Numbers')).toBe(true);
+    expect(jobs[0].art_name.includes('Names')).toBe(true);
+    expect(jobs[0].deco_types).toEqual(expect.arrayContaining(['heat_transfer', 'heat_press']));
   });
 
   test('art status from art file propagates to job', () => {
@@ -2201,21 +2202,19 @@ describe('Cross-Module Integration Scenarios', () => {
         jobs: [],
       });
       const jobs = buildJobs(so);
-      // buildJobs groups by deco TYPE then by decoration signature within each type:
-      // SHIRT-1: art_af1 + art_af2 (both screen_print) → 1 screen_print job
-      // SHIRT-2: art_af1 (screen_print) → 1 screen_print job (different sig from SHIRT-1 — different art set)
-      // SHIRT-2: numbers@Back (heat_transfer) → 1 heat_transfer job
-      // = 3 separate jobs (different deco types go to different machines/vendors)
-      expect(jobs).toHaveLength(3);
+      // buildJobs groups by full decoration signature; mixed-media garments stay ONE job:
+      // SHIRT-1: art_af1 + art_af2 (both screen_print) → 1 job
+      // SHIRT-2: art_af1 + heat-transfer numbers@Back → 1 combined mixed-media job
+      // = 2 jobs (each garment travels production as a single tech sheet)
+      expect(jobs).toHaveLength(2);
       const shirt1Job = jobs.find(j => j.key === 'screen_print::art_af1|art_af2');
-      const shirt2ScreenJob = jobs.find(j => j.key === 'screen_print::art_af1');
-      const shirt2HeatJob = jobs.find(j => j.key.startsWith('heat_transfer::'));
+      const shirt2Job = jobs.find(j => j.key === 'screen_print::art_af1|numbers_heat_transfer@Back');
       expect(shirt1Job.items).toHaveLength(1);
       expect(shirt1Job.total_units).toBe(20);
-      expect(shirt2ScreenJob.items).toHaveLength(1);
-      expect(shirt2ScreenJob.total_units).toBe(5);
-      expect(shirt2HeatJob.items).toHaveLength(1);
-      expect(shirt2HeatJob.total_units).toBe(5);
+      expect(shirt2Job.items).toHaveLength(1);
+      expect(shirt2Job.total_units).toBe(5);
+      expect(shirt2Job.deco_type).toBe('screen_print');
+      expect(shirt2Job.deco_types).toEqual(expect.arrayContaining(['screen_print', 'heat_transfer']));
     });
   });
 });

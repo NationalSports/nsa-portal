@@ -314,8 +314,12 @@ function normalizeWebLogos(webLogos, colorWays) {
   });
 }
 
-// ── Job Building ── Groups items by their full decoration signature, split by deco type
-// Different deco types (e.g. screen_print vs embroidery) always create separate jobs
+// ── Job Building ── Groups items by their full decoration signature. Mixed-media garments
+// (e.g. screen-print front + heat-press numbers) stay ONE job so the garments travel through
+// production on a single tech sheet — the per-deco-type split (SO-1395/SO-1639) sent the same
+// hoodies through the floor as two jobs. Split-art designs still get their own job (per-size
+// allocation), and outsourced decorations never enter a bucket (syncJobs), so those still
+// separate. The job's deco_type is the primary method (art first); deco_types lists all of them.
 const buildJobs = (o) => {
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
   // Build decoration entries per item, grouped by deco type
@@ -333,36 +337,41 @@ const buildJobs = (o) => {
         const part = d.art_file_id ? 'art_' + d.art_file_id : 'unassigned@' + safeStr(d.position);
         // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
         // split across several lines — and a standalone copy of it — all consolidate into ONE job.
-        // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
-        // bundle into a single combined job (the established Split-Art behavior).
-        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : dt;
+        // Everything else shares the item's single combined bucket: all of a garment's in-house
+        // decorations — mixed methods included — form one job.
+        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : '__combined';
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
         const dt = d.num_method || 'heat_transfer';
         const part = 'numbers_' + dt + '@' + (d.position || '');
-        if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di, _dt: dt });
+        if (!decosByType['__combined']) decosByType['__combined'] = [];
+        decosByType['__combined'].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'names') {
         const dt = d.name_method || 'heat_press';
         const part = 'names_' + dt + '@' + (d.position || '');
-        if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di, _dt: dt });
+        if (!decosByType['__combined']) decosByType['__combined'] = [];
+        decosByType['__combined'].push({ part, d, di, _dt: dt });
       }
     });
     Object.entries(decosByType).forEach(([bk, decos]) => {
-      const dt = decos[0]._dt || bk;
+      // Primary method for the sig prefix / job deco_type: an art deco's method wins (sorted so
+      // the choice is deterministic whatever order the decos were added in); numbers/names methods
+      // only lead on garments with no art. All methods still appear in the sorted parts, so two
+      // garments group only when their FULL decoration sets (methods included) match.
+      const artDts = decos.filter(x => x.d.kind === 'art').map(x => x._dt).sort();
+      const dt = artDts[0] || decos.map(x => x._dt).sort()[0] || bk;
       // De-dupe parts so the same logo applied at two positions on one garment keys the same as a
       // single application (one art = one signature = one job).
       const parts = Array.from(new Set(decos.map(x => x.part))).sort();
       const sig = dt + '::' + parts.join('|');
-      if (sig) itemSigs.push({ idx, it, sig, decos });
+      if (sig) itemSigs.push({ idx, it, sig, decos, decoType: dt });
     });
   });
   // Group by signature
   const sigGroups = {};
-  itemSigs.forEach(({ idx, it, sig, decos }) => {
-    if (!sigGroups[sig]) sigGroups[sig] = { sig, items: [] };
+  itemSigs.forEach(({ idx, it, sig, decos, decoType }) => {
+    if (!sigGroups[sig]) sigGroups[sig] = { sig, items: [], decoType };
     sigGroups[sig].items.push({ idx, it, decos });
   });
   return Object.values(sigGroups).map((grp, gi) => {
@@ -425,7 +434,8 @@ const buildJobs = (o) => {
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
-      _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
+      _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: grp.decoType || decoTypes[0] || 'screen_print',
+      deco_types: Array.from(new Set(decoTypes.length ? decoTypes : [grp.decoType].filter(Boolean))),
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
       total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: null, items, _auto: true };
   });
