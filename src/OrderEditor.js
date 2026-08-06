@@ -3128,10 +3128,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // drift onto screen-print decos, and the old blanket exemption here let _healArtPointers ADOPT the
     // foreign screen designs into the embroidery job (plus their garments' units) instead of releasing
     // the stale claims back to the auto-builder.
-    const _methodSetKnown=j=>!j._merged&&!j.split_from;
+    // A mixed-media auto/released job (deco_types lists >1 method — screen front + heat-press
+    // numbers on one garment) legitimately claims several methods, so it is judged against its
+    // declared method set below, like a cross-type merge. Legacy single-method jobs (no
+    // deco_types, or one entry) keep the strict single-method drift rule.
+    const _methodSetKnown=j=>!j._merged&&!j.split_from&&!(Array.isArray(j.deco_types)&&j.deco_types.length>1);
     const _declaredMethodSet=j=>{
       const _ids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(id=>id&&id!=='__tbd');
-      const set=new Set(j.deco_type?[j.deco_type]:[]);
+      const set=new Set([...(j.deco_type?[j.deco_type]:[]),...(Array.isArray(j.deco_types)?j.deco_types:[])]);
       for(const aid of _ids){const artF=af.find(a=>a.id===aid);if(!artF)return null;// declared art not hydrated — don't judge drift off a half-loaded order
         if(artF.deco_type)set.add(artF.deco_type)}
       return set.size?set:null;
@@ -3208,28 +3212,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const part=d.art_file_id?'art_'+d.art_file_id:'unassigned@'+safeStr(d.position);
           // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
           // split across several lines — and a standalone copy of it — all consolidate into ONE job.
-          // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
-          // bundle into a single combined job (the established Split-Art behavior).
-          const bk=(d.art_file_id&&d.split_group)?'art::'+d.art_file_id:dt;
+          // Everything else shares the item's single combined bucket: all of a garment's in-house
+          // decorations — mixed methods included (screen front + heat-press numbers) — form ONE job
+          // so the garments travel production on a single tech sheet (SO-1395/SO-1639).
+          const bk=(d.art_file_id&&d.split_group)?'art::'+d.art_file_id:'__combined';
           if(!decosByType[bk])decosByType[bk]=[];
           decosByType[bk].push({part,d,di,_dt:dt});
         } else if(d.kind==='numbers'){
           const dt=d.num_method||'heat_transfer';
           if(decoIsOutsourced(outTypes,dt))return;// vendor produces these numbers — no in-house job
           const part='numbers_'+dt+'@'+safeStr(d.position);
-          if(!decosByType[dt])decosByType[dt]=[];
-          decosByType[dt].push({part,d,di,_dt:dt});
+          if(!decosByType['__combined'])decosByType['__combined']=[];
+          decosByType['__combined'].push({part,d,di,_dt:dt});
         } else if(d.kind==='names'){
           const dt=d.name_method||'heat_press';
           if(decoIsOutsourced(outTypes,dt))return;// vendor produces these names — no in-house job
           const part='names_'+dt+'@'+safeStr(d.position);
-          if(!decosByType[dt])decosByType[dt]=[];
-          decosByType[dt].push({part,d,di,_dt:dt});
+          if(!decosByType['__combined'])decosByType['__combined']=[];
+          decosByType['__combined'].push({part,d,di,_dt:dt});
         }
       });
-      // Create one signature entry per deco type group (split-art designs get their own group)
+      // Create one signature entry per bucket (split-art designs get their own group).
+      // Primary method for the sig prefix / job deco_type: an art deco's method wins (sorted so the
+      // choice is deterministic whatever order the decos were added in); numbers/names methods only
+      // lead on garments with no art. All methods still appear in the sorted parts, so two garments
+      // group only when their FULL decoration sets (methods included) match. MUST match buildJobs.
       Object.entries(decosByType).forEach(([bk,decos])=>{
-        const dt=decos[0]._dt||bk;
+        const artDts=decos.filter(x=>x.d.kind==='art').map(x=>x._dt).sort();
+        const dt=artDts[0]||decos.map(x=>x._dt).sort()[0]||bk;
         const parts=Array.from(new Set(decos.map(x=>x.part))).sort();
         const sig=dt+'::'+parts.join('|');
         itemSigs.push({ii,it,sig,decos,decoType:dt});
@@ -3280,7 +3290,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const jobKey=grp.sig;
       const _splitGrp=null;// per-item split group lives on each job item (giItem.split_group) for received-unit apportioning
       const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
-        deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
+        deco_type:grp.decoType||decoTypes[0]||'screen_print',
+        deco_types:Array.from(new Set(decoTypes.length?decoTypes:[grp.decoType].filter(Boolean))),
+        positions,items:[],art_status:worstArtSt,
         total_units:0,fulfilled_units:0,_art_ids:artIds,split_group:_splitGrp};
       // Add each item in the group
       grp.items.forEach(({ii,it,decos})=>{
@@ -3356,7 +3368,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _preservedArtSt=(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt;
       const _wf=inheritJobWorkflowFields(existing);
       return{
-        id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
+        id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,deco_types:j.deco_types||(j.deco_type?[j.deco_type]:[]),
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         art_status:_preservedArtSt,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
