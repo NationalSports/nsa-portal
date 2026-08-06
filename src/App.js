@@ -2474,18 +2474,28 @@ export default function App(){
     (async()=>{
       try{
         let _loadTimerId;
-        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
+        // 120s (was 45s): the essential load pulls the full operational dataset in one burst, and a
+        // high-latency / low-bandwidth connection (e.g. a user overseas from the US-West server) can
+        // legitimately need far more than 45s. The self-heal poll below runs with NO cap and succeeds
+        // for those users, which proved the 45s cap was just an artificial early cutoff that flashed the
+        // "didn't finish in time" banner on a load that was still working. 120s matches the poll's tolerance.
+        const _LOAD_CAP_MS=120000;
+        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after '+(_LOAD_CAP_MS/1000)+'s');resolve(null)},_LOAD_CAP_MS)});
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        const d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        let d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // If even 120s wasn't enough, retry ONCE immediately with no cap before falling through to the
+        // error banner — the uncapped poll would recover anyway, but only after its ~2min interval, which
+        // left slow/overseas users staring at an empty "0 jobs" board and a scary banner in the meantime.
+        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:true,fullState:true})}
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
-          // Wording matters: this state is almost always a slow CLIENT (the 45s race above expiring on a
-          // slow network/machine) while the server is fine — the old "Could not load data from Supabase"
-          // text sent people hunting server dashboards. Say what happened, that it self-heals (the poll
-          // clears this banner when a later load succeeds), and what to check.
+          // Wording matters: reaching here means the 120s race lost AND the uncapped retry also came back
+          // empty — almost always a slow/failing CLIENT connection while the server is fine. The old "Could
+          // not load data from Supabase" text sent people hunting server dashboards. Say what happened, that
+          // it self-heals (the poll clears this banner when a later load succeeds), and what to check.
           setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
