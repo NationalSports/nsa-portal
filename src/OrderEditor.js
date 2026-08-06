@@ -8781,10 +8781,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _linkVk=_linkDeco?_apiVendorKey(vn):null;
             if(_linkVk&&apiPayloadItems.length>0){
               nf('🎨 Linked to '+(_linkDeco.po_id||'deco PO')+' — opening '+vn+' API order shipping to '+(_linkDeco.vendor||'decorator'));
+              // SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — passing only the
+              // deco id silently shipped the blanks to the NSA warehouse. Resolve the decorator's
+              // address here (same as buildApiOrderFromPO / the batch-ready S&S path) against
+              // `updated`, not `o`: the deco PO created in this same submit isn't on `o` yet, so the
+              // DPO number on the attention line would come back blank.
+              const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
               setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
                 batchPOs:[{so_id:o.id,items:apiPayloadItems}],
                 shipToDecoId:_linkDeco.deco_vendor_id,
-                initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,'')});
+                initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,''),
+                ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
             }else{
               // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
               // was only offered when a decorator was linked, so direct drop-ships were placed
