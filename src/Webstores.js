@@ -410,35 +410,60 @@ async function fetchOverrideSkuStock(lines) {
   const skus = [...new Set((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku))];
   if (!skus.length || !supabase) return {};
   try {
-    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date').in('sku', skus);
+    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
     const out = {};
     (data || []).forEach((r) => {
-      const e = out[r.sku] || (out[r.sku] = { sizes: {}, eta: false });
+      const e = out[r.sku] || (out[r.sku] = { sizes: {}, sizeEta: {}, sizeIncoming: {}, eta: false, syncedAt: null });
       e.sizes[r.size] = (Number(e.sizes[r.size]) || 0) + (Number(r.stock_qty) || 0);
-      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) e.eta = true;
+      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) {
+        e.eta = true;
+        e.sizeEta[r.size] = r.future_delivery_date;
+        if ((Number(r.future_delivery_qty) || 0) > 0) e.sizeIncoming[r.size] = Number(r.future_delivery_qty);
+      }
+      if (r.last_synced && (!e.syncedAt || r.last_synced > e.syncedAt)) e.syncedAt = r.last_synced;
     });
     return out;
   } catch { return {}; }
 }
+// ── Deliveries that have already landed ──────────────────────────────
+// Vendor stock is a synced SNAPSHOT, not a live feed. When the last sync recorded a
+// size as 0-on-hand with units due on a date that has since PASSED, those units are
+// at the vendor — our row just hasn't been refreshed yet. Reading that stale 0 as a
+// hard shortfall invents shortages that don't exist: JL5412's 5" run was synced
+// 2026-07-31 as 0 on hand with 103 / 17 / 13 units due 2026-08-03, so on 2026-08-05
+// a two-unit batch reported "need 2, have 0 — more on order" with the goods sitting
+// in Adidas' warehouse. Credit the delivered quantity, and label it as inferred so
+// nobody mistakes it for a confirmed count.
+// Deliberately NOT applied to the public storefront's sold-out math — inferring
+// stock there would oversell to customers; here it only softens an internal warning.
+const todayIso = () => new Date().toISOString().slice(0, 10);
+export function arrivedVendorQty(sizeEta, sizeIncoming, size, today = todayIso()) {
+  const eta = String((sizeEta || {})[size] || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(eta) || eta > today) return 0;
+  return Math.max(0, Number((sizeIncoming || {})[size]) || 0);
+}
 // Stock picture for one line, override-aware: overridden lines read the
 // override SKU's vendor stock (warehouse stock is unknown for a bare SKU → 0);
 // normal lines read the product's stock record as before.
-function lineStock(i, stockByPid, stockBySku, madeToOrder) {
+// `arrived` = units the vendor said would land on/before today that our snapshot
+// still shows as 0 (see arrivedVendorQty); `arrivedEta` / `syncedAt` let callers
+// say WHY they're counting them.
+export function lineStock(i, stockByPid, stockBySku, madeToOrder) {
   const size = i.size || 'OS';
   if (i._skuOv) {
     const vst = stockBySku[i._effSku];
     const base = i.product_id ? stockByPid[i.product_id] : null;
     // known: we have real stock numbers to SHOW even when the item is untracked
     // (tracking off = never blocked/short, but availability is still informative).
-    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
+    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, arrived: vst ? arrivedVendorQty(vst.sizeEta, vst.sizeIncoming, size) : 0, arrivedEta: vst ? String((vst.sizeEta || {})[size] || '') : '', syncedAt: (vst && vst.syncedAt) || null, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
   }
   const st = i.product_id ? stockByPid[i.product_id] : null;
-  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
+  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, arrived: st ? arrivedVendorQty(st.vendor_size_eta, st.vendor_size_incoming, size) : 0, arrivedEta: String(((st && st.vendor_size_eta) || {})[size] || ''), syncedAt: (st && st.vendor_synced_at) || null, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
 }
 // Aggregation key: overridden sizes pool stock separately from the base SKU.
 const lineStockKey = (i) => (i.product_id || i.sku || 'x') + (i._skuOv ? '§' + i._effSku : '') + '|' + (i.size || 'OS');
 
-function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
+export function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
   const agg = {};
   lines.forEach((i) => {
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
@@ -446,15 +471,19 @@ function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
     const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
     if (!agg[k]) agg[k] = {
       name: ls.name || i.name || i.sku || pid, sku: i._effSku || i.sku || '', size, need: 0,
-      ours: ls.ours, vendor: ls.vendor, tracked: ls.tracked, known: ls.known, onOrder: ls.onOrder,
+      ours: ls.ours, vendor: ls.vendor, arrived: ls.arrived, tracked: ls.tracked, known: ls.known, onOrder: ls.onOrder,
     };
     agg[k].need += need;
   });
   return Object.values(agg).map((r) => {
+    // Deliveries already past their date count as sourceable from the vendor —
+    // same rule the batch shortfall check uses, so the report can't call a line
+    // backordered that the batch modal cleared.
+    const vendorAvail = r.vendor + (r.arrived || 0);
     const fillOurs = Math.min(r.need, r.ours);
-    const poVendor = Math.min(Math.max(0, r.need - r.ours), r.vendor);
-    const backorder = r.tracked ? Math.max(0, r.need - r.ours - r.vendor) : 0;
-    return { ...r, fillOurs, poVendor, backorder };
+    const poVendor = Math.min(Math.max(0, r.need - r.ours), vendorAvail);
+    const backorder = r.tracked ? Math.max(0, r.need - r.ours - vendorAvail) : 0;
+    return { ...r, vendorAvail, fillOurs, poVendor, backorder };
   });
 }
 
@@ -469,7 +498,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
   const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || (sizeRank(a.size) - sizeRank(b.size)) || a.size.localeCompare(b.size));
   const untracked = rows.filter((r) => !r.tracked);
   const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendor}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
+  const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendorAvail}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
   const fillRow = (r) => `<tr><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td></tr>`;
   printHtml(`<!doctype html><html><head><title>Stock report — ${esc(store.name)}</title><style>
     body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:780px;margin:32px auto;padding:0 24px}
@@ -498,6 +527,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
       ${chip(sum((r) => r.backorder), 'Backordered', sum((r) => r.backorder) > 0)}
     </div>
     ${untracked.length ? `<div class="meta" style="margin-top:8px">${untracked.reduce((a, r) => a + r.need, 0)} made-to-order unit(s) (no stock record) are not counted as shortfalls.</div>` : ''}
+    ${sum((r) => r.arrived || 0) ? `<div class="meta" style="margin-top:8px">Adidas counts include ${sum((r) => r.arrived || 0)} unit(s) from deliveries dated on or before today that our last stock sync hadn't picked up yet — re-run the Adidas sync to confirm.</div>` : ''}
     ${needSrc.length
       ? `<h3>Need to source <span class="ct">${needSrc.length} line${needSrc.length === 1 ? '' : 's'}</span></h3>
          <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">PO Adidas</th><th class="c">Backorder</th></tr></thead><tbody>${needSrc.map(srcRow).join('')}</tbody></table>`
@@ -1304,7 +1334,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const [catRes, bundleRes, stockRes, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,name,color,category,image_front_url').eq('store_id', sid),
+      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,vendor_size_incoming,vendor_synced_at,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
@@ -3025,7 +3055,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
       const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
-        .map((r) => [r.name, r.sku, r.size, r.need, (r.tracked || r.known) ? r.ours : '', (r.tracked || r.known) ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
+        .map((r) => [r.name, r.sku, r.size, r.need, (r.tracked || r.known) ? r.ours : '', (r.tracked || r.known) ? r.vendorAvail : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
     } else {
       const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
@@ -3076,9 +3106,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         const pid = i.product_id, size = i.size || 'OS';
         const ls = lineStock(i, stockByPid, stockBySku, mto);
         if (!ls.tracked) return; // made-to-order / no stock record — never a shortfall
-        const avail = ls.ours + ls.vendor;
+        // Stock we can actually source = ours + the vendor's on-hand + any delivery
+        // whose date has already passed (arrivedVendorQty). Without that last term a
+        // snapshot taken before a landed delivery reports a shortfall that isn't real.
+        const avail = ls.ours + ls.vendor + ls.arrived;
         const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
-        if (q > avail) shortages.push({ pid, size, sku: i._effSku || i.sku || '', label: `${nm}${i._skuOv ? ` (${i._effSku})` : ''} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas)${ls.onOrder ? ' — more on order' : ''}` });
+        const who = `${nm}${i._skuOv ? ` (${i._effSku})` : ''}`;
+        const sku = i._effSku || i.sku || '';
+        if (q > avail) {
+          shortages.push({ kind: 'short', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas${ls.arrived ? ` + ${ls.arrived} delivered ${ls.arrivedEta}` : ''})${ls.onOrder ? ' — more on order' : ''}` });
+        } else if (ls.arrived && q > ls.ours + ls.vendor) {
+          // Covered only BECAUSE we credited a landed delivery — say so rather than
+          // showing a silent all-clear on numbers we know are out of date.
+          shortages.push({ kind: 'assumed', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, on hand 0 as of our last sync — Adidas had ${ls.arrived} due ${ls.arrivedEta}, which has passed, so it's counted as available.` });
+        }
       });
       return shortages;
     };
@@ -3851,7 +3892,13 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
   // the cutoff", so clear the date — otherwise the SO would persist a cutoff that
   // misdescribes which orders are actually in the batch.
   const toggle = (id) => { setCutoff(''); setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
-  const shortages = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  const rows = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  // 'short' rows warn and offer a substitute; 'assumed' rows are covered — but only
+  // by crediting a vendor delivery whose date has passed and whose arrival our stock
+  // snapshot predates, so they're surfaced as a note rather than as a shortfall.
+  const shortages = useMemo(() => rows.filter((r) => r.kind !== 'assumed'), [rows]);
+  const assumed = useMemo(() => rows.filter((r) => r.kind === 'assumed'), [rows]);
+  const syncedAt = useMemo(() => rows.map((r) => r.syncedAt).filter(Boolean).sort()[0] || null, [rows]);
   const count = selIds.size;
   const leftOut = orders.length - count;
   const go = async () => {
@@ -3910,11 +3957,23 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
                   </div>
                 ))}
               </div>
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.{syncedAt ? ` Vendor stock last synced ${new Date(syncedAt).toLocaleDateString()}.` : ''}</div>
             </>
           ) : (
             <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>{count === 0 ? 'No orders selected — pick at least one order (or clear the cutoff) to create a batch.' : 'Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?'}</div>
           )}
+          {assumed.length ? (
+            <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 10, padding: '10px 12px', marginTop: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: '#1d4ed8', marginBottom: 6 }}>ℹ️ Counted from a delivery we haven't re-synced</div>
+              {assumed.map((s, i) => (
+                <div key={i} style={{ fontSize: 12.5, color: '#1e3a8a', lineHeight: 1.45, marginTop: i ? 6 : 0 }}>
+                  {s.label}
+                  {s.sku && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 12, color: '#1e40af', background: '#dbeafe', borderRadius: 4, padding: '1px 5px' }}>{s.sku}</span>}
+                </div>
+              ))}
+              <div style={{ fontSize: 11.5, color: '#475569', marginTop: 8, lineHeight: 1.5 }}>Re-run the Adidas inventory sync to confirm{syncedAt ? ` — stock last synced ${new Date(syncedAt).toLocaleDateString()}` : ''}.</div>
+            </div>
+          ) : null}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
           <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
