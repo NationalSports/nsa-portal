@@ -2663,11 +2663,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // When the attached folder has a default location, seed the deco's placement from it —
       // but only while the deco is still on its factory default, never clobbering a position the
       // user deliberately set.
-      const _newFolderLoc=(e.art_files||[]).find(f=>f.id===newId)?.location;
+      const _newArt=(e.art_files||[]).find(f=>f.id===newId);
+      const _newFolderLoc=_newArt?.location;
       const newItems=safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>{
         if(i!==di)return d;
         const nd={...d,art_file_id:newId};
         if(_newFolderLoc&&(!d.position||d.position==='Front Center'))nd.position=_newFolderLoc;
+        // NSA rule: screen print on a dark garment (anything beyond white / light grey /
+        // vegas gold) needs a white underbase — auto-check it when the art lands so the
+        // charge isn't forgotten. Sets only, never clears; the rep can still untick it.
+        // sell_override resets like the manual toggle does, so the price re-derives.
+        if(_newArt?.deco_type==='screen_print'&&!d.underbase&&garmentNeedsUnderbase(it.color)){nd.underbase=true;nd.sell_override=null}
         return nd;
       })}:it);
       const oldArtIds=new Set();let touched=false;
@@ -2780,9 +2786,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const r=sel.find(s=>s.ii===ii);if(!r)return it;
       const decos=safeDecos(it);
       const empty=decos.findIndex(d=>d.kind==='art'&&!d.art_file_id);
-      if(empty>=0)return{...it,no_deco:false,decorations:decos.map((d,i)=>i===empty?{...d,art_file_id:m.artId,position:r.position||d.position||'Front Center',color_way_id:r.color_way_id||null}:d)};
+      // Same NSA underbase rule as changeArtFileId: screen print on a dark garment
+      // auto-checks the underbase (set-only; the rep can untick on the Line Items tab).
+      const artObj=(e.art_files||[]).find(f=>f.id===m.artId);
+      const ub=artObj?.deco_type==='screen_print'&&garmentNeedsUnderbase(it.color);
+      if(empty>=0)return{...it,no_deco:false,decorations:decos.map((d,i)=>i===empty?{...d,art_file_id:m.artId,position:r.position||d.position||'Front Center',color_way_id:r.color_way_id||null,...(ub&&!d.underbase?{underbase:true,sell_override:null}:{})}:d)};
       const rev=itemIsReversible(it);
-      return{...it,no_deco:false,decorations:[...decos,{kind:'art',position:r.position||'Front Center',art_file_id:m.artId,color_way_id:r.color_way_id||null,sell_override:null,...(rev?{reversible:true}:{})}]};
+      return{...it,no_deco:false,decorations:[...decos,{kind:'art',position:r.position||'Front Center',art_file_id:m.artId,color_way_id:r.color_way_id||null,sell_override:null,...(ub?{underbase:true}:{}),...(rev?{reversible:true}:{})}]};
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
     nf('🎯 Art applied to '+sel.length+' item'+(sel.length>1?'s':'')+' — review CW/location on the Line Items tab');
