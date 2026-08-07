@@ -8239,12 +8239,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // (e.g. Astra, Long Island) so the rep picks the ART being purchased, not garments, and
         // the chosen art folders are marked "DTF Purchased". Auto-default: items already flagged
         // Outside → send; otherwise a DTF/heat-transfer order → dtf.
-        const _dpoMode=dpoMode||((_dpoFlaggedOut.size===0&&(_dpoDefaultType==='dtf'||_dpoDefaultType==='heat_transfer'))?'dtf':'send');
+        // The DTF Purchase option only exists when the order actually carries DTF prints —
+        // either a decoration resolving to DTF/heat-press or a DTF-typed art folder.
+        const _DTF_ART_TYPES=['dtf','heat_press','heat_transfer'];
+        const _orderHasDtf=safeItems(o).some(it=>safeDecos(it).some(d=>_DTF_ART_TYPES.includes(decoConcreteType(o,d))))||af.some(a=>a&&!a.archived&&_DTF_ART_TYPES.includes(a.deco_type));
+        const _dpoMode=_orderHasDtf?(dpoMode||((_dpoFlaggedOut.size===0&&(_dpoDefaultType==='dtf'||_dpoDefaultType==='heat_transfer'))?'dtf':'send')):'send';
         const _dpoEffType=(_dpoMode==='dtf'&&_dpoDefaultType!=='dtf'&&_dpoDefaultType!=='heat_transfer')?'dtf':_dpoDefaultType;
-        const _dtfArtOpts=af.filter(a=>a&&!a.archived);
-        // Default-checked art for a DTF purchase: art actually used on the order, preferring
-        // DTF/heat-transfer folders when any exist.
-        const _dtfDefArt=(()=>{const used=_dtfArtOpts.filter(a=>(artQty[a.id]||0)>0);const typed=used.filter(a=>a.deco_type==='dtf'||a.deco_type==='heat_transfer');return new Set((typed.length?typed:used).map(a=>a.id))})();
+        // A DTF purchase covers DTF art only — never list screen-print/embroidery folders here.
+        const _dtfArtOpts=af.filter(a=>a&&!a.archived&&_DTF_ART_TYPES.includes(a.deco_type));
+        // Default-checked art for a DTF purchase: the DTF folders actually used on the order
+        // (all listed folders when none are placed on items yet).
+        const _dtfDefArt=(()=>{const used=_dtfArtOpts.filter(a=>(artQty[a.id]||0)>0);return new Set((used.length?used:_dtfArtOpts).map(a=>a.id))})();
         // Covered items with NO decoration of the PO's type fall under that same wildcard, so their
         // in-house work is lost too. Surface them so the rep unchecks in-house items deliberately.
         const _dpoMismatched=(items,dt)=>items.filter(it=>{const ts=safeDecos(safeItems(o)[it._idx]||{}).map(d=>decoConcreteType(o,d)).filter(Boolean);return ts.length>0&&!ts.includes(dt)});
@@ -8300,13 +8305,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body" key={_dpoMode}>
-            {/* What is this PO buying? Sending garments out vs purchasing transfers/material. */}
-            <div style={{display:'flex',gap:8,marginBottom:12}}>
+            {/* What is this PO buying? Sending garments out vs purchasing transfers/material.
+                Only offered when the order carries DTF prints — otherwise it's always Sending Items. */}
+            {_orderHasDtf&&<div style={{display:'flex',gap:8,marginBottom:12}}>
               {[['send','📦 Sending Items','We ship garments to the decorator — covered items are badged Outside Deco'],['dtf','🖨️ DTF Purchase','Buying transfers / material (no garments sent) — pick the art you’re purchasing; it’s marked DTF Purchased']].map(([k,label,sub])=>{const sel=_dpoMode===k;return<button key={k} type="button" onClick={()=>setDpoMode(k)} style={{flex:1,padding:'10px 12px',borderRadius:8,border:sel?'2px solid #7c3aed':'1px solid #e2e8f0',background:sel?'#faf5ff':'white',cursor:'pointer',textAlign:'left'}}>
                 <div style={{fontWeight:700,fontSize:13,color:sel?'#6d28d9':'#1e293b'}}>{label}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{sub}</div>
               </button>})}
-            </div>
+            </div>}
             {!preexistingPO?<div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
               {_dpoMode==='dtf'
                 ?<><strong>{decoVendor}</strong> DTF / transfer purchase — associates this vendor's bill (and commission) with this order. No garments are sent; check the art folder(s) you're purchasing below and they'll be marked <strong>DTF Purchased</strong>.</>
@@ -8333,7 +8339,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {_dpoMode==='dtf'?<>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:2}}>Art you're purchasing</div>
             <div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>Check the art folder(s) this purchase covers — they'll be marked <b>DTF Purchased</b>. Items are not sent out and stay in-house.</div>
-            {_dtfArtOpts.length===0?<div style={{padding:'10px 12px',border:'1px dashed #fde68a',borderRadius:6,background:'#fffbeb',fontSize:12,color:'#92400e'}}>No art folders on this order yet — you can still create the PO with a manual qty below, but nothing will be marked DTF Purchased.</div>
+            {_dtfArtOpts.length===0?<div style={{padding:'10px 12px',border:'1px dashed #fde68a',borderRadius:6,background:'#fffbeb',fontSize:12,color:'#92400e'}}>No DTF art folders on this order yet — you can still create the PO with a manual qty below, but nothing will be marked DTF Purchased.</div>
             :_dtfArtOpts.map((a,ai)=>{const aq=artQty[a.id]||0;
               return<div key={a.id} style={{padding:'8px 12px',border:'1px solid #fde68a',borderRadius:6,marginBottom:6,background:'#fffbeb',display:'flex',alignItems:'center',gap:8}}>
                 <input type="checkbox" id={'dpo-art-sel-'+ai} defaultChecked={_dtfDefArt.has(a.id)} style={{width:16,height:16}} onChange={_recalcDpo}/>
@@ -8399,9 +8405,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 notes,drop_ship:isDropShip||undefined,expected_date:returnDate,preexisting:preexistingPO||undefined,
                 status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
-              // DTF purchase marks the chosen art folders as purchased (same save as the PO).
-              const _purchasedArt=artIds.length?(o.art_files||[]).map(a=>artIds.includes(a.id)?{...a,dtf_purchased:{po_id:effectivePoId,vendor:decoVendor,date:new Date().toLocaleDateString()}}:a):null;
-              const updated={...o,...(_purchasedArt?{art_files:_purchasedArt}:{}),deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
+              // DTF purchase marks the chosen art folders as purchased (same save as the PO) and
+              // satisfies the "Order DTF Transfers" art gate exactly like the job page's
+              // "Films Ordered" button (_orderDtf): stamp a dtf_order prod-file marker +
+              // prod_files_attached so artStatusForFile resolves art_complete. Status is NOT
+              // forced to approved — unapproved art still waits for the coach, then completes.
+              const _purchasedArt=artIds.length?(o.art_files||[]).map(a=>{
+                if(!artIds.includes(a.id))return a;
+                const hasMarker=(a.prod_files||[]).some(f=>f&&f.dtf_order);
+                const marker={name:'DTF films ordered — '+effectivePoId,dtf_order:true,po_id:effectivePoId,at:new Date().toISOString(),by:cu?.name||'Rep'};
+                return{...a,dtf_purchased:{po_id:effectivePoId,vendor:decoVendor,date:new Date().toLocaleDateString()},prod_files_attached:true,prod_files:hasMarker?(a.prod_files||[]):[...(a.prod_files||[]),marker]};
+              }):null;
+              // Flip covered DTF jobs' art gate too (as _orderDtf does) — but only when EVERY art
+              // on the job now derives art_complete, so a second unpurchased design keeps its hold.
+              const _updJobs=_purchasedArt?safeJobs(o).map(j=>{
+                const ids=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(id=>id&&id!=='__tbd');
+                if(!ids.length||!ids.some(id=>artIds.includes(id)))return j;
+                const allDone=ids.every(id=>{const a=_purchasedArt.find(x=>x.id===id);return a&&artStatusForFile(a,j.deco_type)==='art_complete'});
+                return allDone&&j.art_status!=='art_complete'?{...j,art_status:'art_complete'}:j;
+              }):null;
+              const updated={...o,...(_purchasedArt?{art_files:_purchasedArt}:{}),...(_updJobs?{jobs:_updJobs}:{}),deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
               if(!preexistingPO)setPOCounter(c=>c+1);
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
@@ -13463,11 +13486,27 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 const _remaining=(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id);
                 const _stillCovered=new Set(_remaining.flatMap(p=>p.item_idxs||[]));
                 const _clr=new Set((dp.item_idxs||[]).filter(ii=>!_stillCovered.has(ii)));
-                // A DTF-purchase PO also un-marks its art folders (unless another PO still covers them).
+                // A DTF-purchase PO also un-marks its art folders (unless another PO still covers
+                // them) and retracts the films-ordered stamp it added, re-deriving the art gate on
+                // any job it had completed — a job already in production is left alone.
                 const _stillPurchased=new Set(_remaining.flatMap(p=>p.art_file_ids||[]));
                 const _unmark=new Set((dp.art_file_ids||[]).filter(aid=>!_stillPurchased.has(aid)));
+                const _cleanArt=_unmark.size?(o.art_files||[]).map(a=>{
+                  if(!_unmark.has(a.id))return a;
+                  const pf=(a.prod_files||[]).filter(f=>!(f&&f.dtf_order&&f.po_id===dp.po_id));
+                  return{...a,dtf_purchased:undefined,prod_files:pf,...(pf.length===0?{prod_files_attached:undefined}:{})};
+                }):null;
+                const _revJobs=_cleanArt?safeJobs(o).map(j=>{
+                  if(j.art_status!=='art_complete'||_activeProd(j.prod_status))return j;
+                  const ids=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(id=>id&&id!=='__tbd');
+                  if(!ids.length||!ids.some(id=>_unmark.has(id)))return j;
+                  let worst='art_complete';
+                  for(const id of ids){const a=_cleanArt.find(x=>x.id===id);const st=artStatusForFile(a,j.deco_type);if(st!=='art_complete'){worst=st;break}}
+                  return worst==='art_complete'?j:{...j,art_status:worst};
+                }):null;
                 const updated={...o,
-                  ...(_unmark.size?{art_files:(o.art_files||[]).map(a=>_unmark.has(a.id)?{...a,dtf_purchased:undefined}:a)}:{}),
+                  ...(_cleanArt?{art_files:_cleanArt}:{}),
+                  ...(_revJobs?{jobs:_revJobs}:{}),
                   items:safeItems(o).map((it,xi)=>_clr.has(xi)?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'&&(d.fulfillment==='outside'||d.deco_po_id)?{...d,fulfillment:undefined,deco_po_id:undefined,vendor:undefined}:d)}:it),
                   // Session-scoped tombstone (never persisted — not in _soCols): tells the save layer's
                   // stale-restore guard this removal is deliberate, so it won't re-inject the entry.
