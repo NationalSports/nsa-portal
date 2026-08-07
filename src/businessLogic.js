@@ -250,6 +250,34 @@ const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
 };
 
+// Every decoration this job claims is routed to an outside vendor — explicitly (fulfillment
+// 'outside' / deco_po_id / legacy outside_deco kind) or because its whole item is deco-PO covered
+// (the vendor decorates the garment). Such a job retires on the order's next sync (OrderEditor's
+// _jobAllOutsourced), but boards that read stored jobs directly (Art Dashboard) need the same
+// answer WITHOUT waiting for a sync (SO-1009: a job moved to outside deco sat in Needs Approval).
+// Partial PO coverage — a transfers purchase on an item that keeps in-house work — does NOT count:
+// that job is still produced in-house. Missing item/deco pairs don't count as outside (deleted-line
+// snapshot preservation is the sync's business, not the board's).
+const jobAllRoutedOutside = (o, j, outByItem) => {
+  const map = outByItem || outsourcedDecoTypes(o);
+  const pairs = [];
+  safeArr(j?.items).forEach(gi => {
+    const dis = Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : (gi?.deco_idx != null ? [gi.deco_idx] : []);
+    dis.forEach(di => pairs.push([gi.item_idx, di]));
+  });
+  if (!pairs.length) return false;
+  const _itemFullyOut = (ii) => {
+    const it = safeItems(o)[ii];
+    const ds = it ? safeDecos(it).filter(d => d && (d.kind === 'art' || d.kind === 'numbers' || d.kind === 'names')) : [];
+    return ds.length > 0 && ds.every(d => isDecoOutsourced(o, ii, d, map));
+  };
+  return pairs.every(([ii, di]) => {
+    const it = safeItems(o)[ii]; if (!it) return false;
+    const d = safeDecos(it)[di]; if (!d) return false;
+    return d.kind === 'outside_deco' || d.fulfillment === 'outside' || !!d.deco_po_id || _itemFullyOut(ii);
+  });
+};
+
 // ── Underbase rule ── Screen-print on anything darker than white / light grey / vegas gold needs
 // a white underbase (NSA rule). Returns true when the garment color needs one; blank color → false
 // (unknown, don't auto-charge). Used to auto-apply the underbase upcharge on pricing lookups.
@@ -1222,7 +1250,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
