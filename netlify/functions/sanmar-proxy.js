@@ -57,7 +57,8 @@ function buildSendPOEnvelope(payload, id, password) {
         <ns:LineItem>
           <ns:lineNumber>${xmlEsc(l.lineNumber)}</ns:lineNumber>
           <shar:description>${xmlEsc(l.description || l.style)}</shar:description>
-          <ns:lineType>${xmlEsc(po.lineType || 'New')}</ns:lineType>
+          <ns:lineType>${xmlEsc(po.lineType || 'New')}</ns:lineType>${l.fobId ? `
+          <shar:fobId>${xmlEsc(l.fobId)}</shar:fobId>` : ''}
           <shar:ToleranceDetails>
             <shar:tolerance>AllowOverrun</shar:tolerance>
           </shar:ToleranceDetails>

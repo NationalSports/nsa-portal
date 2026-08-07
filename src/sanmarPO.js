@@ -14,6 +14,12 @@
 //   • Fields flagged "SanMar does not use" by the guide are still required by the
 //     PromoStandards schema, so we emit them with safe defaults.
 //   • Do NOT put extra commas in any field — comma is SanMar's order-file delimiter.
+//   • `fobId` on a line is SanMar's warehouse NUMBER (1 Seattle, 2 Cincinnati,
+//     3 Dallas, 4 Reno, 5 Robbinsville, 6 Jacksonville, 7 Minneapolis, 12 Phoenix)
+//     — the guide's "FobID: Indicate the FOB point (Warehouse Selection)". SanMar
+//     only honors it on an account configured for Option 3 (Warehouse Selection);
+//     ours runs Option 1 (Warehouse Consolidation), where SanMar picks the
+//     warehouse and this field is ignored. Omitted from the envelope when unset.
 //
 // This module is dry-run-safe: it never makes network calls. It builds the JS
 // payload + the exact SOAP envelope string (password redacted) for previewing.
@@ -171,7 +177,8 @@ export function buildSanMarPOSoap(payload, { id = '<from env>', password, includ
         <ns:LineItem>
           <ns:lineNumber>${esc(l.lineNumber)}</ns:lineNumber>
           <shar:description>${esc(l.description || l.style)}</shar:description>
-          <ns:lineType>${esc(po.lineType || 'New')}</ns:lineType>
+          <ns:lineType>${esc(po.lineType || 'New')}</ns:lineType>${l.fobId ? `
+          <shar:fobId>${esc(l.fobId)}</shar:fobId>` : ''}
           <shar:ToleranceDetails>
             <shar:tolerance>AllowOverrun</shar:tolerance>
           </shar:ToleranceDetails>
