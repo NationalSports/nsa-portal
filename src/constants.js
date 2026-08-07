@@ -38,8 +38,8 @@ export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inboun
 export const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
-export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
+export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id','attachments'];
+export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id','attachments']);
 export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','mock_links','design_id','sample_art','prod_files','prod_files_attached','preview_url','web_logos','web_logo_url','location','notes','status','archived','uploaded'];
 // Maps a DB art-file row (estimate_art_files / so_art_files) to the client shape. Single shared mapper
 // so every column in _artCols round-trips: a column saved but missing from this map silently reverts on

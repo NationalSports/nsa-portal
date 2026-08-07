@@ -35,6 +35,7 @@ import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 
@@ -4548,7 +4549,7 @@ export default function App(){
     },250);
     return()=>{if(_gProdTimer.current)clearTimeout(_gProdTimer.current)};
   },[gQ]);// eslint-disable-line
-  const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all',arc:'hide'});
+  const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[mThreadAtt,setMThreadAtt]=useState([]);const[mThreadAttBusy,setMThreadAttBusy]=useState(false);const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all',arc:'hide'});
   // ─── Server-side product search state (paginated) ───
   const[prodPage,setProdPage]=useState(0);const PROD_PAGE_SIZE=50;
   const[prodServerResults,setProdServerResults]=useState(null);// {products:[], total:0} or null=use client
@@ -30500,7 +30501,7 @@ export default function App(){
       setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
     };
     const openThread=(m)=>{
-      setMThread(m.id);setMThreadDept('all');setMThreadMentionQuery(null);setMThreadMentionIdx(0);
+      setMThread(m.id);setMThreadDept('all');setMThreadMentionQuery(null);setMThreadMentionIdx(0);setMThreadAtt([]);
       // Mark every message in this conversation (same entity) as read
       const k=groupKey(m);
       const toMark=new Set(msgs.filter(mm=>groupKey(mm)===k).map(mm=>mm.id));
@@ -30527,11 +30528,13 @@ export default function App(){
     };
     const threadMentionMembers=mThreadMentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mThreadMentionQuery.toLowerCase())).slice(0,6):[];
     const threadSendReply=()=>{
-      const inp=mThreadInputRef.current;if(!inp||!inp.value.trim())return;
-      const text=inp.value.trim();const tagged=threadExtractTaggedIds(text);
+      const inp=mThreadInputRef.current;if(!inp)return;
+      // An attachment-only reply is valid — a photo or proof PDF often is the message.
+      const text=(inp.value||'').trim();if(!text&&mThreadAtt.length===0)return;
+      const tagged=threadExtractTaggedIds(text);
       const anchor=openRootMsg;if(!anchor)return;
-      const nm={id:'m'+Date.now(),so_id:anchor.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:anchor.entity_type||'so',entity_id:anchor.entity_id||anchor.so_id,thread_id:anchor.thread_id||anchor.id};
-      setMsgs([...msgs,nm]);inp.value='';setMThreadDept('all');setMThreadMentionQuery(null);nf(tagged.length?'Reply sent — '+tagged.length+' member(s) tagged':'Reply sent');
+      const nm={id:'m'+Date.now(),so_id:anchor.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:anchor.entity_type||'so',entity_id:anchor.entity_id||anchor.so_id,thread_id:anchor.thread_id||anchor.id,attachments:mThreadAtt.length?mThreadAtt:null};
+      setMsgs([...msgs,nm]);inp.value='';setMThreadDept('all');setMThreadMentionQuery(null);setMThreadAtt([]);nf(tagged.length?'Reply sent — '+tagged.length+' member(s) tagged':'Reply sent');
     };
     const threadHandleKeyDown=(e)=>{
       if(mThreadMentionQuery!=null&&threadMentionMembers.length>0){
@@ -30540,8 +30543,9 @@ export default function App(){
         if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();threadInsertMention(threadMentionMembers[mThreadMentionIdx]);return}
         if(e.key==='Escape'){setMThreadMentionQuery(null);return}
       }
-      if(e.key==='Enter'&&mThreadMentionQuery==null&&e.target.value.trim()){threadSendReply()}
+      if(e.key==='Enter'&&mThreadMentionQuery==null&&(e.target.value.trim()||mThreadAtt.length>0)){threadSendReply()}
     };
+    const threadHandlePaste=makeMsgPasteHandler(setMThreadAtt,setMThreadAttBusy,nf);
     // Thread view — full conversation history is openMsgs / openRootMsg (computed above)
     return(<>
     {/* Prominent stats row */}
@@ -30580,6 +30584,7 @@ export default function App(){
               <div style={{fontSize:13,color:'#374151'}}><span style={{fontWeight:600,color:'#475569'}}>{lastAuthor?.name?.split(' ')[0]||c.last.author||(c.last.from_customer?'Customer':'')}: </span>{renderMsgPageText(c.last.text)}</div>
               <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
                 {(c.last.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{(c.last.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+                {msgAttachments(c.last).length>0&&<span style={{fontSize:10,color:'#475569',fontWeight:600,display:'flex',alignItems:'center',gap:3}}>&#128206; {msgAttachments(c.last).length}</span>}
                 {count>1&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600,display:'flex',alignItems:'center',gap:3}}><span style={{fontSize:12}}>&#128172;</span> {count} messages</span>}
                 {c.unreadCount>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:700}}>{c.unreadCount} new</span>}
               </div>
@@ -30587,7 +30592,7 @@ export default function App(){
             {isUnread&&<div style={{width:10,height:10,borderRadius:5,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:8}}/>}
           </div></div>})}</div></div>
     {/* Thread panel */}
-    {mThread&&openRootMsg&&<div className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}}>
+    {mThread&&openRootMsg&&<MsgDropZone className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}} setItems={setMThreadAtt} setBusy={setMThreadAttBusy} nf={nf} label="Drop to attach to this reply">
       <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
         <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
         <h2 style={{margin:0,fontSize:14,display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(openRootMsg),color:entityColor(openRootMsg)}}>{entityLabel(openRootMsg)}</span><span style={{color:entityColor(openRootMsg)}}>{openRootMsg.entity_id||openRootMsg.so_id}</span></h2>
@@ -30607,6 +30612,7 @@ export default function App(){
               <span style={{fontSize:10,color:'#94a3b8'}}>{r.ts}</span>
             </div>
             <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgPageText(r.text)}</div>
+            <MsgAttachments items={msgAttachments(r)}/>
             {(r.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(r.tagged_members||[]).map(tid=>{const tm=REPS.find(rep=>rep.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
           </div>})}
       </div>
@@ -30623,13 +30629,14 @@ export default function App(){
               <div><div style={{fontSize:11,fontWeight:600}}>{m.name}</div><div style={{fontSize:9,color:'#94a3b8'}}>{m.role}</div></div>
             </div>)}
           </div>}
+          <MsgAttachBar items={mThreadAtt} setItems={setMThreadAtt} busy={mThreadAttBusy} setBusy={setMThreadAttBusy} nf={nf} compact/>
           <div style={{display:'flex',gap:8}}>
-            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown}/>
-            <button className="btn btn-primary" onClick={threadSendReply}>Reply</button>
+            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone, drag or paste to attach)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown} onPaste={threadHandlePaste}/>
+            <button className="btn btn-primary" disabled={mThreadAttBusy} onClick={threadSendReply}>Reply</button>
           </div>
         </div>
       </div>
-    </div>}
+    </MsgDropZone>}
     </div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
