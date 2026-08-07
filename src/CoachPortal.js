@@ -786,8 +786,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     if(_deepLinked.current)return;
     let sp=null;try{sp=new URLSearchParams(window.location.search);}catch(_){}
     const _param=k=>{const v=sp&&sp.get(k);if(v)return v;try{const r=document.referrer||'';const qi=r.indexOf('?');if(qi>=0)return new URLSearchParams(r.slice(qi)).get(k);}catch(_){}return null;};
-    const estId=_param('est'),soId=_param('so'),jobId=_param('job'),invId=_param('inv');
-    if(!estId&&!soId&&!invId){_deepLinked.current=true;return;}
+    const estId=_param('est'),soId=_param('so'),jobId=_param('job'),invId=_param('inv'),pageId=_param('page');
+    if(!estId&&!soId&&!invId){
+      // Page-only deep-link (?page=billing etc.) — used by statement/past-due emails
+      // that cover several invoices, so there's no single record to open.
+      if(pageId&&['orders','roster','store','art','billing','shop'].includes(pageId))setPage(pageId);
+      _deepLinked.current=true;return;
+    }
     if(estId){const e=(ests||[]).find(x=>x.id===estId);if(e){setEstView(e);setUpdateRequestSent(false);setUpdateRequestText('');setPage('orders');_deepLinked.current=true;}return;}
     if(invId){const inv=(invs||[]).find(x=>x.id===invId);if(inv){setInvView(inv);setPage('billing');_deepLinked.current=true;}return;}
     const s=(sos||[]).find(x=>x.id===soId);
