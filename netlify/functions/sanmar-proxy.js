@@ -204,15 +204,22 @@ function buildPromoStandardsSoapEnvelope(action, params) {
 // only per color/size totals.
 const PROMO_V2_NS = 'http://www.promostandards.org/WSDL/Inventory/2.0.0/';
 const PROMO_V2_SHARED = PROMO_V2_NS + 'SharedObjects/';
-function buildPromoV2SoapEnvelope(action, params) {
+// Envelope variants: SanMar's guide sample uses shar:-prefixed children
+// (SharedObjects ns), while the PromoStandards 2.0.0 standard puts every child in
+// the MAIN Inventory ns — and the ns URI casing ("WSDL" vs "wsdl") differs between
+// references too. The handler tries them in order until one doesn't fault.
+const PROMO_V2_VARIANTS = ['shar', 'ns-upper', 'ns-lower'];
+function buildPromoV2SoapEnvelope(action, params, variant = 'shar') {
   const wrapper = action.charAt(0).toUpperCase() + action.slice(1) + 'Request';
+  const nsUri = variant === 'ns-lower' ? 'http://www.promostandards.org/wsdl/Inventory/2.0.0/' : PROMO_V2_NS;
+  const childPrefix = variant === 'shar' ? 'shar' : 'ns';
+  const sharDecl = variant === 'shar' ? `\n                  xmlns:shar="${PROMO_V2_SHARED}"` : '';
   const paramXml = Object.entries(params)
-    .map(([k, v]) => `<shar:${k}>${escapeXml(String(v ?? ''))}</shar:${k}>`)
+    .map(([k, v]) => `<${childPrefix}:${k}>${escapeXml(String(v ?? ''))}</${childPrefix}:${k}>`)
     .join('\n      ');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:ns="${PROMO_V2_NS}"
-                  xmlns:shar="${PROMO_V2_SHARED}">
+                  xmlns:ns="${nsUri}"${sharDecl}>
   <soapenv:Header/>
   <soapenv:Body>
     <ns:${wrapper}>
@@ -471,6 +478,22 @@ exports.handler = async (event) => {
   try {
     console.log(`[SanMar] SOAP request: ${action} → ${baseUrl} (customer: ${customerNumber}, user: ${username})`);
     let result = await doRequest(soapBody);
+
+    // V2 envelope self-healing: SanMar's guide sample and the PromoStandards 2.0.0
+    // standard disagree on child namespaces/URI casing — on a fault or HTTP error,
+    // walk the other variants until one is accepted.
+    if (service === 'promostandardsV2') {
+      const bad = (r) => r.fault || (r.statusCode && r.statusCode >= 400);
+      if (bad(result)) {
+        const parsed = JSON.parse(event.body || '{}');
+        const p = { wsVersion: parsed.wsVersion || '2.0.0', id: parsed.id || username, password: parsed.password || password, productId: parsed.productID || parsed.productId || '' };
+        for (const variant of PROMO_V2_VARIANTS.slice(1)) {
+          console.warn(`[SanMar] V2 request failed (${result.fault ? result.parsed?.faultString : 'HTTP ' + result.statusCode}); retrying envelope variant "${variant}"`);
+          result = await doRequest(buildPromoV2SoapEnvelope(action, p, variant));
+          if (!bad(result)) break;
+        }
+      }
+    }
 
     // PromoStandards returns a 200 with an errorMessage (not a SOAP fault) when
     // the id/password combo is wrong. The `id` can be either the web-service
