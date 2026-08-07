@@ -1234,11 +1234,11 @@ const sanmarGetWarehouseStock = async (descriptors) => {
   const arr = (x) => (Array.isArray(x) ? x : (x !== undefined && x !== null) ? [x] : []);
   const list = (Array.isArray(descriptors) ? descriptors : []).filter(d => d && d.key && d.style && d.partId);
   const byPart = {};
-  for (const style of [...new Set(list.map(d => String(d.style).toUpperCase().trim()))]) {
+  // One V2 call per style, all styles in flight together — the responses are big
+  // (every part of the style) and serializing them made the modal feel slow.
+  await Promise.all([...new Set(list.map(d => String(d.style).toUpperCase().trim()))].map(async (style) => {
     try {
       const inv = await sanmarApiCall('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
-      // Diagnostic — keep until the display is verified against live data.
-      console.log('[SanMar] RAW V2 inventory', style, '=>', JSON.stringify(inv).slice(0, 1500));
       const parts = arr(inv?.Inventory?.PartInventoryArray?.PartInventory || inv?.PartInventoryArray?.PartInventory);
       for (const p of parts) {
         const pid = String(p?.partId || '').trim();
@@ -1252,7 +1252,7 @@ const sanmarGetWarehouseStock = async (descriptors) => {
         if (rows.length) byPart[pid] = rows;
       }
     } catch (e) { console.warn('[SanMar] V2 warehouse lookup failed for', style, e.message); }
-  }
+  }));
   for (const d of list) { const rows = byPart[String(d.partId)]; if (rows) out[d.key] = rows; }
   return out;
 };

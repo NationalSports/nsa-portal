@@ -463,7 +463,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                               qty: w.qty,
                             })),
                             l.quantity
-                          )}
+                          ).filter(e => e.primary)}
                         />
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
@@ -474,7 +474,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from (SanMar routes each line from the warehouse nearest the ship-to that has stock — split shipments possible). Numbers are current stock per warehouse.
+                  📦 = expected ship-from warehouse (SanMar routes each line from the warehouse nearest the ship-to that has stock — split shipments possible). Hover the chip for current stock.
                 </div>
               )}
             </div>

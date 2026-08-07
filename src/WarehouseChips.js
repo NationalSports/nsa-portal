@@ -32,6 +32,8 @@ export const SANMAR_WAREHOUSES = {
 };
 
 // entries: [{ label, city, qty, primary }] — primary marks the expected ship-from.
+// Chips show the warehouse only; current stock lives in the hover tooltip (the rep
+// asked for "where is it shipping from", not an availability table).
 export default function WarehouseChips({ entries, loading }) {
   if (loading) return <span style={{ color: '#94a3b8', fontSize: 11 }}>…</span>;
   const rows = (entries || []).filter(e => e && e.label);
@@ -50,7 +52,7 @@ export default function WarehouseChips({ entries, loading }) {
             color: e.primary ? '#166534' : e.qty > 0 ? '#475569' : '#b91c1c',
           }}
         >
-          {e.primary ? '📦 ' : ''}{e.label} {e.qty.toLocaleString()}
+          {e.primary ? '📦 ' : ''}{e.label}
         </span>
       ))}
     </span>

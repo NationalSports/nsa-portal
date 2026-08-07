@@ -327,7 +327,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                           entries={rankWarehouses(
                             (whseBySku?.[String(l.sku || '').toUpperCase()] || []).map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
                             l.quantity
-                          )}
+                          ).filter(e => e.primary)}
                         />
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
@@ -338,7 +338,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Numbers are current stock per warehouse; hover a chip for the city.
+                  📦 = expected ship-from warehouse (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Hover the chip for the city and current stock.
                 </div>
               )}
             </div>
