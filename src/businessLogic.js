@@ -131,9 +131,11 @@ function calcSOStatus(ord) {
     // held the whole SO in need_order forever ("Items need ordering — Create PO" on every
     // order with a digitizing PO). Count them covered+fulfilled: the file service has its own
     // tracking on the deco PO and must not gate the garment fulfillment ladder.
-    // Mirrors constants.js isTopstarLine — match the persisted sku marker, not just the
-    // in-memory _topstar flag (which is never saved to so_items, so it's gone after a reload).
-    if (it._topstar || it.sku === 'DIGITIZING') {
+    // Mirrors constants.js isServiceLine — match the persisted sku markers ('DIGITIZING',
+    // 'Artwork'), not just the in-memory _topstar flag (never saved to so_items, so it's gone
+    // after a reload). Artwork charge lines are in-house art time with no vendor PO — they
+    // must not hold the SO in need_order (SO-1566).
+    if (it._topstar || it.sku === 'DIGITIZING' || /^artwork$/i.test(safeStr(it.sku).trim())) {
       let units = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
       if (units === 0) units = safeNum(it.est_qty);
       totalSz += units; coveredSz += units; fulfilledSz += units;

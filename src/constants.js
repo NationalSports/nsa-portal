@@ -18,6 +18,13 @@ export const _itemCols=['product_id','sku','name','brand','color','vendor_id','n
 // line by its stable persisted marker (sku 'DIGITIZING') as well, or a saved SO forgets it and
 // falls back to need_order forever (see #1846, which only caught the in-memory _topstar case).
 export const isTopstarLine=(it)=>!!(it&&(it._topstar||it.sku==='DIGITIZING'));
+// 'Artwork' service line (catalog product, sku 'Artwork') — bills the customer for art time.
+// There is no vendor and nothing physical to purchase, so like a Topstar line it must never
+// gate the SO ordering ladder (a lone unordered Artwork line held whole orders in "Need to
+// Order" forever, SO-1566) and must never be offered its own vendor PO.
+export const isArtworkLine=(it)=>!!(it&&/^artwork$/i.test((it.sku||'').trim()));
+// Billed-back service lines with no item-level vendor PO: covered by definition in status math.
+export const isServiceLine=(it)=>isTopstarLine(it)||isArtworkLine(it);
 export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
