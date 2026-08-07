@@ -8,7 +8,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
-import { MsgAttachments, MsgAttachBar, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
+import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
@@ -6294,7 +6294,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           {replies.length>0&&<div style={{borderLeft:'2px solid #e2e8f0',marginLeft:12,marginTop:4,paddingLeft:0}}>{replies.map(r=>renderOneBubble(r,true))}</div>}
         </div>};
-      return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s){!isSO&&<span style={{marginLeft:8,fontSize:10,padding:'2px 8px',borderRadius:10,background:'#f0fdf4',color:'#166534',fontWeight:600}}>Estimate</span>}</span></div>
+      return<MsgDropZone className="card" setItems={setMsgAtt} setBusy={setMsgAttBusy} nf={nf} label="Drop to attach to this message"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s){!isSO&&<span style={{marginLeft:8,fontSize:10,padding:'2px 8px',borderRadius:10,background:'#f0fdf4',color:'#166534',fontWeight:600}}>Estimate</span>}</span></div>
         <div className="card-body">
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:500,overflow:'auto'}}>
             {topMsgs.length===0?<div className="empty">No messages yet. Start the conversation. Type @ to tag a team member.</div>:
@@ -6319,12 +6319,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             <MsgAttachBar items={msgAtt} setItems={setMsgAtt} busy={msgAttBusy} setBusy={setMsgAttBusy} nf={nf}/>
             <div style={{display:'flex',gap:8}}>
-              <input ref={msgInputRef} className="form-input" placeholder={replyTo?'Type a reply... (@ to tag someone, paste to attach)':'Type a message... (@ to tag someone, paste to attach)'} style={{flex:1}}
+              <input ref={msgInputRef} className="form-input" placeholder={replyTo?'Type a reply... (@ to tag someone, drag or paste to attach)':'Type a message... (@ to tag someone, drag or paste to attach)'} style={{flex:1}}
                 onChange={handleMsgInput} onKeyDown={handleMsgKeyDown} onPaste={handleMsgPaste}/>
               <button className="btn btn-primary" disabled={msgAttBusy} onClick={sendMsg}>{replyTo?'Reply':'Send'}</button>
             </div>
           </div>
-        </div></div>})()}
+        </div></MsgDropZone>})()}
 
         {/* Synced B2B last sync summary (Adidas + Under Armour) */}
     {isSO&&tab==='transactions'&&(()=>{

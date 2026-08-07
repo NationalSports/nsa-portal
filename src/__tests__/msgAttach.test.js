@@ -9,8 +9,10 @@ jest.mock('../utils', () => ({
   _cloudinaryPdfThumb: () => null,
 }));
 
+const React = require('react');
+const { render, screen, fireEvent, waitFor } = require('@testing-library/react');
 const { fileUpload } = require('../utils');
-const { uploadMsgFiles, msgAttachments, MSG_ATTACH_MAX_MB } = require('../lib/msgAttach');
+const { uploadMsgFiles, msgAttachments, MsgDropZone, msgDragHasFiles, MSG_ATTACH_MAX_MB } = require('../lib/msgAttach');
 
 const file = (name, type, size = 1024) => ({ name, type, size });
 
@@ -66,5 +68,65 @@ describe('msgAttachments', () => {
 
   test('entries without a url are dropped so nothing renders a broken tile', () => {
     expect(msgAttachments({ attachments: [{ url: 'u1' }, { name: 'no url' }, null] })).toEqual([{ url: 'u1' }]);
+  });
+});
+
+describe('msgDragHasFiles', () => {
+  test('true for a file drag, false for dragged text or a malformed event', () => {
+    expect(msgDragHasFiles({ dataTransfer: { types: ['Files'] } })).toBe(true);
+    expect(msgDragHasFiles({ dataTransfer: { types: ['text/plain'] } })).toBe(false);
+    expect(msgDragHasFiles({})).toBe(false);
+  });
+});
+
+describe('MsgDropZone', () => {
+  const dt = (types, files = []) => ({ types, files, dropEffect: '' });
+  const zone = (props = {}) => {
+    const setItems = jest.fn();
+    const setBusy = jest.fn();
+    render(<MsgDropZone setItems={setItems} setBusy={setBusy} nf={props.nf} label="Drop to attach">
+      <div data-testid="child">composer</div>
+    </MsgDropZone>);
+    return { el: screen.getByTestId('child').parentElement, setItems, setBusy };
+  };
+
+  test('dropped images upload and land in the pending list', async () => {
+    const { el, setItems, setBusy } = zone();
+    fireEvent.drop(el, { dataTransfer: dt(['Files'], [file('floor.jpg', 'image/jpeg', 2048)]) });
+    await waitFor(() => expect(setItems).toHaveBeenCalled());
+    // setItems is called with an updater, so run it against a prior list to see the result.
+    expect(setItems.mock.calls[0][0]([{ url: 'existing' }])).toEqual([
+      { url: 'existing' },
+      { url: expect.stringContaining('floor.jpg'), name: 'floor.jpg', type: 'image/jpeg', size: 2048 },
+    ]);
+    await waitFor(() => expect(setBusy).toHaveBeenLastCalledWith(false));
+  });
+
+  test('a refused file is reported and nothing is attached', async () => {
+    const nf = jest.fn();
+    const { el, setItems } = zone({ nf });
+    fireEvent.drop(el, { dataTransfer: dt(['Files'], [file('roster.xlsx', 'application/vnd.ms-excel')]) });
+    await waitFor(() => expect(nf).toHaveBeenCalledWith(expect.stringContaining('roster.xlsx'), 'error'));
+    expect(setItems).not.toHaveBeenCalled();
+  });
+
+  test('dragging text is ignored — no overlay, no upload', () => {
+    const { el, setBusy } = zone();
+    fireEvent.dragEnter(el, { dataTransfer: dt(['text/plain']) });
+    expect(screen.queryByText('Drop to attach')).toBeNull();
+    fireEvent.drop(el, { dataTransfer: dt(['text/plain']) });
+    expect(setBusy).not.toHaveBeenCalled();
+  });
+
+  test('the overlay survives dragging across a child and clears on the real exit', () => {
+    const { el } = zone();
+    fireEvent.dragEnter(el, { dataTransfer: dt(['Files']) });
+    expect(screen.queryByText('Drop to attach')).not.toBeNull();
+    // Entering a child fires enter on the child and leave on the parent, in that order.
+    fireEvent.dragEnter(screen.getByTestId('child'), { dataTransfer: dt(['Files']) });
+    fireEvent.dragLeave(el, { dataTransfer: dt(['Files']) });
+    expect(screen.queryByText('Drop to attach')).not.toBeNull();
+    fireEvent.dragLeave(el, { dataTransfer: dt(['Files']) });
+    expect(screen.queryByText('Drop to attach')).toBeNull();
   });
 });

@@ -56,6 +56,19 @@ export const uploadMsgFiles = async (files) => {
   return { uploaded, skipped };
 };
 
+// The one attach path — picker, paste, and drop all land here. Uploads, appends what
+// succeeded, and names anything skipped so nothing disappears quietly.
+const attachMsgFiles = (files, setItems, setBusy, nf, announce) => {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  setBusy(true);
+  uploadMsgFiles(list).then(({ uploaded, skipped }) => {
+    if (uploaded.length) { setItems(prev => [...prev, ...uploaded]); if (announce && nf) nf(uploaded.length + ' file(s) attached') }
+    if (skipped.length && nf) nf('Skipped: ' + skipped.join(', '), 'error');
+  }).catch(e => { if (nf) nf('Upload failed: ' + (e.message || e), 'error') })
+    .finally(() => setBusy(false));
+};
+
 // Read-only strip under a message bubble. Images show as thumbnails, PDFs as a
 // first-page render (Cloudinary) or a labeled tile; both open in a new tab on click.
 export const MsgAttachments = ({ items, size = 84 }) => {
@@ -85,14 +98,7 @@ export const MsgAttachments = ({ items, size = 84 }) => {
 // `busy`/`setBusy` are owned by the caller so its send handler can read the pending
 // files and disable Send while an upload is in flight.
 export const MsgAttachBar = ({ items = [], setItems, busy, setBusy, nf, compact }) => {
-  const add = (files) => {
-    setBusy(true);
-    uploadMsgFiles(files).then(({ uploaded, skipped }) => {
-      if (uploaded.length) setItems(prev => [...prev, ...uploaded]);
-      if (skipped.length && nf) nf('Skipped: ' + skipped.join(', '), 'error');
-    }).catch(e => { if (nf) nf('Upload failed: ' + (e.message || e), 'error') })
-      .finally(() => setBusy(false));
-  };
+  const add = (files) => attachMsgFiles(files, setItems, setBusy, nf, false);
   const fs = compact ? 10 : 11;
   return <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: items.length || busy ? 6 : 0 }}>
     <button type="button" disabled={busy} onClick={() => pickMsgFiles(add)}
@@ -113,10 +119,36 @@ export const makeMsgPasteHandler = (setItems, setBusy, nf) => (e) => {
   const files = msgPasteFiles(e);
   if (!files.length) return;
   e.preventDefault();
-  setBusy(true);
-  uploadMsgFiles(files).then(({ uploaded, skipped }) => {
-    if (uploaded.length) { setItems(prev => [...prev, ...uploaded]); if (nf) nf(uploaded.length + ' file(s) attached') }
-    if (skipped.length && nf) nf('Skipped: ' + skipped.join(', '), 'error');
-  }).catch(err => { if (nf) nf('Upload failed: ' + (err.message || err), 'error') })
-    .finally(() => setBusy(false));
+  attachMsgFiles(files, setItems, setBusy, nf, true);
+};
+
+// True only for a drag carrying actual files — dragging selected text or an image
+// already on the page shouldn't light up the composer.
+export const msgDragHasFiles = (e) => Array.from(e?.dataTransfer?.types || []).includes('Files');
+
+// Drop target. Wraps a composer surface and takes over its element (className/style
+// pass straight through) so callers don't gain a layout layer; dropping images or
+// PDFs anywhere inside attaches them to the message being written.
+export const MsgDropZone = ({ setItems, setBusy, nf, className, style, children, label = 'Drop to attach' }) => {
+  const [over, setOver] = React.useState(false);
+  // Dragging across a child element fires dragleave on the parent, so count enters
+  // and exits instead of clearing on the first leave — otherwise the overlay flickers.
+  const depth = React.useRef(0);
+  const onDragEnter = (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); depth.current += 1; setOver(true) };
+  const onDragOver = (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' };
+  const onDragLeave = (e) => { if (!msgDragHasFiles(e)) return; depth.current = Math.max(0, depth.current - 1); if (!depth.current) setOver(false) };
+  const onDrop = (e) => {
+    if (!msgDragHasFiles(e)) return;
+    e.preventDefault(); depth.current = 0; setOver(false);
+    attachMsgFiles(Array.from(e.dataTransfer.files || []), setItems, setBusy, nf, true);
+  };
+  return <div className={className} style={{ position: 'relative', ...(style || {}) }}
+    onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    {children}
+    {over && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 60, background: 'rgba(239,246,255,0.94)', border: '2px dashed #3b82f6', borderRadius: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, pointerEvents: 'none' }}>
+      <span style={{ fontSize: 28 }}>{'📎'}</span>
+      <span style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>{label}</span>
+      <span style={{ fontSize: 11, color: '#3b82f6' }}>Images and PDFs, up to {MSG_ATTACH_MAX_MB}MB each</span>
+    </div>}
+  </div>;
 };

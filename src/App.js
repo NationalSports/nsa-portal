@@ -35,7 +35,7 @@ import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
 import { closeOpenArtRequests } from './lib/artRequests';
-import { MsgAttachments, MsgAttachBar, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
+import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 
@@ -30556,7 +30556,7 @@ export default function App(){
             {isUnread&&<div style={{width:10,height:10,borderRadius:5,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:8}}/>}
           </div></div>})}</div></div>
     {/* Thread panel */}
-    {mThread&&openRootMsg&&<div className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}}>
+    {mThread&&openRootMsg&&<MsgDropZone className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}} setItems={setMThreadAtt} setBusy={setMThreadAttBusy} nf={nf} label="Drop to attach to this reply">
       <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
         <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
         <h2 style={{margin:0,fontSize:14,display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(openRootMsg),color:entityColor(openRootMsg)}}>{entityLabel(openRootMsg)}</span><span style={{color:entityColor(openRootMsg)}}>{openRootMsg.entity_id||openRootMsg.so_id}</span></h2>
@@ -30595,12 +30595,12 @@ export default function App(){
           </div>}
           <MsgAttachBar items={mThreadAtt} setItems={setMThreadAtt} busy={mThreadAttBusy} setBusy={setMThreadAttBusy} nf={nf} compact/>
           <div style={{display:'flex',gap:8}}>
-            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone, paste to attach)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown} onPaste={threadHandlePaste}/>
+            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone, drag or paste to attach)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown} onPaste={threadHandlePaste}/>
             <button className="btn btn-primary" disabled={mThreadAttBusy} onClick={threadSendReply}>Reply</button>
           </div>
         </div>
       </div>
-    </div>}
+    </MsgDropZone>}
     </div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
