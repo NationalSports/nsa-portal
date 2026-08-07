@@ -98,10 +98,11 @@ export const MsgAttachments = ({ items, size = 84 }) => {
 // `busy`/`setBusy` are owned by the caller so its send handler can read the pending
 // files and disable Send while an upload is in flight.
 export const MsgAttachBar = ({ items = [], setItems, busy, setBusy, nf, compact }) => {
-  const add = (files) => attachMsgFiles(files, setItems, setBusy, nf, false);
+  const [open, setOpen] = React.useState(false);
   const fs = compact ? 10 : 11;
   return <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: items.length || busy ? 6 : 0 }}>
-    <button type="button" disabled={busy} onClick={() => pickMsgFiles(add)}
+    {open && <MsgAttachModal items={items} setItems={setItems} busy={busy} setBusy={setBusy} nf={nf} onClose={() => setOpen(false)}/>}
+    <button type="button" disabled={busy} onClick={() => setOpen(true)}
       style={{ fontSize: fs, padding: compact ? '3px 8px' : '4px 10px', borderRadius: 10, border: '1px solid #e2e8f0', background: 'white', color: busy ? '#94a3b8' : '#475569', cursor: busy ? 'default' : 'pointer', fontWeight: 600 }}>
       {busy ? 'Uploading…' : '📎 Attach'}
     </button>
@@ -129,26 +130,74 @@ export const msgDragHasFiles = (e) => Array.from(e?.dataTransfer?.types || []).i
 // Drop target. Wraps a composer surface and takes over its element (className/style
 // pass straight through) so callers don't gain a layout layer; dropping images or
 // PDFs anywhere inside attaches them to the message being written.
-export const MsgDropZone = ({ setItems, setBusy, nf, className, style, children, label = 'Drop to attach' }) => {
+// Drag state + handlers, shared by the surface-wide zone and the attach dialog.
+const useMsgDrag = (setItems, setBusy, nf) => {
   const [over, setOver] = React.useState(false);
   // Dragging across a child element fires dragleave on the parent, so count enters
-  // and exits instead of clearing on the first leave — otherwise the overlay flickers.
+  // and exits instead of clearing on the first leave — otherwise the target flickers.
   const depth = React.useRef(0);
-  const onDragEnter = (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); depth.current += 1; setOver(true) };
-  const onDragOver = (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' };
-  const onDragLeave = (e) => { if (!msgDragHasFiles(e)) return; depth.current = Math.max(0, depth.current - 1); if (!depth.current) setOver(false) };
-  const onDrop = (e) => {
-    if (!msgDragHasFiles(e)) return;
-    e.preventDefault(); depth.current = 0; setOver(false);
-    attachMsgFiles(Array.from(e.dataTransfer.files || []), setItems, setBusy, nf, true);
+  const handlers = {
+    onDragEnter: (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); depth.current += 1; setOver(true) },
+    onDragOver: (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' },
+    onDragLeave: (e) => { if (!msgDragHasFiles(e)) return; depth.current = Math.max(0, depth.current - 1); if (!depth.current) setOver(false) },
+    onDrop: (e) => {
+      if (!msgDragHasFiles(e)) return;
+      e.preventDefault(); depth.current = 0; setOver(false);
+      attachMsgFiles(Array.from(e.dataTransfer.files || []), setItems, setBusy, nf, true);
+    },
   };
-  return <div className={className} style={{ position: 'relative', ...(style || {}) }}
-    onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+  return [over, handlers];
+};
+
+export const MsgDropZone = ({ setItems, setBusy, nf, className, style, children, label = 'Drop to attach' }) => {
+  const [over, handlers] = useMsgDrag(setItems, setBusy, nf);
+  return <div className={className} style={{ position: 'relative', ...(style || {}) }} {...handlers}>
     {children}
     {over && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 60, background: 'rgba(239,246,255,0.94)', border: '2px dashed #3b82f6', borderRadius: 8, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, pointerEvents: 'none' }}>
       <span style={{ fontSize: 28 }}>{'📎'}</span>
       <span style={{ fontSize: 13, fontWeight: 700, color: '#1e40af' }}>{label}</span>
       <span style={{ fontSize: 11, color: '#3b82f6' }}>Images and PDFs, up to {MSG_ATTACH_MAX_MB}MB each</span>
     </div>}
+  </div>;
+};
+
+// The attach dialog the 📎 button opens — a dashed drop box like the rest of the
+// app's uploads, with browse as the fallback rather than the only way in. Files
+// attach as they land, so closing it is just closing it; nothing is pending.
+export const MsgAttachModal = ({ items = [], setItems, busy, setBusy, nf, onClose }) => {
+  const [over, handlers] = useMsgDrag(setItems, setBusy, nf);
+  const browse = () => pickMsgFiles((files) => attachMsgFiles(files, setItems, setBusy, nf, false));
+  return <div onClick={onClose}
+    style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 200, background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    <div onClick={e => e.stopPropagation()}
+      style={{ background: 'white', borderRadius: 12, padding: 20, width: '100%', maxWidth: 460, boxShadow: '0 20px 40px rgba(0,0,0,0.25)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+        <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>Attach files</span>
+        <button type="button" onClick={onClose} style={{ marginLeft: 'auto', background: 'none', border: 'none', fontSize: 20, lineHeight: 1, color: '#64748b', cursor: 'pointer', padding: '0 4px' }}>{'×'}</button>
+      </div>
+      <div {...handlers} onClick={browse}
+        style={{ padding: 32, border: '2px dashed ' + (over ? '#3b82f6' : '#d1d5db'), borderRadius: 8, textAlign: 'center', cursor: 'pointer', background: over ? '#eff6ff' : '#f8fafc', transition: 'all 0.2s' }}>
+        <div style={{ fontSize: 30, marginBottom: 6 }}>{'📎'}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: over ? '#1e40af' : '#334155' }}>{over ? 'Drop to attach' : 'Drag files here'}</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>or <span style={{ color: '#2563eb', fontWeight: 600, textDecoration: 'underline' }}>browse</span> your computer</div>
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Images and PDFs, up to {MSG_ATTACH_MAX_MB}MB each</div>
+      </div>
+      {busy && <div style={{ fontSize: 12, color: '#2563eb', fontWeight: 600, marginTop: 10 }}>Uploading…</div>}
+      {items.length > 0 && <div style={{ marginTop: 12 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', marginBottom: 6 }}>Attached ({items.length})</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+          {items.map((f, i) => <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 8, background: '#f8fafc', fontSize: 12 }}>
+            <span>{_isPdfUrl(f.url, f) ? '📄' : '🖼'}</span>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#334155' }}>{f.name || 'file'}</span>
+            <button type="button" onClick={() => setItems(prev => prev.filter((_, j) => j !== i))}
+              style={{ border: 'none', background: 'none', color: '#64748b', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>{'×'}</button>
+          </div>)}
+        </div>
+      </div>}
+      <button type="button" onClick={onClose} disabled={busy}
+        style={{ marginTop: 14, width: '100%', padding: '9px 0', borderRadius: 8, border: 'none', background: busy ? '#e2e8f0' : '#1e40af', color: busy ? '#94a3b8' : 'white', fontWeight: 700, fontSize: 13, cursor: busy ? 'default' : 'pointer' }}>
+        {items.length > 0 ? `Done — ${items.length} attached` : 'Done'}
+      </button>
+    </div>
   </div>;
 };

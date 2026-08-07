@@ -12,7 +12,7 @@ jest.mock('../utils', () => ({
 const React = require('react');
 const { render, screen, fireEvent, waitFor } = require('@testing-library/react');
 const { fileUpload } = require('../utils');
-const { uploadMsgFiles, msgAttachments, MsgDropZone, msgDragHasFiles, MSG_ATTACH_MAX_MB } = require('../lib/msgAttach');
+const { uploadMsgFiles, msgAttachments, MsgDropZone, MsgAttachBar, msgDragHasFiles, MSG_ATTACH_MAX_MB } = require('../lib/msgAttach');
 
 const file = (name, type, size = 1024) => ({ name, type, size });
 
@@ -116,6 +116,27 @@ describe('MsgDropZone', () => {
     expect(screen.queryByText('Drop to attach')).toBeNull();
     fireEvent.drop(el, { dataTransfer: dt(['text/plain']) });
     expect(setBusy).not.toHaveBeenCalled();
+  });
+
+  test('the attach button opens the drop dialog instead of the OS picker', () => {
+    const click = jest.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {});
+    render(<MsgAttachBar items={[]} setItems={jest.fn()} busy={false} setBusy={jest.fn()} nf={jest.fn()}/>);
+    fireEvent.click(screen.getByText('📎 Attach'));
+    expect(screen.queryByText('Drag files here')).not.toBeNull();
+    expect(click).not.toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  test('files dropped on the dialog attach without going through the picker', async () => {
+    const setItems = jest.fn();
+    render(<MsgAttachBar items={[]} setItems={setItems} busy={false} setBusy={jest.fn()} nf={jest.fn()}/>);
+    fireEvent.click(screen.getByText('📎 Attach'));
+    const box = screen.getByText('Drag files here').parentElement;
+    fireEvent.drop(box, { dataTransfer: dt(['Files'], [file('proof.png', 'image/png', 512)]) });
+    await waitFor(() => expect(setItems).toHaveBeenCalled());
+    expect(setItems.mock.calls[0][0]([])).toEqual([
+      { url: expect.stringContaining('proof.png'), name: 'proof.png', type: 'image/png', size: 512 },
+    ]);
   });
 
   test('the overlay survives dragging across a child and clears on the real exit', () => {
