@@ -21,12 +21,12 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -2474,18 +2474,28 @@ export default function App(){
     (async()=>{
       try{
         let _loadTimerId;
-        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
+        // 120s (was 45s): the essential load pulls the full operational dataset in one burst, and a
+        // high-latency / low-bandwidth connection (e.g. a user overseas from the US-West server) can
+        // legitimately need far more than 45s. The self-heal poll below runs with NO cap and succeeds
+        // for those users, which proved the 45s cap was just an artificial early cutoff that flashed the
+        // "didn't finish in time" banner on a load that was still working. 120s matches the poll's tolerance.
+        const _LOAD_CAP_MS=120000;
+        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after '+(_LOAD_CAP_MS/1000)+'s');resolve(null)},_LOAD_CAP_MS)});
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        const d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        let d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // If even 120s wasn't enough, retry ONCE immediately with no cap before falling through to the
+        // error banner — the uncapped poll would recover anyway, but only after its ~2min interval, which
+        // left slow/overseas users staring at an empty "0 jobs" board and a scary banner in the meantime.
+        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:true,fullState:true})}
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
-          // Wording matters: this state is almost always a slow CLIENT (the 45s race above expiring on a
-          // slow network/machine) while the server is fine — the old "Could not load data from Supabase"
-          // text sent people hunting server dashboards. Say what happened, that it self-heals (the poll
-          // clears this banner when a later load succeeds), and what to check.
+          // Wording matters: reaching here means the 120s race lost AND the uncapped retry also came back
+          // empty — almost always a slow/failing CLIENT connection while the server is fine. The old "Could
+          // not load data from Supabase" text sent people hunting server dashboards. Say what happened, that
+          // it self-heals (the poll clears this banner when a later load succeeds), and what to check.
           setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
@@ -7628,7 +7638,10 @@ export default function App(){
           // (see jobReceivedAt) instead of updated_at, which drifts to the last edit and mislabels
           // long-received jobs as "Yesterday". items_received_at is honored if ever persisted.
           const _rcvdAt=j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at;
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
+          // Only nag when the art still needs a human: not yet with the artist, or sitting past
+          // ART_ATTENTION_STALE_DAYS. Art that's with the artist and still fresh is somebody
+          // else's open task — surfacing it here just adds noise (artNeedsAttention).
+          if(needsArt){if(artNeedsAttention(j.art_status,_rcvdAt)){const _artAge=Math.floor((Date.now()-new Date(_rcvdAt).getTime())/86400000);todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' ')+(Number.isFinite(_artAge)&&_artAge>ART_ATTENTION_STALE_DAYS?' · sitting '+_artAge+' days':''),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}}
           else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
@@ -10811,7 +10824,9 @@ export default function App(){
           const needsArt=j.art_status!=='art_complete';
           // Real receive moment from the fulfilling receipts (see jobReceivedAt), not updated_at.
           const _rcvdAt=j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at;
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
+          // Same gate as the desktop dashboard generator (artNeedsAttention): with the artist and
+          // still fresh = not a to-do here.
+          if(needsArt){if(artNeedsAttention(j.art_status,_rcvdAt))todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
           else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
@@ -20332,6 +20347,7 @@ export default function App(){
         // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
         if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
         if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
+        if(jobAllRoutedOutside(so,j))return;// skip — every claimed deco moved to an outside decorator; the job retires on the order's next sync (SO-1009)
         if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
@@ -20343,6 +20359,7 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
+        if(jobAllRoutedOutside(so,j))return;// outside decorator produces it — no prod-files step here (SO-1009)
         if(_jobNeedsProdFiles(j,so)){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
           const af=afs.find(a=>!artProdFilesConfirmed(a))||afs[0];
@@ -34928,7 +34945,7 @@ export default function App(){
           const itRcvd=Object.values(it.received||{}).reduce((a,v)=>a+v,0);
           const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
           const extras=[...new Set([...Object.keys(it.sizes||{}),...Object.keys(it.received||{}).filter(sz=>(it.received[sz]||0)>0)])].filter(sz=>!baseSizes.includes(sz));
-          const allSizes=[...baseSizes,...extras].sort((a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)});
+          const allSizes=[...baseSizes,...extras].sort((a,b)=>szRank(a)-szRank(b));
           const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>

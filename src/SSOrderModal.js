@@ -4,7 +4,8 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload } from './ssOrder';
-import { ssResolveSkus, ssSearchProducts, ssSubmitOrder } from './vendorApis';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
+import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -44,6 +45,10 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
 
   const ship = shipTo || NSA_SHIP_TO;
 
+  // Per-warehouse availability for the resolved SKUs — informational "ships from"
+  // display only; a lookup failure just leaves the column blank, never blocks.
+  const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
+
   // Base lines (no network) — flatten the batch.
   const baseLines = useMemo(() => buildSSOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
   const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
@@ -66,6 +71,18 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode }), [poNumber, lines, ship, testMode]);
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
+
+  // Once SKUs are known, fetch each one's per-warehouse stock (one chunked call).
+  const skuKey = useMemo(() => [...new Set(lines.map(l => String(l.sku || '').toUpperCase()).filter(Boolean))].sort().join(','), [lines]);
+  useEffect(() => {
+    let cancelled = false;
+    if (resolving || !skuKey) return;
+    setWhseBySku(null);
+    ssGetWarehouseStock(skuKey.split(','))
+      .then(m => { if (!cancelled) setWhseBySku(m || {}); })
+      .catch(() => { if (!cancelled) setWhseBySku({}); });
+    return () => { cancelled = true; };
+  }, [skuKey, resolving]);
 
   const blocked = lines.length === 0 || warnings.length > 0 || resolving;
   const done = submitState === 'success';
@@ -281,6 +298,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                     <th style={{ ...th, textAlign: 'right' }}>Qty</th>
                     <th style={{ ...th, textAlign: 'right' }}>Unit $</th>
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                    <th style={th}>Ships From (stock)</th>
                     <th style={th}>Source SO</th>
                   </tr>
                 </thead>
@@ -303,12 +321,26 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{l.quantity}</td>
                       <td style={{ ...td, textAlign: 'right' }}>${(l.unitPrice || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
+                      <td style={td}>
+                        <WarehouseChips
+                          loading={l.sku ? whseBySku === null : false}
+                          entries={rankWarehouses(
+                            (whseBySku?.[String(l.sku || '').toUpperCase()] || []).map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
+                            l.quantity
+                          ).filter(e => e.primary)}
+                        />
+                      </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
+              {lines.length > 0 && (
+                <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
+                  📦 = expected ship-from warehouse (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Hover the chip for the city and current stock.
+                </div>
+              )}
             </div>
           )}
 

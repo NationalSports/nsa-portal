@@ -9,7 +9,8 @@
 // the rep falls back to manual ordering rather than risk shipping the wrong item.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
-import { sanmarSubmitPO, sanmarResolvePartIds } from './vendorApis';
+import { sanmarSubmitPO, sanmarResolvePartIds, sanmarGetWarehouseStock } from './vendorApis';
+import WarehouseChips, { rankWarehouses, SANMAR_WAREHOUSES } from './WarehouseChips';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // SanMar ships integrated orders to NSA's receiving address (Warehouse Consolidation).
@@ -39,6 +40,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [resolvedParts, setResolvedParts] = useState({}); // lineNumber -> uniqueKey
   const [candidates, setCandidates] = useState({});       // STYLE -> [{color,size,uniqueKey}]
   const [resolveErr, setResolveErr] = useState('');
+  // Per-warehouse availability keyed by "style|color|size" -> [{id,qty}] (SanMar's legacy
+  // inventory list, warehouse order 1-7,12) — informational "ships from" display only;
+  // a lookup failure leaves the column blank, never blocks.
+  const [whseByLine, setWhseByLine] = useState(null); // null = loading
 
   // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker)
   const isPrescribed = !!shipToDecoId;
@@ -116,6 +121,28 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const payload = useMemo(() => ({ ...base.payload, PO: { ...base.payload.PO, lineItems: lines } }), [base.payload, lines]);
   const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
   const totals = base.totals;
+
+  // Fetch per-warehouse stock for every unique style+color+size on the order (one
+  // legacy-inventory call each) — matched back to each line by the same key.
+  const _whseKey = (l) => [l.style, l.color, l.size].map(s => String(s || '').toUpperCase().trim()).join('|');
+  const whseDescriptors = useMemo(() => {
+    const seen = new Set(); const out = [];
+    // partId rides along so the lookup can use the part's EXACT catalog color/size
+    // spelling (the legacy service errors on our abbreviated order colors).
+    for (const l of lines) { const k = _whseKey(l); if (!l.style || seen.has(k)) continue; seen.add(k); out.push({ key: k, style: l.style, color: l.color, size: l.size, partId: l.partId || '' }); }
+    return out;
+  }, [lines]);
+  const whseFetchKey = useMemo(() => whseDescriptors.map(d => d.key + ':' + d.partId).sort().join(','), [whseDescriptors]);
+  useEffect(() => {
+    let cancelled = false;
+    // Wait for partId resolution — the catalog-spelling lookup needs each line's partId.
+    if (!whseFetchKey || resolving) return;
+    setWhseByLine(null);
+    sanmarGetWarehouseStock(whseDescriptors)
+      .then(m => { if (!cancelled) setWhseByLine(m || {}); })
+      .catch(() => { if (!cancelled) setWhseByLine({}); });
+    return () => { cancelled = true; };
+  }, [whseFetchKey, resolving]);
 
   // Styles still unresolved → surface what SanMar actually returned for them.
   const unresolvedStyles = useMemo(() => {
@@ -411,6 +438,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                     <th style={{ ...th, textAlign: 'right' }}>Qty</th>
                     <th style={{ ...th, textAlign: 'right' }}>Unit $</th>
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                    <th style={th}>Ships From (stock)</th>
                     <th style={th}>Source SO</th>
                   </tr>
                 </thead>
@@ -425,12 +453,30 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{l.quantity}</td>
                       <td style={{ ...td, textAlign: 'right' }}>${(l.unitPrice || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
+                      <td style={td}>
+                        <WarehouseChips
+                          loading={whseByLine === null}
+                          entries={rankWarehouses(
+                            (whseByLine?.[_whseKey(l)] || []).filter(w => w.qty > 0).map(w => ({
+                              label: w.name || (SANMAR_WAREHOUSES[w.id] || ('WH ' + w.id)).split(',')[0],
+                              city: SANMAR_WAREHOUSES[w.id],
+                              qty: w.qty,
+                            })),
+                            l.quantity
+                          ).filter(e => e.primary)}
+                        />
+                      </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
+              {lines.length > 0 && (
+                <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
+                  📦 = expected ship-from warehouse (SanMar routes each line from the warehouse nearest the ship-to that has stock — split shipments possible). Hover the chip for current stock.
+                </div>
+              )}
             </div>
           )}
 

@@ -1675,7 +1675,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           const toList=stmtEmail.split(',').map(s=>s.trim()).filter(s=>s&&/@/.test(s));
           if(toList.length===0){nf('Enter a valid email address','error');return}
           setStmtSending(true);
-          const portalUrl=customer.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)):'';
+          const portalUrl=customer.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+'&page=billing'):'';
           const rep=REPS.find(r=>r.id===customer.primary_rep_id);
           const repEmail=rep&&cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'';
           const senderEmail=stmtFrom==='rep'&&repEmail?repEmail:'accounting@nationalsportsapparel.com';

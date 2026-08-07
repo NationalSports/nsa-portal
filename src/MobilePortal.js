@@ -2173,7 +2173,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(!sendEstModal)return null;
     const est=sendEstModal;
     const cc=custObj(est.customer_id);
-    const estUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag):'';
+    const estUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag)+'&est='+encodeURIComponent(est.id):'';
     const copyLink=()=>{navigator.clipboard.writeText(estUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendEstModal(null)}).catch(()=>{window.prompt('Copy this link:',estUrl);setSendEstModal(null)})};
     const emailEst=()=>{
       const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];
@@ -2205,7 +2205,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const cc=custObj(inv.customer_id);
     const bal=(+inv.total||0)-(+inv.amount_paid||0);
     // Coaches portal shows the customer's open invoices + Pay Now; fall back to a plain summary if no portal tag.
-    const portalUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag):'';
+    const portalUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
     const copyLink=()=>{if(!portalUrl)return;navigator.clipboard.writeText(portalUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendInvModal(null)}).catch(()=>{window.prompt('Copy this link:',portalUrl);setSendInvModal(null)})};
     const emailInv=()=>{
       const acct=(cc?.contacts||[]).find(c=>c.role==='Coach')||(cc?.contacts||[]).find(c=>c.role==='Billing')||(cc?.contacts||[])[0];

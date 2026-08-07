@@ -275,9 +275,9 @@ export default function InvoicesPage(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
-                const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag):'';
+                const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
                 const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
-                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||'');
+                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
                 // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
                 const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
                 const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
@@ -1009,7 +1009,7 @@ export default function InvoicesPage(){
                   brevoAttachments.push({name:_siPdfName,content:pdfB64});
                 }catch(err){console.warn('Failed to build invoice PDF:',err)}
                 // Build email with portal link
-                const portalUrl=siCust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(siCust.alpha_tag):'';
+                const portalUrl=siCust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(siCust.alpha_tag)+'&inv='+encodeURIComponent(siInv.id):'';
                 const emailHtml=buildBrandedEmailHtml(si.msg.replace(/\n/g,'<br>')
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
                   +(si.review?buildReviewButtonHtml():''),companyInfo);
@@ -1591,7 +1591,7 @@ export default function InvoicesPage(){
               return '<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-weight:600">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+memo+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:11px">'+po+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+date+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+due+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#b91c1c;font-weight:600">'+_$(inv._bal)+'</td></tr>';
             }).join('');
             const stmtTable=pd.options.includeStatement?'<div style="margin:18px 0"><div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:6px">Past-Due Invoices</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9"><th style="padding:8px 10px;text-align:left">Invoice</th><th style="padding:8px 10px;text-align:left">Memo</th><th style="padding:8px 10px;text-align:left">PO #</th><th style="padding:8px 10px;text-align:left">Date</th><th style="padding:8px 10px;text-align:left">Due</th><th style="padding:8px 10px;text-align:right">Balance</th></tr></thead><tbody>'+stmtRows+'<tr><td colspan="5" style="padding:8px 10px;text-align:right;font-weight:700;border-top:2px solid #1e293b">Total Owed</td><td style="padding:8px 10px;text-align:right;font-weight:800;color:#b91c1c;border-top:2px solid #1e293b">'+_$(t.total)+'</td></tr></tbody></table></div>':'';
-            const portalUrl=c.alpha_tag?(portalBase+encodeURIComponent(c.alpha_tag)):'';
+            const portalUrl=c.alpha_tag?(portalBase+encodeURIComponent(c.alpha_tag)+(t.invoices.length===1?'&inv='+encodeURIComponent(t.invoices[0].id):'&page=billing')):'';
             const payButton=(pd.options.includePayLink&&portalUrl)?'<div style="margin:20px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px">View & Pay in Portal</a></div>':'';
             const greeting=(getBillingContacts(c,cust)[0]?.name||(c.contacts||[])[0]?.name||'Coach');
             const personalizedMsg=pd.message.replace(/\{name\}/g,greeting).replace(/\n/g,'<br/>');
