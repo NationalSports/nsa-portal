@@ -458,7 +458,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                           loading={whseByLine === null}
                           entries={rankWarehouses(
                             (whseByLine?.[_whseKey(l)] || []).filter(w => w.qty > 0).map(w => ({
-                              label: (SANMAR_WAREHOUSES[w.id] || ('WH ' + w.id)).split(',')[0],
+                              label: w.name || (SANMAR_WAREHOUSES[w.id] || ('WH ' + w.id)).split(',')[0],
                               city: SANMAR_WAREHOUSES[w.id],
                               qty: w.qty,
                             })),

@@ -16,11 +16,12 @@
 const { verifyUserOrInternal } = require('./_shared');
 
 const WSDL_MAP = {
-  product:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarProductInfoServicePort',
-  inventory:      'https://ws.sanmar.com:8080/SanMarWebService/SanMarWebServicePort',
-  pricing:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarPricingServicePort',
-  promostandards: 'https://ws.sanmar.com:8080/promostandards/InventoryServiceBinding',
-  invoice:        'https://ws.sanmar.com:8080/SanMarWebService/InvoicePort',
+  product:          'https://ws.sanmar.com:8080/SanMarWebService/SanMarProductInfoServicePort',
+  inventory:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarWebServicePort',
+  pricing:          'https://ws.sanmar.com:8080/SanMarWebService/SanMarPricingServicePort',
+  promostandards:   'https://ws.sanmar.com:8080/promostandards/InventoryServiceBinding',
+  promostandardsV2: 'https://ws.sanmar.com:8080/promostandards/InventoryServiceBindingV2',
+  invoice:          'https://ws.sanmar.com:8080/SanMarWebService/InvoicePort',
 };
 
 // PromoStandards Purchase Order (sendPO) bindings. Onboarding/test submissions go
@@ -187,6 +188,31 @@ function buildPromoStandardsSoapEnvelope(action, params) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
                   xmlns:ns="${PROMO_NS}">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ns:${wrapper}>
+      ${paramXml}
+    </ns:${wrapper}>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+}
+
+// PromoStandards Inventory 2.0.0 (InventoryServiceBindingV2). Two namespaces, per the
+// integration guide's sample: the request wrapper (GetInventoryLevelsRequest) lives in
+// .../Inventory/2.0.0/ and every child element in .../Inventory/2.0.0/SharedObjects/.
+// SanMar's V2 is where per-warehouse detail lives (InventoryLocationArray) — V1 returns
+// only per color/size totals.
+const PROMO_V2_NS = 'http://www.promostandards.org/WSDL/Inventory/2.0.0/';
+const PROMO_V2_SHARED = PROMO_V2_NS + 'SharedObjects/';
+function buildPromoV2SoapEnvelope(action, params) {
+  const wrapper = action.charAt(0).toUpperCase() + action.slice(1) + 'Request';
+  const paramXml = Object.entries(params)
+    .map(([k, v]) => `<shar:${k}>${escapeXml(String(v ?? ''))}</shar:${k}>`)
+    .join('\n      ');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:ns="${PROMO_V2_NS}"
+                  xmlns:shar="${PROMO_V2_SHARED}">
   <soapenv:Header/>
   <soapenv:Body>
     <ns:${wrapper}>
@@ -384,6 +410,15 @@ exports.handler = async (event) => {
           productIDtype: productIDtype || productIdType || 'Supplier',
         };
         soapBody = buildPromoStandardsSoapEnvelope(action, promoParams);
+      } else if (service === 'promostandardsV2') {
+        // V2 children ride in the SharedObjects namespace; productId casing per the guide.
+        const { wsVersion, id, password: pwd, productId, productID } = parsed;
+        soapBody = buildPromoV2SoapEnvelope(action, {
+          wsVersion: wsVersion || '2.0.0',
+          id: id || username,
+          password: pwd || password,
+          productId: productID || productId || '',
+        });
       } else if (service === 'inventory') {
         // Inventory service uses flat string args: arg0=custNum, arg1=user, arg2=pass, arg3=style, arg4=color, arg5=size
         soapBody = buildFlatArgSoapEnvelope(action, [
@@ -441,7 +476,7 @@ exports.handler = async (event) => {
     // the id/password combo is wrong. The `id` can be either the web-service
     // username or the numeric customer number depending on the account, so if
     // the first attempt (username) fails auth, retry once with the other value.
-    if (service === 'promostandards' && result.statusCode === 200) {
+    if ((service === 'promostandards' || service === 'promostandardsV2') && result.statusCode === 200) {
       let errMsg = '';
       try { errMsg = (JSON.parse(result.body || '{}').errorMessage) || ''; } catch {}
       if (/auth|credential/i.test(errMsg)) {
@@ -449,13 +484,20 @@ exports.handler = async (event) => {
         const firstId = parsed.id || username;
         const altId = firstId === username ? customerNumber : username;
         console.warn(`[SanMar] PromoStandards auth failed with id="${firstId}", retrying with id="${altId}"`);
-        const altBody = buildPromoStandardsSoapEnvelope(action, {
-          wsVersion: parsed.wsVersion || '1.2.1',
-          id: altId,
-          password: parsed.password || password,
-          productID: parsed.productID || parsed.productId || '',
-          productIDtype: parsed.productIDtype || parsed.productIdType || 'Supplier',
-        });
+        const altBody = service === 'promostandardsV2'
+          ? buildPromoV2SoapEnvelope(action, {
+              wsVersion: parsed.wsVersion || '2.0.0',
+              id: altId,
+              password: parsed.password || password,
+              productId: parsed.productID || parsed.productId || '',
+            })
+          : buildPromoStandardsSoapEnvelope(action, {
+              wsVersion: parsed.wsVersion || '1.2.1',
+              id: altId,
+              password: parsed.password || password,
+              productID: parsed.productID || parsed.productId || '',
+              productIDtype: parsed.productIDtype || parsed.productIdType || 'Supplier',
+            });
         const altResult = await doRequest(altBody);
         let altErr = '';
         try { altErr = (JSON.parse(altResult.body || '{}').errorMessage) || ''; } catch {}

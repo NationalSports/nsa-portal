@@ -1221,73 +1221,39 @@ const ssGetWarehouseStock = async (skus) => {
   return map;
 };
 
-// SanMar: getInventoryLevels carries NO per-warehouse detail (only per color/size
-// totals), so per-warehouse comes from the legacy getInventoryQtyForStyleColorSize
-// service. Per SanMar's integration guide, its response is an ORDERED list of
-// quantities whose positions designate the warehouses 1,2,3,4,5,6,7,12 (Seattle,
-// Cincinnati, Dallas, Reno, Robbinsville, Jacksonville, Minneapolis, Phoenix) —
-// the list itself names no warehouse. One call per unique style+color+size.
-// descriptors: [{ key, style, color, size }] → { key: [{ id, qty }] }. Best-effort:
-// an unparseable or failed lookup just omits the key (the modal shows "—").
-const SANMAR_WHSE_ORDER = ['1', '2', '3', '4', '5', '6', '7', '12'];
+// SanMar: per-warehouse detail lives ONLY in PromoStandards Inventory 2.0.0
+// (InventoryServiceBindingV2) — its PartInventory rows carry an
+// InventoryLocationArray with warehouse id/name/quantity, keyed by the same
+// partId (Unique_Key) sendPO uses. V1 getInventoryLevels has no location detail
+// and the legacy getInventoryQtyForStyleColorSize errors on our order-line color
+// spellings (verified live 2026-08-06). One V2 call per style, parts matched to
+// modal lines by partId. descriptors: [{ key, style, partId }] → { key: [{ id,
+// name, qty }] }. Best-effort: a failed style just omits its keys ("—" cells).
 const sanmarGetWarehouseStock = async (descriptors) => {
   const out = {};
   const arr = (x) => (Array.isArray(x) ? x : (x !== undefined && x !== null) ? [x] : []);
-  const list = (Array.isArray(descriptors) ? descriptors : []).filter(d => d && d.key && d.style);
-  // The legacy inventory service errors ("Internal error occured") unless color and
-  // size match SanMar's exact catalog spelling, and order lines often carry
-  // abbreviations ("Dark Smoke Gry"). Each line's resolved partId (Unique_Key) pins
-  // the exact catalogColor + size — pull them from the product API, one call per style.
-  const specByPart = {};
+  const list = (Array.isArray(descriptors) ? descriptors : []).filter(d => d && d.key && d.style && d.partId);
+  const byPart = {};
   for (const style of [...new Set(list.map(d => String(d.style).toUpperCase().trim()))]) {
     try {
-      const pd = await sanmarGetProduct(style);
-      for (const r of arr(pd?.items)) {
-        const bi = r.productBasicInfo || r;
-        const uk = _smKey(r, bi);
-        if (uk && !specByPart[uk]) specByPart[uk] = { color: _smColor(bi), size: _smSize(bi) };
+      const inv = await sanmarApiCall('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+      // Diagnostic — keep until the display is verified against live data.
+      console.log('[SanMar] RAW V2 inventory', style, '=>', JSON.stringify(inv).slice(0, 1500));
+      const parts = arr(inv?.Inventory?.PartInventoryArray?.PartInventory || inv?.PartInventoryArray?.PartInventory);
+      for (const p of parts) {
+        const pid = String(p?.partId || '').trim();
+        if (!pid) continue;
+        const locs = arr(p?.InventoryLocationArray?.InventoryLocation || p?.inventoryLocationArray?.inventoryLocation);
+        const rows = locs.map(loc => ({
+          id: String(loc?.inventoryLocationId || '').trim(),
+          name: String(loc?.inventoryLocationName || '').trim(),
+          qty: parseInt(loc?.inventoryLocationQuantity?.Quantity?.value ?? loc?.inventoryLocationQuantity?.quantity?.value ?? NaN, 10),
+        })).filter(r => r.id && !Number.isNaN(r.qty));
+        if (rows.length) byPart[pid] = rows;
       }
-    } catch (e) { console.warn('[SanMar] catalog spelling lookup failed for', style, e.message); }
+    } catch (e) { console.warn('[SanMar] V2 warehouse lookup failed for', style, e.message); }
   }
-  for (const d of list) {
-    if (out[d.key]) continue;
-    try {
-      const spec = specByPart[String(d.partId || '')] || {};
-      const inv = await sanmarGetInventory(d.style, spec.color || d.color || '', spec.size || d.size || '');
-      // Diagnostic (mirrors OrderEditor's RAW per-size dump): past attempts guessed the
-      // legacy shape wrong — keep the full response visible until this display has been
-      // verified against live data.
-      console.log('[SanMar] RAW warehouse response', d.style, d.color, d.size, '=>', JSON.stringify(inv));
-      // Row normalization mirrors OrderEditor's proven legacy parse: rows arrive under
-      // items/listResponse/return, or the response IS a single root-level row.
-      let rows = arr(inv?.items);
-      if (!rows.length) rows = arr(inv?.listResponse);
-      if (!rows.length) rows = arr(inv?.return);
-      if (!rows.length && inv && (inv.size || inv.totalQty || inv.qty || inv.warehouseInfo)) rows = [inv];
-      rows = rows.filter(r => !(r && (r.errorOccurred === 'true' || r.errorOccured === 'true')));
-      if (!rows.length) continue;
-      // Shape 1 (integration-guide doc): plain values whose POSITION designates the
-      // warehouse (1-7,12). Zip only when every entry is a bare number — a partial
-      // parse must not mislabel warehouses.
-      if (rows.every(r => r === null || typeof r !== 'object')) {
-        const nums = rows.map(r => parseInt(r, 10));
-        if (nums.length && nums.every(n => !Number.isNaN(n))) {
-          out[d.key] = nums.slice(0, SANMAR_WHSE_ORDER.length).map((qty, i) => ({ id: SANMAR_WHSE_ORDER[i], qty }));
-        }
-        continue;
-      }
-      // Shape 2 (live legacy rows): warehouseInfo.inventoryDetail entries with a
-      // quantity each — use an explicit warehouse id when present, else position.
-      const det = rows.flatMap(r => { const w = r && r.warehouseInfo; if (!w) return []; return arr(w.inventoryDetail || w); });
-      const src = det.length ? det : rows; // some responses put per-warehouse rows at the top level
-      const rows2 = src.map((x, i) => ({
-        id: String(x?.whseID ?? x?.whseNo ?? x?.whse ?? SANMAR_WHSE_ORDER[i] ?? ''),
-        qty: parseInt(x?.quantity ?? x?.qty ?? NaN, 10),
-      })).filter(r => r.id && !Number.isNaN(r.qty));
-      if (rows2.length > 1 || (rows2.length === 1 && det.length)) out[d.key] = rows2;
-    } catch (e) { console.warn('[SanMar] warehouse stock lookup failed for', d.style, d.color, d.size, e.message); }
-    await new Promise(r => setTimeout(r, 150));
-  }
+  for (const d of list) { const rows = byPart[String(d.partId)]; if (rows) out[d.key] = rows; }
   return out;
 };
 
