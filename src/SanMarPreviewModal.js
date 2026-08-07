@@ -14,6 +14,7 @@ import WarehouseChips, {
   rankWarehouses, pickConsolidatedWarehouse, warehouseKey, warehouseCity,
   shipToCoords, warehouseCoords, milesBetween, SANMAR_WAREHOUSE_INFO,
 } from './WarehouseChips';
+import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // SanMar Option 3, "Warehouse Selection": the rep names the warehouse and it rides
@@ -76,8 +77,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
   const isLive = env === 'prod';
 
-  // Compute the effective ship-to address inside the memo so it stays a stable dep.
-  const base = useMemo(() => {
+  // Hand-edited ship-to (null = use the auto-selected warehouse/decorator address).
+  const [shipOverride, setShipOverride] = useState(null);
+  // Re-selecting a destination replaces the address wholesale, so a stale override
+  // must not silently survive it.
+  useEffect(() => { setShipOverride(null); }, [shipMode, selectedDecoId]);
+
+  // The address the modal picks on its own — warehouse or decorator.
+  const autoShip = useMemo(() => {
     let effectiveShip;
     if (shipMode === 'deco' && selectedDeco) {
       const a1 = selectedDeco.address_line1 || inlineAddr.address_line1 || '';
@@ -98,9 +105,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     } else {
       effectiveShip = shipTo || NSA_SHIP_TO;
     }
+    return effectiveShip;
+  }, [shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
+
+  const base = useMemo(() => {
+    const effectiveShip = shipOverride || autoShip;
     const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: effectiveShip });
     return { payload: p, baseLines: p.PO.lineItems, totals: p._summary, effectiveShip };
-  }, [batchPOs, poNumber, shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
+  }, [batchPOs, poNumber, autoShip, shipOverride]);
 
   const ship = base.effectiveShip;
 
@@ -232,12 +244,15 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setTimeout(() => setCopied(false), 1500);
   };
 
-  // Block submit if decorator mode but address is incomplete
-  const decoAddrIncomplete = shipMode === 'deco' && selectedDeco && !hasDecoAddr
+  // Block submit if decorator mode but address is incomplete. A hand-edited
+  // ship-to supersedes both checks — the rep has supplied the address themselves.
+  const decoAddrIncomplete = !shipOverride && shipMode === 'deco' && selectedDeco && !hasDecoAddr
     && (!inlineAddr.address_line1.trim() || !inlineAddr.city.trim() || !inlineAddr.state.trim() || !inlineAddr.zip.trim());
-  const decoNoVendor = shipMode === 'deco' && !selectedDeco;
+  const decoNoVendor = !shipOverride && shipMode === 'deco' && !selectedDeco;
+  // Whatever the source, the address that actually goes to SanMar has to be complete.
+  const shipIncomplete = shipToIncomplete(ship);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -491,10 +506,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
-          <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-            <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
-            {ship.attentionTo && ship.attentionTo !== 'Receiving' && <span style={{ marginLeft: 6, color: '#7c3aed', fontWeight: 700 }}>· Attn: {ship.attentionTo}</span>}
-          </div>
+          <ShipToEditor
+            auto={autoShip}
+            override={shipOverride}
+            onChange={setShipOverride}
+            disabled={done || submitting}
+            shipVia="UPS Ground"
+            autoLabel={shipMode === 'deco' ? 'decorator' : 'warehouse'}
+          />
 
           {/* Ships FROM — which SanMar warehouse fills the order */}
           {!done && (
@@ -629,6 +648,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   resolving ? 'Looking up Part IDs…'
                   : decoAddrIncomplete ? 'Enter the decorator\'s full address first'
                   : decoNoVendor ? 'Select a decorator first'
+                  : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required'
                   : blocked ? 'Every line needs a matched SanMar Part ID first'
                   : !confirmed ? 'Check the confirmation box first'
                   : ''

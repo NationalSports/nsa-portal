@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
+import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -43,7 +44,11 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchErr, setSearchErr] = useState('');
 
-  const ship = shipTo || NSA_SHIP_TO;
+  // Auto-selected destination (NSA dock, or the deco/customer address the caller
+  // passed), plus the rep's optional hand-edited override.
+  const autoShip = shipTo || NSA_SHIP_TO;
+  const [shipOverride, setShipOverride] = useState(null);
+  const ship = shipOverride || autoShip;
 
   // Per-warehouse availability for the resolved SKUs — informational "ships from"
   // display only; a lookup failure just leaves the column blank, never blocks.
@@ -84,7 +89,8 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     return () => { cancelled = true; };
   }, [skuKey, resolving]);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving;
+  const shipIncomplete = shipToIncomplete(ship);
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const live = !testMode;
@@ -276,9 +282,14 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
-          <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-            <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
-          </div>
+          <ShipToEditor
+            auto={autoShip}
+            override={shipOverride}
+            onChange={setShipOverride}
+            disabled={done || submitting}
+            shipVia="UPS Ground"
+            autoLabel={shipTo ? 'selected' : 'warehouse'}
+          />
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
@@ -368,7 +379,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={resolving ? 'Looking up SKUs…' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: live ? '#b91c1c' : '#1e40af', borderColor: live ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
                 {submitting ? 'Submitting…' : resolving ? 'Looking up SKUs…' : live ? '🚀 Place Order with S&S' : '🧪 Submit Test Order'}
