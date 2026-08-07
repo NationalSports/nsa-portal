@@ -22,7 +22,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -17011,69 +17011,84 @@ export default function App(){
     const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
-    // Remaining (unshipped) items across a soMap — shared by Create Shipment and Clear/Mark-Shipped
-    // Build a map of soId -> Set of item indices that are actually ready to ship for this
-    // customer group (only the completed jobs / pulled no-deco lines, not the whole SO).
-    // A null entry — or a task whose item indices can't be resolved — means "all items"
-    // (a safe fallback that preserves the prior whole-SO behavior for legacy/malformed data).
-    const whReadyIdxBySo=(grp)=>{
-      const m={};
-      (grp?.items||[]).forEach(t=>{
-        if(m[t.soId]===null)return;// already flagged as "all"
-        const idxs=(t.itemIdxs||[]).filter(ix=>ix!=null);
-        if(!idxs.length){m[t.soId]=null;return}// unknown scope → show all
-        if(!m[t.soId])m[t.soId]=new Set();
-        idxs.forEach(ix=>m[t.soId].add(ix));
+    // ── READY TO SHIP IS PER JOB, NOT PER SALES ORDER ──────────────────────────────────────
+    // What the warehouse packs is a finished decoration job (or a fully-pulled no-deco line),
+    // not an order: one SO can carry several jobs finishing weeks apart, and a job can own just
+    // a size-slice of a shared line. So a card's rows come off the job's OWN items and sizes,
+    // minus what already shipped for that job (jobShippedSizes — the same apportioning the ship
+    // gating uses), rather than off the SO's line items filtered by a set of item indices.
+    // `claimed` is the group's running tally of shipped units already subtracted, so two lines
+    // sharing a sku|color can't each subtract the same box.
+    const whShipRows=(t,claimed)=>{
+      const so=t?.so;if(!so)return[];
+      const items=safeItems(so);
+      const shippedSizes=shippedSizesByLine(so._shipments);
+      const rows=[];
+      if(t.type==='deco_done'&&t.job){
+        const shippedByGi=jobShippedSizes(t.job,safeJobs(so),shippedSizes);
+        (t.job.items||[]).forEach((gi,gidx)=>{
+          if(!gi)return;
+          const it=items[gi.item_idx]||{};
+          // A split slice carries its own per-size allocation; a whole-line job item takes the line.
+          const base=(gi.sizes&&Object.keys(gi.sizes).length)?gi.sizes:safeSizes(it);
+          const shipped=shippedByGi[gidx]||{};
+          const sizes={};Object.entries(base).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)sizes[sz]=rem});
+          const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+          // unitKey identifies the physical garments this row covers: slices of one split family
+          // partition a line (they add up), while separate jobs on the same line are decoration
+          // layers over the SAME garments (they must not).
+          if(qty>0)rows.push({sku:it.sku||gi.sku||'',name:it.name||gi.name||'',color:it.color||gi.color||'',
+            sizes,qty,soId:t.soId,itemIdx:gi.item_idx,unitKey:gi.split_group||('job:'+t.job.id)});
+        });
+        return rows;
+      }
+      // No-deco line / wait-complete order — no job owns these garments, so the SO lines are the batch.
+      [...new Set((t.itemIdxs||[]).filter(ix=>ix!=null))].forEach(ix=>{
+        const it=items[ix];if(!it)return;
+        const shipped=shippedSizes[(it.sku||'')+'|'+(it.color||'')]||{};
+        const ck=t.soId+'|'+(it.sku||'')+'|'+(it.color||'');
+        const claim=claimed?(claimed[ck]||(claimed[ck]={})):{};
+        const sizes={};
+        Object.entries(safeSizes(it)).forEach(([sz,v])=>{
+          const ordered=safeNum(v);if(ordered<=0)return;
+          const use=Math.min(ordered,Math.max(0,safeNum(shipped[sz])-safeNum(claim[sz])));
+          claim[sz]=safeNum(claim[sz])+use;
+          const rem=ordered-use;if(rem>0)sizes[sz]=rem;
+        });
+        const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+        if(qty>0)rows.push({sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty,soId:t.soId,itemIdx:ix,unitKey:'line:'+ix});
       });
-      return m;
+      return rows;
     };
-    // Units still committed to not-yet-ready jobs (hold/ready/staging/in_process) on an SO, keyed
-    // by SKU|color → size → qty. A completed job can share a line item with a backorder or split
-    // slice that isn't decorated/received yet; those units must be held back from the completed
-    // batch's shippable quantity so Ready to Ship never offers goods that aren't actually done.
-    const whHeldBySku=(so)=>{
-      const held={};
-      safeJobs(so).forEach(j=>{
-        const st=j.prod_status;
-        if(st==='completed'||st==='shipped'||st==='draft')return;// only jobs still in production hold units
-        (j.items||[]).forEach(gi=>{
-          const key=(gi.sku||'')+'|'+(gi.color||'');const sizes=gi.sizes||gi.fulSizes||{};
-          if(!held[key])held[key]={};
-          Object.entries(sizes).forEach(([sz,v])=>{held[key][sz]=(held[key][sz]||0)+safeNum(v)});
-        });
-      });
-      return held;
+    // One section per ready-to-ship job/line in a customer card — shared by the card body, the
+    // packing slip and the shipment/clear modals so all three agree unit for unit.
+    const whGroupRows=(grp)=>{
+      const claimed={};
+      return(grp?.items||[]).map(t=>{const rows=whShipRows(t,claimed);return{task:t,rows,units:rows.reduce((a,r)=>a+r.qty,0)}});
     };
-    const whRemainingItems=(soMap,readyIdxBySo)=>{
-      const allItems=[];const seen=new Set();
-      Object.entries(soMap).forEach(([soId,so])=>{
-        const readyIdx=readyIdxBySo?.[soId];
-        const heldBySku=whHeldBySku(so);
-        // Calculate already-shipped quantities per SKU+color for this SO
-        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-          const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
-          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
-        })});
-        // Merge duplicate items by SKU+color before building available items
-        const mergedByKey={};const mergedOrder=[];
-        safeItems(so).forEach((item,iIdx)=>{
-          if(readyIdx&&!readyIdx.has(iIdx))return;// only items belonging to a ready-to-ship job
-          const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
-          if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
-          else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
-        });
-        mergedOrder.forEach(m=>{
-          const key=soId+'|'+m.sku+'|'+(m.color||'');
-          if(seen.has(key))return;
-          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};const held=heldBySku[itemKey]||{};
-          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz])-safeNum(held[sz]);if(rem>0)remainSz[sz]=rem});
-          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-          if(qty<=0)return;
-          seen.add(key);
-          allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
-        });
+    // Physical garments still to pack across a whole card — what Create Shipment and Mark Shipped
+    // operate on. Per SO line, units are summed within a split family (disjoint batches of one
+    // line) and maxed across families/layers (a second position or a names pass decorates the
+    // same garments, so it must not add a second copy of them to the box).
+    const whRemainingItems=(grp)=>{
+      const perItem={};const order=[];
+      whGroupRows(grp).forEach(sec=>sec.rows.forEach(r=>{
+        const ik=r.soId+'|'+r.itemIdx;
+        if(!perItem[ik]){perItem[ik]={soId:r.soId,itemIdx:r.itemIdx,sku:r.sku,name:r.name,color:r.color,buckets:{}};order.push(perItem[ik])}
+        const b=perItem[ik].buckets[r.unitKey]||(perItem[ik].buckets[r.unitKey]={});
+        Object.entries(r.sizes).forEach(([sz,v])=>{b[sz]=(b[sz]||0)+v});
+      }));
+      const out=[];const byKey={};
+      order.forEach(pi=>{
+        const sizes={};Object.values(pi.buckets).forEach(b=>Object.entries(b).forEach(([sz,v])=>{sizes[sz]=Math.max(sizes[sz]||0,v)}));
+        if(!Object.keys(sizes).length)return;
+        // Duplicate lines with the same sku+color merge into one shipment row (boxes key off soId+itemIdx).
+        const k=pi.soId+'|'+pi.sku+'|'+(pi.color||'');
+        if(byKey[k]){Object.entries(sizes).forEach(([sz,v])=>{byKey[k].sizes[sz]=(byKey[k].sizes[sz]||0)+v});return}
+        const item={sku:pi.sku,name:pi.name,color:pi.color||'',sizes,soId:pi.soId,itemIdx:pi.itemIdx};
+        byKey[k]=item;out.push(item);
       });
-      return allItems;
+      return out;
     };
     const tabs=[
       {id:'pull',label:'Item Fulfillment',icon:'📋',count:fPull.length,color:'#d97706'},
@@ -18074,9 +18089,9 @@ export default function App(){
             {Object.values(byCustomer).map((grp,gi)=>{
               // Check what's already been shipped for these SOs
               const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
-              // Only the items that belong to the ready-to-ship jobs/lines for this group —
-              // an SO can have other jobs still in production that must NOT appear here.
-              const readyIdxBySo=whReadyIdxBySo(grp);
+              // One section per finished job / no-deco line — an SO can have other jobs still in
+              // production, and each job packs on its own, so the card never lists SO lines.
+              const grpRows=whGroupRows(grp);
               const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
               const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
@@ -18093,56 +18108,45 @@ export default function App(){
                   {existingShipments.length>0&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{existingShipments.length} pkg shipped</span>}
                   {(()=>{const r=_fmtReadyDate(grp.readyAt);return r?<span title={'Oldest item ready to ship since '+new Date(grp.readyAt).toLocaleString()} style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#f1f5f9',color:'#475569'}}>📅 Ready {r.label} · {r.ago}</span>:null})()}
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
-                  <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} job{grp.items.length!==1?'s':''}</span>
                 </div>
                 {expanded&&<>
-                {/* Detailed item list per SO */}
-                {[...grp.soIds].map(soId=>{const so=grp.soMap[soId];if(!so)return null;
-                  return<div key={soId} style={{marginBottom:6}}>
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
-                      <span style={{fontSize:10,fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}}
-                        onClick={()=>{setESOTab(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>{soId}</span>
-                      {grp.items.find(t=>t.soId===soId)?.urgent&&<span style={{fontSize:10}}>🔥</span>}
+                {/* One block per finished job (or no-deco line) — the batch the warehouse actually packs */}
+                {grpRows.map((sec,si)=>{
+                  const t=sec.task;const j=t.type==='deco_done'?t.job:null;
+                  if(!sec.rows.length)return null;
+                  const ready=_fmtReadyDate(t.readyAt);
+                  return<div key={si} style={{marginBottom:8,padding:'6px 8px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3,flexWrap:'wrap'}}>
+                      <span title={j?'Open this job on the order':'Open the order'} style={{fontSize:10,fontWeight:800,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}}
+                        onClick={()=>{const so=t.so;setESOTab(j?'jobs':null);if(j){setESOScrollJob(null);setESOScrollJobRef({artId:j.art_file_id,key:j.key,id:j.id})}setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>
+                        {j?j.id:t.soId}</span>
+                      <span style={{fontSize:10,fontWeight:700,color:'#334155'}}>{j?j.art_name:t.type==='wait_complete'?'Full order':(t.desc||'No deco')}</span>
+                      {j?.deco_type&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,fontWeight:600,background:'#ede9fe',color:'#5b21b6'}}>{j.deco_type.replace(/_/g,' ')}</span>}
+                      {!j&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,fontWeight:600,background:'#f1f5f9',color:'#475569'}}>no deco</span>}
+                      {j&&<span style={{fontSize:9,color:'#94a3b8'}}>{t.soId}</span>}
+                      {t.urgent&&<span style={{fontSize:10}}>🔥</span>}
+                      {ready&&<span style={{fontSize:9,color:'#64748b'}}>📅 {ready.label} · {ready.ago}</span>}
+                      <span style={{marginLeft:'auto',fontSize:10,fontWeight:800,color:'#166534'}}>{sec.units} units</span>
                     </div>
-                    {(()=>{
-                      // Calculate already-shipped quantities per SKU+color for this SO
-                      const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-                        const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
-                        Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
-                      })});
-                      // Held-back units (backorder / split slices still in production) — subtracted below so partly-ready items show only their ready quantity.
-                      const heldBySku=whHeldBySku(so);
-                      // Merge duplicate items by SKU+color before rendering (ready-to-ship items only)
-                      const readyIdx=readyIdxBySo[soId];
-                      const mergedItems=[];const seenItems={};
-                      safeItems(so).forEach((item,iIdx)=>{
-                        if(readyIdx&&!readyIdx.has(iIdx))return;// skip items still in production on this SO
-                        const key=item.sku+'|'+(item.color||'');
-                        if(seenItems[key]){const m=seenItems[key];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
-                        else{const m={sku:item.sku,name:item.name,color:item.color,sizes:{}};Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=safeNum(v)});seenItems[key]=m;mergedItems.push(m)}
-                      });
-                      return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
-                      {mergedItems.map((item,ii)=>{
-                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};const held=heldBySku[key]||{};
-                        const remainSz={};Object.entries(item.sizes).forEach(([sz,v])=>{const rem=v-safeNum(shipped[sz])-safeNum(held[sz]);if(rem>0)remainSz[sz]=rem});
-                        const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-                        if(totalQty<=0)return null;
-                        const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
-                        return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
-                          <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{item.sku}</td>
-                          <td style={{fontSize:10,color:'#475569'}}>{item.name}{item.color?' · '+item.color:''}</td>
+                    <table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
+                      {sec.rows.map((r,ri)=>{
+                        const szStr=Object.entries(r.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
+                        return<tr key={ri} style={{borderBottom:'1px solid #f1f5f9'}}>
+                          <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{r.sku}</td>
+                          <td style={{fontSize:10,color:'#475569'}}>{r.name}{r.color?' · '+r.color:''}</td>
                           <td style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{szStr}</td>
-                          <td style={{textAlign:'center',fontWeight:700,width:40}}>{totalQty}</td>
+                          <td style={{textAlign:'center',fontWeight:700,width:40}}>{r.qty}</td>
                         </tr>})}
-                    </tbody></table>})()}
+                    </tbody></table>
                   </div>})}
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{const firstSO=Object.values(grp.soMap)[0];_whOpenAssign({title:'Ship — '+grp.cName,description:[...grp.soIds].join(', ')+' · '+grp.totalUnits+' units',so:firstSO,soId:firstSO?.id,docLabel:[...grp.soIds].join(', ')})}}>👤 Assign</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with remaining (unshipped) items from the ready-to-ship jobs/lines
-                      const allItems=whRemainingItems(grp.soMap,readyIdxBySo);
+                      // Build ship modal with remaining (unshipped) garments from the ready-to-ship jobs/lines
+                      const allItems=whRemainingItems(grp);
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button title="Clear from Ready to Ship without creating a label — marks remaining units as shipped (rep pickup, ShipStation, etc.)"
@@ -18165,18 +18169,14 @@ export default function App(){
                         }
                         return 'Default address on file';
                       })();
-                      // Build rows with full item detail (SKU + sizes)
+                      // Rows follow the card: one block of lines per finished job, with that job's own sizes
                       const packRows=[];
-                      [...grp.soIds].forEach(soId=>{
-                        const so=grp.soMap[soId];if(!so)return;
-                        const readyIdx=readyIdxBySo[soId];
-                        safeItems(so).forEach((item,iIdx)=>{
-                          if(readyIdx&&!readyIdx.has(iIdx))return;// only items in a ready-to-ship job
-                          const szObj=safeSizes(item);
-                          const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
-                          if(totalQty<=0)return;
-                          const szStr=Object.entries(szObj).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
-                          packRows.push({cells:[soId,item.sku||'',item.name||'',item.color||'—',szStr,totalQty]});
+                      grpRows.forEach(sec=>{
+                        const j=sec.task.type==='deco_done'?sec.task.job:null;
+                        const jobLabel=j?(j.id+' · '+(j.art_name||'')):(sec.task.type==='wait_complete'?'Full order':'No deco');
+                        sec.rows.forEach(r=>{
+                          const szStr=Object.entries(r.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
+                          packRows.push({cells:[r.soId,jobLabel,r.sku||'',r.name||'',r.color||'—',szStr,r.qty]});
                         });
                       });
                       const packOpts={
@@ -18189,8 +18189,8 @@ export default function App(){
                         ],
                         tables:[{
                           title:'Items in this Shipment',
-                          headers:['SO#','SKU','Item','Color','Sizes','Qty'],
-                          aligns:['left','left','left','left','left','center'],
+                          headers:['SO#','Job','SKU','Item','Color','Sizes','Qty'],
+                          aligns:['left','left','left','left','left','left','center'],
                           rows:packRows
                         }],
                         notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
@@ -18791,7 +18791,7 @@ export default function App(){
         {clearShipModal&&(()=>{
           // Scope to the ready-to-ship jobs/lines only — clearing must not mark items that are
           // still in production (other jobs on the same SO) as shipped.
-          const remaining=whRemainingItems(clearShipModal.soMap,whReadyIdxBySo(clearShipModal.grp));
+          const remaining=whRemainingItems(clearShipModal.grp);
           const totUnits=remaining.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
           const reasons=['Picked up by rep','Shipped via ShipStation','Customer picked up','Other'];
           const reasonIcon={'Picked up by rep':'🚗','Shipped via ShipStation':'🛒','Customer picked up':'🏫','Other':'✏️'};
