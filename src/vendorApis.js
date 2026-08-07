@@ -1237,27 +1237,37 @@ const sanmarGetWarehouseStock = async (descriptors) => {
     if (!d || !d.key || out[d.key] || !d.style) continue;
     try {
       const inv = await sanmarGetInventory(d.style, d.color || '', d.size || '');
+      // Diagnostic (mirrors OrderEditor's RAW per-size dump): past attempts guessed the
+      // legacy shape wrong — keep the full response visible until this display has been
+      // verified against live data.
+      console.log('[SanMar] RAW warehouse response', d.style, d.color, d.size, '=>', JSON.stringify(inv));
+      // Row normalization mirrors OrderEditor's proven legacy parse: rows arrive under
+      // items/listResponse/return, or the response IS a single root-level row.
       let rows = arr(inv?.items);
       if (!rows.length) rows = arr(inv?.listResponse);
       if (!rows.length) rows = arr(inv?.return);
-      // Documented shape: plain values in warehouse order. Some responses wrap the
-      // quantity in an object — accept either, but only zip by position when EVERY
-      // entry yields a number (a partial parse must not mislabel warehouses).
-      const nums = rows.map(r => (r !== null && typeof r === 'object')
-        ? parseInt(r.quantity ?? r.qty ?? r.totalQty ?? NaN, 10)
-        : parseInt(r, 10));
-      if (nums.length && nums.every(n => !Number.isNaN(n))) {
-        out[d.key] = nums.slice(0, SANMAR_WHSE_ORDER.length).map((qty, i) => ({ id: SANMAR_WHSE_ORDER[i], qty }));
+      if (!rows.length && inv && (inv.size || inv.totalQty || inv.qty || inv.warehouseInfo)) rows = [inv];
+      rows = rows.filter(r => !(r && (r.errorOccurred === 'true' || r.errorOccured === 'true')));
+      if (!rows.length) continue;
+      // Shape 1 (integration-guide doc): plain values whose POSITION designates the
+      // warehouse (1-7,12). Zip only when every entry is a bare number — a partial
+      // parse must not mislabel warehouses.
+      if (rows.every(r => r === null || typeof r !== 'object')) {
+        const nums = rows.map(r => parseInt(r, 10));
+        if (nums.length && nums.every(n => !Number.isNaN(n))) {
+          out[d.key] = nums.slice(0, SANMAR_WHSE_ORDER.length).map((qty, i) => ({ id: SANMAR_WHSE_ORDER[i], qty }));
+        }
         continue;
       }
-      // Alternate richer shape seen on some accounts: warehouseInfo.inventoryDetail
-      // rows, each with a quantity (and possibly an explicit whseID).
+      // Shape 2 (live legacy rows): warehouseInfo.inventoryDetail entries with a
+      // quantity each — use an explicit warehouse id when present, else position.
       const det = rows.flatMap(r => { const w = r && r.warehouseInfo; if (!w) return []; return arr(w.inventoryDetail || w); });
-      const rows2 = det.map((x, i) => ({
-        id: String(x?.whseID ?? x?.whseNo ?? SANMAR_WHSE_ORDER[i] ?? ''),
-        qty: parseInt(x?.quantity ?? NaN, 10),
+      const src = det.length ? det : rows; // some responses put per-warehouse rows at the top level
+      const rows2 = src.map((x, i) => ({
+        id: String(x?.whseID ?? x?.whseNo ?? x?.whse ?? SANMAR_WHSE_ORDER[i] ?? ''),
+        qty: parseInt(x?.quantity ?? x?.qty ?? NaN, 10),
       })).filter(r => r.id && !Number.isNaN(r.qty));
-      if (rows2.length) out[d.key] = rows2;
+      if (rows2.length > 1 || (rows2.length === 1 && det.length)) out[d.key] = rows2;
     } catch (e) { console.warn('[SanMar] warehouse stock lookup failed for', d.style, d.color, d.size, e.message); }
     await new Promise(r => setTimeout(r, 150));
   }
