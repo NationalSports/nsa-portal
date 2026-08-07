@@ -17095,6 +17095,65 @@ export default function App(){
       });
       return out;
     };
+    // A single job block, shaped as a one-job card so the shipment/clear modals — which take a
+    // customer group — can act on just that job. Shipping one finished job while the rest of the
+    // order is still in production is the normal case in the warehouse, not the exception.
+    const whJobGrp=(grp,sec)=>({cName:grp.cName,shipMethod:grp.shipMethod,items:[sec.task],
+      totalUnits:sec.units,soIds:new Set([sec.task.soId]),soMap:{[sec.task.soId]:sec.task.so},readyAt:sec.task.readyAt});
+    // A "ship complete" order must leave as one shipment, so its block never gets its own
+    // ship/clear buttons — the whole-card actions are the only way to send it.
+    const whShipsAlone=(sec)=>sec.task.type!=='wait_complete'&&(sec.task.shipPref||'ship_as_ready')!=='wait_complete';
+    // Packing slip for a whole card or for one job block — same builder, so a one-job slip is
+    // just the card slip scoped to a single section.
+    const whOpenPackSlip=(grp,sections)=>{
+      const secs=sections||whGroupRows(grp);
+      const soIds=[...new Set(secs.map(s=>s.task.soId))];
+      const firstSO=grp.soMap[soIds[0]]||Object.values(grp.soMap)[0];
+      const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
+      const shipAddrSub=(()=>{
+        const sel=orderShipToSub(firstSO,shipCust);if(sel)return sel;
+        const _da=custShipAddrSub(shipCust);if(_da)return _da;
+        if(shipCust?.billing_address_line1){
+          let a=shipCust.billing_address_line1;
+          if(shipCust.billing_address_line2)a+='<br/>'+shipCust.billing_address_line2;
+          a+='<br/>'+(shipCust.billing_city||'')+', '+(shipCust.billing_state||'')+' '+(shipCust.billing_zip||'');
+          return a;
+        }
+        return 'Default address on file';
+      })();
+      // Rows follow the card: one block of lines per finished job, with that job's own sizes
+      const packRows=[];
+      secs.forEach(sec=>{
+        const j=sec.task.type==='deco_done'?sec.task.job:null;
+        const jobLabel=j?(j.id+' · '+(j.art_name||'')):(sec.task.type==='wait_complete'?'Full order':'No deco');
+        sec.rows.forEach(r=>{
+          const szStr=Object.entries(r.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
+          packRows.push({cells:[r.soId,jobLabel,r.sku||'',r.name||'',r.color||'—',szStr,r.qty]});
+        });
+      });
+      const units=secs.reduce((a,s)=>a+s.units,0);
+      const oneJob=secs.length===1&&secs[0].task.type==='deco_done'?secs[0].task.job:null;
+      const docNum=soIds.join(', ')+(oneJob?' · '+oneJob.id:'');
+      const packOpts={
+        title:grp.cName,docNum,
+        docType:'PACKING LIST',showPricing:false,
+        headerRight:'<div class="ta" style="font-size:20px">'+units+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
+        infoBoxes:[
+          {label:'Ship To',value:grp.cName,sub:shipAddrSub},
+          {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
+        ],
+        tables:[{
+          title:'Items in this Shipment',
+          headers:['SO#','Job','SKU','Item','Color','Sizes','Qty'],
+          aligns:['left','left','left','left','left','left','center'],
+          rows:packRows
+        }],
+        notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+        footer:'NO PRICING — Customer Copy'
+      };
+      openDocPDF(packOpts,'Packing-List-'+(oneJob?oneJob.id:soIds.join('-'))).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
+      nf('📦 Packing list opened for '+grp.cName);
+    };
     const tabs=[
       {id:'pull',label:'Item Fulfillment',icon:'📋',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'Ready for Deco',icon:'🎨',count:fDeco.length,color:'#7c3aed'},
@@ -18097,6 +18156,7 @@ export default function App(){
               // One section per finished job / no-deco line — an SO can have other jobs still in
               // production, and each job packs on its own, so the card never lists SO lines.
               const grpRows=whGroupRows(grp);
+              const shownSecs=grpRows.filter(s=>s.rows.length);
               const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
               const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
@@ -18117,9 +18177,8 @@ export default function App(){
                 </div>
                 {expanded&&<>
                 {/* One block per finished job (or no-deco line) — the batch the warehouse actually packs */}
-                {grpRows.map((sec,si)=>{
+                {shownSecs.map((sec,si)=>{
                   const t=sec.task;const j=t.type==='deco_done'?t.job:null;
-                  if(!sec.rows.length)return null;
                   const ready=_fmtReadyDate(t.readyAt);
                   return<div key={si} style={{marginBottom:8,padding:'6px 8px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
                     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3,flexWrap:'wrap'}}>
@@ -18144,8 +18203,21 @@ export default function App(){
                           <td style={{textAlign:'center',fontWeight:700,width:40}}>{r.qty}</td>
                         </tr>})}
                     </tbody></table>
+                    {/* Per-job actions — shipping one finished job on its own is the common case */}
+                    {shownSecs.length>1&&whShipsAlone(sec)&&<div style={{display:'flex',gap:5,marginTop:6,flexWrap:'wrap',borderTop:'1px dashed #e2e8f0',paddingTop:5}}>
+                      <button title="Assign this job's shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:9,background:'#0891b2',color:'white',border:'none',padding:'3px 8px',fontWeight:700}}
+                        onClick={()=>_whOpenAssign({title:'Ship — '+(j?j.art_name:t.soId),description:t.soId+(j?' · '+j.id:'')+' · '+sec.units+' units',so:t.so,soId:t.soId,docLabel:j?j.id:t.soId})}>👤 Assign</button>
+                      <button title="Create a shipment for just this job" className="btn btn-sm" style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',fontWeight:700}}
+                        onClick={()=>{const sg=whJobGrp(grp,sec);setShipModal({grp:sg,soMap:sg.soMap,availableItems:whRemainingItems(sg),boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}}>📦 Create Shipment</button>
+                      <button title="Clear just this job from Ready to Ship — marks its units shipped with no label (rep pickup, ShipStation, etc.)"
+                        className="btn btn-sm" style={{fontSize:9,background:'#0f766e',color:'white',border:'none',padding:'3px 8px',fontWeight:700}}
+                        onClick={()=>{const sg=whJobGrp(grp,sec);setClearShipModal({grp:sg,soMap:sg.soMap,reason:'Picked up by rep',custom:'',note:''})}}>✓ Mark Shipped</button>
+                      <button title="Packing slip for just this job" className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px'}}
+                        onClick={()=>whOpenPackSlip(grp,[sec])}>🖨️ Pack Slip</button>
+                    </div>}
                   </div>})}
-                <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                {shownSecs.length>1&&<div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginTop:8}}>All {shownSecs.length} jobs together</div>}
+                <div style={{display:'flex',gap:6,marginTop:shownSecs.length>1?4:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{const firstSO=Object.values(grp.soMap)[0];_whOpenAssign({title:'Ship — '+grp.cName,description:[...grp.soIds].join(', ')+' · '+grp.totalUnits+' units',so:firstSO,soId:firstSO?.id,docLabel:[...grp.soIds].join(', ')})}}>👤 Assign</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
@@ -18158,52 +18230,7 @@ export default function App(){
                     className="btn btn-sm" style={{fontSize:10,background:'#0f766e',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>setClearShipModal({grp,soMap:grp.soMap,reason:'Picked up by rep',custom:'',note:''})}>✓ Mark Shipped</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
-                    onClick={()=>{
-                      // Quick packing slip for entire group
-                      // Resolve shipping address from customer
-                      const firstSO=Object.values(grp.soMap)[0];
-                      const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
-                      const shipAddrSub=(()=>{
-                        const sel=orderShipToSub(firstSO,shipCust);if(sel)return sel;
-                        const _da=custShipAddrSub(shipCust);if(_da)return _da;
-                        if(shipCust?.billing_address_line1){
-                          let a=shipCust.billing_address_line1;
-                          if(shipCust.billing_address_line2)a+='<br/>'+shipCust.billing_address_line2;
-                          a+='<br/>'+(shipCust.billing_city||'')+', '+(shipCust.billing_state||'')+' '+(shipCust.billing_zip||'');
-                          return a;
-                        }
-                        return 'Default address on file';
-                      })();
-                      // Rows follow the card: one block of lines per finished job, with that job's own sizes
-                      const packRows=[];
-                      grpRows.forEach(sec=>{
-                        const j=sec.task.type==='deco_done'?sec.task.job:null;
-                        const jobLabel=j?(j.id+' · '+(j.art_name||'')):(sec.task.type==='wait_complete'?'Full order':'No deco');
-                        sec.rows.forEach(r=>{
-                          const szStr=Object.entries(r.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
-                          packRows.push({cells:[r.soId,jobLabel,r.sku||'',r.name||'',r.color||'—',szStr,r.qty]});
-                        });
-                      });
-                      const packOpts={
-                        title:grp.cName,docNum:[...grp.soIds].join(', '),
-                        docType:'PACKING LIST',showPricing:false,
-                        headerRight:'<div class="ta" style="font-size:20px">'+grp.totalUnits+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
-                        infoBoxes:[
-                          {label:'Ship To',value:grp.cName,sub:shipAddrSub},
-                          {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
-                        ],
-                        tables:[{
-                          title:'Items in this Shipment',
-                          headers:['SO#','Job','SKU','Item','Color','Sizes','Qty'],
-                          aligns:['left','left','left','left','left','left','center'],
-                          rows:packRows
-                        }],
-                        notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
-                        footer:'NO PRICING — Customer Copy'
-                      };
-                      openDocPDF(packOpts,'Packing-List-'+[...grp.soIds].join('-')).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
-                      nf('📦 Packing list opened for '+grp.cName);
-                    }}>🖨️ Pack Slip</button>
+                    onClick={()=>whOpenPackSlip(grp,grpRows)}>🖨️ Pack Slip</button>
                 </div>
                 </>}
               </div>
