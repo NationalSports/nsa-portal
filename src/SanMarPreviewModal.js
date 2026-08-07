@@ -10,8 +10,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
 import { sanmarSubmitPO, sanmarResolvePartIds, sanmarGetWarehouseStock } from './vendorApis';
-import WarehouseChips, { rankWarehouses, SANMAR_WAREHOUSES } from './WarehouseChips';
+import WarehouseChips, {
+  rankWarehouses, pickConsolidatedWarehouse, warehouseKey, warehouseCity,
+  shipToCoords, warehouseCoords, milesBetween, SANMAR_WAREHOUSE_INFO,
+} from './WarehouseChips';
+import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
+
+// SanMar Option 3, "Warehouse Selection": the rep names the warehouse and it rides
+// on each line as <shar:fobId>. It only takes effect once SanMar reconfigures our
+// integration account off Option 1 (Warehouse Consolidation) — until then SanMar
+// picks the warehouse and fobId is ignored, so the picker stays read-only rather
+// than promising routing we can't deliver. Flip this to true after SanMar confirms
+// (request it via sanmarintegrations@sanmar.com).
+// NOTE Option 3 removes the safety net: a line short at the chosen warehouse puts
+// the WHOLE order on hold for manual keying instead of bumping to the next DC.
+const WAREHOUSE_SELECTION_ENABLED = false;
 
 // SanMar ships integrated orders to NSA's receiving address (Warehouse Consolidation).
 // PromoStandards requires a ContactDetails block on both OrderContact and ShipTo — without
@@ -27,7 +41,7 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipWarning = '', shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -45,9 +59,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // a lookup failure leaves the column blank, never blocks.
   const [whseByLine, setWhseByLine] = useState(null); // null = loading
 
-  // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker)
+  // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker).
+  // 'order' appears only when the caller resolved a destination off the batch itself
+  // (a drop-ship program address, or a write-in address on the PO) — without it that
+  // address would sit under a radio labelled "NSA Warehouse".
   const isPrescribed = !!shipToDecoId;
-  const [shipMode, setShipMode] = useState(shipToDecoId ? 'deco' : 'nsa'); // 'nsa' | 'deco'
+  const [shipMode, setShipMode] = useState(shipToDecoId ? 'deco' : (shipTo ? 'order' : 'nsa')); // 'nsa' | 'deco' | 'order'
   const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
   const [selectedDecoId, setSelectedDecoId] = useState(() => shipToDecoId || activeDecoVendors[0]?.id || '');
   const [dpoNumber, setDpoNumber] = useState(initialDpoNumber || '');
@@ -63,8 +80,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
   const isLive = env === 'prod';
 
-  // Compute the effective ship-to address inside the memo so it stays a stable dep.
-  const base = useMemo(() => {
+  // Hand-edited ship-to (null = use the auto-selected warehouse/decorator address).
+  const [shipOverride, setShipOverride] = useState(null);
+  // Re-selecting a destination replaces the address wholesale, so a stale override
+  // must not silently survive it.
+  useEffect(() => { setShipOverride(null); }, [shipMode, selectedDecoId]);
+
+  // The address the modal picks on its own — warehouse or decorator.
+  const autoShip = useMemo(() => {
     let effectiveShip;
     if (shipMode === 'deco' && selectedDeco) {
       const a1 = selectedDeco.address_line1 || inlineAddr.address_line1 || '';
@@ -82,12 +105,19 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
         postalCode: zip,
         country: 'US',
       };
+    } else if (shipMode === 'order' && shipTo) {
+      effectiveShip = shipTo;
     } else {
-      effectiveShip = shipTo || NSA_SHIP_TO;
+      effectiveShip = NSA_SHIP_TO;
     }
+    return effectiveShip;
+  }, [shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
+
+  const base = useMemo(() => {
+    const effectiveShip = shipOverride || autoShip;
     const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: effectiveShip });
     return { payload: p, baseLines: p.PO.lineItems, totals: p._summary, effectiveShip };
-  }, [batchPOs, poNumber, shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
+  }, [batchPOs, poNumber, autoShip, shipOverride]);
 
   const ship = base.effectiveShip;
 
@@ -118,7 +148,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     () => lines.filter(l => !l.partId).map(l => `Line ${l.lineNumber} (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) is missing a SanMar partId / Unique_Key`),
     [lines]
   );
-  const payload = useMemo(() => ({ ...base.payload, PO: { ...base.payload.PO, lineItems: lines } }), [base.payload, lines]);
+  // Forced ship-from warehouse (SanMar warehouse number, '' = let SanMar route).
+  const [forcedWhse, setForcedWhse] = useState('');
+  // Lines as submitted: a forced warehouse rides on every line as fobId.
+  const submitLines = useMemo(
+    () => (forcedWhse ? lines.map(l => ({ ...l, fobId: String(forcedWhse) })) : lines),
+    [lines, forcedWhse]
+  );
+  const payload = useMemo(() => ({ ...base.payload, PO: { ...base.payload.PO, lineItems: submitLines } }), [base.payload, submitLines]);
   const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
   const totals = base.totals;
 
@@ -144,6 +181,62 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     return () => { cancelled = true; };
   }, [whseFetchKey, resolving]);
 
+  // Per-line warehouse rows, each carrying its distance from the ship-to. SanMar
+  // routes by proximity, so the prediction has to rank by distance — ranking by
+  // "who holds the most stock" pointed at Cincinnati/Minneapolis for a California
+  // ship-to when Reno and Phoenix were both full.
+  const shipCoords = useMemo(() => shipToCoords(ship), [ship]);
+  const lineWhseRows = useMemo(() => {
+    const map = {};
+    for (const l of lines) {
+      const k = _whseKey(l);
+      if (map[k]) continue;
+      map[k] = (whseByLine?.[k] || []).filter(w => w.qty > 0).map(w => {
+        const city = warehouseCity(w.name, w.id);
+        return {
+          id: w.id,
+          label: city.split(',')[0],
+          city,
+          qty: w.qty,
+          dist: milesBetween(shipCoords, warehouseCoords(w.name, w.id)),
+        };
+      });
+    }
+    return map;
+  }, [lines, whseByLine, shipCoords]);
+
+  // SanMar consolidates: the whole PO ships from the closest warehouse that can
+  // fill every line. Predict that one DC for all lines (null = no single warehouse
+  // covers the order, so SanMar will split and each line falls back to its own).
+  const consolidatedWhse = useMemo(
+    () => pickConsolidatedWarehouse(lines.map(l => ({ rows: lineWhseRows[_whseKey(l)] || [], need: l.quantity }))),
+    [lines, lineWhseRows]
+  );
+
+  const consolidatedRow = useMemo(() => {
+    if (!consolidatedWhse || !lines.length) return null;
+    return (lineWhseRows[_whseKey(lines[0])] || []).find(r => warehouseKey(r) === consolidatedWhse) || null;
+  }, [consolidatedWhse, lines, lineWhseRows]);
+
+  // Stock at a forced warehouse, matched to the inventory rows by city name (the
+  // inventory service's location ids aren't the same numbering as fobId).
+  const forcedInfo = forcedWhse ? SANMAR_WAREHOUSE_INFO[forcedWhse] : null;
+  const forcedRowFor = (rows) => {
+    if (!forcedInfo) return null;
+    const city = forcedInfo.city.split(',')[0].toLowerCase();
+    return (rows || []).find(r => String(r.label || '').toLowerCase().includes(city)
+      || String(r.city || '').toLowerCase().includes(city)) || null;
+  };
+  // Lines the forced warehouse can't cover — SanMar puts the ENTIRE order on hold
+  // for one of these, so it's a hard warning, not a nudge.
+  const forcedShort = useMemo(() => {
+    if (!forcedInfo) return [];
+    return lines.filter(l => {
+      const row = forcedRowFor(lineWhseRows[_whseKey(l)]);
+      return !row || row.qty < l.quantity;
+    }).map(l => ({ line: l, have: forcedRowFor(lineWhseRows[_whseKey(l)])?.qty ?? 0 }));
+  }, [forcedInfo, lines, lineWhseRows]);
+
   // Styles still unresolved → surface what SanMar actually returned for them.
   const unresolvedStyles = useMemo(() => {
     const s = new Set(lines.filter(l => !l.partId).map(l => String(l.style || '').toUpperCase().trim()));
@@ -156,12 +249,15 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     setTimeout(() => setCopied(false), 1500);
   };
 
-  // Block submit if decorator mode but address is incomplete
-  const decoAddrIncomplete = shipMode === 'deco' && selectedDeco && !hasDecoAddr
+  // Block submit if decorator mode but address is incomplete. A hand-edited
+  // ship-to supersedes both checks — the rep has supplied the address themselves.
+  const decoAddrIncomplete = !shipOverride && shipMode === 'deco' && selectedDeco && !hasDecoAddr
     && (!inlineAddr.address_line1.trim() || !inlineAddr.city.trim() || !inlineAddr.state.trim() || !inlineAddr.zip.trim());
-  const decoNoVendor = shipMode === 'deco' && !selectedDeco;
+  const decoNoVendor = !shipOverride && shipMode === 'deco' && !selectedDeco;
+  // Whatever the source, the address that actually goes to SanMar has to be complete.
+  const shipIncomplete = shipToIncomplete(ship);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -187,7 +283,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     // result was ignored. Await it and surface anything short of a recorded batch number.
     if (onSubmitted) {
       try {
-        const recorded = await onSubmitted(r, lines);
+        const recorded = await onSubmitted(r, submitLines);
         if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
       } catch (e) {
         console.error('[SanMar] order placed but post-order bookkeeping failed:', e);
@@ -310,6 +406,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                       <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'nsa'} onChange={() => setShipMode('nsa')} />
                       NSA Warehouse
                     </label>
+                    {shipTo && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'order' ? 700 : 400, color: shipMode === 'order' ? '#b45309' : 'inherit' }}>
+                        <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'order'} onChange={() => setShipMode('order')} />
+                        Drop ship — order address
+                      </label>
+                    )}
                     {activeDecoVendors.length > 0 && (
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'deco' ? 700 : 400, color: shipMode === 'deco' ? '#7c3aed' : 'inherit' }}>
                         <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'deco'} onChange={() => setShipMode('deco')} />
@@ -415,10 +517,59 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
-          <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-            <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
-            {ship.attentionTo && ship.attentionTo !== 'Receiving' && <span style={{ marginLeft: 6, color: '#7c3aed', fontWeight: 700 }}>· Attn: {ship.attentionTo}</span>}
-          </div>
+          {!done && shipWarning && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
+              <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
+            </div>
+          )}
+          <ShipToEditor
+            auto={autoShip}
+            override={shipOverride}
+            onChange={setShipOverride}
+            disabled={done || submitting}
+            shipVia="UPS Ground"
+            autoLabel={shipMode === 'deco' ? 'decorator' : shipMode === 'order' ? 'order address' : 'warehouse'}
+          />
+
+          {/* Ships FROM — which SanMar warehouse fills the order */}
+          {!done && (
+            <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <strong>Ships from:</strong>
+                <select
+                  className="form-select"
+                  style={{ fontSize: 12, minWidth: 220 }}
+                  value={forcedWhse}
+                  disabled={!WAREHOUSE_SELECTION_ENABLED || submitting}
+                  onChange={e => setForcedWhse(e.target.value)}
+                >
+                  <option value="">
+                    Auto — closest warehouse that can fill the order{consolidatedRow ? ` (${consolidatedRow.city})` : ''}
+                  </option>
+                  {Object.entries(SANMAR_WAREHOUSE_INFO).map(([num, w]) => (
+                    <option key={num} value={num}>{w.city} — ship everything from here</option>
+                  ))}
+                </select>
+                {!WAREHOUSE_SELECTION_ENABLED && (
+                  <span style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 4, padding: '3px 7px' }}>
+                    Picking a warehouse needs SanMar to switch our integration account to <strong>Warehouse Selection</strong> — request it from sanmarintegrations@sanmar.com. Until then SanMar routes the order itself.
+                  </span>
+                )}
+              </div>
+              {forcedInfo && (
+                <div style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>
+                  Every line is sent with <code>fobId {forcedWhse}</code> ({forcedInfo.code} · {forcedInfo.city}).
+                  If a line is short there, SanMar puts the <strong>whole order</strong> on hold for manual keying instead of using another warehouse.
+                </div>
+              )}
+              {forcedInfo && forcedShort.length > 0 && (
+                <div style={{ marginTop: 6, padding: '6px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, fontSize: 11, color: '#991b1b' }}>
+                  <strong>⚠ {forcedInfo.city} can't cover {forcedShort.length} line(s):</strong>{' '}
+                  {forcedShort.map(s => `${s.line.style} ${s.line.size} (need ${s.line.quantity}, have ${s.have})`).join(' · ')}
+                </div>
+              )}
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
@@ -456,14 +607,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                       <td style={td}>
                         <WarehouseChips
                           loading={whseByLine === null}
-                          entries={rankWarehouses(
-                            (whseByLine?.[_whseKey(l)] || []).filter(w => w.qty > 0).map(w => ({
-                              label: w.name || (SANMAR_WAREHOUSES[w.id] || ('WH ' + w.id)).split(',')[0],
-                              city: SANMAR_WAREHOUSES[w.id],
-                              qty: w.qty,
-                            })),
-                            l.quantity
-                          ).filter(e => e.primary)}
+                          entries={forcedInfo
+                            ? [{
+                                label: forcedInfo.city.split(',')[0],
+                                city: forcedInfo.city,
+                                qty: forcedRowFor(lineWhseRows[_whseKey(l)])?.qty || 0,
+                                primary: (forcedRowFor(lineWhseRows[_whseKey(l)])?.qty || 0) >= l.quantity,
+                              }]
+                            : rankWarehouses(lineWhseRows[_whseKey(l)] || [], l.quantity, consolidatedWhse).filter(e => e.primary)}
                         />
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
@@ -474,7 +625,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
               {lines.length > 0 && (
                 <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
-                  📦 = expected ship-from warehouse (SanMar routes each line from the warehouse nearest the ship-to that has stock — split shipments possible). Hover the chip for current stock.
+                  📦 = expected ship-from warehouse. SanMar consolidates: the whole order ships from the closest warehouse to the ship-to that can fill every line, bumping to the next closest when something is short. Hover the chip for current stock.
                 </div>
               )}
             </div>
@@ -513,6 +664,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   resolving ? 'Looking up Part IDs…'
                   : decoAddrIncomplete ? 'Enter the decorator\'s full address first'
                   : decoNoVendor ? 'Select a decorator first'
+                  : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required'
                   : blocked ? 'Every line needs a matched SanMar Part ID first'
                   : !confirmed ? 'Check the confirmation box first'
                   : ''
