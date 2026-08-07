@@ -4447,7 +4447,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
                                   {onChangeCloseDate && editCloseId !== s.id && (
-                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at)); }}>Change Close Date</button>
+                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); }}>Change Close Date</button>
                                   )}
                                 </div>
                                 {onChangeCloseDate && editCloseId === s.id && (
@@ -4807,8 +4807,15 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
+// New stores default to closing on the third Sunday from today (midnight): orders are
+// processed Monday mornings, so a store built today runs ~3 weekends and lands on that cycle.
+const defaultCloseDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + (((7 - d.getDay()) % 7) || 7) + 14); // next Sunday (strictly ahead), then +2 weeks
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
