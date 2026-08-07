@@ -9407,7 +9407,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const artF2=d.kind==='art'&&d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=decoConcreteType(o,d)||'screen_print';
           const dp=(o.deco_pos||[]).find(p=>(p.item_idxs||[]).includes(firstGi.item_idx)&&p.deco_type===dt)||(o.deco_pos||[]).find(p=>(p.item_idxs||[]).includes(firstGi.item_idx));
-          const row={name:artF2?.name||(d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':''),dt,position:safeStr(d.position),vendor:dp?.vendor||d.vendor||''};
+          const row={name:artF2?.name||(d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':''),dt,position:safeStr(d.position),vendor:dp?.vendor||d.vendor||'',art:artF2||null};
           const k=row.name+'|'+row.dt+'|'+row.position;
           if(!seen.has(k)){seen.add(k);out.push(row)}
         });
@@ -10309,8 +10309,27 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                        {_priorPickR(gi)||_requestMockR(gi,false)}
                        {_linkChipsR(gi)}
                       </>}
+                      {/* Outsourced designs on the same garment — context only (SO-1660): the proof
+                          is judged as the WHOLE garment, so a mixed-media approval must show every
+                          location, including the vendor-produced one. Not part of this approval. */}
+                      {(()=>{const _ctx=_jobOutsideDecos(j);if(!_ctx.length)return null;
+                        return<div style={{margin:'0 10px 10px',padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8}}>
+                          <div style={{fontSize:10,fontWeight:800,color:'#6d28d9',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}} title="This decoration is produced by an outside vendor — shown for context, it is not part of this approval">🏭 Also on this garment — produced outside</div>
+                          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                            {_ctx.map((ol,ci)=>{const im=ol.art?.item_mockups||{};const _mk2=gi.sku+'|'+(gi.color||'');
+                              const _own=_filterDisplayable(im[_mk2]&&im[_mk2].length?im[_mk2]:(im[gi.sku]||[]));
+                              const _pool=_own.length?_own:_filterDisplayable([...(ol.art?.mockup_files||ol.art?.files||[]),...(ol.art?.prod_files||[])]);
+                              const f=_pool[0]||null;const url=f?(typeof f==='string'?f:(f?.url||'')):'';
+                              return<div key={ci} style={{width:150,borderRadius:8,border:'2px solid #c4b5fd',overflow:'hidden',background:'white'}}>
+                                {url&&_isImgUrl(url,f)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#fafafa',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
+                                :url&&_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#fafafa',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
+                                :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,color:'#7c3aed',background:'#fafafa',padding:'0 8px',textAlign:'center'}}>{url?fileDisplayName(f):'No mock on file'}</div>}
+                                <div style={{padding:'4px 8px',borderTop:'1px solid #ddd6fe',fontSize:10,color:'#6d28d9',fontWeight:700}}>{_outsideDecoText(ol)}</div>
+                              </div>})}
+                          </div>
+                        </div>})()}
                       {/* Decoration spec */}
-                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0||_jobOutsideDecos(j).length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
                         {artDecos.map((d,di)=>{
                           const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
@@ -10350,6 +10369,10 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                         </div>)}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                        {_jobOutsideDecos(j).map((ol,ci)=><div key={'oc'+ci} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 7px',borderRadius:3,border:'1px solid #ddd6fe'}} title="Produced by an outside vendor — not part of this approval">🏭 Outside{ol.vendor?' · '+ol.vendor:''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(ol.name?ol.name+' — ':'')+ol.dt.replace(/_/g,' ')+' · '+(ol.position||'—')}</span>
                         </div>)}
                       </div>}
                       {/* Size grid */}
@@ -10626,6 +10649,10 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                           </div>})}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                        {_jobOutsideDecos(j).map((ol,ci)=><div key={'oc'+ci} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 7px',borderRadius:3,border:'1px solid #ddd6fe'}} title="Produced by an outside vendor — not part of this job">🏭 Outside{ol.vendor?' · '+ol.vendor:''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(ol.name?ol.name+' — ':'')+ol.dt.replace(/_/g,' ')+' · '+(ol.position||'—')}</span>
                         </div>)}
                       </div>}
                       {/* Size grid */}
