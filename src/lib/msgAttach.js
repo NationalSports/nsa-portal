@@ -136,13 +136,16 @@ const useMsgDrag = (setItems, setBusy, nf) => {
   // Dragging across a child element fires dragleave on the parent, so count enters
   // and exits instead of clearing on the first leave — otherwise the target flickers.
   const depth = React.useRef(0);
+  // Zones nest — the attach dialog sits inside the composer's surface-wide zone — so
+  // every handler stops the event. Without this a single drop is handled by the inner
+  // zone and again by the outer one, and the file uploads twice.
   const handlers = {
-    onDragEnter: (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); depth.current += 1; setOver(true) },
-    onDragOver: (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' },
-    onDragLeave: (e) => { if (!msgDragHasFiles(e)) return; depth.current = Math.max(0, depth.current - 1); if (!depth.current) setOver(false) },
+    onDragEnter: (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); e.stopPropagation(); depth.current += 1; setOver(true) },
+    onDragOver: (e) => { if (!msgDragHasFiles(e)) return; e.preventDefault(); e.stopPropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' },
+    onDragLeave: (e) => { if (!msgDragHasFiles(e)) return; e.stopPropagation(); depth.current = Math.max(0, depth.current - 1); if (!depth.current) setOver(false) },
     onDrop: (e) => {
       if (!msgDragHasFiles(e)) return;
-      e.preventDefault(); depth.current = 0; setOver(false);
+      e.preventDefault(); e.stopPropagation(); depth.current = 0; setOver(false);
       attachMsgFiles(Array.from(e.dataTransfer.files || []), setItems, setBusy, nf, true);
     },
   };

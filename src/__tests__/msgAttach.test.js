@@ -139,6 +139,22 @@ describe('MsgDropZone', () => {
     ]);
   });
 
+  test('a drop on the dialog inside a surface zone attaches once, not twice', async () => {
+    // The real nesting: the composer surface is a drop zone and the attach dialog it
+    // opens sits inside it, so an unstopped drop event gets handled by both.
+    const setItems = jest.fn();
+    const setBusy = jest.fn();
+    render(<MsgDropZone setItems={setItems} setBusy={setBusy} nf={jest.fn()}>
+      <MsgAttachBar items={[]} setItems={setItems} busy={false} setBusy={setBusy} nf={jest.fn()}/>
+    </MsgDropZone>);
+    fireEvent.click(screen.getByText('📎 Attach'));
+    const box = screen.getByText('Drag files here').parentElement;
+    fireEvent.drop(box, { dataTransfer: dt(['Files'], [file('shot.png', 'image/png', 512)]) });
+    await waitFor(() => expect(setItems).toHaveBeenCalled());
+    expect(setItems).toHaveBeenCalledTimes(1);
+    expect(fileUpload).toHaveBeenCalledTimes(1);
+  });
+
   test('the overlay survives dragging across a child and clears on the real exit', () => {
     const { el } = zone();
     fireEvent.dragEnter(el, { dataTransfer: dt(['Files']) });
