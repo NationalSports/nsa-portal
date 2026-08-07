@@ -2210,9 +2210,17 @@ const _dbSaveInvoiceInner = async (inv) => {
     // IDENTITY GUARD (2026-07-27, mirrors the SO/estimate paths). nextInvId mints from the same
     // page-load-stale _dbMaxIds, and this path had NO new-vs-existing check at all — a bare upsert, so
     // a stale tab that re-minted a live invoice number would silently replace another customer's
-    // invoice, payments and line items included. No invoice collision appears in the audit history
-    // (the INV range moves fast and invoices are minted-then-saved in one burst, so the window is
-    // narrow), but the hole is the same one that cost SO-1507 its header, on a money document.
+    // invoice, payments and line items included — the same hole that cost SO-1507 its header, on a
+    // money document.
+    //
+    // CORRECTION (2026-08-07): the original note here said no invoice collision appears in the audit
+    // history. That was wrong, and the detector behind it was blind by construction. It looked for
+    // created_at CHANGING between old_data and new_data, but invoices.created_at is a DB-owned
+    // `timestamptz DEFAULT now()` that an overwriting upsert never rewrites — so a collision leaves it
+    // untouched and the query returns nothing. Searching on customer_id changing instead surfaces
+    // seven, of which INV-63144 (2026-07-10) was a real loss: Palos Verdes HS Football's $384.41
+    // invoice, already emailed to the school, replaced 92 seconds later by another rep's session that
+    // had minted the same number. Restored as INV-63450.
     //
     // Unlike sales_orders/estimates, invoices.created_at is `timestamptz DEFAULT now()`, NOT text — so
     // the two sides legitimately differ in FORMAT for the same instant: a client that just created the
@@ -2225,23 +2233,48 @@ const _dbSaveInvoiceInner = async (inv) => {
       if(!Number.isFinite(ta)||!Number.isFinite(tb))return true;// unparseable → can't tell → allow
       return Math.abs(ta-tb)<=5000;// one document across two formats stays far inside this
     };
-    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at').eq('id',inv.id).maybeSingle();
-    if(!_existInvErr&&_existInv&&inv.created_at&&_existInv.created_at&&!_invSameDoc(_existInv.created_at,inv.created_at)){
+    // ...and created_at alone cannot carry this guard, because the path that creates almost every
+    // invoice — the Create Invoice button in OrderEditor — builds its object without one (the column
+    // has a DB default, so nothing client-side ever needed to stamp it). `inv.created_at` is undefined
+    // there, the condition short-circuits, and the guard never runs. That is the gap INV-63144 fell
+    // through, and it stayed open after the 2026-07-27 fix shipped.
+    //
+    // So: compare created_at when both sides have one (strongest signal, and the only one that can
+    // tell two docs apart once a client has loaded the row), and otherwise fall back to the document's
+    // own identity. A client with no _version believes it is CREATING this invoice, so an existing row
+    // at that id is either our own save being retried — same customer, SO and total — or somebody
+    // else's invoice, which differs on at least one. A client that does hold a _version loaded the row
+    // from the DB, so its edits are deliberate (re-pointing an invoice to another customer is a real
+    // workflow — the Lincoln XC split did exactly that) and must not be second-guessed here.
+    const _invDifferentDoc=ex=>{
+      if(inv.created_at&&ex.created_at)return!_invSameDoc(ex.created_at,inv.created_at);
+      if(inv._version)return false;// loaded from the DB — this is an edit, not a mint
+      const _n=v=>Number(v)||0;
+      return(ex.customer_id??null)!==(inv.customer_id??null)
+        ||(ex.so_id??null)!==(inv.so_id??null)
+        ||Math.abs(_n(ex.total)-_n(inv.total))>=0.005;
+    };
+    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total').eq('id',inv.id).maybeSingle();
+    if(!_existInvErr&&_existInv&&_invDifferentDoc(_existInv)){
       const oldId=inv.id;
+      // Which signal caught it — the alerts are read during incident triage, so say which.
+      const _why=(inv.created_at&&_existInv.created_at)
+        ?'created_at mismatch: theirs '+_existInv.created_at+' vs ours '+inv.created_at
+        :'identity mismatch: theirs '+_existInv.customer_id+'/'+_existInv.so_id+'/'+_existInv.total+' vs ours '+inv.customer_id+'/'+inv.so_id+'/'+inv.total;
       if(!inv._version){
         // Never saved, so no payments or items hang off this id yet — renumbering is clean. Scan on
         // the 'INV' prefix, NOT 'INV-': some live ids carry no dash ('INV63316'), and a 'INV-%' scan
         // would happily re-mint straight into one of them.
         const freshMax=await _refreshMaxId('invoices','INV');
         inv.id=invRow.id='INV-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
-        console.warn('[DB] Invoice',oldId,'is held by a different invoice (created',_existInv.created_at,'vs ours',inv.created_at,') — re-minted to',inv.id);
+        console.warn('[DB] Invoice',oldId,'is held by a different invoice (',_why,') — re-minted to',inv.id);
         if(_dbNotify)_dbNotify(oldId+' was already taken by another invoice — this one saved as '+inv.id+'. Reload to keep editing it.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'inv_id_reminted',soId:inv.id,reason:oldId+' belonged to a different invoice (created_at mismatch) — re-minted to '+inv.id});
+        if(_dataLossAlert)_dataLossAlert({kind:'inv_id_reminted',soId:inv.id,reason:oldId+' belonged to a different invoice ('+_why+') — re-minted to '+inv.id});
       }else{
         // Already saved under this id: renumbering would strand its payments and line items.
-        console.error('[DB] SAFETY: Blocking invoice save —',oldId,'is held by a different invoice (created',_existInv.created_at,'vs ours',inv.created_at,')');
+        console.error('[DB] SAFETY: Blocking invoice save —',oldId,'is held by a different invoice (',_why,')');
         if(_dbNotify)_dbNotify('Save blocked — '+oldId+' now belongs to a different invoice. Please reload before editing.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice (created_at mismatch) — refused overwrite'});
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice ('+_why+') — refused overwrite'});
         _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
         return false;
       }
