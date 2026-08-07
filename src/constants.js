@@ -361,6 +361,18 @@ export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers
 // or moved past it (completed, shipped). Once here, the warehouse "All items received" hand-off
 // notification is stale — the job has moved through that process — so it should no longer surface.
 export const DECO_OR_LATER_STATUSES=['staging','in_process','completed','shipped'];
+// "All items received — art needs attention" is a nag, so it should only fire when nobody is
+// already on the art: either it has never been handed to an artist (needs_art / unset), or it
+// HAS been submitted but hasn't cleared in ART_ATTENTION_STALE_DAYS and is now overdue.
+// sinceDate is the job's receive moment (the date the to-do already shows), because no per-job
+// art-submitted timestamp is persisted — so the row's visible age and this rule always agree.
+export const ART_ATTENTION_STALE_DAYS=10;
+export const artNeedsAttention=(artStatus,sinceDate)=>{
+  if(!artStatus||artStatus==='needs_art')return true;// never submitted to the artist
+  const t=sinceDate?new Date(sinceDate).getTime():NaN;
+  if(!Number.isFinite(t))return true;// no reliable clock — keep surfacing it rather than hiding it
+  return Math.floor((Date.now()-t)/86400000)>ART_ATTENTION_STALE_DAYS;
+};
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
