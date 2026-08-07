@@ -3118,6 +3118,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // decorations covers that whole item (see outsourcedDecoTypes) — so this also handles the
     // mismatched/default-typed-PO case (SO-1199: an 'embroidery' PO over DTF/screen-print garments).
     const outsourcedByItem=outsourcedDecoTypes(o);
+    // A deco PO covering an item that ALSO keeps in-house decorations is a MATERIALS purchase —
+    // the vendor prints the transfers, the floor still applies them (SO-1660: front transfers
+    // bought from Astra Sport, pressed in-house alongside the DTF back). Garments are never
+    // decorated in two places, so a covered decoration STAYS on the in-house job (one job, one
+    // tech sheet) while its COST keeps reading from the PO (isDecoOutsourced in the cost walks
+    // is untouched). Only when EVERY decoration on the item is covered does the vendor truly
+    // decorate the garment (SO-1682's whole-order deco PO) — only then does the item spawn no
+    // in-house work. Explicit per-deco routing (d.fulfillment/'outside', d.deco_po_id) keeps
+    // its current per-deco behavior.
+    const _fullOutCache={};
+    const _itemFullyOutsourced=ii=>{if(_fullOutCache[ii]!==undefined)return _fullOutCache[ii];
+      const it=safeItems(o)[ii];
+      const ds=it?safeDecos(it).filter(d=>d&&(d.kind==='art'||d.kind==='numbers'||d.kind==='names')):[];
+      return _fullOutCache[ii]=ds.length>0&&ds.every(d=>isDecoOutsourced(o,ii,d,outsourcedByItem));};
     // Released jobs (submitted via the wizard) are frozen — their items are
     // committed to art and shouldn't be re-merged into auto-generated groups.
     // Build a set of (item_idx, deco_idx) pairs already covered by a released
@@ -3132,7 +3146,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const pairs=[];
       (j?.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>pairs.push([gi.item_idx,di]))});
       if(!pairs.length)return false;
-      return pairs.every(([ii,di])=>{const it=safeItems(o)[ii];if(!it)return false;const d=safeDecos(it)[di];if(!d)return false;return isDecoOutsourced(o,ii,d,outsourcedByItem)});
+      // Mirrors the build gate below: a PO-covered deco on an item that keeps in-house work is a
+      // materials purchase (the floor still applies it), so it does NOT count toward retiring the
+      // job — only whole-item vendor decoration or explicit per-deco routing does.
+      return pairs.every(([ii,di])=>{const it=safeItems(o)[ii];if(!it)return false;const d=safeDecos(it)[di];if(!d)return false;
+        return d.kind==='outside_deco'||d.fulfillment==='outside'||!!d.deco_po_id||_itemFullyOutsourced(ii)});
     };
     // Frozen jobs whose claimed decorations were all cleared (rep deleted art from every line)
     // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
@@ -3262,7 +3280,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(d.fulfillment==='outside'||d.deco_po_id)return;// routed outside (soft flag / on a deco PO) — no in-house job
           const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const concreteDt=artF?.deco_type||d.deco_type||null;
-          if(decoIsOutsourced(outTypes,concreteDt))return;// vendor produces this decoration — no in-house job
+          if(decoIsOutsourced(outTypes,concreteDt)&&_itemFullyOutsourced(ii))return;// whole item vendor-decorated — no in-house job (partial coverage = materials purchase, deco stays)
           const dt=concreteDt||'screen_print';
           const part=d.art_file_id?'art_'+d.art_file_id:'unassigned@'+safeStr(d.position);
           // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
@@ -3275,13 +3293,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           decosByType[bk].push({part,d,di,_dt:dt});
         } else if(d.kind==='numbers'){
           const dt=d.num_method||'heat_transfer';
-          if(decoIsOutsourced(outTypes,dt))return;// vendor produces these numbers — no in-house job
+          if(decoIsOutsourced(outTypes,dt)&&_itemFullyOutsourced(ii))return;// whole item vendor-decorated — no in-house job
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType['__combined'])decosByType['__combined']=[];
           decosByType['__combined'].push({part,d,di,_dt:dt});
         } else if(d.kind==='names'){
           const dt=d.name_method||'heat_press';
-          if(decoIsOutsourced(outTypes,dt))return;// vendor produces these names — no in-house job
+          if(decoIsOutsourced(outTypes,dt)&&_itemFullyOutsourced(ii))return;// whole item vendor-decorated — no in-house job
           const part='names_'+dt+'@'+safeStr(d.position);
           if(!decosByType['__combined'])decosByType['__combined']=[];
           decosByType['__combined'].push({part,d,di,_dt:dt});
@@ -9407,7 +9425,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const artF2=d.kind==='art'&&d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
           const dt=decoConcreteType(o,d)||'screen_print';
           const dp=(o.deco_pos||[]).find(p=>(p.item_idxs||[]).includes(firstGi.item_idx)&&p.deco_type===dt)||(o.deco_pos||[]).find(p=>(p.item_idxs||[]).includes(firstGi.item_idx));
-          const row={name:artF2?.name||(d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':''),dt,position:safeStr(d.position),vendor:dp?.vendor||d.vendor||''};
+          const row={name:artF2?.name||(d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':''),dt,position:safeStr(d.position),vendor:dp?.vendor||d.vendor||'',art:artF2||null};
           const k=row.name+'|'+row.dt+'|'+row.position;
           if(!seen.has(k)){seen.add(k);out.push(row)}
         });
@@ -10309,8 +10327,27 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                        {_priorPickR(gi)||_requestMockR(gi,false)}
                        {_linkChipsR(gi)}
                       </>}
+                      {/* Outsourced designs on the same garment — context only (SO-1660): the proof
+                          is judged as the WHOLE garment, so a mixed-media approval must show every
+                          location, including the vendor-produced one. Not part of this approval. */}
+                      {(()=>{const _ctx=_jobOutsideDecos(j);if(!_ctx.length)return null;
+                        return<div style={{margin:'0 10px 10px',padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8}}>
+                          <div style={{fontSize:10,fontWeight:800,color:'#6d28d9',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}} title="This decoration is routed to an outside vendor — shown for context, it is not part of this approval">🏭 Also on this garment — outside vendor</div>
+                          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                            {_ctx.map((ol,ci)=>{const im=ol.art?.item_mockups||{};const _mk2=gi.sku+'|'+(gi.color||'');
+                              const _own=_filterDisplayable(im[_mk2]&&im[_mk2].length?im[_mk2]:(im[gi.sku]||[]));
+                              const _pool=_own.length?_own:_filterDisplayable([...(ol.art?.mockup_files||ol.art?.files||[]),...(ol.art?.prod_files||[])]);
+                              const f=_pool[0]||null;const url=f?(typeof f==='string'?f:(f?.url||'')):'';
+                              return<div key={ci} style={{width:150,borderRadius:8,border:'2px solid #c4b5fd',overflow:'hidden',background:'white'}}>
+                                {url&&_isImgUrl(url,f)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#fafafa',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
+                                :url&&_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#fafafa',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
+                                :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,color:'#7c3aed',background:'#fafafa',padding:'0 8px',textAlign:'center'}}>{url?fileDisplayName(f):'No mock on file'}</div>}
+                                <div style={{padding:'4px 8px',borderTop:'1px solid #ddd6fe',fontSize:10,color:'#6d28d9',fontWeight:700}}>{_outsideDecoText(ol)}</div>
+                              </div>})}
+                          </div>
+                        </div>})()}
                       {/* Decoration spec */}
-                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
+                      {(artDecos.length>0||numDecos.length>0||nameDecos.length>0||_jobOutsideDecos(j).length>0)&&<div style={{padding:'10px 14px',borderTop:'1px solid #fde68a',background:'#f8fafc'}}>
                         <div style={{fontSize:10,fontWeight:700,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Decoration Spec</div>
                         {artDecos.map((d,di)=>{
                           const dAf=d.art_file_id?safeArt(o).find(a=>a.id===d.art_file_id):null;
@@ -10350,6 +10387,10 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                         </div>)}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                        {_jobOutsideDecos(j).map((ol,ci)=><div key={'oc'+ci} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 7px',borderRadius:3,border:'1px solid #ddd6fe'}} title="Produced by an outside vendor — not part of this approval">🏭 Outside{ol.vendor?' · '+ol.vendor:''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(ol.name?ol.name+' — ':'')+ol.dt.replace(/_/g,' ')+' · '+(ol.position||'—')}</span>
                         </div>)}
                       </div>}
                       {/* Size grid */}
@@ -10626,6 +10667,10 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                           </div>})}
                         {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 7px',borderRadius:3}}>Names{nd.front_and_back?' — Front + Back':''}</span>
+                        </div>)}
+                        {_jobOutsideDecos(j).map((ol,ci)=><div key={'oc'+ci} style={{padding:'5px 0',borderTop:'1px solid #e2e8f0',display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 7px',borderRadius:3,border:'1px solid #ddd6fe'}} title="Produced by an outside vendor — not part of this job">🏭 Outside{ol.vendor?' · '+ol.vendor:''}</span>
+                          <span style={{fontSize:11,color:'#1e293b'}}>{(ol.name?ol.name+' — ':'')+ol.dt.replace(/_/g,' ')+' · '+(ol.position||'—')}</span>
                         </div>)}
                       </div>}
                       {/* Size grid */}

@@ -26,7 +26,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -20342,6 +20342,7 @@ export default function App(){
         // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
         if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
         if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
+        if(jobAllRoutedOutside(so,j))return;// skip — every claimed deco moved to an outside decorator; the job retires on the order's next sync (SO-1009)
         if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
@@ -20353,6 +20354,7 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
+        if(jobAllRoutedOutside(so,j))return;// outside decorator produces it — no prod-files step here (SO-1009)
         if(_jobNeedsProdFiles(j,so)){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
           const af=afs.find(a=>!artProdFilesConfirmed(a))||afs[0];
