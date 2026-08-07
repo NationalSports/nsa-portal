@@ -802,6 +802,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _activeArtistId=(id)=>(id&&(REPS||[]).some(r=>r.id===id&&(r.role==='art'||r.role==='artist')&&r.is_active!==false))?id:'';
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
+  // 🎯 Apply-art picker: after a new art folder is created (or via each folder's "Apply to items"
+  // button) pick which line items the art goes on, plus per-item location and color way.
+  // {artId,rows:[{ii,checked,already,position,color_way_id,cwExact}]} — null = closed.
+  const[artApply,setArtApply]=useState(null);
   const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
   const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
@@ -2745,7 +2749,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // latest art_files. Closure-captured `af` would be stale across async gaps
   // (file uploads, auto-save flips of dirty, parent prop refreshes), and
   // writing back a stale snapshot would clobber unsaved color ways / size.
-  const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Open the apply-art picker for a folder: one row per line item, pre-checked unless the
+  // item already carries this art, location seeded from the folder default, CW pre-matched
+  // to the garment shade (exact matches only — a fallback guess is left for the rep).
+  const openArtApply=(artObj)=>{
+    if(!artObj)return;
+    const items=safeItems(o);
+    if(!items.length){nf('No line items on this order yet — add items first, then apply the art.');return}
+    const cws=safeArr(artObj.color_ways);
+    const rows=items.map((it,ii)=>{
+      const already=safeDecos(it).some(d=>d.kind==='art'&&d.art_file_id===artObj.id);
+      const m=_cwMatchForItem(artObj,it,it.color);
+      return{ii,already,checked:!already,position:artObj.location||'Front Center',
+        color_way_id:(m&&m.exact&&m.id)||(cws.length===1?cws[0].id:''),cwExact:!!(m&&m.exact)};
+    });
+    setArtApply({artId:artObj.id,rows});
+  };
+  // Write the picker's selections onto the items. Fills the first EMPTY art deco slot on the
+  // item when one exists (so freshly-added items don't grow a second decoration), else appends
+  // a new decoration. Only empty slots are touched — swapping art already in a job goes through
+  // changeArtFileId, which handles the request-recall bookkeeping this path must not shortcut.
+  const applyArtSelections=()=>{
+    const m=artApply;if(!m)return;
+    const sel=m.rows.filter(r=>r.checked&&!r.already);
+    setArtApply(null);
+    if(!sel.length)return;
+    setO(e=>({...e,items:safeItems(e).map((it,ii)=>{
+      const r=sel.find(s=>s.ii===ii);if(!r)return it;
+      const decos=safeDecos(it);
+      const empty=decos.findIndex(d=>d.kind==='art'&&!d.art_file_id);
+      if(empty>=0)return{...it,no_deco:false,decorations:decos.map((d,i)=>i===empty?{...d,art_file_id:m.artId,position:r.position||d.position||'Front Center',color_way_id:r.color_way_id||null}:d)};
+      const rev=itemIsReversible(it);
+      return{...it,no_deco:false,decorations:[...decos,{kind:'art',position:r.position||'Front Center',art_file_id:m.artId,color_way_id:r.color_way_id||null,sell_override:null,...(rev?{reversible:true}:{})}]};
+    }),updated_at:new Date().toLocaleString()}));
+    setDirty(true);
+    nf('🎯 Art applied to '+sel.length+' item'+(sel.length>1?'s':'')+' — review CW/location on the Line Items tab');
+  };
+  const addArt=()=>{const newArt={id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()};
+    setO(e=>({...e,art_files:[...(e.art_files||[]),newArt],updated_at:new Date().toLocaleString()}));setDirty(true);
+    // Immediately offer to place the new folder on the order's items (skipped when there are none).
+    if(safeItems(o).length)openArtApply(newArt)};
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
   // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to
@@ -5826,6 +5869,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>{(art.deco_type||'').replace(/_/g,' ')}{art.art_size?' · '+art.art_size:''} · {usedIn} deco(s) · {garmentCount} garment{garmentCount===1?'':'s'}</span>
                 </div>
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
+                <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
               {/* Collapsible body */}
@@ -6075,6 +6119,55 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
               </div>})}
           </div>}</>}
+        </div>
+      </div></div>})()}
+
+    {/* 🎯 APPLY ART TO ITEMS — pick which line items a folder goes on, plus location + CW per item */}
+    {artApply&&(()=>{
+      const art=af.find(a=>a.id===artApply.artId);
+      if(!art){setTimeout(()=>setArtApply(null),0);return null}
+      const cws=safeArr(art.color_ways);
+      const items=safeItems(o);
+      const upRow=(ii,patch)=>setArtApply(p=>p?{...p,rows:p.rows.map(r=>r.ii===ii?{...r,...patch}:r)}:p);
+      const selCount=artApply.rows.filter(r=>r.checked&&!r.already).length;
+      const allChecked=artApply.rows.every(r=>r.already||r.checked);
+      return<div className="modal-overlay" onClick={()=>setArtApply(null)}><div className="modal" style={{maxWidth:720}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>🎯 Apply "{art.name||'Untitled'}" to items</h2><button className="modal-close" onClick={()=>setArtApply(null)}>×</button></div>
+        <div className="modal-body" style={{maxHeight:480,overflowY:'auto'}}>
+          <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Check each garment this art goes on and set its decoration location{cws.length?' and color way':''}. Everything here can still be changed per-decoration on the Line Items tab.</div>
+          {cws.length===0&&<div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11.5,color:'#92400e',marginBottom:10}}>This folder has no color ways yet — add them in the folder's Color Ways editor, then set each decoration's CW on the Line Items tab (it will show "CW Needed" until then).</div>}
+          <label style={{display:'flex',alignItems:'center',gap:6,fontSize:11.5,fontWeight:700,color:'#475569',marginBottom:6,cursor:'pointer'}}>
+            <input type="checkbox" checked={allChecked} onChange={e=>{const v=e.target.checked;setArtApply(p=>p?{...p,rows:p.rows.map(r=>r.already?r:{...r,checked:v})}:p)}}/> Select all
+          </label>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {artApply.rows.map(r=>{const it=items[r.ii];if(!it)return null;
+              const qty=it.total_qty||Object.values(it.sizes||{}).reduce((s,b)=>s+(+b||0),0)||it.est_qty||0;
+              const label=(it.color?it.color+' ':'')+(it.sku||it.name||('Item '+(r.ii+1)));
+              return<div key={r.ii} style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',padding:'8px 10px',borderRadius:6,border:'1px solid '+(r.already?'#bbf7d0':r.checked?'#c7d2fe':'#e2e8f0'),background:r.already?'#f0fdf4':r.checked?'#f5f3ff':'white',opacity:r.already?0.8:1}}>
+                <label style={{display:'flex',alignItems:'center',gap:8,flex:1,minWidth:180,cursor:r.already?'default':'pointer'}}>
+                  <input type="checkbox" checked={r.already||r.checked} disabled={r.already} onChange={e=>upRow(r.ii,{checked:e.target.checked})}/>
+                  <span style={{fontSize:12.5,fontWeight:600}}>{label}<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}> · {qty} pc{qty===1?'':'s'}</span></span>
+                </label>
+                {r.already?<span style={{fontSize:10.5,fontWeight:700,color:'#166534'}}>✓ already applied</span>:<>
+                  <div style={{display:'flex',flexDirection:'column',gap:1}}>
+                    <span style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Location</span>
+                    <select className="form-select" style={{width:140,fontSize:11.5}} value={r.position} disabled={!r.checked} onChange={e=>upRow(r.ii,{position:e.target.value})}>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select>
+                  </div>
+                  {cws.length>0&&<div style={{display:'flex',flexDirection:'column',gap:1}}>
+                    <span style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Color way</span>
+                    <select className="form-select" style={{width:170,fontSize:11.5,border:r.color_way_id?'1px solid #e2e8f0':'2px solid #f59e0b'}} value={r.color_way_id} disabled={!r.checked} onChange={e=>upRow(r.ii,{color_way_id:e.target.value})}>
+                      <option value="">— pick later —</option>
+                      {cws.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({(cw.inks||[]).filter(c=>String(c||'').trim()).length}c)</option>)}
+                    </select>
+                    {r.checked&&r.color_way_id&&!r.cwExact&&<span style={{fontSize:9,color:'#b45309',fontWeight:700}}>⚠ confirm — shade not an exact match</span>}
+                  </div>}
+                </>}
+              </div>})}
+          </div>
+        </div>
+        <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+          <button className="btn btn-secondary" onClick={()=>setArtApply(null)}>Skip — wire manually</button>
+          <button className="btn btn-primary" disabled={!selCount} onClick={applyArtSelections}>Apply to {selCount} item{selCount===1?'':'s'}</button>
         </div>
       </div></div>})()}
 
