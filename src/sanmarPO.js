@@ -46,13 +46,14 @@ export const SANMAR_TEST_PRODUCTS = [
 // The SanMar Unique_Key (partId) is required for a real submit. We look for it on
 // the item under several common keys; if absent we flag it via `_warnings` so the
 // preview makes the gap obvious rather than silently sending an invalid part.
+// Drop-ship lines are included: the modal resolves the batch's drop-ship
+// destination as its ship-to and the rep can edit it before submitting.
 export function buildSanMarLineItems(batchPOs) {
   const lines = [];
   const warnings = [];
   let lineNumber = 1;
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
-      if (it.drop_ship) return; // drop-ship lines ship direct to the customer, not via the NSA-warehouse API order
       const style = it._sanmar_style || (String(it.sku || '').split(/[\s_]/)[0] || it.sku || '');
       const color = it._sanmar_color || it.color || '';
       // SanMar upcharges extended sizes (2XL+). Per-size costs (if captured at PO

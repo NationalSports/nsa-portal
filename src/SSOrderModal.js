@@ -20,7 +20,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, onClose, onSubmitted, onLearnSkus }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', onClose, onSubmitted, onLearnSkus }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
@@ -282,6 +282,11 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
+          {!done && shipWarning && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
+              <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
+            </div>
+          )}
           <ShipToEditor
             auto={autoShip}
             override={shipOverride}

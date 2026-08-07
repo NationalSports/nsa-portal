@@ -41,7 +41,7 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipWarning = '', shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
@@ -59,9 +59,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // a lookup failure leaves the column blank, never blocks.
   const [whseByLine, setWhseByLine] = useState(null); // null = loading
 
-  // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker)
+  // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker).
+  // 'order' appears only when the caller resolved a destination off the batch itself
+  // (a drop-ship program address, or a write-in address on the PO) — without it that
+  // address would sit under a radio labelled "NSA Warehouse".
   const isPrescribed = !!shipToDecoId;
-  const [shipMode, setShipMode] = useState(shipToDecoId ? 'deco' : 'nsa'); // 'nsa' | 'deco'
+  const [shipMode, setShipMode] = useState(shipToDecoId ? 'deco' : (shipTo ? 'order' : 'nsa')); // 'nsa' | 'deco' | 'order'
   const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
   const [selectedDecoId, setSelectedDecoId] = useState(() => shipToDecoId || activeDecoVendors[0]?.id || '');
   const [dpoNumber, setDpoNumber] = useState(initialDpoNumber || '');
@@ -102,8 +105,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
         postalCode: zip,
         country: 'US',
       };
+    } else if (shipMode === 'order' && shipTo) {
+      effectiveShip = shipTo;
     } else {
-      effectiveShip = shipTo || NSA_SHIP_TO;
+      effectiveShip = NSA_SHIP_TO;
     }
     return effectiveShip;
   }, [shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
@@ -401,6 +406,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                       <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'nsa'} onChange={() => setShipMode('nsa')} />
                       NSA Warehouse
                     </label>
+                    {shipTo && (
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'order' ? 700 : 400, color: shipMode === 'order' ? '#b45309' : 'inherit' }}>
+                        <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'order'} onChange={() => setShipMode('order')} />
+                        Drop ship — order address
+                      </label>
+                    )}
                     {activeDecoVendors.length > 0 && (
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', fontWeight: shipMode === 'deco' ? 700 : 400, color: shipMode === 'deco' ? '#7c3aed' : 'inherit' }}>
                         <input type="radio" name="sanmar-ship-mode" checked={shipMode === 'deco'} onChange={() => setShipMode('deco')} />
@@ -506,13 +517,18 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
+          {!done && shipWarning && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
+              <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
+            </div>
+          )}
           <ShipToEditor
             auto={autoShip}
             override={shipOverride}
             onChange={setShipOverride}
             disabled={done || submitting}
             shipVia="UPS Ground"
-            autoLabel={shipMode === 'deco' ? 'decorator' : 'warehouse'}
+            autoLabel={shipMode === 'deco' ? 'decorator' : shipMode === 'order' ? 'order address' : 'warehouse'}
           />
 
           {/* Ships FROM — which SanMar warehouse fills the order */}
