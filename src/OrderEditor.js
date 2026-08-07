@@ -2411,34 +2411,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const buildApiOrderFromPO=(po,lines)=>{
     if(!po||po.po_type==='outside_deco')return null;
     const vk=_apiVendorKey(po.vendor);if(!vk)return null;
-    // For drop-ship POs, only allow API ordering when blanks are going to a decorator
-    // (not directly to the customer — we can't pre-determine customer ship-to here).
     const lineIdxs=new Set((lines||[]).map(ln=>ln.lineIdx));
     const relDeco=po.drop_ship?(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).some(ix=>lineIdxs.has(ix))&&dp.deco_vendor_id):null;
-    if(po.drop_ship&&!relDeco)return null;
     const poId=po.po_id;const items=safeItems(o);const payloadItems=[];
+    let writeIn=null;// first write-in "new address" found on this PO's lines
     (lines||[]).forEach(ln=>{const it=items[ln.lineIdx];if(!it)return;
       const pl=(it.po_lines||[]).find(p=>p.po_id===poId);if(!pl)return;
       const sizes={};Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&typeof v==='number'&&v>0)sizes[k]=v});
       if(!Object.keys(sizes).length)return;
+      if(!writeIn&&pl.ship_to&&(pl.ship_to.line1||pl.ship_to.city))writeIn={addr:pl.ship_to,attention:pl.attention||pl.ship_to.attention||''};
       payloadItems.push({sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
         ...(pl._size_costs?{_size_costs:pl._size_costs}:{}),
         ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
     });
     if(!payloadItems.length)return null;
-    // Decorator drop-ship: SanMar's modal resolves the address itself from shipToDecoId +
-    // decoVendors, but SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — so
-    // without this the S&S order silently defaults to the NSA warehouse. Resolve the decorator's
-    // address (with DPO on the attention line) the same way the batch-ready popup S&S path does.
+    // Ship-to for a drop-ship PO, same precedence the batch flow uses (see
+    // resolveBatchDestination): the PO's write-in address, then the decorator this PO's
+    // blanks belong to, then the SO's ship-to customer. The modals take a PRE-RESOLVED
+    // shipTo — without one an S&S/Momentec drop ship silently goes to the NSA dock.
+    // Every address stays editable in the modal, so an unresolved one is a warning, not
+    // a block: this used to bail out entirely on a customer drop ship, which left those
+    // POs with no API path at all.
+    const _shape=(a,attn)=>(a&&(a.line1||a.city))?{companyName:a.name||'',attentionTo:attn||a.attention||'',address1:a.line1||'',address2:a.line2||'',city:a.city||'',region:a.state||'',postalCode:a.zip||'',country:'US'}:null;
     const _decoShip=relDeco?resolveDecoShipToClient({decoId:relDeco.deco_vendor_id,so:o,decoVendors,vendors:vendorList,itemIdxs:[...lineIdxs]}):null;
+    // `o` first so an unsaved edit to this SO's ship-to wins over the stale copy in allOrders.
+    const _custShip=(po.drop_ship&&!relDeco&&!writeIn)?resolveShipToClient(o.id,[o,...(allOrders||[])],allCustomers):null;
+    const shipTo=writeIn?_shape(writeIn.addr,writeIn.attention):(_decoShip?_shape(_decoShip):_shape(_custShip));
     return {
       vendorKey:vk,poNumber:poId,vendorName:po.vendor,
       batchPOs:[{so_id:o.id,items:payloadItems}],
+      ...(shipTo?{shipTo}:{}),
+      ...(po.drop_ship&&!shipTo?{shipWarning:'This PO is drop ship but no delivery address is on file'+(relDeco?' for the decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" for the SO's ship-to customer")+' — it has fallen back to the NSA warehouse. Edit the address below if it should go elsewhere.'}:{}),
       // Decorator drop-ship: pre-lock ship-to and pre-fill DPO number in attention line
       ...(relDeco?{
         shipToDecoId:relDeco.deco_vendor_id,
         initialDpoNumber:String(relDeco.po_id||'').replace(/^DPO\s*/i,''),
-        ...(_decoShip?{shipTo:{companyName:_decoShip.name,attentionTo:_decoShip.attention||'',address1:_decoShip.line1,city:_decoShip.city,region:_decoShip.state,postalCode:_decoShip.zip}}:{}),
       }:{}),
     };
   };
