@@ -1233,10 +1233,27 @@ const SANMAR_WHSE_ORDER = ['1', '2', '3', '4', '5', '6', '7', '12'];
 const sanmarGetWarehouseStock = async (descriptors) => {
   const out = {};
   const arr = (x) => (Array.isArray(x) ? x : (x !== undefined && x !== null) ? [x] : []);
-  for (const d of (Array.isArray(descriptors) ? descriptors : [])) {
-    if (!d || !d.key || out[d.key] || !d.style) continue;
+  const list = (Array.isArray(descriptors) ? descriptors : []).filter(d => d && d.key && d.style);
+  // The legacy inventory service errors ("Internal error occured") unless color and
+  // size match SanMar's exact catalog spelling, and order lines often carry
+  // abbreviations ("Dark Smoke Gry"). Each line's resolved partId (Unique_Key) pins
+  // the exact catalogColor + size — pull them from the product API, one call per style.
+  const specByPart = {};
+  for (const style of [...new Set(list.map(d => String(d.style).toUpperCase().trim()))]) {
     try {
-      const inv = await sanmarGetInventory(d.style, d.color || '', d.size || '');
+      const pd = await sanmarGetProduct(style);
+      for (const r of arr(pd?.items)) {
+        const bi = r.productBasicInfo || r;
+        const uk = _smKey(r, bi);
+        if (uk && !specByPart[uk]) specByPart[uk] = { color: _smColor(bi), size: _smSize(bi) };
+      }
+    } catch (e) { console.warn('[SanMar] catalog spelling lookup failed for', style, e.message); }
+  }
+  for (const d of list) {
+    if (out[d.key]) continue;
+    try {
+      const spec = specByPart[String(d.partId || '')] || {};
+      const inv = await sanmarGetInventory(d.style, spec.color || d.color || '', spec.size || d.size || '');
       // Diagnostic (mirrors OrderEditor's RAW per-size dump): past attempts guessed the
       // legacy shape wrong — keep the full response visible until this display has been
       // verified against live data.

@@ -127,19 +127,22 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const _whseKey = (l) => [l.style, l.color, l.size].map(s => String(s || '').toUpperCase().trim()).join('|');
   const whseDescriptors = useMemo(() => {
     const seen = new Set(); const out = [];
-    for (const l of lines) { const k = _whseKey(l); if (!l.style || seen.has(k)) continue; seen.add(k); out.push({ key: k, style: l.style, color: l.color, size: l.size }); }
+    // partId rides along so the lookup can use the part's EXACT catalog color/size
+    // spelling (the legacy service errors on our abbreviated order colors).
+    for (const l of lines) { const k = _whseKey(l); if (!l.style || seen.has(k)) continue; seen.add(k); out.push({ key: k, style: l.style, color: l.color, size: l.size, partId: l.partId || '' }); }
     return out;
   }, [lines]);
-  const whseFetchKey = useMemo(() => whseDescriptors.map(d => d.key).sort().join(','), [whseDescriptors]);
+  const whseFetchKey = useMemo(() => whseDescriptors.map(d => d.key + ':' + d.partId).sort().join(','), [whseDescriptors]);
   useEffect(() => {
     let cancelled = false;
-    if (!whseFetchKey) return;
+    // Wait for partId resolution — the catalog-spelling lookup needs each line's partId.
+    if (!whseFetchKey || resolving) return;
     setWhseByLine(null);
     sanmarGetWarehouseStock(whseDescriptors)
       .then(m => { if (!cancelled) setWhseByLine(m || {}); })
       .catch(() => { if (!cancelled) setWhseByLine({}); });
     return () => { cancelled = true; };
-  }, [whseFetchKey]);
+  }, [whseFetchKey, resolving]);
 
   // Styles still unresolved → surface what SanMar actually returned for them.
   const unresolvedStyles = useMemo(() => {
