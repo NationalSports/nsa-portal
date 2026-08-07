@@ -8,6 +8,7 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
+import { MsgAttachments, MsgAttachBar, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
@@ -595,7 +596,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' and pointed '+targets.length+' decoration'+(targets.length>1?'s':'')+' on '+garments.length+' garment'+(garments.length>1?'s':'')+' at it'+_pfNote
       +(cwFlag.length?' — ⚠️ confirm color-way for '+cwFlag.join(', '):''));
   };
-  const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
+  const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);const[msgAtt,setMsgAtt]=useState([]);const[msgAttBusy,setMsgAttBusy]=useState(false);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
     // Use a ref to track the last order we synced from, to avoid re-triggering on format differences
     const lastSyncRef=React.useRef(order.id+':'+(order.updated_at||''));
@@ -6258,21 +6259,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();insertMention(mentionMembers[mentionIdx]);return}
           if(e.key==='Escape'){setMentionQuery(null);return}
         }
-        if(e.key==='Enter'&&mentionQuery==null&&e.target.value.trim()){
-          const text=e.target.value.trim();
-          const tagged=extractTaggedIds(text);
-          const eType=isSO?'so':'estimate';
-          const nm={id:'m'+Date.now(),so_id:isSO?o.id:null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged,entity_type:eType,entity_id:o.id,thread_id:replyTo||null};
-          if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');setMentionQuery(null);setReplyTo(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent')}
+        if(e.key==='Enter'&&mentionQuery==null&&(e.target.value.trim()||msgAtt.length>0)){sendMsg()}
       };
       const sendMsg=()=>{
-        const inp=msgInputRef.current;if(!inp||!inp.value.trim())return;
-        const text=inp.value.trim();
+        const inp=msgInputRef.current;if(!inp)return;
+        // An attachment-only message is valid — a photo or proof PDF often is the message.
+        const text=(inp.value||'').trim();if(!text&&msgAtt.length===0)return;
         const tagged=extractTaggedIds(text);
         const eType=isSO?'so':'estimate';
-        const nm={id:'m'+Date.now(),so_id:isSO?o.id:null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged,entity_type:eType,entity_id:o.id,thread_id:replyTo||null};
-        if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');setMentionQuery(null);setReplyTo(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent');
+        const nm={id:'m'+Date.now(),so_id:isSO?o.id:null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged,entity_type:eType,entity_id:o.id,thread_id:replyTo||null,attachments:msgAtt.length?msgAtt:null};
+        if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');setMentionQuery(null);setReplyTo(null);setMsgAtt([]);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent');
       };
+      const handleMsgPaste=makeMsgPasteHandler(setMsgAtt,setMsgAttBusy,nf);
       const renderOneBubble=(m,indent)=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
         const dept=DEPTS.find(d=>d.id===m.dept);const isTagged=(m.tagged_members||[]).includes(cu.id);const replies=getReplies(m.id);
         return<div key={m.id} style={{marginLeft:indent?24:0}}>
@@ -6290,6 +6288,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>
             <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgText(m.text,m.tagged_members)}</div>
+            <MsgAttachments items={msgAttachments(m)}/>
             {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
             {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
           </div>
@@ -6318,10 +6317,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div><div style={{fontSize:12,fontWeight:600}}>{m.name}</div><div style={{fontSize:10,color:'#94a3b8'}}>{m.role}</div></div>
               </div>)}
             </div>}
+            <MsgAttachBar items={msgAtt} setItems={setMsgAtt} busy={msgAttBusy} setBusy={setMsgAttBusy} nf={nf}/>
             <div style={{display:'flex',gap:8}}>
-              <input ref={msgInputRef} className="form-input" placeholder={replyTo?'Type a reply... (@ to tag someone)':'Type a message... (@ to tag someone)'} style={{flex:1}}
-                onChange={handleMsgInput} onKeyDown={handleMsgKeyDown}/>
-              <button className="btn btn-primary" onClick={sendMsg}>{replyTo?'Reply':'Send'}</button>
+              <input ref={msgInputRef} className="form-input" placeholder={replyTo?'Type a reply... (@ to tag someone, paste to attach)':'Type a message... (@ to tag someone, paste to attach)'} style={{flex:1}}
+                onChange={handleMsgInput} onKeyDown={handleMsgKeyDown} onPaste={handleMsgPaste}/>
+              <button className="btn btn-primary" disabled={msgAttBusy} onClick={sendMsg}>{replyTo?'Reply':'Send'}</button>
             </div>
           </div>
         </div></div>})()}

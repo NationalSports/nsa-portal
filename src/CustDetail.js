@@ -6,6 +6,7 @@ import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, T
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
+import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
 import { StripePaymentModal } from './modals';
@@ -438,6 +439,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div>{g.msgs.map((m,mi)=>{const un=isUnread(m);return<div key={m.id||mi} style={{padding:'8px 12px',borderBottom:mi<g.msgs.length-1?'1px solid #f1f5f9':'none',borderLeft:un?'3px solid #dc2626':'3px solid transparent',background:un?'#fef2f2':'white'}}>
         <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{m.is_system?'System':authorName(m.author_id)} <span style={{fontWeight:400,color:'#94a3b8',fontSize:9}}>{msgTs(m)?new Date(msgTs(m)).toLocaleString():''}</span>{un&&<span style={{marginLeft:6,fontSize:9,color:'#dc2626',fontWeight:700}}>● NEW</span>}</div>
         <div style={{fontSize:12,color:'#334155',marginTop:2,whiteSpace:'pre-wrap'}}>{m.text}</div>
+        <MsgAttachments items={msgAttachments(m)} size={72}/>
       </div>})}</div>
     </div>)}
   </div></div>}
