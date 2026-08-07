@@ -1909,6 +1909,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
+  // Change close date from the list row dropdown, without opening the full store editor.
+  // Extending an already-closed store into the future reopens it (and clears the sweep's
+  // idempotency stamp so the next close still notifies the rep/CSR).
+  const changeCloseDate = useCallback(async (store, newDate) => {
+    const patch = { close_at: newDate || null, updated_at: new Date().toISOString() };
+    if (store.status === 'closed' && (!newDate || new Date(newDate + 'T23:59:59') > new Date())) {
+      if (!window.confirm(`"${store.name}" is closed. ${newDate ? 'Setting a future close date' : 'Removing the close date'} will reopen it and start taking orders again. Continue?`)) return;
+      patch.status = 'open';
+      patch.closed_notified_at = null;
+    }
+    const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
+    if (error) { flash('Could not update close date: ' + error.message); return; }
+    setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
+    if (sel?.id === store.id) setSel(data);
+    flash(newDate ? 'Close date updated' : 'Close date cleared — store stays open');
+  }, [sel, flash]);
+
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
     const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
@@ -3594,7 +3611,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -4051,7 +4068,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -4060,6 +4077,9 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
   const [copiedId, setCopiedId] = useState(null);
+  // Inline close-date editor in the expanded row (id of the store being edited + draft value).
+  const [editCloseId, setEditCloseId] = useState(null);
+  const [closeDraft, setCloseDraft] = useState('');
   // Live-inventory panel (Reporting view): per-store stock for every item.
   const [invStoreId, setInvStoreId] = useState('');
   const [invItems, setInvItems] = useState([]);
@@ -4426,7 +4446,17 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                  {onChangeCloseDate && editCloseId !== s.id && (
+                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); }}>Change Close Date</button>
+                                  )}
                                 </div>
+                                {onChangeCloseDate && editCloseId === s.id && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                                    <input className="form-input" type="date" value={closeDraft} onChange={(e) => setCloseDraft(e.target.value)} style={{ width: 160, padding: '6px 8px', fontSize: 13 }} autoFocus />
+                                    <button className="btn btn-sm btn-primary" onClick={() => { onChangeCloseDate(s, closeDraft); setEditCloseId(null); }}>Save</button>
+                                    <button className="btn btn-sm btn-secondary" onClick={() => setEditCloseId(null)}>Cancel</button>
+                                  </div>
+                                )}
                               </div>
                               {/* Col 3: Store Setup */}
                               <div>
@@ -4777,8 +4807,15 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
+// New stores default to closing on the third Sunday from today (midnight): orders are
+// processed Monday mornings, so a store built today runs ~3 weekends and lands on that cycle.
+const defaultCloseDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + (((7 - d.getDay()) % 7) || 7) + 14); // next Sunday (strictly ahead), then +2 weeks
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
