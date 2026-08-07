@@ -2760,7 +2760,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const rows=items.map((it,ii)=>{
       const already=safeDecos(it).some(d=>d.kind==='art'&&d.art_file_id===artObj.id);
       const m=_cwMatchForItem(artObj,it,it.color);
-      return{ii,already,checked:!already,position:artObj.location||'Front Center',
+      // Nothing pre-checked on a multi-item order — the rep picks explicitly. Only a
+      // single-item order starts checked (there's nothing to choose between).
+      return{ii,already,checked:!already&&items.length===1,position:artObj.location||'Front Center',
         color_way_id:(m&&m.exact&&m.id)||(cws.length===1?cws[0].id:''),cwExact:!!(m&&m.exact)};
     });
     setArtApply({artId:artObj.id,rows});
