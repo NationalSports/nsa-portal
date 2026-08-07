@@ -775,8 +775,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
   const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
-  // Deep-link: emails/texts can point straight at one estimate (?est=<id>) or art
-  // proof (?so=<id>&job=<id>) instead of the portal home. The params ride on the
+  // Deep-link: emails/texts can point straight at one estimate (?est=<id>), art
+  // proof (?so=<id>&job=<id>), or invoice (?inv=<id>) instead of the portal home. The params ride on the
   // portal's own URL when it's opened directly; embedded in the marketing /coach
   // iframe (which forwards only the portal tag) they're recovered from the parent
   // page URL via document.referrer. Applied once, as soon as the target record has
@@ -786,12 +786,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     if(_deepLinked.current)return;
     let sp=null;try{sp=new URLSearchParams(window.location.search);}catch(_){}
     const _param=k=>{const v=sp&&sp.get(k);if(v)return v;try{const r=document.referrer||'';const qi=r.indexOf('?');if(qi>=0)return new URLSearchParams(r.slice(qi)).get(k);}catch(_){}return null;};
-    const estId=_param('est'),soId=_param('so'),jobId=_param('job');
-    if(!estId&&!soId){_deepLinked.current=true;return;}
+    const estId=_param('est'),soId=_param('so'),jobId=_param('job'),invId=_param('inv'),pageId=_param('page');
+    if(!estId&&!soId&&!invId){
+      // Page-only deep-link (?page=billing etc.) — used by statement/past-due emails
+      // that cover several invoices, so there's no single record to open.
+      if(pageId&&['orders','roster','store','art','billing','shop'].includes(pageId))setPage(pageId);
+      _deepLinked.current=true;return;
+    }
     if(estId){const e=(ests||[]).find(x=>x.id===estId);if(e){setEstView(e);setUpdateRequestSent(false);setUpdateRequestText('');setPage('orders');_deepLinked.current=true;}return;}
+    if(invId){const inv=(invs||[]).find(x=>x.id===invId);if(inv){setInvView(inv);setPage('billing');_deepLinked.current=true;}return;}
     const s=(sos||[]).find(x=>x.id===soId);
     if(s){setSoView(s);const j=jobId?(safeJobs(s)||[]).find(jj=>jj.id===jobId):null;if(j){setJobView({job:j,so:s});setComment('');}setPage('orders');_deepLinked.current=true;}
-  },[sos,ests]);
+  },[sos,ests,invs]);
   const isP=!customer.parent_id;
   // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
   // A sub-team's own colors drive the theme; its parent department's colors only

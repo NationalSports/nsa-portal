@@ -25,8 +25,10 @@ const DEFAULT_MAX = 4;
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-function portalLink(alphaTag) {
-  return alphaTag ? `${PORTAL_BASE}?portal=${encodeURIComponent(alphaTag)}` : '';
+// deepLink: extra query params (e.g. 'est=EST123') so the portal opens straight
+// on the document being followed up, not the portal home.
+function portalLink(alphaTag, deepLink) {
+  return alphaTag ? `${PORTAL_BASE}?portal=${encodeURIComponent(alphaTag)}${deepLink ? '&' + deepLink : ''}` : '';
 }
 
 // Branded shell — message body (rep's custom text) + an optional portal button + the opt-out
@@ -181,7 +183,7 @@ exports.handler = async () => {
       if (!to.length) { await stop('estimates', r.id); continue; }
       if (!(await claim('estimates', r))) continue;
       const cust = custs[r.customer_id] || {};
-      const link = portalLink(cust.alpha_tag);
+      const link = portalLink(cust.alpha_tag, 'est=' + encodeURIComponent(r.id));
       const msg = r.follow_up_message || defaultMessage('estimate', r.memo, link);
       const unsub = unsubUrl('estimates', r.id);
       const out = await sendEmail({ toList: to, subject: `Following up on your estimate${r.memo ? ` — ${r.memo}` : ''}`, html: buildHtml(msg, link, 'View & approve your estimate', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
@@ -208,7 +210,7 @@ exports.handler = async () => {
       if (!to.length) { await stop('invoices', r.id); continue; }
       if (!(await claim('invoices', r))) continue;
       const cust = custs[r.customer_id] || {};
-      const link = portalLink(cust.alpha_tag);
+      const link = portalLink(cust.alpha_tag, 'inv=' + encodeURIComponent(r.id));
       const msg = r.follow_up_message || defaultMessage('invoice', r.id, link);
       const unsub = unsubUrl('invoices', r.id);
       const out = await sendEmail({ toList: to, subject: `Following up on invoice ${r.id}`, html: buildHtml(msg, link, 'View & pay your invoice', unsub), replyTo: reps[r.created_by], unsubLink: unsub });
@@ -243,7 +245,7 @@ exports.handler = async () => {
       if (!(await claim('so_jobs', r))) continue;
       const so = soMap[r.so_id] || {};
       const cust = custs[so.customer_id] || {};
-      const link = portalLink(cust.alpha_tag);
+      const link = portalLink(cust.alpha_tag, r.so_id ? 'so=' + encodeURIComponent(r.so_id) + '&job=' + encodeURIComponent(r.id) : '');
       const msg = r.follow_up_message || defaultMessage('art', r.art_name, link);
       const unsub = unsubUrl('so_jobs', r.id);
       const out = await sendEmail({ toList: to, subject: `Reminder: artwork ready for approval${r.art_name ? ` — ${r.art_name}` : ''}`, html: buildHtml(msg, link, 'Review & approve your artwork', unsub), replyTo: reps[so.created_by], unsubLink: unsub });

@@ -254,7 +254,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(emails.length===0){alert('Please select at least one recipient');return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
-    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag):'';
+    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+(estimate?.id?(docType==='so'?'&so=':'&est=')+encodeURIComponent(estimate.id):''):'';
     const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
