@@ -1221,46 +1221,45 @@ const ssGetWarehouseStock = async (skus) => {
   return map;
 };
 
-// SanMar: PromoStandards getInventoryLevels (one call per style) — each part row
-// carries an inventoryLocationArray with per-warehouse quantities. Returns
-// { STYLEUPPER: { PARTID: [{ id, name, qty }] } } keyed by Unique_Key (the same
-// partId sendPO uses), so modal lines match directly. Field access is defensive:
-// if SanMar omits the location array the style just resolves to {}.
-const sanmarGetWarehouseStock = async (styles) => {
+// SanMar: getInventoryLevels carries NO per-warehouse detail (only per color/size
+// totals), so per-warehouse comes from the legacy getInventoryQtyForStyleColorSize
+// service. Per SanMar's integration guide, its response is an ORDERED list of
+// quantities whose positions designate the warehouses 1,2,3,4,5,6,7,12 (Seattle,
+// Cincinnati, Dallas, Reno, Robbinsville, Jacksonville, Minneapolis, Phoenix) —
+// the list itself names no warehouse. One call per unique style+color+size.
+// descriptors: [{ key, style, color, size }] → { key: [{ id, qty }] }. Best-effort:
+// an unparseable or failed lookup just omits the key (the modal shows "—").
+const SANMAR_WHSE_ORDER = ['1', '2', '3', '4', '5', '6', '7', '12'];
+const sanmarGetWarehouseStock = async (descriptors) => {
   const out = {};
-  const list = [...new Set((Array.isArray(styles) ? styles : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean))];
-  const arr = (x) => (Array.isArray(x) ? x : x ? [x] : []);
-  for (const style of list) {
-    const byPart = {};
+  const arr = (x) => (Array.isArray(x) ? x : (x !== undefined && x !== null) ? [x] : []);
+  for (const d of (Array.isArray(descriptors) ? descriptors : [])) {
+    if (!d || !d.key || out[d.key] || !d.style) continue;
     try {
-      const inv = await sanmarGetPromoInventory(style);
-      const variations = arr(
-        inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory ||
-        inv?.ProductVariationInventoryArray?.ProductVariationInventory ||
-        inv?.inventory || inv?.items
-      );
-      for (const v of variations) {
-        for (const p of arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory)) {
-          const partId = String(p?.partId || p?.PartId || '').trim();
-          if (!partId) continue;
-          const locs = arr(
-            p?.inventoryLocationArray?.inventoryLocation || p?.InventoryLocationArray?.InventoryLocation ||
-            p?.inventoryLocationArray?.InventoryLocation || p?.InventoryLocationArray?.inventoryLocation
-          );
-          const rows = locs.map(loc => ({
-            id: String(loc?.inventoryLocationId || loc?.InventoryLocationId || '').trim(),
-            name: String(loc?.inventoryLocationName || loc?.InventoryLocationName || '').trim(),
-            qty: parseInt(
-              loc?.inventoryLocationQuantity?.Quantity?.value ??
-              loc?.inventoryLocationQuantity?.quantity?.value ??
-              loc?.inventoryLocationQuantity?.Quantity ??
-              loc?.quantityAvailable ?? 0, 10) || 0,
-          })).filter(l => l.id || l.name);
-          if (rows.length) byPart[partId] = rows;
-        }
+      const inv = await sanmarGetInventory(d.style, d.color || '', d.size || '');
+      let rows = arr(inv?.items);
+      if (!rows.length) rows = arr(inv?.listResponse);
+      if (!rows.length) rows = arr(inv?.return);
+      // Documented shape: plain values in warehouse order. Some responses wrap the
+      // quantity in an object — accept either, but only zip by position when EVERY
+      // entry yields a number (a partial parse must not mislabel warehouses).
+      const nums = rows.map(r => (r !== null && typeof r === 'object')
+        ? parseInt(r.quantity ?? r.qty ?? r.totalQty ?? NaN, 10)
+        : parseInt(r, 10));
+      if (nums.length && nums.every(n => !Number.isNaN(n))) {
+        out[d.key] = nums.slice(0, SANMAR_WHSE_ORDER.length).map((qty, i) => ({ id: SANMAR_WHSE_ORDER[i], qty }));
+        continue;
       }
-    } catch (e) { console.warn('[SanMar] warehouse stock lookup failed for', style, e.message); }
-    out[style] = byPart;
+      // Alternate richer shape seen on some accounts: warehouseInfo.inventoryDetail
+      // rows, each with a quantity (and possibly an explicit whseID).
+      const det = rows.flatMap(r => { const w = r && r.warehouseInfo; if (!w) return []; return arr(w.inventoryDetail || w); });
+      const rows2 = det.map((x, i) => ({
+        id: String(x?.whseID ?? x?.whseNo ?? SANMAR_WHSE_ORDER[i] ?? ''),
+        qty: parseInt(x?.quantity ?? NaN, 10),
+      })).filter(r => r.id && !Number.isNaN(r.qty));
+      if (rows2.length) out[d.key] = rows2;
+    } catch (e) { console.warn('[SanMar] warehouse stock lookup failed for', d.style, d.color, d.size, e.message); }
+    await new Promise(r => setTimeout(r, 150));
   }
   return out;
 };

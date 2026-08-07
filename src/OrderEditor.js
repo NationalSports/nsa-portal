@@ -2785,10 +2785,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setDirty(true);
     nf('🎯 Art applied to '+sel.length+' item'+(sel.length>1?'s':'')+' — review CW/location on the Line Items tab');
   };
-  const addArt=()=>{const newArt={id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()};
-    setO(e=>({...e,art_files:[...(e.art_files||[]),newArt],updated_at:new Date().toLocaleString()}));setDirty(true);
-    // Immediately offer to place the new folder on the order's items (skipped when there are none).
-    if(safeItems(o).length)openArtApply(newArt)};
+  // Deliberately NO auto-open of the apply picker here (owner 2026-08-06): a brand-new
+  // folder has no name or color ways yet, so the picker had nothing useful to offer.
+  // The rep fills the folder in first, then uses its "🎯 Apply to items" button.
+  const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
   const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
   // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to

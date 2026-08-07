@@ -40,9 +40,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [resolvedParts, setResolvedParts] = useState({}); // lineNumber -> uniqueKey
   const [candidates, setCandidates] = useState({});       // STYLE -> [{color,size,uniqueKey}]
   const [resolveErr, setResolveErr] = useState('');
-  // Per-warehouse availability keyed style -> partId -> [{id,name,qty}] — informational
-  // "ships from" display only; a lookup failure leaves the column blank, never blocks.
-  const [whseByStyle, setWhseByStyle] = useState(null); // null = loading
+  // Per-warehouse availability keyed by "style|color|size" -> [{id,qty}] (SanMar's legacy
+  // inventory list, warehouse order 1-7,12) — informational "ships from" display only;
+  // a lookup failure leaves the column blank, never blocks.
+  const [whseByLine, setWhseByLine] = useState(null); // null = loading
 
   // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker)
   const isPrescribed = !!shipToDecoId;
@@ -121,18 +122,24 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
   const totals = base.totals;
 
-  // Fetch per-warehouse stock for every style on the order (one PromoStandards
-  // call per style) once the lines exist — matched to each line by its partId.
-  const styleKey = useMemo(() => [...new Set(lines.map(l => String(l.style || '').toUpperCase().trim()).filter(Boolean))].sort().join(','), [lines]);
+  // Fetch per-warehouse stock for every unique style+color+size on the order (one
+  // legacy-inventory call each) — matched back to each line by the same key.
+  const _whseKey = (l) => [l.style, l.color, l.size].map(s => String(s || '').toUpperCase().trim()).join('|');
+  const whseDescriptors = useMemo(() => {
+    const seen = new Set(); const out = [];
+    for (const l of lines) { const k = _whseKey(l); if (!l.style || seen.has(k)) continue; seen.add(k); out.push({ key: k, style: l.style, color: l.color, size: l.size }); }
+    return out;
+  }, [lines]);
+  const whseFetchKey = useMemo(() => whseDescriptors.map(d => d.key).sort().join(','), [whseDescriptors]);
   useEffect(() => {
     let cancelled = false;
-    if (!styleKey) return;
-    setWhseByStyle(null);
-    sanmarGetWarehouseStock(styleKey.split(','))
-      .then(m => { if (!cancelled) setWhseByStyle(m || {}); })
-      .catch(() => { if (!cancelled) setWhseByStyle({}); });
+    if (!whseFetchKey) return;
+    setWhseByLine(null);
+    sanmarGetWarehouseStock(whseDescriptors)
+      .then(m => { if (!cancelled) setWhseByLine(m || {}); })
+      .catch(() => { if (!cancelled) setWhseByLine({}); });
     return () => { cancelled = true; };
-  }, [styleKey]);
+  }, [whseFetchKey]);
 
   // Styles still unresolved → surface what SanMar actually returned for them.
   const unresolvedStyles = useMemo(() => {
@@ -445,10 +452,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
                       <td style={td}>
                         <WarehouseChips
-                          loading={l.partId ? whseByStyle === null : false}
+                          loading={whseByLine === null}
                           entries={rankWarehouses(
-                            (whseByStyle?.[String(l.style || '').toUpperCase().trim()]?.[String(l.partId || '')] || []).map(w => ({
-                              label: w.name || SANMAR_WAREHOUSES[w.id] || ('WH ' + w.id),
+                            (whseByLine?.[_whseKey(l)] || []).filter(w => w.qty > 0).map(w => ({
+                              label: (SANMAR_WAREHOUSES[w.id] || ('WH ' + w.id)).split(',')[0],
                               city: SANMAR_WAREHOUSES[w.id],
                               qty: w.qty,
                             })),

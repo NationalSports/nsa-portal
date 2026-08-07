@@ -16,7 +16,10 @@ export const SS_WAREHOUSES = {
   DS: 'Dropship',
 };
 
-// SanMar inventoryLocationId → city (tooltip/fallback when no name is returned).
+// SanMar warehouse number → city, per the Web Services Integration Guide's
+// "Warehouse Location Designations" table (the legacy inventory list response
+// carries no ids — position designates the warehouse, in this order; AZ is 12
+// because 8-11 are internal virtual warehouses).
 export const SANMAR_WAREHOUSES = {
   1: 'Seattle, WA',
   2: 'Cincinnati, OH',
@@ -26,7 +29,6 @@ export const SANMAR_WAREHOUSES = {
   6: 'Jacksonville, FL',
   7: 'Minneapolis, MN',
   12: 'Phoenix, AZ',
-  31: 'Richmond, VA',
 };
 
 // entries: [{ label, city, qty, primary }] — primary marks the expected ship-from.
