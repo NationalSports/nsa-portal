@@ -727,6 +727,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[poAttention,setPoAttention]=useState('');// drop-ship attention line (e.g. an existing DPO reference for the decorator)
     const[poDropShip,setPoDropShip]=useState(null);// product PO form — In-House(false) vs Drop Ship(true); null = rep hasn't chosen
     const[dpoDropShip,setDpoDropShip]=useState(true);// standalone deco PO form — deco POs are always drop ship
+    const[dpoMode,setDpoMode]=useState(null);// Deco PO kind: 'send' (we ship garments to the decorator) | 'dtf' (buying transfers/material) | null = auto from the order
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     // Topstar digitizing/vector service catalog — shared by the PO modal and the send-to-vendor action.
@@ -5340,7 +5341,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {/* Deco-PO chip is SO-only — estimates can't create POs. On an estimate, Outside is just a flag. */}
               {isSO&&_outside&&(_dp
                 ? <span onClick={()=>setPoFullPage({decoPo:_dp,soId:o.id,soItems:safeItems(o)})} title="On a Deco PO — click to open it (edit items / per-item costing)" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
-                : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
+                : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setDpoMode(null);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
               {!isSO&&_outside&&<span title="Routed to an outside decorator — a Deco PO is created when this estimate becomes a sales order" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}}>🎨 Outside deco{_orderOutsideVendor()?' · '+_orderOutsideVendor():''}</span>}
             </>})()}
             {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
@@ -5898,6 +5899,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</span>
                   <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>{(art.deco_type||'').replace(/_/g,' ')}{art.art_size?' · '+art.art_size:''} · {usedIn} deco(s) · {garmentCount} garment{garmentCount===1?'':'s'}</span>
                 </div>
+                {art.dtf_purchased&&<span title={'DTF purchased'+(art.dtf_purchased.po_id?' on '+art.dtf_purchased.po_id:'')+(art.dtf_purchased.vendor?' from '+art.dtf_purchased.vendor:'')+(art.dtf_purchased.date?' · '+art.dtf_purchased.date:'')} style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:700,flexShrink:0,background:'#fef3c7',color:'#b45309'}}>🖨️ DTF Purchased</span>}
                 <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
                 <button className="btn btn-sm" style={{fontSize:10,flexShrink:0,background:'#4f46e5',color:'white',border:'none',fontWeight:700}} title="Pick which line items this art applies to, with location and color way per item" onClick={e=>{e.stopPropagation();openArtApply(art)}}>🎯 Apply to items</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
@@ -8216,7 +8218,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {decoMatches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No decorators match.</div>:decoMatches.map(dv=>
                   <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:_pre===dv?'#7c3aed':'#fff',color:_pre===dv?'#fff':'#334155',border:'1px solid '+(_pre===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer',fontWeight:_pre===dv?700:400}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
               </div>
-              <button className="btn btn-sm" disabled={!_pre} style={{background:_pre?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:_pre?'pointer':'not-allowed'}} onClick={()=>{if(_pre){setDpoDropShip(true);setShowPO('deco:'+_pre)}}}>{_pre?'Create Deco PO for '+_pre:'Create Deco PO'}</button>
+              <button className="btn btn-sm" disabled={!_pre} style={{background:_pre?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:_pre?'pointer':'not-allowed'}} onClick={()=>{if(_pre){setDpoDropShip(true);setDpoMode(null);setShowPO('deco:'+_pre)}}}>{_pre?'Create Deco PO for '+_pre:'Create Deco PO'}</button>
             </>})()}
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
@@ -8250,12 +8252,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _dpoTypeCounts={};
         _initialSel.forEach(it=>safeDecos(safeItems(o)[it._idx]||{}).forEach(d=>{const t=decoConcreteType(o,d);if(t&&_DPO_TYPE_OPTS.includes(t))_dpoTypeCounts[t]=(_dpoTypeCounts[t]||0)+1}));
         const _dpoDefaultType=Object.entries(_dpoTypeCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||'embroidery';
+        // PO kind toggle — 'send': we ship garments to the decorator (e.g. Silver Screen, Pacific)
+        // and the covered items flip to Outside Deco; 'dtf': we're buying transfers/material
+        // (e.g. Astra, Long Island) so the rep picks the ART being purchased, not garments, and
+        // the chosen art folders are marked "DTF Purchased". Auto-default: items already flagged
+        // Outside → send; otherwise a DTF/heat-transfer order → dtf.
+        // The DTF Purchase option only exists when the order actually carries DTF prints —
+        // either a decoration resolving to DTF/heat-press or a DTF-typed art folder.
+        const _DTF_ART_TYPES=['dtf','heat_press','heat_transfer'];
+        const _orderHasDtf=safeItems(o).some(it=>safeDecos(it).some(d=>_DTF_ART_TYPES.includes(decoConcreteType(o,d))))||af.some(a=>a&&!a.archived&&_DTF_ART_TYPES.includes(a.deco_type));
+        const _dpoMode=_orderHasDtf?(dpoMode||((_dpoFlaggedOut.size===0&&(_dpoDefaultType==='dtf'||_dpoDefaultType==='heat_transfer'))?'dtf':'send')):'send';
+        const _dpoEffType=(_dpoMode==='dtf'&&_dpoDefaultType!=='dtf'&&_dpoDefaultType!=='heat_transfer')?'dtf':_dpoDefaultType;
+        // A DTF purchase covers DTF art only — never list screen-print/embroidery folders here.
+        const _dtfArtOpts=af.filter(a=>a&&!a.archived&&_DTF_ART_TYPES.includes(a.deco_type));
+        // Default-checked art for a DTF purchase: the DTF folders actually used on the order
+        // (all listed folders when none are placed on items yet).
+        const _dtfDefArt=(()=>{const used=_dtfArtOpts.filter(a=>(artQty[a.id]||0)>0);return new Set((used.length?used:_dtfArtOpts).map(a=>a.id))})();
         // Covered items with NO decoration of the PO's type fall under that same wildcard, so their
         // in-house work is lost too. Surface them so the rep unchecks in-house items deliberately.
         const _dpoMismatched=(items,dt)=>items.filter(it=>{const ts=safeDecos(safeItems(o)[it._idx]||{}).map(d=>decoConcreteType(o,d)).filter(Boolean);return ts.length>0&&!ts.includes(dt)});
         const _dpoWarnText=(mm,dt)=>'⚠ '+mm.length+' checked item'+(mm.length!==1?'s carry':' carries')+' no '+String(dt).replace(/_/g,' ')+' decoration ('+mm.slice(0,6).map(it=>it.sku).join(', ')+(mm.length>6?'…':'')+') — all of their decorations will be treated as outsourced to this vendor and will NOT create in-house production jobs. Uncheck any item whose decoration is done in-house.';
-        const _initialMismatch=_dpoMismatched(_initialSel,_dpoDefaultType);
-        const _initialDpoQty=_initialSel.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
+        const _initialMismatch=_dpoMode==='dtf'?[]:_dpoMismatched(_initialSel,_dpoEffType);
+        const _initialDpoQty=_dpoMode==='dtf'
+          ?_dtfArtOpts.reduce((a,ar)=>a+(_dtfDefArt.has(ar.id)?(artQty[ar.id]||0):0),0)
+          :_initialSel.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
         const _initialDpoStitches=Math.max(0,...(_initialSel.flatMap(it=>safeDecos(safeItems(o)[it._idx]||{}).filter(d=>d.kind==='art').map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0})).filter(n=>n>0)),0);
         // Screen-print upcharges auto-detected from the garments (overridable via the checkboxes below):
         // fleece = hoodies/sweatshirts/sweatpants; mesh = mesh garments. Dark comes from garment color.
@@ -8264,11 +8284,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _initialDark=_initialSel.some(it=>garmentNeedsUnderbase(it.color));
         const _initialFleece=_initialSel.some(it=>_isFleeceGarment(it));
         const _initialMesh=_initialSel.some(it=>_isMeshGarment(it));
-        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,_dpoDefaultType,{qty:_initialDpoQty,stitches:_initialDpoStitches}):null;
+        const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,_dpoEffType,{qty:_initialDpoQty,stitches:_initialDpoStitches}):null;
         const _recalcDpo=()=>{
           let qty=0;const selected=[];
-          allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);selected.push(vi)}});
-          const dt=document.getElementById('dpo-type-'+poId)?.value||_dpoDefaultType;
+          if(_dpoMode==='dtf'){
+            _dtfArtOpts.forEach((a,ai)=>{if(document.getElementById('dpo-art-sel-'+ai)?.checked)qty+=(artQty[a.id]||0)});
+          }else{
+            allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){qty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);selected.push(vi)}});
+          }
+          const dt=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
           // Price the right tier: max ink-colors (SP) / max stitches (EMB) of the selected designs,
           // and underbase when any selected garment is darker than white/light grey/vegas gold.
           const _selDecos=selected.flatMap(vi=>safeDecos(safeItems(o)[allItems[vi]?._idx]||{}).filter(d=>d.kind==='art'));
@@ -8298,20 +8322,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         };
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
-          <div className="modal-body">
+          <div className="modal-body" key={_dpoMode}>
+            {/* What is this PO buying? Sending garments out vs purchasing transfers/material.
+                Only offered when the order carries DTF prints — otherwise it's always Sending Items. */}
+            {_orderHasDtf&&<div style={{display:'flex',gap:8,marginBottom:12}}>
+              {[['send','📦 Sending Items','We ship garments to the decorator — covered items are badged Outside Deco'],['dtf','🖨️ DTF Purchase','Buying transfers / material (no garments sent) — pick the art you’re purchasing; it’s marked DTF Purchased']].map(([k,label,sub])=>{const sel=_dpoMode===k;return<button key={k} type="button" onClick={()=>setDpoMode(k)} style={{flex:1,padding:'10px 12px',borderRadius:8,border:sel?'2px solid #7c3aed':'1px solid #e2e8f0',background:sel?'#faf5ff':'white',cursor:'pointer',textAlign:'left'}}>
+                <div style={{fontWeight:700,fontSize:13,color:sel?'#6d28d9':'#1e293b'}}>{label}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{sub}</div>
+              </button>})}
+            </div>}
             {!preexistingPO?<div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
-              <strong>{decoVendor}</strong> decoration PO — associates this decorator's bill (and commission) with this sales order. This is a cost bucket, not an order for physical items; pick which items on the SO this PO covers so we can price it and badge them.
+              {_dpoMode==='dtf'
+                ?<><strong>{decoVendor}</strong> DTF / transfer purchase — associates this vendor's bill (and commission) with this order. No garments are sent; check the art folder(s) you're purchasing below and they'll be marked <strong>DTF Purchased</strong>.</>
+                :<><strong>{decoVendor}</strong> decoration PO — associates this decorator's bill (and commission) with this sales order. This is a cost bucket, not an order for physical items; pick which items on the SO this PO covers so we can price it and badge them.</>}
             </div>:<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12}}>
               <div style={{fontSize:12,fontWeight:700,color:'#d97706'}}>Preexisting PO Mode — Enter the PO number from the decorator's bill (or elsewhere). This will not affect sequential PO numbering.</div>
             </div>}
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
               <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
-              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue={_dpoDefaultType} onChange={e=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';const ur=document.getElementById('dpo-upcharge-row-'+poId);if(ur)ur.style.display=e.target.value==='screen_print'?'flex':'none';_recalcDpo()}}>
+              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue={_dpoEffType} onChange={e=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';const ur=document.getElementById('dpo-upcharge-row-'+poId);if(ur)ur.style.display=e.target.value==='screen_print'?'flex':'none';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
-            <div id={'dpo-upcharge-row-'+poId} style={{display:_dpoDefaultType==='screen_print'?'flex':'none',gap:14,alignItems:'center',flexWrap:'wrap',marginBottom:12,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+            <div id={'dpo-upcharge-row-'+poId} style={{display:_dpoEffType==='screen_print'?'flex':'none',gap:14,alignItems:'center',flexWrap:'wrap',marginBottom:12,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
               <span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>Screen-print upcharges</span>
               {[['dark','Dark / underbase',_initialDark],['fleece','Fleece',_initialFleece],['mesh','Mesh',_initialMesh]].map(([k,label,def])=>(
                 <label key={k} style={{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',color:'#92400e'}}>
@@ -8320,9 +8354,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </label>))}
               <span style={{fontSize:10,color:'#a16207'}}>auto-detected from the garments · adjust as needed</span>
             </div>
+            {_dpoMode==='dtf'?<>
+            <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:2}}>Art you're purchasing</div>
+            <div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>Check the art folder(s) this purchase covers — they'll be marked <b>DTF Purchased</b>. Items are not sent out and stay in-house.</div>
+            {_dtfArtOpts.length===0?<div style={{padding:'10px 12px',border:'1px dashed #fde68a',borderRadius:6,background:'#fffbeb',fontSize:12,color:'#92400e'}}>No DTF art folders on this order yet — you can still create the PO with a manual qty below, but nothing will be marked DTF Purchased.</div>
+            :_dtfArtOpts.map((a,ai)=>{const aq=artQty[a.id]||0;
+              return<div key={a.id} style={{padding:'8px 12px',border:'1px solid #fde68a',borderRadius:6,marginBottom:6,background:'#fffbeb',display:'flex',alignItems:'center',gap:8}}>
+                <input type="checkbox" id={'dpo-art-sel-'+ai} defaultChecked={_dtfDefArt.has(a.id)} style={{width:16,height:16}} onChange={_recalcDpo}/>
+                <strong style={{flex:1}}>{a.name||'Untitled'}</strong>
+                <span style={{color:'#64748b',fontSize:12}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</span>
+                {a.dtf_purchased&&<span title={'Already purchased'+(a.dtf_purchased.po_id?' on '+a.dtf_purchased.po_id:'')} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#b45309'}}>🖨️ Purchased</span>}
+                <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>Used on {aq} unit{aq!==1?'s':''}</span>
+              </div>})}
+            </>:<>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:2}}>Items covered by this PO</div>
             <div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>Optional — leave everything unchecked for an in-house order (e.g. DTF transfers) not tied to specific SO items, and type the qty below.</div>
-            <div id={'dpo-type-warn-'+poId} style={{display:_initialMismatch.length?'block':'none',marginBottom:8,padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:11,fontWeight:600,color:'#991b1b'}}>{_initialMismatch.length?_dpoWarnText(_initialMismatch,_dpoDefaultType):''}</div>
+            <div id={'dpo-type-warn-'+poId} style={{display:_initialMismatch.length?'block':'none',marginBottom:8,padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:11,fontWeight:600,color:'#991b1b'}}>{_initialMismatch.length?_dpoWarnText(_initialMismatch,_dpoEffType):''}</div>
             {allItems.length>1&&<div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,fontSize:11}}>
               <span style={{color:'#64748b',fontWeight:600}}>{allItems.length} item{allItems.length!==1?'s':''} available</span>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=true});_recalcDpo()}}>Select All</button>
@@ -8336,6 +8383,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{color:'#64748b',fontSize:12}}>{it.color}</span>
                 <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
               </div>})}
+            </>}
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
               <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup) {_initialDpoQty===0&&<span style={{color:'#7c3aed',fontWeight:600}}>(no items checked — enter manually)</span>}</label><input className="form-input" id="dpo-total-qty" type="number" defaultValue={_initialDpoQty} data-auto={_initialDpoQty>0?'1':'0'} style={{fontWeight:700,color:'#1e40af'}} onChange={e=>{e.target.dataset.auto='0';_recalcDpo()}}/></div>
               <div><label className="form-label" style={{fontSize:10}}>Unit Cost {_initialDpoCost!==null&&<span style={{color:'#7c3aed',fontWeight:600}}>(from price list · editable)</span>}</label><input className="form-input" id="dpo-unit-cost" type="number" step="0.01" defaultValue={_initialDpoCost!==null?_initialDpoCost.toFixed(2):''} placeholder="0.00" data-auto={_initialDpoCost!==null?'1':'0'} style={{fontWeight:700,color:'#7c3aed'}} onChange={e=>{e.target.dataset.auto='0';_recalcDpo()}}/></div>
@@ -8349,33 +8397,63 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
               const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
-              const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoDefaultType;
+              const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
-              const isDropShip=dpoDropShip;
-              const itemIdxs=[];let totalQty=0;
-              allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
-              // No items checked is valid — an in-house order (e.g. DTF transfers) not tied to
-              // specific SO items; use the manually-entered qty instead.
-              if(itemIdxs.length===0)totalQty=parseFloat(document.getElementById('dpo-total-qty')?.value)||0;
+              // DTF purchase: nothing ships anywhere — never a drop ship.
+              const isDropShip=_dpoMode==='dtf'?false:dpoDropShip;
+              const itemIdxs=[];const artIds=[];let totalQty=0;
+              if(_dpoMode==='dtf'){
+                _dtfArtOpts.forEach((a,ai)=>{if(document.getElementById('dpo-art-sel-'+ai)?.checked)artIds.push(a.id)});
+                if(artIds.length===0&&_dtfArtOpts.length>0){nf('Check which art you\'re purchasing (or switch to Sending Items)','error');return}
+                totalQty=parseFloat(document.getElementById('dpo-total-qty')?.value)||0;
+              }else{
+                allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked){itemIdxs.push(it._idx);totalQty+=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)}});
+                // No items checked is valid — an in-house order (e.g. DTF transfers) not tied to
+                // specific SO items; use the manually-entered qty instead.
+                if(itemIdxs.length===0)totalQty=parseFloat(document.getElementById('dpo-total-qty')?.value)||0;
+              }
               const unitCost=parseFloat(document.getElementById('dpo-unit-cost')?.value)||0;
               const expectedCost=Math.round(totalQty*unitCost*100)/100;
               const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:effectivePoId,vendor:decoVendor,deco_vendor_id:dv?.id||null,deco_type:decoType,
-                item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
+                po_mode:_dpoMode==='dtf'?'dtf_purchase':'send_items',
+                item_idxs:itemIdxs,art_file_ids:artIds.length?artIds:undefined,
+                qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
                 notes,drop_ship:isDropShip||undefined,expected_date:returnDate,preexisting:preexistingPO||undefined,
                 status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
-              const updated={...o,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
+              // DTF purchase marks the chosen art folders as purchased (same save as the PO) and
+              // satisfies the "Order DTF Transfers" art gate exactly like the job page's
+              // "Films Ordered" button (_orderDtf): stamp a dtf_order prod-file marker +
+              // prod_files_attached so artStatusForFile resolves art_complete. Status is NOT
+              // forced to approved — unapproved art still waits for the coach, then completes.
+              const _purchasedArt=artIds.length?(o.art_files||[]).map(a=>{
+                if(!artIds.includes(a.id))return a;
+                const hasMarker=(a.prod_files||[]).some(f=>f&&f.dtf_order);
+                const marker={name:'DTF films ordered — '+effectivePoId,dtf_order:true,po_id:effectivePoId,at:new Date().toISOString(),by:cu?.name||'Rep'};
+                return{...a,dtf_purchased:{po_id:effectivePoId,vendor:decoVendor,date:new Date().toLocaleDateString()},prod_files_attached:true,prod_files:hasMarker?(a.prod_files||[]):[...(a.prod_files||[]),marker]};
+              }):null;
+              // Flip covered DTF jobs' art gate too (as _orderDtf does) — but only when EVERY art
+              // on the job now derives art_complete, so a second unpurchased design keeps its hold.
+              const _updJobs=_purchasedArt?safeJobs(o).map(j=>{
+                const ids=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(id=>id&&id!=='__tbd');
+                if(!ids.length||!ids.some(id=>artIds.includes(id)))return j;
+                const allDone=ids.every(id=>{const a=_purchasedArt.find(x=>x.id===id);return a&&artStatusForFile(a,j.deco_type)==='art_complete'});
+                return allDone&&j.art_status!=='art_complete'?{...j,art_status:'art_complete'}:j;
+              }):null;
+              const updated={...o,...(_purchasedArt?{art_files:_purchasedArt}:{}),...(_updJobs?{jobs:_updJobs}:{}),deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
               if(!preexistingPO)setPOCounter(c=>c+1);
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
-              nf('🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
-            }}>🎨 {preexistingPO?'Apply Preexisting PO':'Create Deco PO for '+decoVendor}</button>
-            {dv&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
+              nf(_dpoMode==='dtf'
+                ?'🖨️ '+effectivePoId+' '+(preexistingPO?'applied':'created')+' — DTF purchase from '+decoVendor+(artIds.length?' — '+artIds.length+' art folder'+(artIds.length!==1?'s':'')+' marked DTF Purchased':'')+' ($'+expectedCost.toFixed(2)+')'
+                :'🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
+            }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>
+            {dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
               if(_poCreatingRef.current)return;
               const effectiveDpoId=autoPoId;
-              const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoDefaultType;
+              const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
               const itemIdxs=[];const selectedItems=[];let totalQty=0;
@@ -8387,6 +8465,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Create Deco PO (same as regular Create button)
               const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:effectiveDpoId,vendor:decoVendor,deco_vendor_id:dv.id,deco_type:decoType,
+                po_mode:'send_items',
                 item_idxs:itemIdxs,qty:totalQty,unit_cost:unitCost,expected_cost:expectedCost,
                 notes,drop_ship:true,expected_date:returnDate,
                 status:'waiting',created_at:new Date().toLocaleDateString(),
@@ -13409,7 +13488,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             ...((dp._bill_details||[]).length>0?[{title:'Billing Details',headers:['Doc #','Date','Supplier','Cost','Freight','Tracking'],aligns:['left','left','left','right','right','left'],
               rows:dp._bill_details.map(bd=>({cells:[bd.doc||'—',bd.date||'—',bd.supplier||'—',{value:'$'+safeNum(bd.cost).toFixed(2),style:'text-align:right'},{value:bd.freight?'$'+safeNum(bd.freight).toFixed(2):'—',style:'text-align:right'},bd.tracking||'—']}))}]:[]),
           ],
-          notes:(()=>{const parts=[];if(dp.deco_type)parts.push('Deco Type: '+dp.deco_type.replace(/_/g,' '));if(dp.notes)parts.push(dp.notes);if((dp.tracking_numbers||[]).length)parts.push('Tracking: '+dp.tracking_numbers.join(', '));if(dp.drop_ship)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer.');return parts.length?parts.join('<br/>'):null})(),
+          notes:(()=>{const parts=[];if(dp.deco_type)parts.push('Deco Type: '+dp.deco_type.replace(/_/g,' '));if(dp.po_mode==='dtf_purchase')parts.push('<strong>DTF / TRANSFER PURCHASE</strong> — no garments are being sent.'+((dp.art_file_ids||[]).length?' Art: '+(dp.art_file_ids||[]).map(aid=>(o.art_files||[]).find(a=>a.id===aid)?.name||aid).join(', '):''));if(dp.notes)parts.push(dp.notes);if((dp.tracking_numbers||[]).length)parts.push('Tracking: '+dp.tracking_numbers.join(', '));if(dp.drop_ship)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the customer.');return parts.length?parts.join('<br/>'):null})(),
           footer:'Expected return: '+(dp.expected_date||'TBD'),
           companyInfo:_ci
         });
@@ -13422,6 +13501,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 <span className={`badge ${dp.status==='billed'||dp.status==='received'?'badge-green':dp.status==='ordered'?'badge-blue':'badge-gray'}`} style={{fontSize:11}}>{(dp.status||'waiting').replace(/^./,c=>c.toUpperCase())}</span>
                 <span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>
                 {dp.preexisting&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Preexisting</span>}
+                {dp.po_mode==='dtf_purchase'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700}} title="Buying transfers/material — no garments sent to this vendor">🖨️ DTF Purchase</span>}
                 {dp.drop_ship&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>Drop Ship</span>}
               </div>
               <div style={{textAlign:'right',flexShrink:0}}>
@@ -13432,6 +13512,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 {dp.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected return: {dp.expected_date}</div>}
               </div>
             </div>
+            {(dp.art_file_ids||[]).length>0&&<div style={{padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,fontSize:12,color:'#92400e'}}>
+              <b>Art purchased on this PO:</b> {(dp.art_file_ids||[]).map(aid=>(o.art_files||[]).find(a=>a.id===aid)?.name||aid).join(', ')}
+            </div>}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
@@ -13448,7 +13531,27 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 const _remaining=(o.deco_pos||[]).filter(x=>dp.id?x.id!==dp.id:x.po_id!==dp.po_id);
                 const _stillCovered=new Set(_remaining.flatMap(p=>p.item_idxs||[]));
                 const _clr=new Set((dp.item_idxs||[]).filter(ii=>!_stillCovered.has(ii)));
+                // A DTF-purchase PO also un-marks its art folders (unless another PO still covers
+                // them) and retracts the films-ordered stamp it added, re-deriving the art gate on
+                // any job it had completed — a job already in production is left alone.
+                const _stillPurchased=new Set(_remaining.flatMap(p=>p.art_file_ids||[]));
+                const _unmark=new Set((dp.art_file_ids||[]).filter(aid=>!_stillPurchased.has(aid)));
+                const _cleanArt=_unmark.size?(o.art_files||[]).map(a=>{
+                  if(!_unmark.has(a.id))return a;
+                  const pf=(a.prod_files||[]).filter(f=>!(f&&f.dtf_order&&f.po_id===dp.po_id));
+                  return{...a,dtf_purchased:undefined,prod_files:pf,...(pf.length===0?{prod_files_attached:undefined}:{})};
+                }):null;
+                const _revJobs=_cleanArt?safeJobs(o).map(j=>{
+                  if(j.art_status!=='art_complete'||_activeProd(j.prod_status))return j;
+                  const ids=(j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id]).filter(id=>id&&id!=='__tbd');
+                  if(!ids.length||!ids.some(id=>_unmark.has(id)))return j;
+                  let worst='art_complete';
+                  for(const id of ids){const a=_cleanArt.find(x=>x.id===id);const st=artStatusForFile(a,j.deco_type);if(st!=='art_complete'){worst=st;break}}
+                  return worst==='art_complete'?j:{...j,art_status:worst};
+                }):null;
                 const updated={...o,
+                  ...(_cleanArt?{art_files:_cleanArt}:{}),
+                  ...(_revJobs?{jobs:_revJobs}:{}),
                   items:safeItems(o).map((it,xi)=>_clr.has(xi)?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'&&(d.fulfillment==='outside'||d.deco_po_id)?{...d,fulfillment:undefined,deco_po_id:undefined,vendor:undefined}:d)}:it),
                   // Session-scoped tombstone (never persisted — not in _soCols): tells the save layer's
                   // stale-restore guard this removal is deliberate, so it won't re-inject the entry.
