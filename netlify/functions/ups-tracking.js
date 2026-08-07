@@ -13,9 +13,13 @@ exports.handler = async (event) => {
   }
 
   try {
-    // UPS public tracking endpoint (no API key required)
+    // UPS public tracking endpoint (no API key required). It now tarpits/blocks
+    // server-side callers (hangs instead of answering), so abort after 8s — the
+    // caller ("Check UPS Pickups" button + the client daily check) then fails fast
+    // instead of spinning until the function times out.
     const response = await fetch('https://webapis.ups.com/track/api/Track/GetStatus?loc=en_US', {
       method: 'POST',
+      signal: AbortSignal.timeout(8000),
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0',
