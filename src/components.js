@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
-import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment } from './utils';
+import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
 
 // allowVector: when true the gallery also accepts vector (.ai/.eps/.svg) and .pdf
 // artwork — used by the Topstar digitizing/Vector PO flow where production-ready
@@ -202,7 +202,7 @@ function FollowUpAutoPanel({value,onChange,defaultMessage}){
 
 // SEND ESTIMATE MODAL
 
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo,supabase}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo,supabase,docTotal}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);
   const[checkedEmails,setCheckedEmails]=useState({});const[customEmails,setCustomEmails]=useState([]);const[addingEmail,setAddingEmail]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
@@ -218,6 +218,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const estimateRef=React.useRef(estimate);estimateRef.current=estimate;
   const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
   const repUserRef=React.useRef(repUser);repUserRef.current=repUser;
+  const docTotalRef=React.useRef(docTotal);docTotalRef.current=docTotal;
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
     const lbl=dt==='so'?'Sales Order':'Estimate';
@@ -227,19 +228,31 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     // Greet by first name only — "Hi Jabari," not the full "Hi Jabari Carr," which reads too formal.
     const _firstName=(primaryContact?.name||'Coach').trim().split(/\s+/)[0]||'Coach';
     const initChecked={};emails.forEach(em=>{initChecked[em]=true});
+    // Everyone pre-selected gets named in the greeting; it re-writes as the rep checks/unchecks.
+    const _greeting=greetLine(emails,cust2.contacts);
     setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
     // Deep-link the portal straight to this estimate (?est=<id>) / SO (?so=<id>)
     // instead of the portal home — the coach portal opens the matching view on load.
     const _dl=est2?.id?(dt==='so'?'&so='+est2.id:'&est='+est2.id):'';
     const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag)+_dl:'';
-    setBody(`Hi ${_firstName},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag||'')}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    const _job=(est2?.memo||'').trim();
+    const _forJob=_job?` for "${_job}"`:'';
+    const _total=Number(docTotalRef.current||0);
+    const _totalTxt=_total>0?`, totalling ${emailMoney(_total)}`:'';
+    setBody(`${_greeting}\n\nAttached below is your ${lbl.toLowerCase()}${_forJob}${_totalTxt}. You can ${dt==='so'?'view it':'review and approve it'} right in your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag||'')}\n\nPlease let us know if you have any questions, and thank you for your business!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=portalLink;
     setSmsMsg('Hi '+_firstName+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setFollowUp(seedFollowUp(est2));
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
+  // Keep the greeting in step with the recipient checkboxes ("Hi Cam and Hillary,").
+  // Only the greeting line is swapped, so edits to the rest of the message survive.
+  const _toKey=allTargets.join('|');
+  // (No recipients selected — leave the drafted greeting alone rather than blanking it to "Hi there,".)
+  React.useEffect(()=>{if(!isOpen||!_toKey)return;
+    setBody(b=>withGreeting(b,greetLine(_toKey.split('|'),customerRef.current?.contacts)))},[_toKey,isOpen]);
   React.useEffect(()=>{let cancelled=false;
     if(!isOpen||!supabase||!estimate?.source_inbox_message_id)return()=>{cancelled=true};
     supabase.from('ai_inbox_messages').select('draft_body_text').eq('id',estimate.source_inbox_message_id).maybeSingle()
@@ -392,7 +405,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         </div>
       ):(
         <div style={{marginBottom:12}}>
-          <FollowUpAutoPanel value={followUp} onChange={setFollowUp} defaultMessage={`Hi ${(customer?.contacts||[])[0]?.name||'Coach'},\n\nJust following up on the ${label.toLowerCase()} we sent over${estimate?.memo?` for ${estimate.memo}`:''}. Let us know if you'd like to move forward or have any questions — we're happy to help!\n\n${repUser?.name||'National Sports Apparel'}\nNational Sports Apparel`}/>
+          <FollowUpAutoPanel value={followUp} onChange={setFollowUp} defaultMessage={`${greetLine(allTargets,customer?.contacts)}\n\nJust following up on the ${label.toLowerCase()} we sent over${estimate?.memo?` for "${estimate.memo}"`:''}. Let us know if you'd like to move forward or have any questions — we're happy to help!\n\n${repUser?.name||'National Sports Apparel'}\nNational Sports Apparel`}/>
         </div>
       )}
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
