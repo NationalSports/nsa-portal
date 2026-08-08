@@ -809,7 +809,12 @@ const fetchAdidasInventory = async (sku) => {
 const fetchAdidasGlobalLastSync = async () => {
   if (!supabase) return null;
   try {
-    const { data, error } = await supabase.from('adidas_inventory').select('last_synced').order('last_synced', { ascending: false }).limit(1);
+    // S&S also writes Adidas rows into this table every day. Filter to the direct
+    // CLICK writers so a fresh S&S timestamp cannot mask a stale/incomplete CLICK
+    // materials sync (the KD5431/KD5434 failure mode).
+    const { data, error } = await supabase.from('adidas_inventory').select('last_synced')
+      .in('source', ['api-materials', 'adidas_click_b2b', 'api-nodata'])
+      .order('last_synced', { ascending: false }).limit(1);
     if (error) { console.warn('[Adidas B2B] Last-sync fetch error:', error.message); return null; }
     return data?.[0]?.last_synced || null;
   } catch (e) { console.error('[Adidas B2B] Last-sync fetch failed:', e); return null; }
