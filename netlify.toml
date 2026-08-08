@@ -271,6 +271,18 @@
 # See netlify/functions/teamshop-auto-po.js.
 [functions."teamshop-auto-po"]
   schedule = "25 * * * *"
+
+# DTF transfer order lane (00235/00236) — hourly. Every run auto-syncs order art
+# into the DTF queue (DTF/heat-press jobs at art_status 'order_dtf_transfers'
+# become queued dtf_requests: .ai from the job's art, qty from units, size parsed
+# from art_size with a lone number treated as WIDTH). The gang-sheet batch itself
+# builds only in the weekly window — Wednesdays 16:xx UTC (~9am PT) — and emails
+# the supplier only when dtf_settings.auto_send is on AND a supplier email is
+# configured; otherwise the draft waits in the DTF Transfers page for staff
+# review. Default-INERT (no supplier email seeded). Staff can also POST
+# { action:'build_batch' } on demand. See netlify/functions/dtf-orders.js.
+[functions."dtf-orders"]
+  schedule = "10 * * * *"
 [functions."gmail-ai-sync"]
   schedule = "*/5 * * * *"
   timeout = 26
