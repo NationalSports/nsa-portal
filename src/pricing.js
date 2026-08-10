@@ -80,6 +80,22 @@ export let TWN=DECO.TWN;
 export let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
 export let CONTACT_ROLES=['Primary','Billing','Shipping','Coach','Athletic Director','Equipment Manager','Booster Club','Other'];
 
+// "Other" art placement — the free-text escape hatch on the art location picker. Whatever gets typed
+// IS the stored position, so work orders, job tickets and printouts show the real placement with no
+// second field to keep in sync. `position_custom` only marks the row as typed, so the picker knows to
+// reopen the box; without it, placements that predate this list (a team shop's 'Front Center', say)
+// would read back as Other. Returns everything the picker renders.
+export const OTHER_POS='Other';
+export const artPosView=(value,custom)=>{
+  const v=value==null?'':String(value);
+  const showBox=!!custom||v===OTHER_POS;
+  const options=POSITIONS.includes(OTHER_POS)?[...POSITIONS]:[...POSITIONS,OTHER_POS];
+  // An off-list placement (typed on a row whose flag got dropped, or a list entry later removed in
+  // Settings) shows itself rather than silently displaying as whatever option happens to be first.
+  if(!showBox&&v&&!options.includes(v))options.push(v);
+  return{showBox,options,selectValue:showBox?OTHER_POS:v,boxValue:v===OTHER_POS?'':v};
+};
+
 // ── Load settings overrides from localStorage ──
 // Only honor cached SP/EM if they match the current schema version (_v); otherwise use the new defaults.
 try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.TWA)TWA=_s.TWA;if(_s.TWN)TWN=_s.TWN;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
