@@ -7,7 +7,7 @@
  * vanished from the warehouse's ready-to-ship queues and the order looked invoiceable.
  * Slices count only their own per-size share; whole-line jobs keep the full-line count.
  */
-const { jobShippedUnits, shippedSizesByLine } = require('../safeHelpers');
+const { jobShippedUnits, jobShippedSizes, shippedSizesByLine } = require('../safeHelpers');
 
 const ship = (items) => ({ id: 'SHP', items });
 const job = (id, items, total) => ({ id, items, total_units: total });
@@ -85,5 +85,55 @@ describe('jobShippedUnits', () => {
     expect(jobShippedUnits(null, null, null)).toBe(0);
     expect(jobShippedUnits({}, [], {})).toBe(0);
     expect(jobShippedUnits(job('J', [null, { sku: 'X' }], 5), [job('J', [], 5)], { 'X|': { M: 2 } })).toBe(2);
+  });
+});
+
+// Per-size resolution — what the warehouse's per-job Ready-to-Ship rows subtract. Same
+// apportioning as jobShippedUnits (which is its sum), keyed by the job's items[] index.
+describe('jobShippedSizes', () => {
+  const shippedSM = shippedSizesByLine([ship([{ sku: 'PA100', color: 'Navy', sizes: { S: 10, M: 7 } }])]);
+
+  test('whole-line job item takes the whole line per size', () => {
+    const a = job('JOB-1', [{ item_idx: 0, sku: 'PA100', color: 'Navy' }], 17);
+    expect(jobShippedSizes(a, [a], shippedSM)).toEqual({ 0: { S: 10, M: 7 } });
+  });
+
+  test("split slice takes only its own sizes — sibling design's box stays out of its row", () => {
+    const a = job('JOB-A', [{ item_idx: 0, sku: 'PA100', color: 'Navy', split_group: 'sg1', sizes: { S: 10, M: 7 } }], 17);
+    const b = job('JOB-B', [{ item_idx: 0, sku: 'PA100', color: 'Navy', split_group: 'sg1', sizes: { L: 8, XL: 4 } }], 12);
+    expect(jobShippedSizes(a, [a, b], shippedSM)).toEqual({ 0: { S: 10, M: 7 } });
+    expect(jobShippedSizes(b, [a, b], shippedSM)).toEqual({ 0: { L: 0, XL: 0 } });
+  });
+
+  test('same-size quantity split apportions in job order', () => {
+    const shipped = shippedSizesByLine([ship([{ sku: 'PA100', color: 'Navy', sizes: { M: 6 } }])]);
+    const a = job('JOB-A', [{ item_idx: 0, sku: 'PA100', color: 'Navy', split_group: 'sg1', sizes: { M: 6 } }], 6);
+    const b = job('JOB-B', [{ item_idx: 0, sku: 'PA100', color: 'Navy', split_group: 'sg1', sizes: { M: 4 } }], 4);
+    expect(jobShippedSizes(a, [a, b], shipped)).toEqual({ 0: { M: 6 } });
+    expect(jobShippedSizes(b, [a, b], shipped)).toEqual({ 0: { M: 0 } });
+  });
+
+  test('rows are keyed by items[] index, including a multi-line job', () => {
+    const shipped = shippedSizesByLine([ship([
+      { sku: 'PA100', color: 'Navy', sizes: { S: 5 } },
+      { sku: 'TS200', color: 'White', sizes: { M: 3 } },
+    ])]);
+    const a = job('JOB-A', [
+      { item_idx: 0, sku: 'PA100', color: 'Navy', split_group: 'sg1', sizes: { S: 5 } },
+      { item_idx: 1, sku: 'TS200', color: 'White' },
+    ], 8);
+    expect(jobShippedSizes(a, [a], shipped)).toEqual({ 0: { S: 5 }, 1: { M: 3 } });
+  });
+
+  test('nothing shipped for a line leaves that row out entirely', () => {
+    const a = job('JOB-A', [{ item_idx: 0, sku: 'ZZ999', color: 'Red' }], 4);
+    expect(jobShippedSizes(a, [a], shippedSM)).toEqual({});
+  });
+
+  test('jobShippedUnits is exactly the sum of this map', () => {
+    const a = job('JOB-A', [{ item_idx: 0, sku: 'PA100', color: 'Navy', split_group: 'sg1', sizes: { S: 6 } }], 6);
+    const sizes = jobShippedSizes(a, [a], shippedSM);
+    const sum = Object.values(sizes).reduce((t, row) => t + Object.values(row).reduce((s, v) => s + v, 0), 0);
+    expect(jobShippedUnits(a, [a], shippedSM)).toBe(sum);
   });
 });

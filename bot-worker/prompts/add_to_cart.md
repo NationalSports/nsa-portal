@@ -104,7 +104,10 @@ quantities. Today's date matters here — compute "two weeks from today" first.
   hover it before deciding anything about that size.
   - Restock date WITHIN 14 days of today → treat the SKU as orderable
     (short backorder).
-  - Restock date MORE than 14 days out → **SKIP THE ENTIRE SKU**: enter NO
+  - Restock date MORE than 14 days out → a LONG backorder. FIRST check
+    **the rep's standing decision on long backorders** below — if the rep
+    already decided (order anyway / drop), DO that instead of asking. Only
+    when no standing decision was given: **SKIP THE ENTIRE SKU** — enter NO
     quantities on any of its sizes, add it to `skipped` WITH the date you
     found (the rep decides with real information), and move on.
   - Only report "no date" when the size truly has NO calendar icon and
@@ -155,10 +158,13 @@ Take a screenshot of the final cart. Then verify ALL of:
 3. Every non-skipped line has its quantities under the right size headers.
 
 Status to report:
-- Any SKUs in `skipped` → **needs_input**. In `question`, list each skipped
-  SKU with the size(s) and restock date, and ask the rep how to proceed
-  (wait for restock, substitute, or drop). The rest of the cart is fully
-  built — say so.
+- Any SKUs in `skipped` that the rep did NOT already decide → **needs_input**.
+  In `question`, list each skipped SKU with the size(s) and restock date, and
+  ask the rep how to proceed (wait for restock, substitute, or drop). The
+  rest of the cart is fully built — say so.
+- SKUs/sizes skipped BECAUSE the rep's standing decision says drop (or the
+  per-item schedule says order-now-only) are ALREADY decided: list them in
+  `skipped`, do NOT ask about them, and finish to **needs_review**.
 - No skips, cart fully built → **needs_review** (mention any short-backorder
   delivery-date shift in `summary`).
 - If the human already answered a skip/backorder question in the Conversation

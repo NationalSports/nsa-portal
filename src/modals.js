@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES, BALL_SIZES } from './constants';
+import { _pick, szRank, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES, BALL_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
@@ -535,7 +535,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
   const isBall=!isFw&&avail.length>0&&avail.every(s=>BALL_SIZES.includes(s));
   const isNumeric=!isFw&&!isBall&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
   const sizePool=isFw?FOOTWEAR_SIZES:(isBall?BALL_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES));
-  const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
+  const sortSz=(arr)=>[...arr].sort((x,y)=>{const xr=szRank(x),yr=szRank(y);if(xr===yr)return(parseFloat(x)||0)-(parseFloat(y)||0);return xr-yr});
   const dispSizes=sortSz(avail);
   const addable=sizePool.filter(s=>!avail.includes(s));
   const addSz=(sz)=>{if(!avail.includes(sz))setAvail(x=>[...x,sz])};

@@ -1187,6 +1187,76 @@ const ssResolveSkus = async (descriptors) => {
   return { resolved, candidates };
 };
 
+// ─── Per-warehouse availability (order-modal "ships from" display) ───
+// Neither vendor lets an integrated order pick its warehouse: both route each line
+// from the warehouse nearest the ship-to that has stock (splitting when needed).
+// These lookups surface that per-warehouse picture so the rep can see the likely
+// ship-from before submitting. Read-only and best-effort — a failure returns {}
+// and the modal simply omits the column; it must never block an order.
+
+// S&S: GET /Products/{sku,…} — every product row carries a warehouses[] breakdown
+// (warehouseAbbr, qty, and S&S's own `closest` flag = nearest to the account's
+// default ship-to). Returns { SKUUPPER: [{ abbr, qty, closest }] }.
+// Chunked 25/call like ssGetProductStyles to keep URLs short and inside rate limits.
+const ssGetWarehouseStock = async (skus) => {
+  const list = [...new Set((Array.isArray(skus) ? skus : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  const map = {};
+  for (let i = 0; i < list.length; i += 25) {
+    const chunk = list.slice(i, i + 25);
+    try {
+      const data = await ssApiCall('/Products/' + chunk.map(encodeURIComponent).join(','));
+      (Array.isArray(data) ? data : (data ? [data] : [])).forEach(p => {
+        const k = String(p?.sku || p?.Sku || '').trim().toUpperCase();
+        const wh = Array.isArray(p?.warehouses) ? p.warehouses : [];
+        if (!k) return;
+        map[k] = wh.map(w => ({
+          abbr: String(w?.warehouseAbbr || w?.WarehouseAbbr || '').trim().toUpperCase(),
+          qty: Number(w?.qty) || 0,
+          closest: w?.closest === true || w?.Closest === true,
+        })).filter(w => w.abbr);
+      });
+    } catch (e) { console.warn('[S&S] warehouse stock lookup failed:', e.message); }
+    if (i + 25 < list.length) await new Promise(r => setTimeout(r, 350));
+  }
+  return map;
+};
+
+// SanMar: per-warehouse detail lives ONLY in PromoStandards Inventory 2.0.0
+// (InventoryServiceBindingV2) — its PartInventory rows carry an
+// InventoryLocationArray with warehouse id/name/quantity, keyed by the same
+// partId (Unique_Key) sendPO uses. V1 getInventoryLevels has no location detail
+// and the legacy getInventoryQtyForStyleColorSize errors on our order-line color
+// spellings (verified live 2026-08-06). One V2 call per style, parts matched to
+// modal lines by partId. descriptors: [{ key, style, partId }] → { key: [{ id,
+// name, qty }] }. Best-effort: a failed style just omits its keys ("—" cells).
+const sanmarGetWarehouseStock = async (descriptors) => {
+  const out = {};
+  const arr = (x) => (Array.isArray(x) ? x : (x !== undefined && x !== null) ? [x] : []);
+  const list = (Array.isArray(descriptors) ? descriptors : []).filter(d => d && d.key && d.style && d.partId);
+  const byPart = {};
+  // One V2 call per style, all styles in flight together — the responses are big
+  // (every part of the style) and serializing them made the modal feel slow.
+  await Promise.all([...new Set(list.map(d => String(d.style).toUpperCase().trim()))].map(async (style) => {
+    try {
+      const inv = await sanmarApiCall('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+      const parts = arr(inv?.Inventory?.PartInventoryArray?.PartInventory || inv?.PartInventoryArray?.PartInventory);
+      for (const p of parts) {
+        const pid = String(p?.partId || '').trim();
+        if (!pid) continue;
+        const locs = arr(p?.InventoryLocationArray?.InventoryLocation || p?.inventoryLocationArray?.inventoryLocation);
+        const rows = locs.map(loc => ({
+          id: String(loc?.inventoryLocationId || '').trim(),
+          name: String(loc?.inventoryLocationName || '').trim(),
+          qty: parseInt(loc?.inventoryLocationQuantity?.Quantity?.value ?? loc?.inventoryLocationQuantity?.quantity?.value ?? NaN, 10),
+        })).filter(r => r.id && !Number.isNaN(r.qty));
+        if (rows.length) byPart[pid] = rows;
+      }
+    } catch (e) { console.warn('[SanMar] V2 warehouse lookup failed for', style, e.message); }
+  }));
+  for (const d of list) { const rows = byPart[String(d.partId)]; if (rows) out[d.key] = rows; }
+  return out;
+};
+
 // Free-text S&S product search for the order modal's manual SKU picker: when a line can't be
 // auto-resolved (a color/size S&S doesn't carry under our style, a mis-spec'd style), the rep
 // searches S&S live and picks the exact per-size Sku to drop onto the line. Returns flat,
@@ -1726,4 +1796,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

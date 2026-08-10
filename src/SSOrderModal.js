@@ -4,7 +4,9 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload } from './ssOrder';
-import { ssResolveSkus, ssSearchProducts, ssSubmitOrder } from './vendorApis';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
+import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
+import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -18,7 +20,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, onClose, onSubmitted, onLearnSkus }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', onClose, onSubmitted, onLearnSkus }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
@@ -42,7 +44,15 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchErr, setSearchErr] = useState('');
 
-  const ship = shipTo || NSA_SHIP_TO;
+  // Auto-selected destination (NSA dock, or the deco/customer address the caller
+  // passed), plus the rep's optional hand-edited override.
+  const autoShip = shipTo || NSA_SHIP_TO;
+  const [shipOverride, setShipOverride] = useState(null);
+  const ship = shipOverride || autoShip;
+
+  // Per-warehouse availability for the resolved SKUs — informational "ships from"
+  // display only; a lookup failure just leaves the column blank, never blocks.
+  const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
 
   // Base lines (no network) — flatten the batch.
   const baseLines = useMemo(() => buildSSOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
@@ -67,7 +77,20 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving;
+  // Once SKUs are known, fetch each one's per-warehouse stock (one chunked call).
+  const skuKey = useMemo(() => [...new Set(lines.map(l => String(l.sku || '').toUpperCase()).filter(Boolean))].sort().join(','), [lines]);
+  useEffect(() => {
+    let cancelled = false;
+    if (resolving || !skuKey) return;
+    setWhseBySku(null);
+    ssGetWarehouseStock(skuKey.split(','))
+      .then(m => { if (!cancelled) setWhseBySku(m || {}); })
+      .catch(() => { if (!cancelled) setWhseBySku({}); });
+    return () => { cancelled = true; };
+  }, [skuKey, resolving]);
+
+  const shipIncomplete = shipToIncomplete(ship);
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const live = !testMode;
@@ -259,9 +282,19 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
-          <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-            <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
-          </div>
+          {!done && shipWarning && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
+              <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
+            </div>
+          )}
+          <ShipToEditor
+            auto={autoShip}
+            override={shipOverride}
+            onChange={setShipOverride}
+            disabled={done || submitting}
+            shipVia="UPS Ground"
+            autoLabel={shipTo ? 'selected' : 'warehouse'}
+          />
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
@@ -281,6 +314,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                     <th style={{ ...th, textAlign: 'right' }}>Qty</th>
                     <th style={{ ...th, textAlign: 'right' }}>Unit $</th>
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                    <th style={th}>Ships From (stock)</th>
                     <th style={th}>Source SO</th>
                   </tr>
                 </thead>
@@ -303,12 +337,26 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{l.quantity}</td>
                       <td style={{ ...td, textAlign: 'right' }}>${(l.unitPrice || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
+                      <td style={td}>
+                        <WarehouseChips
+                          loading={l.sku ? whseBySku === null : false}
+                          entries={rankWarehouses(
+                            (whseBySku?.[String(l.sku || '').toUpperCase()] || []).map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
+                            l.quantity
+                          ).filter(e => e.primary)}
+                        />
+                      </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
+              {lines.length > 0 && (
+                <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
+                  📦 = expected ship-from warehouse (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Hover the chip for the city and current stock.
+                </div>
+              )}
             </div>
           )}
 
@@ -336,7 +384,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={resolving ? 'Looking up SKUs…' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: live ? '#b91c1c' : '#1e40af', borderColor: live ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
                 {submitting ? 'Submitting…' : resolving ? 'Looking up SKUs…' : live ? '🚀 Place Order with S&S' : '🧪 Submit Test Order'}

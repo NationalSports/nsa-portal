@@ -7,7 +7,7 @@ import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, botProgress } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -21,12 +21,12 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, garmentCost } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -35,6 +35,7 @@ import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 
@@ -1609,7 +1610,7 @@ const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
   return price;
 };
 // _v bumps when default values change so cached localStorage from older versions is ignored.
-let SP={_v:3,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,null,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
+let SP={_v:4,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,100,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
 let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
@@ -2069,6 +2070,43 @@ const RowLink=React.memo(function RowLink({params,onOpen,children,style,classNam
   return(<a href={_buildTabHref(params)} onClick={handler} className={className} title={title} style={{color:'inherit',textDecoration:'none',display:inline?'inline':'block',cursor:'pointer',...(style||{})}}>{children}</a>);
 });
 
+// Vendor picker for the product editor. Was a plain <select> over the eight seed
+// vendors (D_V), so distributors that only exist in the vendors table — Agron, A4,
+// Twin City… — could never be applied to a product. This is a type-to-filter search
+// over every vendor in the system; picking one applies it, clearing it unsets the vendor.
+function VendorSearchSelect({vendors,value,onPick}){
+  const list=useMemo(()=>(vendors||[]).filter(v=>v&&v.id&&v.name).slice().sort((a,b)=>a.name.localeCompare(b.name)),[vendors]);
+  const sel=list.find(v=>v.id===value)||null;
+  const[q,setQ]=useState('');const[open,setOpen]=useState(false);const[hi,setHi]=useState(0);
+  const wrap=useRef(null);
+  useEffect(()=>{if(!open)return;const h=e=>{if(wrap.current&&!wrap.current.contains(e.target))setOpen(false)};document.addEventListener('mousedown',h);return()=>document.removeEventListener('mousedown',h)},[open]);
+  const matches=useMemo(()=>{const s=q.trim().toLowerCase();return(s?list.filter(v=>v.name.toLowerCase().includes(s)):list).slice(0,80)},[q,list]);
+  const pick=v=>{onPick(v?v.id:'',v||null);setQ('');setOpen(false)};
+  const key=e=>{
+    if(e.key==='ArrowDown'){e.preventDefault();setOpen(true);setHi(h=>Math.min(h+1,matches.length-1))}
+    else if(e.key==='ArrowUp'){e.preventDefault();setHi(h=>Math.max(h-1,0))}
+    else if(e.key==='Enter'){if(open&&matches[hi]){e.preventDefault();pick(matches[hi])}}
+    else if(e.key==='Escape'){setOpen(false);setQ('')}
+  };
+  return(<div ref={wrap} style={{position:'relative'}}>
+    <div style={{display:'flex',alignItems:'center',gap:4}}>
+      <input className="form-input" autoComplete="off" placeholder={sel?sel.name:'Search vendors…'} title={sel?'Vendor: '+sel.name:'Search all vendors'}
+        value={open?q:(sel?sel.name:'')} style={{flex:1,minWidth:0}}
+        onFocus={()=>{setQ('');setHi(0);setOpen(true)}}
+        onChange={e=>{setQ(e.target.value);setHi(0);setOpen(true)}}
+        onKeyDown={key}/>
+      {sel&&<button type="button" className="btn btn-sm" title="Clear vendor" style={{padding:'2px 8px',lineHeight:1.2}} onClick={()=>pick(null)}>×</button>}
+    </div>
+    {open&&<div style={{position:'absolute',zIndex:60,top:'100%',left:0,right:0,maxHeight:260,overflowY:'auto',background:'#fff',border:'1px solid #cbd5e1',borderRadius:6,boxShadow:'0 8px 24px rgba(15,23,42,.14)',marginTop:2}}>
+      {matches.length===0?<div style={{padding:'8px 10px',fontSize:12,color:'#94a3b8'}}>No vendor matches “{q}”</div>:matches.map((v,i)=>
+        <div key={v.id} onMouseDown={e=>{e.preventDefault();pick(v)}} onMouseEnter={()=>setHi(i)}
+          style={{padding:'6px 10px',fontSize:13,cursor:'pointer',background:i===hi?'#eff6ff':(v.id===value?'#f8fafc':'#fff'),fontWeight:v.id===value?700:500}}>
+          {v.name}{v.vendor_type==='api'&&<span style={{marginLeft:6,fontSize:10,color:'#0e7490'}}>API</span>}
+        </div>)}
+    </div>}
+  </div>);
+}
+
 export default function App(){
   // /auth/setup and /auth/reset short-circuit the entire app — they live behind their own
   // landing page that completes the magic-link / password reset flow before bouncing to /.
@@ -2437,18 +2475,28 @@ export default function App(){
     (async()=>{
       try{
         let _loadTimerId;
-        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
+        // 120s (was 45s): the essential load pulls the full operational dataset in one burst, and a
+        // high-latency / low-bandwidth connection (e.g. a user overseas from the US-West server) can
+        // legitimately need far more than 45s. The self-heal poll below runs with NO cap and succeeds
+        // for those users, which proved the 45s cap was just an artificial early cutoff that flashed the
+        // "didn't finish in time" banner on a load that was still working. 120s matches the poll's tolerance.
+        const _LOAD_CAP_MS=120000;
+        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after '+(_LOAD_CAP_MS/1000)+'s');resolve(null)},_LOAD_CAP_MS)});
         // Tier 1 (essential): everything the dashboard renders — orders, customers, invoices, messages,
         // todos, history, config — but NOT the ~47k product catalog / _pimg_ image rows (the dashboard
         // never reads them). Paints fast; products stream in via the tier-2 load below.
-        const d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        let d=await Promise.race([_dbLoad({essential:true,histInvoices:true,fullState:true}).then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
+        // If even 120s wasn't enough, retry ONCE immediately with no cap before falling through to the
+        // error banner — the uncapped poll would recover anyway, but only after its ~2min interval, which
+        // left slow/overseas users staring at an empty "0 jobs" board and a scary banner in the meantime.
+        if(!d&&!cancelled){console.warn('[DB] Initial load hit the '+(_LOAD_CAP_MS/1000)+'s cap — retrying once uncapped before showing the error banner');d=await _dbLoad({essential:true,histInvoices:true,fullState:true})}
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
-          // Wording matters: this state is almost always a slow CLIENT (the 45s race above expiring on a
-          // slow network/machine) while the server is fine — the old "Could not load data from Supabase"
-          // text sent people hunting server dashboards. Say what happened, that it self-heals (the poll
-          // clears this banner when a later load succeeds), and what to check.
+          // Wording matters: reaching here means the 120s race lost AND the uncapped retry also came back
+          // empty — almost always a slow/failing CLIENT connection while the server is fine. The old "Could
+          // not load data from Supabase" text sent people hunting server dashboards. Say what happened, that
+          // it self-heals (the poll clears this banner when a later load succeeds), and what to check.
           setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
           console.error('[DB] Load returned null — blocking Supabase writes');
         }else if(d.hasData){
@@ -4501,7 +4549,7 @@ export default function App(){
     },250);
     return()=>{if(_gProdTimer.current)clearTimeout(_gProdTimer.current)};
   },[gQ]);// eslint-disable-line
-  const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all',arc:'hide'});
+  const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[mThreadAtt,setMThreadAtt]=useState([]);const[mThreadAttBusy,setMThreadAttBusy]=useState(false);const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all',arc:'hide'});
   // ─── Server-side product search state (paginated) ───
   const[prodPage,setProdPage]=useState(0);const PROD_PAGE_SIZE=50;
   const[prodServerResults,setProdServerResults]=useState(null);// {products:[], total:0} or null=use client
@@ -7591,7 +7639,10 @@ export default function App(){
           // (see jobReceivedAt) instead of updated_at, which drifts to the last edit and mislabels
           // long-received jobs as "Yesterday". items_received_at is honored if ever persisted.
           const _rcvdAt=j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at;
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
+          // Only nag when the art still needs a human: not yet with the artist, or sitting past
+          // ART_ATTENTION_STALE_DAYS. Art that's with the artist and still fresh is somebody
+          // else's open task — surfacing it here just adds noise (artNeedsAttention).
+          if(needsArt){if(artNeedsAttention(j.art_status,_rcvdAt)){const _artAge=Math.floor((Date.now()-new Date(_rcvdAt).getTime())/86400000);todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' ')+(Number.isFinite(_artAge)&&_artAge>ART_ATTENTION_STALE_DAYS?' · sitting '+_artAge+' days':''),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}}
           else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
@@ -9392,6 +9443,9 @@ export default function App(){
       return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);doSave()};
     },[editing]);
     const v=vend.find(x=>x.id===ep.vendor_id);
+    // Vendor options for the editor: the live vendors table, plus any seed vendor the
+    // table hasn't been loaded with yet (offline / first paint), so nothing disappears.
+    const _vendorOpts=vend&&vend.length?[...vend,...D_V.filter(d=>!vend.some(x=>x.id===d.id))]:D_V;
     // Find all orders this product appears on
     const pEsts=ests.filter(e=>e.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
     const pSOs=sos.filter(s=>s.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
@@ -9505,7 +9559,17 @@ export default function App(){
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
-                <div><label className="form-label">Vendor</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div><label className="form-label">Vendor</label>
+                  {/* Search over every vendor in the system, not just the seed list — distributors
+                      like Agron carry adidas product and have to be applicable here. Brand only
+                      follows the vendor when it was already in sync with it, so an Agron item keeps
+                      brand "Adidas" (the adidas stock lookups match on that brand). */}
+                  <VendorSearchSelect vendors={_vendorOpts} value={ep.vendor_id||''} onPick={(id,v)=>setEp(x=>{
+                    const prevV=_vendorOpts.find(o=>o.id===x.vendor_id);
+                    const brandFollowsVendor=!x.brand||(prevV&&(x.brand||'').toLowerCase()===(prevV.name||'').toLowerCase());
+                    return{...x,vendor_id:id||null,brand:(v&&brandFollowsVendor)?v.name:x.brand};
+                  })}/>
+                </div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
                 <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
@@ -10761,7 +10825,9 @@ export default function App(){
           const needsArt=j.art_status!=='art_complete';
           // Real receive moment from the fulfilling receipts (see jobReceivedAt), not updated_at.
           const _rcvdAt=j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at;
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
+          // Same gate as the desktop dashboard generator (artNeedsAttention): with the artist and
+          // still fresh = not a to-do here.
+          if(needsArt){if(artNeedsAttention(j.art_status,_rcvdAt))todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review art',role:'sales',date:_rcvdAt})}
           else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:_rcvdAt});
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
@@ -12026,6 +12092,19 @@ export default function App(){
     const byVendor={};
     batchPOs.forEach(bp=>{const _gk=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');if(!byVendor[_gk]){const _dv=bp.ship_to_deco_id?decoVendors.find(dv=>dv.id===bp.ship_to_deco_id):null;byVendor[_gk]={name:bp.vendor_name+(_dv?' → '+_dv.name:''),vendor_key:bp.vendor_key,ship_to_deco_id:bp.ship_to_deco_id||null,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold??200,pos:[]}}byVendor[_gk].pos.push(bp)});
     const vendorGroups=Object.entries(byVendor);
+    // Ship-to for an API order, resolved the same way the bot-cart flow resolves it
+    // (write-in address > decorator > drop-ship program address > NSA warehouse).
+    // A batch whose lines belong at different addresses can't be one API order — an
+    // order carries a single ship-to — so that comes back as a warning the modal
+    // shows above the confirm box rather than something resolved silently.
+    const _apiDest=(vg)=>{
+      const d=resolveBatchDestination({batches:vg.pos,decoId:vg.ship_to_deco_id||null,allOrders:sos,customers:cust,decoVendors,vendors:vend});
+      return{shipTo:d.shipTo,warning:d.unresolved
+        ?`This batch is flagged drop ship but no delivery address is on file${vg.ship_to_deco_id?" for the decorator (add it in Settings → Deco Vendors or on its linked Vendor)":" for the SO's ship-to customer"} — it has fallen back to the NSA warehouse. Edit the address below if it should go elsewhere.`
+        :d.mixed
+        ?`This batch has lines bound for ${d.destinationCount} different destinations, but one API order ships to one address — every line below will go to the address shown. Order the destinations as separate batches unless you mean to consolidate them.`
+        :''};
+    };
     // Universal PO lookup — searches submitted batches AND all PO lines across every SO
     const q2=batchScan.trim().toLowerCase();
     const batchMatch=q2?submittedBatches.find(sb=>sb.po_number.toLowerCase()===q2):null;
@@ -12503,27 +12582,23 @@ export default function App(){
                 nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
-            {vg.vendor_key==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}>
+            {vg.vendor_key==='sanmar'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>{const _d=_apiDest(vg);setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,shipTo:vg.ship_to_deco_id?undefined:(_d.shipTo||undefined),shipWarning:_d.warning,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}}>
               🚀 Submit SanMar Order (API)
             </button>}
-            {vg.vendor_key==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
+            {vg.vendor_key==='sss'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
               onClick={()=>{
                 // Decorator-bound group (vendor:decoId): the S&S order must ship to the
                 // DECORATOR with the DPO on the attention line — not the NSA warehouse. Resolve
                 // the same way the bot-cart and SanMar flows do, then hand SSOrderModal a shipTo
                 // in its shape. Non-deco batches pass no shipTo → default (NSA warehouse).
-                const _ssSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
-                const _deco=vg.ship_to_deco_id
-                  ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_ssSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
-                  :null;
-                const _ssShipTo=_deco?{companyName:_deco.name,attentionTo:_deco.attention||'',address1:_deco.line1,address2:'',city:_deco.city,region:_deco.state,postalCode:_deco.zip}:undefined;
-                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_ssShipTo,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
+                const _d=_apiDest(vg);
+                setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})});
               }}>
               🚀 Order via S&S API
             </button>}
-            {vg.vendor_key==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}>
+            {vg.vendor_key==='momentec'&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
+              onClick={()=>{const _d=_apiDest(vg);setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipTo:_d.shipTo||undefined,shipWarning:_d.warning,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
@@ -16948,69 +17023,143 @@ export default function App(){
     const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
-    // Remaining (unshipped) items across a soMap — shared by Create Shipment and Clear/Mark-Shipped
-    // Build a map of soId -> Set of item indices that are actually ready to ship for this
-    // customer group (only the completed jobs / pulled no-deco lines, not the whole SO).
-    // A null entry — or a task whose item indices can't be resolved — means "all items"
-    // (a safe fallback that preserves the prior whole-SO behavior for legacy/malformed data).
-    const whReadyIdxBySo=(grp)=>{
-      const m={};
-      (grp?.items||[]).forEach(t=>{
-        if(m[t.soId]===null)return;// already flagged as "all"
-        const idxs=(t.itemIdxs||[]).filter(ix=>ix!=null);
-        if(!idxs.length){m[t.soId]=null;return}// unknown scope → show all
-        if(!m[t.soId])m[t.soId]=new Set();
-        idxs.forEach(ix=>m[t.soId].add(ix));
+    // ── READY TO SHIP IS PER JOB, NOT PER SALES ORDER ──────────────────────────────────────
+    // What the warehouse packs is a finished decoration job (or a fully-pulled no-deco line),
+    // not an order: one SO can carry several jobs finishing weeks apart, and a job can own just
+    // a size-slice of a shared line. So a card's rows come off the job's OWN items and sizes,
+    // minus what already shipped for that job (jobShippedSizes — the same apportioning the ship
+    // gating uses), rather than off the SO's line items filtered by a set of item indices.
+    // `claimed` is the group's running tally of shipped units already subtracted, so two lines
+    // sharing a sku|color can't each subtract the same box.
+    const whShipRows=(t,claimed)=>{
+      const so=t?.so;if(!so)return[];
+      const items=safeItems(so);
+      const shippedSizes=shippedSizesByLine(so._shipments);
+      const rows=[];
+      if(t.type==='deco_done'&&t.job){
+        const shippedByGi=jobShippedSizes(t.job,safeJobs(so),shippedSizes);
+        (t.job.items||[]).forEach((gi,gidx)=>{
+          if(!gi)return;
+          const it=items[gi.item_idx]||{};
+          // A split slice carries its own per-size allocation; a whole-line job item takes the line.
+          const base=(gi.sizes&&Object.keys(gi.sizes).length)?gi.sizes:safeSizes(it);
+          const shipped=shippedByGi[gidx]||{};
+          const sizes={};Object.entries(base).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)sizes[sz]=rem});
+          const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+          // unitKey identifies the physical garments this row covers: slices of one split family
+          // partition a line (they add up), while separate jobs on the same line are decoration
+          // layers over the SAME garments (they must not).
+          if(qty>0)rows.push({sku:it.sku||gi.sku||'',name:it.name||gi.name||'',color:it.color||gi.color||'',
+            sizes,qty,soId:t.soId,itemIdx:gi.item_idx,unitKey:gi.split_group||('job:'+t.job.id)});
+        });
+        return rows;
+      }
+      // No-deco line / wait-complete order — no job owns these garments, so the SO lines are the batch.
+      [...new Set((t.itemIdxs||[]).filter(ix=>ix!=null))].forEach(ix=>{
+        const it=items[ix];if(!it)return;
+        const shipped=shippedSizes[(it.sku||'')+'|'+(it.color||'')]||{};
+        const ck=t.soId+'|'+(it.sku||'')+'|'+(it.color||'');
+        const claim=claimed?(claimed[ck]||(claimed[ck]={})):{};
+        const sizes={};
+        Object.entries(safeSizes(it)).forEach(([sz,v])=>{
+          const ordered=safeNum(v);if(ordered<=0)return;
+          const use=Math.min(ordered,Math.max(0,safeNum(shipped[sz])-safeNum(claim[sz])));
+          claim[sz]=safeNum(claim[sz])+use;
+          const rem=ordered-use;if(rem>0)sizes[sz]=rem;
+        });
+        const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+        if(qty>0)rows.push({sku:it.sku||'',name:it.name||'',color:it.color||'',sizes,qty,soId:t.soId,itemIdx:ix,unitKey:'line:'+ix});
       });
-      return m;
+      return rows;
     };
-    // Units still committed to not-yet-ready jobs (hold/ready/staging/in_process) on an SO, keyed
-    // by SKU|color → size → qty. A completed job can share a line item with a backorder or split
-    // slice that isn't decorated/received yet; those units must be held back from the completed
-    // batch's shippable quantity so Ready to Ship never offers goods that aren't actually done.
-    const whHeldBySku=(so)=>{
-      const held={};
-      safeJobs(so).forEach(j=>{
-        const st=j.prod_status;
-        if(st==='completed'||st==='shipped'||st==='draft')return;// only jobs still in production hold units
-        (j.items||[]).forEach(gi=>{
-          const key=(gi.sku||'')+'|'+(gi.color||'');const sizes=gi.sizes||gi.fulSizes||{};
-          if(!held[key])held[key]={};
-          Object.entries(sizes).forEach(([sz,v])=>{held[key][sz]=(held[key][sz]||0)+safeNum(v)});
-        });
-      });
-      return held;
+    // One section per ready-to-ship job/line in a customer card — shared by the card body, the
+    // packing slip and the shipment/clear modals so all three agree unit for unit.
+    const whGroupRows=(grp)=>{
+      const claimed={};
+      return(grp?.items||[]).map(t=>{const rows=whShipRows(t,claimed);return{task:t,rows,units:rows.reduce((a,r)=>a+r.qty,0)}});
     };
-    const whRemainingItems=(soMap,readyIdxBySo)=>{
-      const allItems=[];const seen=new Set();
-      Object.entries(soMap).forEach(([soId,so])=>{
-        const readyIdx=readyIdxBySo?.[soId];
-        const heldBySku=whHeldBySku(so);
-        // Calculate already-shipped quantities per SKU+color for this SO
-        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-          const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
-          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
-        })});
-        // Merge duplicate items by SKU+color before building available items
-        const mergedByKey={};const mergedOrder=[];
-        safeItems(so).forEach((item,iIdx)=>{
-          if(readyIdx&&!readyIdx.has(iIdx))return;// only items belonging to a ready-to-ship job
-          const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
-          if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
-          else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
-        });
-        mergedOrder.forEach(m=>{
-          const key=soId+'|'+m.sku+'|'+(m.color||'');
-          if(seen.has(key))return;
-          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};const held=heldBySku[itemKey]||{};
-          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz])-safeNum(held[sz]);if(rem>0)remainSz[sz]=rem});
-          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-          if(qty<=0)return;
-          seen.add(key);
-          allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
+    // Physical garments still to pack across a whole card — what Create Shipment and Mark Shipped
+    // operate on. Per SO line, units are summed within a split family (disjoint batches of one
+    // line) and maxed across families/layers (a second position or a names pass decorates the
+    // same garments, so it must not add a second copy of them to the box).
+    const whRemainingItems=(grp)=>{
+      const perItem={};const order=[];
+      whGroupRows(grp).forEach(sec=>sec.rows.forEach(r=>{
+        const ik=r.soId+'|'+r.itemIdx;
+        if(!perItem[ik]){perItem[ik]={soId:r.soId,itemIdx:r.itemIdx,sku:r.sku,name:r.name,color:r.color,buckets:{}};order.push(perItem[ik])}
+        const b=perItem[ik].buckets[r.unitKey]||(perItem[ik].buckets[r.unitKey]={});
+        Object.entries(r.sizes).forEach(([sz,v])=>{b[sz]=(b[sz]||0)+v});
+      }));
+      const out=[];const byKey={};
+      order.forEach(pi=>{
+        const sizes={};Object.values(pi.buckets).forEach(b=>Object.entries(b).forEach(([sz,v])=>{sizes[sz]=Math.max(sizes[sz]||0,v)}));
+        if(!Object.keys(sizes).length)return;
+        // Duplicate lines with the same sku+color merge into one shipment row (boxes key off soId+itemIdx).
+        const k=pi.soId+'|'+pi.sku+'|'+(pi.color||'');
+        if(byKey[k]){Object.entries(sizes).forEach(([sz,v])=>{byKey[k].sizes[sz]=(byKey[k].sizes[sz]||0)+v});return}
+        const item={sku:pi.sku,name:pi.name,color:pi.color||'',sizes,soId:pi.soId,itemIdx:pi.itemIdx};
+        byKey[k]=item;out.push(item);
+      });
+      return out;
+    };
+    // A single job block, shaped as a one-job card so the shipment/clear modals — which take a
+    // customer group — can act on just that job. Shipping one finished job while the rest of the
+    // order is still in production is the normal case in the warehouse, not the exception.
+    const whJobGrp=(grp,sec)=>({cName:grp.cName,shipMethod:grp.shipMethod,items:[sec.task],
+      totalUnits:sec.units,soIds:new Set([sec.task.soId]),soMap:{[sec.task.soId]:sec.task.so},readyAt:sec.task.readyAt});
+    // A "ship complete" order must leave as one shipment, so its block never gets its own
+    // ship/clear buttons — the whole-card actions are the only way to send it.
+    const whShipsAlone=(sec)=>sec.task.type!=='wait_complete'&&(sec.task.shipPref||'ship_as_ready')!=='wait_complete';
+    // Packing slip for a whole card or for one job block — same builder, so a one-job slip is
+    // just the card slip scoped to a single section.
+    const whOpenPackSlip=(grp,sections)=>{
+      const secs=sections||whGroupRows(grp);
+      const soIds=[...new Set(secs.map(s=>s.task.soId))];
+      const firstSO=grp.soMap[soIds[0]]||Object.values(grp.soMap)[0];
+      const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
+      const shipAddrSub=(()=>{
+        const sel=orderShipToSub(firstSO,shipCust);if(sel)return sel;
+        const _da=custShipAddrSub(shipCust);if(_da)return _da;
+        if(shipCust?.billing_address_line1){
+          let a=shipCust.billing_address_line1;
+          if(shipCust.billing_address_line2)a+='<br/>'+shipCust.billing_address_line2;
+          a+='<br/>'+(shipCust.billing_city||'')+', '+(shipCust.billing_state||'')+' '+(shipCust.billing_zip||'');
+          return a;
+        }
+        return 'Default address on file';
+      })();
+      // Rows follow the card: one block of lines per finished job, with that job's own sizes
+      const packRows=[];
+      secs.forEach(sec=>{
+        const j=sec.task.type==='deco_done'?sec.task.job:null;
+        const jobLabel=j?(j.id+' · '+(j.art_name||'')):(sec.task.type==='wait_complete'?'Full order':'No deco');
+        sec.rows.forEach(r=>{
+          const szStr=Object.entries(r.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
+          packRows.push({cells:[r.soId,jobLabel,r.sku||'',r.name||'',r.color||'—',szStr,r.qty]});
         });
       });
-      return allItems;
+      const units=secs.reduce((a,s)=>a+s.units,0);
+      const oneJob=secs.length===1&&secs[0].task.type==='deco_done'?secs[0].task.job:null;
+      const docNum=soIds.join(', ')+(oneJob?' · '+oneJob.id:'');
+      const packOpts={
+        title:grp.cName,docNum,
+        docType:'PACKING LIST',showPricing:false,
+        headerRight:'<div class="ta" style="font-size:20px">'+units+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
+        infoBoxes:[
+          {label:'Ship To',value:grp.cName,sub:shipAddrSub},
+          {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
+        ],
+        tables:[{
+          title:'Items in this Shipment',
+          headers:['SO#','Job','SKU','Item','Color','Sizes','Qty'],
+          aligns:['left','left','left','left','left','left','center'],
+          rows:packRows
+        }],
+        notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+        footer:'NO PRICING — Customer Copy'
+      };
+      openDocPDF(packOpts,'Packing-List-'+(oneJob?oneJob.id:soIds.join('-'))).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
+      nf('📦 Packing list opened for '+grp.cName);
     };
     const tabs=[
       {id:'pull',label:'Item Fulfillment',icon:'📋',count:fPull.length,color:'#d97706'},
@@ -18011,9 +18160,10 @@ export default function App(){
             {Object.values(byCustomer).map((grp,gi)=>{
               // Check what's already been shipped for these SOs
               const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
-              // Only the items that belong to the ready-to-ship jobs/lines for this group —
-              // an SO can have other jobs still in production that must NOT appear here.
-              const readyIdxBySo=whReadyIdxBySo(grp);
+              // One section per finished job / no-deco line — an SO can have other jobs still in
+              // production, and each job packs on its own, so the card never lists SO lines.
+              const grpRows=whGroupRows(grp);
+              const shownSecs=grpRows.filter(s=>s.rows.length);
               const grpKey=grp.cName+'|'+(grp.shipMethod||'pending');
               const expanded=!!shipExpanded[grpKey];
               return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
@@ -18030,112 +18180,64 @@ export default function App(){
                   {existingShipments.length>0&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{existingShipments.length} pkg shipped</span>}
                   {(()=>{const r=_fmtReadyDate(grp.readyAt);return r?<span title={'Oldest item ready to ship since '+new Date(grp.readyAt).toLocaleString()} style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#f1f5f9',color:'#475569'}}>📅 Ready {r.label} · {r.ago}</span>:null})()}
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
-                  <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} job{grp.items.length!==1?'s':''}</span>
                 </div>
                 {expanded&&<>
-                {/* Detailed item list per SO */}
-                {[...grp.soIds].map(soId=>{const so=grp.soMap[soId];if(!so)return null;
-                  return<div key={soId} style={{marginBottom:6}}>
-                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
-                      <span style={{fontSize:10,fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}}
-                        onClick={()=>{setESOTab(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>{soId}</span>
-                      {grp.items.find(t=>t.soId===soId)?.urgent&&<span style={{fontSize:10}}>🔥</span>}
+                {/* One block per finished job (or no-deco line) — the batch the warehouse actually packs */}
+                {shownSecs.map((sec,si)=>{
+                  const t=sec.task;const j=t.type==='deco_done'?t.job:null;
+                  const ready=_fmtReadyDate(t.readyAt);
+                  return<div key={si} style={{marginBottom:8,padding:'6px 8px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3,flexWrap:'wrap'}}>
+                      <span title={j?'Open this job on the order':'Open the order'} style={{fontSize:10,fontWeight:800,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}}
+                        onClick={()=>{const so=t.so;setESOTab(j?'jobs':null);if(j){setESOScrollJob(null);setESOScrollJobRef({artId:j.art_file_id,key:j.key,id:j.id})}setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>
+                        {j?j.id:t.soId}</span>
+                      <span style={{fontSize:10,fontWeight:700,color:'#334155'}}>{j?j.art_name:t.type==='wait_complete'?'Full order':(t.desc||'No deco')}</span>
+                      {j?.deco_type&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,fontWeight:600,background:'#ede9fe',color:'#5b21b6'}}>{j.deco_type.replace(/_/g,' ')}</span>}
+                      {!j&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,fontWeight:600,background:'#f1f5f9',color:'#475569'}}>no deco</span>}
+                      {j&&<span style={{fontSize:9,color:'#94a3b8'}}>{t.soId}</span>}
+                      {t.urgent&&<span style={{fontSize:10}}>🔥</span>}
+                      {ready&&<span style={{fontSize:9,color:'#64748b'}}>📅 {ready.label} · {ready.ago}</span>}
+                      <span style={{marginLeft:'auto',fontSize:10,fontWeight:800,color:'#166534'}}>{sec.units} units</span>
                     </div>
-                    {(()=>{
-                      // Calculate already-shipped quantities per SKU+color for this SO
-                      const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-                        const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
-                        Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
-                      })});
-                      // Held-back units (backorder / split slices still in production) — subtracted below so partly-ready items show only their ready quantity.
-                      const heldBySku=whHeldBySku(so);
-                      // Merge duplicate items by SKU+color before rendering (ready-to-ship items only)
-                      const readyIdx=readyIdxBySo[soId];
-                      const mergedItems=[];const seenItems={};
-                      safeItems(so).forEach((item,iIdx)=>{
-                        if(readyIdx&&!readyIdx.has(iIdx))return;// skip items still in production on this SO
-                        const key=item.sku+'|'+(item.color||'');
-                        if(seenItems[key]){const m=seenItems[key];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
-                        else{const m={sku:item.sku,name:item.name,color:item.color,sizes:{}};Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=safeNum(v)});seenItems[key]=m;mergedItems.push(m)}
-                      });
-                      return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
-                      {mergedItems.map((item,ii)=>{
-                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};const held=heldBySku[key]||{};
-                        const remainSz={};Object.entries(item.sizes).forEach(([sz,v])=>{const rem=v-safeNum(shipped[sz])-safeNum(held[sz]);if(rem>0)remainSz[sz]=rem});
-                        const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-                        if(totalQty<=0)return null;
-                        const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
-                        return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
-                          <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{item.sku}</td>
-                          <td style={{fontSize:10,color:'#475569'}}>{item.name}{item.color?' · '+item.color:''}</td>
+                    <table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
+                      {sec.rows.map((r,ri)=>{
+                        const szStr=Object.entries(r.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
+                        return<tr key={ri} style={{borderBottom:'1px solid #f1f5f9'}}>
+                          <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{r.sku}</td>
+                          <td style={{fontSize:10,color:'#475569'}}>{r.name}{r.color?' · '+r.color:''}</td>
                           <td style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{szStr}</td>
-                          <td style={{textAlign:'center',fontWeight:700,width:40}}>{totalQty}</td>
+                          <td style={{textAlign:'center',fontWeight:700,width:40}}>{r.qty}</td>
                         </tr>})}
-                    </tbody></table>})()}
+                    </tbody></table>
+                    {/* Per-job actions — shipping one finished job on its own is the common case */}
+                    {shownSecs.length>1&&whShipsAlone(sec)&&<div style={{display:'flex',gap:5,marginTop:6,flexWrap:'wrap',borderTop:'1px dashed #e2e8f0',paddingTop:5}}>
+                      <button title="Assign this job's shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:9,background:'#0891b2',color:'white',border:'none',padding:'3px 8px',fontWeight:700}}
+                        onClick={()=>_whOpenAssign({title:'Ship — '+(j?j.art_name:t.soId),description:t.soId+(j?' · '+j.id:'')+' · '+sec.units+' units',so:t.so,soId:t.soId,docLabel:j?j.id:t.soId})}>👤 Assign</button>
+                      <button title="Create a shipment for just this job" className="btn btn-sm" style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',fontWeight:700}}
+                        onClick={()=>{const sg=whJobGrp(grp,sec);setShipModal({grp:sg,soMap:sg.soMap,availableItems:whRemainingItems(sg),boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}}>📦 Create Shipment</button>
+                      <button title="Clear just this job from Ready to Ship — marks its units shipped with no label (rep pickup, ShipStation, etc.)"
+                        className="btn btn-sm" style={{fontSize:9,background:'#0f766e',color:'white',border:'none',padding:'3px 8px',fontWeight:700}}
+                        onClick={()=>{const sg=whJobGrp(grp,sec);setClearShipModal({grp:sg,soMap:sg.soMap,reason:'Picked up by rep',custom:'',note:''})}}>✓ Mark Shipped</button>
+                      <button title="Packing slip for just this job" className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px'}}
+                        onClick={()=>whOpenPackSlip(grp,[sec])}>🖨️ Pack Slip</button>
+                    </div>}
                   </div>})}
-                <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                {shownSecs.length>1&&<div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginTop:8}}>All {shownSecs.length} jobs together</div>}
+                <div style={{display:'flex',gap:6,marginTop:shownSecs.length>1?4:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button title="Assign this shipment to a warehouse worker" className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{const firstSO=Object.values(grp.soMap)[0];_whOpenAssign({title:'Ship — '+grp.cName,description:[...grp.soIds].join(', ')+' · '+grp.totalUnits+' units',so:firstSO,soId:firstSO?.id,docLabel:[...grp.soIds].join(', ')})}}>👤 Assign</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with remaining (unshipped) items from the ready-to-ship jobs/lines
-                      const allItems=whRemainingItems(grp.soMap,readyIdxBySo);
+                      // Build ship modal with remaining (unshipped) garments from the ready-to-ship jobs/lines
+                      const allItems=whRemainingItems(grp);
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button title="Clear from Ready to Ship without creating a label — marks remaining units as shipped (rep pickup, ShipStation, etc.)"
                     className="btn btn-sm" style={{fontSize:10,background:'#0f766e',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>setClearShipModal({grp,soMap:grp.soMap,reason:'Picked up by rep',custom:'',note:''})}>✓ Mark Shipped</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
-                    onClick={()=>{
-                      // Quick packing slip for entire group
-                      // Resolve shipping address from customer
-                      const firstSO=Object.values(grp.soMap)[0];
-                      const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
-                      const shipAddrSub=(()=>{
-                        const sel=orderShipToSub(firstSO,shipCust);if(sel)return sel;
-                        const _da=custShipAddrSub(shipCust);if(_da)return _da;
-                        if(shipCust?.billing_address_line1){
-                          let a=shipCust.billing_address_line1;
-                          if(shipCust.billing_address_line2)a+='<br/>'+shipCust.billing_address_line2;
-                          a+='<br/>'+(shipCust.billing_city||'')+', '+(shipCust.billing_state||'')+' '+(shipCust.billing_zip||'');
-                          return a;
-                        }
-                        return 'Default address on file';
-                      })();
-                      // Build rows with full item detail (SKU + sizes)
-                      const packRows=[];
-                      [...grp.soIds].forEach(soId=>{
-                        const so=grp.soMap[soId];if(!so)return;
-                        const readyIdx=readyIdxBySo[soId];
-                        safeItems(so).forEach((item,iIdx)=>{
-                          if(readyIdx&&!readyIdx.has(iIdx))return;// only items in a ready-to-ship job
-                          const szObj=safeSizes(item);
-                          const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
-                          if(totalQty<=0)return;
-                          const szStr=Object.entries(szObj).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0]),bi=SZ_ORD.indexOf(b[0]);return (ai<0?999:ai)-(bi<0?999:bi)}).map(([sz,v])=>sz+': '+v).join('  ');
-                          packRows.push({cells:[soId,item.sku||'',item.name||'',item.color||'—',szStr,totalQty]});
-                        });
-                      });
-                      const packOpts={
-                        title:grp.cName,docNum:[...grp.soIds].join(', '),
-                        docType:'PACKING LIST',showPricing:false,
-                        headerRight:'<div class="ta" style="font-size:20px">'+grp.totalUnits+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
-                        infoBoxes:[
-                          {label:'Ship To',value:grp.cName,sub:shipAddrSub},
-                          {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
-                        ],
-                        tables:[{
-                          title:'Items in this Shipment',
-                          headers:['SO#','SKU','Item','Color','Sizes','Qty'],
-                          aligns:['left','left','left','left','left','center'],
-                          rows:packRows
-                        }],
-                        notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
-                        footer:'NO PRICING — Customer Copy'
-                      };
-                      openDocPDF(packOpts,'Packing-List-'+[...grp.soIds].join('-')).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
-                      nf('📦 Packing list opened for '+grp.cName);
-                    }}>🖨️ Pack Slip</button>
+                    onClick={()=>whOpenPackSlip(grp,grpRows)}>🖨️ Pack Slip</button>
                 </div>
                 </>}
               </div>
@@ -18728,7 +18830,7 @@ export default function App(){
         {clearShipModal&&(()=>{
           // Scope to the ready-to-ship jobs/lines only — clearing must not mark items that are
           // still in production (other jobs on the same SO) as shipped.
-          const remaining=whRemainingItems(clearShipModal.soMap,whReadyIdxBySo(clearShipModal.grp));
+          const remaining=whRemainingItems(clearShipModal.grp);
           const totUnits=remaining.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
           const reasons=['Picked up by rep','Shipped via ShipStation','Customer picked up','Other'];
           const reasonIcon={'Picked up by rep':'🚗','Shipped via ShipStation':'🛒','Customer picked up':'🏫','Other':'✏️'};
@@ -20279,6 +20381,7 @@ export default function App(){
         // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
         if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
         if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
+        if(jobAllRoutedOutside(so,j))return;// skip — every claimed deco moved to an outside decorator; the job retires on the order's next sync (SO-1009)
         if(j.art_status==='art_complete'&&_jobNeedsProdFiles(j,so))return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
@@ -20290,6 +20393,7 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
+        if(jobAllRoutedOutside(so,j))return;// outside decorator produces it — no prod-files step here (SO-1009)
         if(_jobNeedsProdFiles(j,so)){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
           const af=afs.find(a=>!artProdFilesConfirmed(a))||afs[0];
@@ -30394,7 +30498,7 @@ export default function App(){
       setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
     };
     const openThread=(m)=>{
-      setMThread(m.id);setMThreadDept('all');setMThreadMentionQuery(null);setMThreadMentionIdx(0);
+      setMThread(m.id);setMThreadDept('all');setMThreadMentionQuery(null);setMThreadMentionIdx(0);setMThreadAtt([]);
       // Mark every message in this conversation (same entity) as read
       const k=groupKey(m);
       const toMark=new Set(msgs.filter(mm=>groupKey(mm)===k).map(mm=>mm.id));
@@ -30421,11 +30525,13 @@ export default function App(){
     };
     const threadMentionMembers=mThreadMentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mThreadMentionQuery.toLowerCase())).slice(0,6):[];
     const threadSendReply=()=>{
-      const inp=mThreadInputRef.current;if(!inp||!inp.value.trim())return;
-      const text=inp.value.trim();const tagged=threadExtractTaggedIds(text);
+      const inp=mThreadInputRef.current;if(!inp)return;
+      // An attachment-only reply is valid — a photo or proof PDF often is the message.
+      const text=(inp.value||'').trim();if(!text&&mThreadAtt.length===0)return;
+      const tagged=threadExtractTaggedIds(text);
       const anchor=openRootMsg;if(!anchor)return;
-      const nm={id:'m'+Date.now(),so_id:anchor.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:anchor.entity_type||'so',entity_id:anchor.entity_id||anchor.so_id,thread_id:anchor.thread_id||anchor.id};
-      setMsgs([...msgs,nm]);inp.value='';setMThreadDept('all');setMThreadMentionQuery(null);nf(tagged.length?'Reply sent — '+tagged.length+' member(s) tagged':'Reply sent');
+      const nm={id:'m'+Date.now(),so_id:anchor.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:anchor.entity_type||'so',entity_id:anchor.entity_id||anchor.so_id,thread_id:anchor.thread_id||anchor.id,attachments:mThreadAtt.length?mThreadAtt:null};
+      setMsgs([...msgs,nm]);inp.value='';setMThreadDept('all');setMThreadMentionQuery(null);setMThreadAtt([]);nf(tagged.length?'Reply sent — '+tagged.length+' member(s) tagged':'Reply sent');
     };
     const threadHandleKeyDown=(e)=>{
       if(mThreadMentionQuery!=null&&threadMentionMembers.length>0){
@@ -30434,8 +30540,9 @@ export default function App(){
         if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();threadInsertMention(threadMentionMembers[mThreadMentionIdx]);return}
         if(e.key==='Escape'){setMThreadMentionQuery(null);return}
       }
-      if(e.key==='Enter'&&mThreadMentionQuery==null&&e.target.value.trim()){threadSendReply()}
+      if(e.key==='Enter'&&mThreadMentionQuery==null&&(e.target.value.trim()||mThreadAtt.length>0)){threadSendReply()}
     };
+    const threadHandlePaste=makeMsgPasteHandler(setMThreadAtt,setMThreadAttBusy,nf);
     // Thread view — full conversation history is openMsgs / openRootMsg (computed above)
     return(<>
     {/* Prominent stats row */}
@@ -30474,6 +30581,7 @@ export default function App(){
               <div style={{fontSize:13,color:'#374151'}}><span style={{fontWeight:600,color:'#475569'}}>{lastAuthor?.name?.split(' ')[0]||c.last.author||(c.last.from_customer?'Customer':'')}: </span>{renderMsgPageText(c.last.text)}</div>
               <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
                 {(c.last.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{(c.last.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+                {msgAttachments(c.last).length>0&&<span style={{fontSize:10,color:'#475569',fontWeight:600,display:'flex',alignItems:'center',gap:3}}>&#128206; {msgAttachments(c.last).length}</span>}
                 {count>1&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600,display:'flex',alignItems:'center',gap:3}}><span style={{fontSize:12}}>&#128172;</span> {count} messages</span>}
                 {c.unreadCount>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:700}}>{c.unreadCount} new</span>}
               </div>
@@ -30481,7 +30589,7 @@ export default function App(){
             {isUnread&&<div style={{width:10,height:10,borderRadius:5,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:8}}/>}
           </div></div>})}</div></div>
     {/* Thread panel */}
-    {mThread&&openRootMsg&&<div className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}}>
+    {mThread&&openRootMsg&&<MsgDropZone className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}} setItems={setMThreadAtt} setBusy={setMThreadAttBusy} nf={nf} label="Drop to attach to this reply">
       <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
         <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
         <h2 style={{margin:0,fontSize:14,display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(openRootMsg),color:entityColor(openRootMsg)}}>{entityLabel(openRootMsg)}</span><span style={{color:entityColor(openRootMsg)}}>{openRootMsg.entity_id||openRootMsg.so_id}</span></h2>
@@ -30501,6 +30609,7 @@ export default function App(){
               <span style={{fontSize:10,color:'#94a3b8'}}>{r.ts}</span>
             </div>
             <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgPageText(r.text)}</div>
+            <MsgAttachments items={msgAttachments(r)}/>
             {(r.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(r.tagged_members||[]).map(tid=>{const tm=REPS.find(rep=>rep.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
           </div>})}
       </div>
@@ -30517,13 +30626,14 @@ export default function App(){
               <div><div style={{fontSize:11,fontWeight:600}}>{m.name}</div><div style={{fontSize:9,color:'#94a3b8'}}>{m.role}</div></div>
             </div>)}
           </div>}
+          <MsgAttachBar items={mThreadAtt} setItems={setMThreadAtt} busy={mThreadAttBusy} setBusy={setMThreadAttBusy} nf={nf} compact/>
           <div style={{display:'flex',gap:8}}>
-            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown}/>
-            <button className="btn btn-primary" onClick={threadSendReply}>Reply</button>
+            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone, drag or paste to attach)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown} onPaste={threadHandlePaste}/>
+            <button className="btn btn-primary" disabled={mThreadAttBusy} onClick={threadSendReply}>Reply</button>
           </div>
         </div>
       </div>
-    </div>}
+    </MsgDropZone>}
     </div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
@@ -34875,7 +34985,7 @@ export default function App(){
           const itRcvd=Object.values(it.received||{}).reduce((a,v)=>a+v,0);
           const baseSizes=it.available_sizes||['S','M','L','XL','2XL'];
           const extras=[...new Set([...Object.keys(it.sizes||{}),...Object.keys(it.received||{}).filter(sz=>(it.received[sz]||0)>0)])].filter(sz=>!baseSizes.includes(sz));
-          const allSizes=[...baseSizes,...extras].sort((a,b)=>{const ai=SZ_ORD.indexOf(a),bi=SZ_ORD.indexOf(b);return (ai<0?999:ai)-(bi<0?999:bi)});
+          const allSizes=[...baseSizes,...extras].sort((a,b)=>szRank(a)-szRank(b));
           const addableSizes=[...SZ_ORD,...EXTRA_SIZES].filter((sz,i,a)=>a.indexOf(sz)===i&&!allSizes.includes(sz));
           return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>

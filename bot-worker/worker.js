@@ -417,14 +417,21 @@ async function processOne() {
       + 'Original error: ' + (result.summary || '');
   }
 
-  // Sanity-check: skipped SKUs (out of stock beyond the 14-day window) always
-  // need a rep decision — never let them slide through as needs_review.
+  // Sanity-check: skipped SKUs (out of stock beyond the 14-day window) need a
+  // rep decision — unless the rep already made it at assign time (the standing
+  // backorder selector, or a per-item schedule covering that SKU). Without this
+  // exception a pre-decided 'drop' run always bounced back to needs_input,
+  // re-asking the exact question the selector answered.
   const skipped = Array.isArray(result.skipped) ? result.skipped : [];
-  if (status === 'needs_review' && skipped.length) {
+  const _pd = { ...(task.bot_payload || {}), ...(order || {}) };
+  const _decidedGlobally = _pd.backorder_action === 'order' || _pd.backorder_action === 'drop';
+  const _sched = _pd.line_schedule || {};
+  const undecided = skipped.filter((s) => !_decidedGlobally && !_sched[s.sku]);
+  if (status === 'needs_review' && undecided.length) {
     status = 'needs_input';
     if (!result.question) {
       result.question = 'These SKUs were skipped (sizes unavailable now and not restocking within 14 days): '
-        + skipped.map((s) => `${s.sku} (${s.sizes || '?'} — restock ${s.restock || 'no date'})`).join('; ')
+        + undecided.map((s) => `${s.sku} (${s.sizes || '?'} — restock ${s.restock || 'no date'})`).join('; ')
         + '. Wait for restock, substitute, or drop them?';
     }
   }
@@ -464,7 +471,7 @@ async function processOne() {
   if (result.cart_url) checklist.push(`- 🛒 Cart: ${result.cart_url}`);
   sections.push('**Checklist**\n' + checklist.join('\n'));
   if (result.question) sections.push('**Question**\n' + String(result.question).trim());
-  if (skipped.length) sections.push('**Skipped — need your call**\n'
+  if (skipped.length) sections.push(`**Skipped — ${status === 'needs_input' ? 'need your call' : 'per your instruction'}**\n`
     + skipped.map((s) => `- ${s.sku} (${s.sizes || '?'}) — restock ${s.restock || 'no date'}`).join('\n'));
   if (Array.isArray(result.backordered) && result.backordered.length) sections.push('**Backordered — ordered anyway (restock ≤ 14 days)**\n'
     + result.backordered.map((b) => `- ${b}`).join('\n'));

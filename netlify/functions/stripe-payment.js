@@ -77,6 +77,23 @@ exports.handler = async (event) => {
             if (balanceCents <= 0 || amount_cents > maxCents) {
               return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice. Please reload the page and try again.' }) };
             }
+            // In-flight ACH guard — REAL invoices only (ids that resolved to rows). A
+            // bank debit settles in 1–4 business days, and nothing marks the invoice
+            // "pending" while it does — the balance still shows open, so a payer
+            // returning the next day could start a SECOND real debit for the same
+            // invoice. Refuse (any method) while a 'processing' intent overlaps these
+            // invoice ids. Scoped inside the invRows branch so a non-invoice
+            // identifier (e.g. a legacy webstore slug shared across buyers) can never
+            // block one buyer on another's in-flight payment. One 100-item page over
+            // 7 days covers NSA's volume; fail-open on Stripe errors (outer catch) so
+            // the check can never block payments outright.
+            const realIds = invRows.map((r) => String(r.id));
+            const recent = await client.paymentIntents.list({ created: { gte: Math.floor(Date.now() / 1000) - 7 * 86400 }, limit: 100 });
+            const inFlight = (recent.data || []).find((p) => p.status === 'processing' && p.metadata && p.metadata.invoice_id
+              && String(p.metadata.invoice_id).split(/[\s,]+/).some((v) => realIds.includes(v)));
+            if (inFlight) {
+              return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing (submitted ' + new Date(inFlight.created * 1000).toLocaleDateString('en-US') + '). Bank payments take 1–4 business days to clear, so please don’t pay again — contact NSA if you believe this is an error.' }) };
+            }
           }
         }
       } catch (e) {
