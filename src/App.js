@@ -8570,6 +8570,7 @@ export default function App(){
       </div>;
     })()}
     <div className="connect-dashboard">
+    {uiMode==='new'&&<>
     {/* Role Selector — only show tabs relevant to the user's role */}
     {uiMode==='new'&&visibleTabs.length>1&&<div className="connect-dashboard__roles" aria-label="Dashboard view">
       {visibleTabs.map(r=><button key={r.id} type="button" className={`connect-dashboard__role ${dashView===r.id?'is-active':''}`}
@@ -8706,35 +8707,6 @@ export default function App(){
       {isA&&(()=>{const _parked=savedBills.filter(b=>b.reviewLater).length;const n=ssNewCount+siNewCount+_parked;return n>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#0891b2'}} title={'S&S new: '+ssNewCount+' · Sports Inc new: '+siNewCount+' · parked for later: '+_parked} onClick={()=>{setBillView('import');setPg('import')}}><div className="stat-label">📥 Bills Inbox</div><div className="stat-value" style={{color:'#0e7490'}}>{n}</div></div>})()}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
     {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const recentNotifs=visNotifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a)).slice(0,6);const orderedAssigned=myAssignedTodos.slice().sort((a,b)=>(a.priority??2)-(b.priority??2)||(new Date(a.due_date||a.created_at||0)-new Date(b.due_date||b.created_at||0)));const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));const _hubTitle=s=>(s||'').replace(/^[^\w@]+/,'');const _openNotif=t=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};return<><div style={{display:'grid',gridTemplateColumns:uiMode==='classic'?'1fr 1fr':'1fr',gap:16,marginBottom:16}}>
-      {uiMode==='classic'&&<>
-      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}>
-        <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
-        </select>
-        <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
-        </select>
-        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div></div>
-        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
-          (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
-            {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
-              {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
-              {t.type==='follow_up'&&t.est&&<button title="Open the send window to email this estimate to the coach" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'doc'});setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}>📧 Send</button>}
-              {t.type==='coach_followup'&&t.so&&t.jobId&&<button title="Open Send-to-Coach for this artwork" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'coach',jobId:t.jobId});setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId});setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}>📧 Send</button>}
-              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
-              <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
-              {_todoIsFollowUp(t)?(snoozeOpenKey===t.dismissKey?<div style={{display:'flex',gap:2,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
-                <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
-                {[1,3,5,7].map(d=><button key={d} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={e=>{e.stopPropagation();snoozeTodo(t,d)}}>{d}d</button>)}
-              </div>:<button style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(t.dismissKey)}}>💤 Snooze</button>):
-              (t.type==='rep_delivery'?<button title="Record this delivery and clear it from your list" style={{fontSize:10,padding:'3px 10px',borderRadius:8,background:'#166534',color:'white',border:'none',fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();_repDeliver(t)}}>🚚 {t.action}</button>:<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>)}
-            </div>)}
-          </div>)})()}
-        </div></div></>}
 
       {_renderSalesBox(null)}
     </div>
@@ -9281,6 +9253,622 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 Orders</button>
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
       <button className="btn btn-secondary" onClick={()=>setPg('customers')}>👥 Customers</button></div></div>
+    </>}
+    </>}
+
+    {/* ═══ CLASSIC UI — the dashboard exactly as it exists on main (pre-redesign), kept verbatim for the rollout toggle ═══ */}
+    {uiMode==='classic'&&<>
+    {visibleTabs.length>1&&<div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
+      {visibleTabs.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
+        style={{fontSize:11,padding:'5px 12px',background:dashView===r.id?'#1e293b':'',borderColor:dashView===r.id?'#1e293b':''}}
+        onClick={()=>setDashView(r.id)}>{r.label}</button>)}
+    </div>}
+
+    {/* ═══ ADMIN VIEW ═══ */}
+    {dashView==='admin'&&<>
+    <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
+      {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
+      {/* Bills Inbox — the morning glance for supplier-bill intake: S&S + Sports Inc docs the
+          daily syncs flagged new, plus locally-parked bills. Click → Import & Review. */}
+      {isA&&(()=>{const _parked=savedBills.filter(b=>b.reviewLater).length;const n=ssNewCount+siNewCount+_parked;return n>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#0891b2'}} title={'S&S new: '+ssNewCount+' · Sports Inc new: '+siNewCount+' · parked for later: '+_parked} onClick={()=>{setBillView('import');setPg('import')}}><div className="stat-label">📥 Bills Inbox</div><div className="stat-value" style={{color:'#0e7490'}}>{n}</div></div>})()}
+      <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+        <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+        </select>
+        <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
+          (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
+            {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
+              {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
+              {t.type==='follow_up'&&t.est&&<button title="Open the send window to email this estimate to the coach" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'doc'});setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}>📧 Send</button>}
+              {t.type==='coach_followup'&&t.so&&t.jobId&&<button title="Open Send-to-Coach for this artwork" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'coach',jobId:t.jobId});setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId});setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}>📧 Send</button>}
+              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
+              <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
+              {_todoIsFollowUp(t)?(snoozeOpenKey===t.dismissKey?<div style={{display:'flex',gap:2,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
+                <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
+                {[1,3,5,7].map(d=><button key={d} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={e=>{e.stopPropagation();snoozeTodo(t,d)}}>{d}d</button>)}
+              </div>:<button style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(t.dismissKey)}}>💤 Snooze</button>):
+              (t.type==='rep_delivery'?<button title="Record this delivery and clear it from your list" style={{fontSize:10,padding:'3px 10px',borderRadius:8,background:'#166534',color:'white',border:'none',fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();_repDeliver(t)}}>🚚 {t.action}</button>:<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>)}
+            </div>)}
+          </div>)})()}
+        </div></div>
+      {_renderSalesBox(null)}
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
+          notifGroups.map(g=><div key={g.cat}>
+            {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+              {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+              <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+            </div>)}
+          </div>)}
+        </div>
+      </div>})()}
+      {/* Unread messages — moved beside Notifications (each half-width) */}
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
+        {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+        </select>}</div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
+                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':''))}</span>
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
+              <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
+            </div>})}
+        </div></div>
+    </div>
+    </>})()}
+    {renderCatReqCard()}
+    {renderCatReqModal()}
+    {/* Claude needs you — loud banner when a bot task is waiting on a human
+        (a question, a cart ready to submit, or a blocker). The row pill alone
+        is easy to miss; this sits at the top of the dashboard until acted on. */}
+    {isBotOwner(cu)&&(()=>{const _need=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to==='bot-claude'&&['needs_input','needs_review','blocked'].includes(t.bot_status));
+      if(_need.length===0)return null;
+      return<div className="card" style={{marginBottom:16,border:'2px solid #fb7185',background:'#fff1f2'}}>
+        <div className="card-body" style={{padding:'12px 16px'}}>
+          <div style={{fontSize:14,fontWeight:800,color:'#be123c',marginBottom:8}}>🤖 Claude is waiting on you ({_need.length})</div>
+          {_need.map(t=>{const _b=botRowUI(t.bot_status);return<div key={t.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #fecdd3'}}>
+            <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b?.pillBg,color:_b?.pillFg,whiteSpace:'nowrap',flexShrink:0}}>{_b?.label||t.bot_status}</span>
+            <span style={{fontSize:12,fontWeight:600,color:'#334155',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
+            <button className="btn btn-sm btn-primary" style={{flexShrink:0}} onClick={()=>setTodoDetailId(t.id)}>{t.bot_status==='needs_input'?'Answer':t.bot_status==='needs_review'?'Review & order':'View'}</button>
+          </div>})}
+        </div>
+      </div>})()}
+    {/* Assigned Tasks for Admin */}
+    {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
+        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
+      </div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
+        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
+          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#fef3c7':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+              </div>
+              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
+              <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
+              {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
+              {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
+              {t.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(t.bot_status)&&<button title="Retry — requeue for Claude" style={{background:'none',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#1e40af',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_botRequeue(t.id)}}>🔁</button>}
+              <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
+              <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
+            </div>
+          </div>})}
+      </div>
+      {recentlyCompleted.length>0&&<div style={{borderTop:'1px solid #e2e8f0'}}>
+        <div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#166534',background:'#f0fdf4'}}>Recently Completed ({recentlyCompleted.length})</div>
+        {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/864e5);const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
+          return<div key={t.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',background:'#f0fdf4',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,color:'#166534'}}>✅ {t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Completed by {completedBy?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.completion_note?' — '+t.completion_note:''}{daysAgo===0?' · Today':' · '+daysAgo+'d ago'}</div>
+              </div>
+              <button title="Acknowledge — clear from list" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();dismissNotif('task-ack-'+t.id)}}>✓</button>
+            </div>
+          </div>})}
+      </div>}
+    </div>})()}
+    <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
+      <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('production')}><Icon name="grid" size={14}/> Prod Board</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button>
+      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task</button></div></div>
+    {renderCoachAcctsModal()}
+    </>}
+
+    {/* ═══ SALES REP VIEW ═══ */}
+    {dashView==='sales'&&<>
+    <div className="stats-row">
+      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
+      <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{myTodos.filter(t=>t.type==='art').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
+    </div>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='prod_files'||t.type==='order_dtf';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
+        <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option>
+        </select>
+        <button title="Expand — sort, message & manage" className="btn btn-sm" style={{marginLeft:6,fontSize:11,padding:'3px 10px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('todos')}>⤢ Expand</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
+          (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
+            {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
+              {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
+              {t.type==='follow_up'&&t.est&&<button title="Open the send window to email this estimate to the coach" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'doc'});setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}>📧 Send</button>}
+              {t.type==='coach_followup'&&t.so&&t.jobId&&<button title="Open Send-to-Coach for this artwork" className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:8,whiteSpace:'nowrap',fontWeight:700}} onClick={e=>{e.stopPropagation();_todoClickedThrough(t);setOEAutoSend({kind:'coach',jobId:t.jobId});setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId});setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}>📧 Send</button>}
+              {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
+              <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
+              {_todoIsFollowUp(t)?(snoozeOpenKey===t.dismissKey?<div style={{display:'flex',gap:2,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
+                <button title="Cancel" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:11,color:'#64748b'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(null)}}>←</button>
+                {[1,3,5,7].map(d=><button key={d} style={{fontSize:10,padding:'2px 6px',background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontWeight:600}} onClick={e=>{e.stopPropagation();snoozeTodo(t,d)}}>{d}d</button>)}
+              </div>:<button style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fffbeb',color:'#92400e',border:'1px solid #fde68a',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setSnoozeOpenKey(t.dismissKey)}}>💤 Snooze</button>):
+              (t.type==='rep_delivery'?<button title="Record this delivery and clear it from your list" style={{fontSize:10,padding:'3px 10px',borderRadius:8,background:'#166534',color:'white',border:'none',fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();_repDeliver(t)}}>🚚 {t.action}</button>:<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>)}
+            </div>)}
+          </div>)})()}</div></div>
+      <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete'&&calcSOStatus(s)!=='booking').slice(0,10).map(so=>{const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
+            return<div key={so.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c);setPg('orders')}}>
+              <div style={{display:'flex',justifyContent:'space-between'}}>
+                <span style={{fontWeight:700,fontSize:12}}>{c?.alpha_tag||c?.name} — {so.memo||so.id}</span>
+                <span style={{fontSize:9,padding:'2px 6px',borderRadius:8,background:SC[st]?.bg,color:SC[st]?.c,fontWeight:600}}>{st.replace(/_/g,' ')}</span>
+              </div></div>})}
+        </div></div>
+    </div>
+    <div style={{marginBottom:16}}>{_renderSalesBox(cu.id)}</div>
+    {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,dismissKey:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
+    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
+      <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
+        {notifGroups.map(g=><div key={g.cat}>
+          {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
+          {g.items.map((t,i)=><div key={t._key||g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
+        </div>)}
+      </div>
+    </div>})()}
+    </>})()}
+    {renderCatReqCard()}
+    {renderCatReqModal()}
+    {/* Assigned Todos Card — always visible for reps */}
+    {(()=>{const tasksIAssigned=myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id);const tasksForMe=myAssignedTodos.filter(t=>t.assigned_to===cu.id);const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);return<div className="card" style={{marginBottom:16}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <BotStatus assignedTodos={assignedTodos} hidden={!isBotOwner(cu)}/>
+          <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
+        </div>
+      </div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
+        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
+          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#fef3c7':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+              </div>
+              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
+              <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
+              {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
+              <button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
+              <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
+            </div>
+          </div>})}
+      </div>
+      {recentlyCompleted.length>0&&<div style={{borderTop:'1px solid #e2e8f0'}}>
+        <div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#166534',background:'#f0fdf4'}}>Recently Completed ({recentlyCompleted.length})</div>
+        {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));
+          return<div key={t.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',background:'#f0fdf4',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,color:'#166534'}}>✅ {t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Completed by {completedBy?.name}{t.completion_note?' — '+t.completion_note:''}{daysAgo===0?' · Today':' · '+daysAgo+'d ago'}</div>
+              </div>
+            </div>
+          </div>})}
+      </div>}
+    </div>})()}
+    <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>newE(null)}>📝 New Estimate</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 My Orders</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button>
+      {(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2,due_date:''})}>📌 Assign Task to CSR</button>}
+    </div></div>
+    {renderCoachAcctsModal()}
+    </>}
+
+    {/* ═══ WAREHOUSE VIEW ═══ */}
+    {dashView==='warehouse'&&<>
+    <div className="stats-row">
+      <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Open IFs</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Ship Today</div><div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
+    </div>
+    {/* Ready for decoration — jobs whose last units were just checked in with art already complete */}
+    {(()=>{
+      const readyNotifs=todos.filter(t=>t.type==='ready_for_deco'&&!dismissedNotifs.includes(t.dismissKey));
+      if(readyNotifs.length===0)return null;
+      return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #22c55e'}}>
+        <div className="card-header"><h2>🎽 Ready for Decoration ({readyNotifs.length})</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+          {readyNotifs.map((t,i)=><div key={t.dismissKey||i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){setESOTab('jobs');if(t.jobId){setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
+        </div>
+      </div>;
+    })()}
+    {/* My delegated tasks — what this warehouse worker needs to do, with due dates */}
+    {(()=>{
+      const canDelegateWh=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||WAREHOUSE_LEAD_IDS.includes(cu.id);
+      const _due=t=>t.due_date?String(t.due_date).slice(0,10):'9999-12-31';
+      const whTasks=myAssignedTodos.filter(t=>t.assigned_to===cu.id).sort((a,b)=>_due(a).localeCompare(_due(b))||(a.priority??2)-(b.priority??2));
+      const delegated=canDelegateWh?myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_due(a).localeCompare(_due(b))||(a.priority??2)-(b.priority??2)):[];
+      if(whTasks.length===0&&delegated.length===0&&!canDelegateWh)return null;
+      const _row=(t,mine)=>{const creator=REPS.find(r=>r.id===t.created_by);const assignee=REPS.find(r=>r.id===t.assigned_to);
+        return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:t.due_date&&String(t.due_date).slice(0,10)<=_todayStr?'#fffbeb':'white'}} onClick={()=>setTodoDetailId(t.id)}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+            </div>
+            {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
+            <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
+            {mine&&<button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>}
+            {canDelegateWh&&!mine&&<button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>}
+          </div>
+        </div>};
+      return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #0891b2'}}>
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>📌 My Tasks Today ({whTasks.length})</h2>
+          {canDelegateWh&&<button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_todayStr,doc_label:'',wh_only:true})}>+ Assign Task</button>}
+        </div>
+        <div className="card-body" style={{padding:0,maxHeight:340,overflow:'auto'}}>
+          {whTasks.length===0?<div className="empty" style={{padding:16,fontSize:13}}>No tasks assigned to you. {canDelegateWh?'Use “+ Assign Task” to delegate work.':'All clear!'}</div>:whTasks.map(t=>_row(t,true))}
+          {delegated.length>0&&<><div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderTop:'1px solid #e2e8f0',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>Assigned to others ({delegated.length})</div>{delegated.map(t=>_row(t,false))}</>}
+        </div>
+      </div>;
+    })()}
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card" style={{borderLeft:'3px solid #d97706'}}><div className="card-header"><h2>🏗️ Next to Pull</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('warehouse')}>Full List →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {pullTasks.slice(0,8).map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:t.urgent?'#fef2f2':''}} onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              {t.urgent&&<span>🔥</span>}<span style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{t.soId}</span>
+              <span style={{fontWeight:600,fontSize:12}}>{t.cName}</span>
+              <span style={{marginLeft:'auto',fontWeight:800,color:'#d97706'}}>{t.needsPull}</span>
+            </div>
+            <div style={{fontSize:10,color:'#64748b'}}>{t.sku} · {t.name}</div>
+          </div>)}
+        </div></div>
+      <div className="card" style={{borderLeft:'3px solid #166534'}}><div className="card-header"><h2>📦 Ready to Ship</h2><button className="btn btn-sm btn-secondary" onClick={()=>{setPg('warehouse');setWhTab('ship')}}>Full List →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {shipTasks.slice(0,8).map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{t.soId}</span>
+              <span style={{fontWeight:600,fontSize:12}}>{t.cName}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,color:'#166534'}}>{t.units}u</span>
+            </div></div>)}
+        </div></div>
+    </div>
+    <div className="card"><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>setPg('warehouse')}>📦 Warehouse</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('inventory')}>📊 Inventory</button></div></div>
+    </>}
+
+    {/* ═══ DECORATOR VIEW ═══ */}
+    {dashView==='decorator'&&<>
+    {(()=>{
+      const inProcess=activeJobs.filter(j=>j.prod_status==='in_process');
+      const inLine=activeJobs.filter(j=>j.prod_status==='staging');
+      const myTimers=Object.entries(activeTimers);
+      const todayLogs=jobTimeLogs.filter(l=>{try{return new Date(l.clockOut).toDateString()===new Date().toDateString()}catch{return false}});
+      const todayMins=todayLogs.reduce((a,l)=>a+l.minutes,0);
+      return<>
+      <div className="stats-row">
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">In Line (next)</div><div className="stat-value" style={{color:'#d97706'}}>{inLine.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Clocked In</div><div className="stat-value" style={{color:myTimers.length>0?'#166534':'#94a3b8'}}>{myTimers.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Today's Time</div><div className="stat-value" style={{color:'#7c3aed'}}>{todayMins}m</div><div style={{fontSize:10,color:'#94a3b8'}}>{(todayMins/60).toFixed(1)} hrs</div></div>
+      </div>
+      {myTimers.length>0&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #22c55e',background:'#f0fdf4'}}>
+        <div style={{padding:'10px 14px'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:6}}>⏱️ Active Now</div>
+          {myTimers.map(([key,timer])=>{const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
+            return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0'}}>
+              <span style={{width:8,height:8,borderRadius:4,background:'#22c55e'}}/> 
+              <span style={{fontWeight:700}}>{timer.person}</span>
+              <span style={{color:'#64748b',fontSize:11}}>{jobId} ({soId})</span>
+              <span style={{marginLeft:'auto',fontWeight:800,color:'#d97706',fontSize:14}}>{mins}m</span>
+              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
+                setJobTimeLogs(prev=>[...prev,{jobId,soId,person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins}]);
+                setActiveTimers(prev=>{const n={...prev};delete n[key];return n});
+                nf('⏱️ Clocked out — '+mins+'m');
+              }}>Clock Out</button>
+            </div>})}
+        </div></div>}
+      <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>🖨️ My Queue — In Process</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('production')}>Prod Board →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+          {inProcess.length===0?<div className="empty" style={{padding:20}}>Nothing running right now</div>:
+          inProcess.map(j=><div key={j.id+j.so?.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:800,color:'#7c3aed'}}>{j.art_name}</span>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>{j.deco_type?.replace(/_/g,' ')}</span>
+              <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName} · {j.so?.id}</span>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4}}>
+              <span style={{fontSize:12,fontWeight:700}}>{j.fulfilled_units}/{j.total_units}</span>
+              <div style={{flex:1,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:'#3b82f6',width:(j.total_units>0?j.fulfilled_units/j.total_units*100:0)+'%'}}/></div>
+              {j.assigned_machine&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>🖨️ {MACHINES.find(m=>m.id===j.assigned_machine)?.name}</span>}
+            </div>
+          </div>)}
+        </div></div>
+      <div className="card"><div className="card-header"><h2>📋 Up Next — In Line</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+          {inLine.length===0?<div className="empty" style={{padding:20}}>Nothing queued</div>:
+          inLine.slice(0,8).map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:700,color:'#475569'}}>{j.art_name}</span>
+              <span style={{fontSize:10,color:'#64748b'}}>{j.cName}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,fontSize:11}}>{j.total_units}u</span>
+            </div></div>)}
+        </div></div>
+      </>})()}
+    </>}
+
+    {/* ═══ PRODUCTION VIEW ═══ */}
+    {dashView==='production'&&<>
+    {(()=>{
+      const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
+      activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
+      const readyForBoard=activeJobs.filter(j=>j.prod_status==='hold'&&isJobReady(j,j.so));
+      const artReady=activeJobs.filter(j=>j.art_status==='art_complete'||j.art_status==='waiting_approval');
+      const decorators=REPS.filter(r=>r.role==='production');
+      const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
+      return<>
+      <div className="stats-row">
+        {[['hold','Hold',byStatus.hold,'#94a3b8',null],['ready','Ready to Go',readyForBoard.length,'#22c55e','#166534'],['staging','In Line',byStatus.staging,'#f59e0b','#d97706'],['in_process','In Process',byStatus.in_process,'#2563eb','#2563eb'],['completed','Completed',byStatus.completed,'#166534','#166534']].map(([id,label,count,border,valColor])=>
+          <div key={id} className="stat-card" style={{borderLeft:'3px solid '+border,cursor:'pointer',outline:prodDashFilter===id?'2px solid '+border:'none',background:prodDashFilter===id?'#f8fafc':'white'}} onClick={()=>setProdDashFilter(f=>f===id?null:id)}>
+            <div className="stat-label">{label}</div><div className="stat-value" style={{color:valColor||undefined}}>{count}</div>
+          </div>)}
+      </div>
+
+      {/* Filtered job list when a stat card is clicked */}
+      {prodDashFilter&&(()=>{
+        const filtered=prodDashFilter==='ready'?readyForBoard:activeJobs.filter(j=>j.prod_status===prodDashFilter);
+        const filterLabel={hold:'Hold',ready:'Ready to Go',staging:'In Line',in_process:'In Process',completed:'Completed'}[prodDashFilter];
+        return<div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>{filterLabel} — {filtered.length} job{filtered.length!==1?'s':''}</h2><button className="btn btn-sm btn-secondary" onClick={()=>setProdDashFilter(null)}>× Close</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            {filtered.length===0?<div className="empty" style={{padding:20}}>No jobs</div>:
+            filtered.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+              return<div key={j.id+j.so?.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+                <span style={{fontWeight:700,fontSize:12,flex:1}}>{j.art_name}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:600,background:j.deco_type==='screen_print'?'#dbeafe':j.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:j.deco_type==='screen_print'?'#1e40af':j.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{j.deco_type?.replace(/_/g,' ')}</span>
+                {j.assigned_to&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>👤 {j.assigned_to}</span>}
+                <span style={{fontWeight:700,fontSize:11}}>{j.fulfilled_units}/{j.total_units}</span>
+                <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:4,marginTop:3}}>
+                <span style={{fontSize:10,color:'#64748b'}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
+                <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                  {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
+                  {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
+                  {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
+                  {prodDashFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ships from warehouse</span>}
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open</button>
+                </div>
+              </div>
+            </div>})}
+          </div></div>})()}
+
+      {/* Production deadline todos */}
+      {(()=>{const prodDeadlines=myTodos.filter(t=>t.role==='production'&&t.type==='deadline');return prodDeadlines.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #dc2626'}}>
+        <div className="card-header"><h2>⚠️ Upcoming Deadlines ({prodDeadlines.length})</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:250,overflow:'auto'}}>
+          {prodDeadlines.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef2f2',color:'#dc2626',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+          </div>)}
+        </div></div>})()}
+      {/* Ready to Go — art complete + items received */}
+      {readyForBoard.length>0&&<div className="card" style={{marginBottom:16}}>
+        <div className="card-header" style={{background:'#f0fdf4'}}><h2>✅ Ready to Go — {readyForBoard.length} job{readyForBoard.length!==1?'s':''}</h2><button className="btn btn-sm btn-primary" onClick={()=>setPg('production')}>Open Board →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+          {readyForBoard.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+              <span style={{fontWeight:700,fontSize:12,flex:1}}>{j.art_name}</span>
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:600,background:j.deco_type==='screen_print'?'#dbeafe':j.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:j.deco_type==='screen_print'?'#1e40af':j.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{j.deco_type?.replace(/_/g,' ')}</span>
+              <span style={{fontWeight:700,fontSize:11}}>{j.total_units}u</span>
+              <select style={{fontSize:10,padding:'2px 4px',border:'1px solid #e2e8f0',borderRadius:4,width:110}} value={j.assigned_to||''} onClick={e=>e.stopPropagation()} onChange={e=>{const so=j.so;const updJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,assigned_to:e.target.value}:jj);savSO({...so,jobs:updJobs});nf('Assigned to '+e.target.value)}}>
+                <option value="">Assign...</option>
+                {decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+              </select>
+              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>{setAssignModal({job:j,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>→ In Line</button>
+            </div>
+            <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</div>
+          </div>)}
+        </div></div>}
+
+      {/* Art Status — what's coming */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+        <div className="card"><div className="card-header" style={{background:'#ede9fe'}}><h2>🎨 Art Status</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+            {artReady.length===0?<div className="empty" style={{padding:20}}>No art ready</div>:
+            artReady.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
+                <span style={{fontWeight:700,fontSize:11}}>{j.art_name}</span>
+                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName}</span>
+              </div></div>)}
+          </div></div>
+
+        {/* Active Timers */}
+        <div className="card"><div className="card-header"><h2>⏱️ Clocked In Now</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('production')}>Prod Board →</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+            {Object.entries(activeTimers).length>0?Object.entries(activeTimers).map(([key,timer])=>{const[soId,jobId]=key.split('|');
+              return<div key={key} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8}}>
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e'}}/>
+                <span style={{fontWeight:700,fontSize:12}}>{timer.person}</span>
+                <span style={{fontSize:11,color:'#64748b'}}>{jobId}</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{Math.round((Date.now()-timer.clockIn)/60000)}m</span>
+              </div>}):<div className="empty" style={{padding:20}}>No one clocked in</div>}
+          </div></div>
+      </div>
+
+      {/* Decorator Workloads */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>👥 Decorator Workloads</h2><button className="btn btn-sm btn-primary" onClick={()=>setPg('production')}>Open Board →</button></div>
+        <div className="card-body" style={{padding:0}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:0}}>
+            {decoWorkload.map(d=><div key={d.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',borderRight:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                <div style={{width:28,height:28,borderRadius:14,background:'#7c3aed',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700}}>{d.name.split(' ').map(w=>w[0]).join('')}</div>
+                <div><div style={{fontWeight:700,fontSize:12}}>{d.name}</div><div style={{fontSize:10,color:d.count>0?'#2563eb':'#94a3b8'}}>{d.count} job{d.count!==1?'s':''}</div></div>
+              </div>
+              {d.jobs.map(j2=><div key={j2.id} style={{fontSize:10,padding:'3px 6px',background:j2.prod_status==='in_process'?'#dbeafe':'#f8fafc',borderRadius:4,marginBottom:3}}>
+                <span style={{fontWeight:700}}>{j2.id}</span> <span style={{color:'#64748b'}}>{j2.art_name} · {j2.total_units}u</span>
+              </div>)}
+              {d.count===0&&<div style={{fontSize:10,color:'#cbd5e1',fontStyle:'italic'}}>No jobs assigned</div>}
+            </div>)}
+          </div>
+        </div></div>
+
+      {/* Active Production — in line + in process */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>🏭 Active Production</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+          {activeJobs.filter(j=>j.prod_status==='in_process'||j.prod_status==='staging').length===0?<div className="empty" style={{padding:20}}>Nothing running</div>:
+          activeJobs.filter(j=>j.prod_status==='in_process'||j.prod_status==='staging').map(j=>{
+            const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+            return<div key={j.id+j.so?.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.prod_status]?.bg,color:SC[j.prod_status]?.c,fontWeight:700}}>{j.prod_status==='in_process'?'RUN':'LINE'}</span>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+              <span style={{fontWeight:700,fontSize:12}}>{j.art_name}</span>
+              <span style={{fontSize:10,color:'#64748b'}}>{j.cName}</span>
+              {j.assigned_to&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>👤 {j.assigned_to}</span>}
+              <span style={{marginLeft:'auto',fontWeight:700,fontSize:11}}>{j.fulfilled_units}/{j.total_units}</span>
+              <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:4,marginTop:4}}>
+              <span style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
+              <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                {j.prod_status==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
+                {j.prod_status==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
+                <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{setProdJobModal({...j})}}>📋</button>
+              </div>
+            </div>
+          </div>})}
+        </div></div>
+      </>})()}
+    </>}
+
+    {/* ═══ CSR VIEW ═══ */}
+    {dashView==='csr'&&<>
+    <div className="stats-row">
+      <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
+      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(c?.primary_rep_id||s.created_by)}).length})()}</div></div>
+      <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
+      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
+    </div>
+    {/* CSR Action Items — orders to place, estimate updates, deposits, deadlines */}
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
+      <div className="card-header"><h2>🎯 Action Items ({csrActions.length})</h2></div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>}</div></div>
+          {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
+          <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
+          <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef3c7',color:'#92400e',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+        </div>)}
+      </div></div>})()}
+    {/* Assigned Tasks for CSR — highlighted */}
+    {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #0891b2'}}>
+      <div className="card-header"><h2>📌 My Assigned Tasks ({myAssignedTodos.length})</h2></div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {myAssignedTodos.map(t=>{const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
+          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#ecfdf5':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:t.priority<=1?'#dc2626':'#1e293b'}}>{t.priority<=1?'! ':''}{t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}{t.description?' — '+t.description.slice(0,60):''}</div>
+              </div>
+              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
+              {t.comments?.length>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
+              <button title="Mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
+              <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
+            </div>
+          </div>})}
+      </div>
+    </div>}
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card"><div className="card-header"><h2>💬 Messages</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('messages')}>All →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {myUnread.length===0?<div className="empty" style={{padding:20}}>All caught up!</div>:
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontWeight:700,fontSize:12}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id||(m.entity_type==='issue'?'💬 Issue reply':'')}</span><span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
+              <div style={{fontSize:12,color:'#475569'}}>{m.text}</div>
+            </div>})}
+        </div></div>
+      <div className="card"><div className="card-header"><h2>📋 Order Status Lookup</h2></div>
+        <div className="card-body">
+          <input className="form-input" placeholder="Search by SO#, customer, or memo..." style={{marginBottom:8}}
+            onChange={e=>{const q2=e.target.value.toLowerCase();if(!q2)return;
+              const match=sos.find(s=>(s.id+' '+(s.memo||'')+' '+(cust.find(c=>c.id===s.customer_id)?.name||'')).toLowerCase().includes(q2));
+              if(match){setESO(match);setESOC(cust.find(c=>c.id===match.customer_id));setPg('orders')}}}/>
+          <div style={{fontSize:11,color:'#64748b'}}>Type to search and jump to any order — great for when coaches call in asking about their order status.</div>
+        </div></div>
+    </div>
+    <div className="card"><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>setPg('messages')}>💬 Messages</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 Orders</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('customers')}>👥 Customers</button></div></div>
+    </>}
     </>}
 
     {/* CREATE TODO MODAL — rendered globally below so it works from every page */}
