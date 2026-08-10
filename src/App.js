@@ -25219,6 +25219,7 @@ export default function App(){
     const _applyFreightToSOs=(bill,soIds)=>{
       const billFreight=safeNum(bill.freight||0);
       if(!billFreight||!soIds.length)return;
+      const _dupSkips=[];// shipments already billed to a line — skipped, not double-counted
       const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
       const billedBySku={};const costBySku={};
       bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
@@ -25246,6 +25247,7 @@ export default function App(){
           });
           // Find PO lines on this SO whose po_id starts with the bill PO number
           const skuCostApplied={};// track how much cost has been applied per SKU to handle rounding on last item
+          let _anyApplied=false,_anyDup=false;// freight must not double either when the whole bill re-lands
           const updatedItems=(s.items||[]).map(it=>{
             const matchPO=it.po_lines?.find(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
             if(!matchPO)return it;
@@ -25267,6 +25269,13 @@ export default function App(){
             return{...it,po_lines:it.po_lines.map(po=>{
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return po;
+              // Duplicate-shipment guard: this (tracking/doc + sizes) is already on the line —
+              // skip re-billing it rather than double-counting (see duplicateBillDetail). The two
+              // sibling apply paths below have carried this guard; this one did not, which is how
+              // one bill landing twice compounded billed qty and _bill_cost on the same line.
+              const _dup=duplicateBillDetail(po._bill_details,{doc:bill.doc_number,tracking:bill.tracking,sizes:itemBilled});
+              if(_dup){_anyDup=true;_dupSkips.push((it.sku||'?')+' '+(po.po_id||'')+' — '+(bill.tracking?'tracking '+bill.tracking:'doc '+bill.doc_number)+' already billed'+(_dup.doc&&_dup.doc!==bill.doc_number?' (as '+_dup.doc+')':''));return po;}
+              _anyApplied=true;
               const existingBilled=po.billed||{};
               const newBilled={...existingBilled};
               const _pk=_poLineSizeKeys(po);
@@ -25288,12 +25297,19 @@ export default function App(){
                 _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:appliedCost}]};
             })};
           });
-          const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          // Freight rides the same re-apply: when every line this bill touched was skipped as an
+          // already-billed duplicate, its freight is already on the SO too. Only suppressed when a
+          // duplicate was actually seen, so an SO with no lines on this bill still takes its share.
+          const _freightAdd=(_anyDup&&!_anyApplied)?0:perSOFreight;
+          const updatedSO={...s,_inbound_freight:Math.round((prevFreight+_freightAdd)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
           _billApplySave(bill,updatedSO);
           return updatedSO;
         });
         return changed?next:prev;
       });
+      // setSOs runs its updater asynchronously, so the length test itself has to wait for the
+      // commit — otherwise a real skip goes unreported on the render where it happened.
+      setTimeout(()=>{if(_dupSkips.length)nf('Skipped '+_dupSkips.length+' already-billed shipment(s): '+_dupSkips.join('; '),'error')},0);
     };
 
     // Selection-agnostic: does this parsed bill have a valid push target (auto-matched PO or a
