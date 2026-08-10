@@ -21,6 +21,7 @@ const ROUTE_META={
   vendor:{label:'Drop-ship from vendor',color:'#C07C1E'},
 };
 const SURFACE='#0F1A38';
+const STATE_BY_FIPS={'01':'AL','02':'AK','04':'AZ','05':'AR','06':'CA','08':'CO','09':'CT','10':'DE','11':'DC','12':'FL','13':'GA','15':'HI','16':'ID','17':'IL','18':'IN','19':'IA','20':'KS','21':'KY','22':'LA','23':'ME','24':'MD','25':'MA','26':'MI','27':'MN','28':'MS','29':'MO','30':'MT','31':'NE','32':'NV','33':'NH','34':'NJ','35':'NM','36':'NY','37':'NC','38':'ND','39':'OH','40':'OK','41':'OR','42':'PA','44':'RI','45':'SC','46':'SD','47':'TN','48':'TX','49':'UT','50':'VT','51':'VA','53':'WA','54':'WV','55':'WI','56':'WY'};
 const MONEY=(n)=>'$'+Math.round(n).toLocaleString();
 const _fmtK=(n)=>Math.abs(n)>=1e6?'$'+(n/1e6).toFixed(1)+'m':Math.abs(n)>=1e3?'$'+(n/1e3).toFixed(n>=1e4?0:1)+'k':MONEY(n);
 
@@ -47,7 +48,9 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
   const [q,setQ]=useState('');
   const [view,setView]=useState('map');
   const [tip,setTip]=useState(null);// {x,y,c:aggregated customer}
-  const [zoom,setZoom]=useState({k:1,x:0,y:0});
+  const WEST_VIEW={k:2.1,x:487.5-185*2.1,y:305-300*2.1};// frame CA + the West — where nearly all customers are
+  const US_VIEW={k:1,x:0,y:0};
+  const [zoom,setZoom]=useState(WEST_VIEW);
   const dragRef=useRef(null);
   const svgRef=useRef(null);
 
@@ -119,10 +122,12 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
       }
     });
     const custs=[...byCust.values()].sort((a,b)=>b.total-a.total);
+    const byState={};
+    custs.forEach(a=>{const st=String(a.pt.geo.shipping_state||a.pt.geo.billing_state||'').trim().toUpperCase();if(st)byState[st]=(byState[st]||0)+a.total});
     const flows=[...arcs.values()].sort((a,b)=>b.rev-a.rev).slice(0,300);
     const maxTotal=Math.max(1,...custs.map(x=>x.total));
     const maxFlow=Math.max(1,...flows.map(f=>f.rev));
-    return {custs,flows,maxTotal,maxFlow,unmappedRev,unmappedCount};
+    return {custs,flows,maxTotal,maxFlow,unmappedRev,unmappedCount,byState};
   },[orders,custById,rangeStart,repF,calcMargin,custPoint,vendorZip,nsaZip,projection]);
 
   const visCusts=useMemo(()=>{
@@ -138,7 +143,7 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
   const mappedTotal=visCusts.reduce((s,a)=>s+a.total,0);
   const mappedOrders=visCusts.reduce((s,a)=>s+a.orders,0);
 
-  const rScale=useCallback((v)=>3+25*Math.sqrt(v/data.maxTotal),[data.maxTotal]);
+  const rScale=useCallback((v)=>2+15*Math.sqrt(v/data.maxTotal),[data.maxTotal]);
 
   // Wheel zoom (cursor-centered) + drag pan.
   const onWheel=useCallback((e)=>{
@@ -169,6 +174,8 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
     return `M${x1},${y1} Q${mx},${my} ${x2},${y2}`;
   };
 
+  const stateTotals=data.byState||{};
+  const maxState=Math.max(0,...Object.values(stateTotals));
   const k=zoom.k;
   const isAdmin=['admin','gm','super_admin'].includes(currentUser?.role);
 
@@ -198,6 +205,10 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
       </select>}
       {['nsa','deco','vendor'].map(chip)}
       <input placeholder="Find a school…" value={q} onChange={e=>setQ(e.target.value)} style={{background:'#16234A',color:'#E7ECF7',border:'1px solid #2A3A6B',borderRadius:8,padding:'6px 10px',fontSize:12,minWidth:150}}/>
+      <div style={{display:'flex',gap:2,background:'#16234A',borderRadius:8,padding:2,border:'1px solid #2A3A6B'}}>
+        <button onClick={()=>setZoom(WEST_VIEW)} style={{fontSize:12,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'none',cursor:'pointer',background:'transparent',color:'#93A1C0'}}>West</button>
+        <button onClick={()=>setZoom(US_VIEW)} style={{fontSize:12,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'none',cursor:'pointer',background:'transparent',color:'#93A1C0'}}>Whole US</button>
+      </div>
       <div style={{marginLeft:'auto',display:'flex',gap:2,background:'#16234A',borderRadius:8,padding:2,border:'1px solid #2A3A6B'}}>
         {['map','list'].map(v=><button key={v} onClick={()=>setView(v)} style={{fontSize:12,fontWeight:700,padding:'5px 14px',borderRadius:6,border:'none',cursor:'pointer',background:view===v?'#5B8DEF':'transparent',color:view===v?'#fff':'#93A1C0'}}>{v==='map'?'Map':'List'}</button>)}
       </div>
@@ -205,12 +216,20 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
 
     {view==='map'&&<div style={{position:'relative'}}>
       <svg ref={svgRef} viewBox="0 0 975 610" style={{width:'100%',height:'auto',display:'block',cursor:dragRef.current?'grabbing':'grab',touchAction:'none'}}
-        onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={()=>{onUp();setTip(null)}} onDoubleClick={()=>setZoom({k:1,x:0,y:0})}>
+        onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={()=>{onUp();setTip(null)}} onDoubleClick={()=>setZoom(WEST_VIEW)}>
         <defs>
-          <radialGradient id="smGlow"><stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.55"/><stop offset="60%" stopColor="#FFFFFF" stopOpacity="0.18"/><stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.05"/></radialGradient>
+          <radialGradient id="smGlow"><stop offset="0%" stopColor="#FFC24D" stopOpacity="0.5"/><stop offset="55%" stopColor="#FFB347" stopOpacity="0.16"/><stop offset="100%" stopColor="#FFA53D" stopOpacity="0"/></radialGradient>
         </defs>
         <g transform={`translate(${zoom.x},${zoom.y}) scale(${k})`}>
-          {statesFeat.features.map(f=><path key={f.id} d={path(f)} fill="#16234A" stroke="none"/>)}
+          {statesFeat.features.map(f=>{
+            const st=STATE_BY_FIPS[f.id];
+            const v=st?(stateTotals[st]||0):0;
+            const t=maxState>0?Math.sqrt(v/maxState):0;
+            // #16234A → #3A5FB8, sqrt-eased single-hue ramp
+            const mix=(a,b)=>Math.round(a+(b-a)*t);
+            const fill=v>0?`rgb(${mix(22,58)},${mix(35,95)},${mix(74,184)})`:'#16234A';
+            return<path key={f.id} d={path(f)} fill={fill} stroke="none">{st&&v>0&&<title>{st+': '+MONEY(v)}</title>}</path>;
+          })}
           <path d={path(borders)} fill="none" stroke="#24335C" strokeWidth={0.8/k}/>
           <path d={path({type:'FeatureCollection',features:statesFeat.features})} fill="none" stroke="#2A3A6B" strokeWidth={0.6/k}/>
           {/* Flow arcs */}
@@ -231,8 +250,8 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
               onPointerMove={e=>{const sr=svgRef.current.getBoundingClientRect();setTip(t=>t&&{...t,x:e.clientX-sr.left,y:e.clientY-sr.top})}}
               onPointerLeave={()=>setTip(null)}
               onClick={()=>{if(!dragRef.current?.moved)onOpenCustomer?.(a.c)}}>
-              <circle cx={x} cy={y} r={r*2} fill="url(#smGlow)"/>
-              <circle cx={x} cy={y} r={r} fill="rgba(255,255,255,0.22)" stroke="#FFFFFF" strokeWidth={1.1/k}/>
+              <circle cx={x} cy={y} r={r*1.9} fill="url(#smGlow)" style={{mixBlendMode:'screen'}}/>
+              <circle cx={x} cy={y} r={r} fill="rgba(255,194,77,0.30)" stroke="#FFD9A0" strokeWidth={0.9/k} style={{mixBlendMode:'screen'}}/>
             </g>;
           })}
         </g>
@@ -270,7 +289,7 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
       <div style={{position:'absolute',bottom:12,left:12,background:'rgba(16,29,66,.88)',border:'1px solid #2A3A6B',borderRadius:12,padding:'10px 14px',backdropFilter:'blur(4px)'}}>
         <div style={{display:'flex',alignItems:'flex-end',gap:10}}>
           {[0.05,0.35,1].map(f=>{const v=data.maxTotal*f;return<div key={f} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
-            <span style={{width:rScale(v)*2,height:rScale(v)*2,borderRadius:99,background:'rgba(255,255,255,.22)',border:'1px solid #fff'}}/>
+            <span style={{width:rScale(v)*2,height:rScale(v)*2,borderRadius:99,background:'rgba(255,194,77,.30)',border:'1px solid #FFD9A0'}}/>
             <span style={{fontSize:9.5,color:'#93A1C0'}}>{_fmtK(v)}</span>
           </div>})}
         </div>
