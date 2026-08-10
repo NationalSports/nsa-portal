@@ -982,6 +982,43 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
 };
+// ── Dashboard art preview (READ-ONLY) ──
+// The mock images behind an "Art awaiting approval" to-do, so a rep can eyeball the proof
+// from the home page instead of opening the order. Scoping is the production board's
+// (_prodJobArtFiles / _prodJobItemMocks / _prodJobGenericMocks), so what shows here is the
+// same set the job sheet prints — this decides nothing, it only displays. When a job has no
+// garment mockup at all (the "set up the mockup" to-do) it falls back to the raw design art,
+// flagged as such: seeing the logo helps, and calling it a mockup is exactly the SO-1661
+// mistake. Non-renderable production formats (.ai/.eps/.dst/.psd) are skipped — the preview
+// shows what a browser can actually draw.
+const _shotUrl=f=>typeof f==='string'?f:(f?.url||'');
+const dashArtShots=(job,so)=>{
+  const empty={shots:[],hasMock:false,artFiles:[],units:0,garments:[]};
+  if(!job||!so)return empty;
+  const artFiles=_prodJobArtFiles(job,so);
+  const shots=[];const seen=new Set();
+  const push=(f,label,kind)=>{
+    const u=_shotUrl(f);if(!u||seen.has(u))return;
+    const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);
+    if(!isImg&&!isPdf)return;
+    // A PDF proof only previews if Cloudinary can rasterize page 1; anything else has no thumb.
+    const thumb=isImg?u:_cloudinaryPdfThumb(u);
+    if(!thumb)return;
+    seen.add(u);shots.push({url:u,thumb,file:f,label,kind,name:fileDisplayName(f)});
+  };
+  const garments=[];let units=0;
+  (job.items||[]).forEach(gi=>{
+    const it=safeItems(so)[gi.item_idx];if(!it)return;
+    const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';
+    const qty=Object.values(gi.sizes||safeSizes(it)||{}).reduce((a,v)=>a+(safeNum(v)||0),0);
+    units+=qty;garments.push({sku,color,name:it.name||gi.name||'',qty});
+    _prodJobItemMocks(artFiles,so,gi).forEach(f=>push(f,[sku,color].filter(Boolean).join(' · ')||'Garment mockup','mock'));
+  });
+  _prodJobGenericMocks(artFiles).forEach(f=>push(f,'Design mockup','mock'));
+  const hasMock=shots.length>0;
+  if(!hasMock)artFiles.forEach(a=>(a?.files||[]).forEach(f=>push(f,'Design art','design')));
+  return{shots,hasMock,artFiles,units,garments};
+};
 // Production Job Sheet PDF options — the single builder shared by the production-board
 // prodJobModal and the SO editor's Jobs tab so both render an identical sheet. Pure: reads
 // the job (j) and its sales order (so), pulling customer/rep/sibling context from ctx
@@ -1685,6 +1722,9 @@ export { dP, rQ, parseDate, _decoUnitCostComb };
 // InvoicesPage additionally shares these (RowLink/_buildTabHref are the deep-link row
 // helpers; the brevo pair and the invoice-PDF builder move with a later comms/pdf pass).
 export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms };
+// Exported for its unit test — the dashboard's inline art preview resolves what a rep sees
+// before opening the order, so its scoping (mock vs. raw design art) is worth pinning down.
+export { dashArtShots };
 
 // ── Combined deco COST for manually-linked jobs that share a screen ──
 // Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)
@@ -5499,6 +5539,19 @@ export default function App(){
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
   const ActiveOrderEditor=uiMode==='new'?OrderEditor:OrderEditorClassic;// classic gets the frozen pre-redesign editor, not a reskin
   const[dashActionOpen,setDashActionOpen]=useState(null);// which dash2 action card is expanded below the grid ('art'|'todos'|'msgs') — Batch-POs-style accordion
+  const[dashArtRow,setDashArtRow]=useState(null);// dismissKey of the expanded action row showing its art mocks inline (one open at a time)
+  const[dashArtLb,setDashArtLb]=useState(null);// {shots,idx,title,sub} — full-size mock viewer opened from that inline preview
+  // Lightbox keys: Esc closes, ←/→ walk the gallery. Bound only while it's open.
+  useEffect(()=>{
+    if(!dashArtLb)return;
+    const onKey=e=>{
+      if(e.key==='Escape'){setDashArtLb(null);return}
+      if(e.key==='ArrowRight')setDashArtLb(l=>l&&l.shots.length>1?{...l,idx:(l.idx+1)%l.shots.length}:l);
+      if(e.key==='ArrowLeft')setDashArtLb(l=>l&&l.shots.length>1?{...l,idx:(l.idx-1+l.shots.length)%l.shots.length}:l);
+    };
+    window.addEventListener('keydown',onKey);
+    return()=>window.removeEventListener('keydown',onKey);
+  },[dashArtLb]);
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
@@ -8651,7 +8704,8 @@ export default function App(){
       const _kpi=(icon,label,val,cur,prev,pct,vs)=>(<div className="dash2-kpi"><div className="dash2-kpi-top"><span className="dash2-icon">{icon}</span>{label}</div><div className="dash2-kpi-val">{val}</div><div className="dash2-kpi-foot">{_delta(cur,prev,pct)}<span className="dash2-vs">vs {vs}</span></div></div>);
       // Action-card counts — the same live set the To-Do card shows (undismissed, unsnoozed)
       const _live=adminTodos.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
-      const _art=_live.filter(t=>['art','coach_followup','art_rejected'].includes(t.type));
+      const _ART_TYPES=['art','coach_followup','art_rejected'];
+      const _art=_live.filter(t=>_ART_TYPES.includes(t.type));
       const _artWaiting=_art.filter(t=>t.type==='coach_followup').length;
       const _due=_live.filter(t=>t.type==='deadline').length;
       const _n2=(n)=>String(n).padStart(2,'0');
@@ -8676,23 +8730,72 @@ export default function App(){
         const _isMsgs=dashActionOpen==='msgs';
         const _rows=dashActionOpen==='art'?_art:dashActionOpen==='todos'?_live:unreadMsgs;
         const _title=dashActionOpen==='art'?'Art awaiting approval':dashActionOpen==='todos'?'To-dos waiting on you':'Unread messages';
+        // Job lookup for the inline art preview, memoized per SO — several to-dos can point at
+        // the same order and buildJobs walks every line item.
+        const _jobCache=new Map();
+        const _jobOf=t=>{const so=t.so;if(!so)return null;let js=_jobCache.get(so.id);if(!js){js=buildJobs(so);_jobCache.set(so.id,js)}return js.find(j=>j.id===t.jobId)||null};
         return<div className="card dash2-expand" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2 style={{fontSize:15}}>{_title} <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>({_rows.length})</span></h2>
             <button style={{background:'none',border:'1px solid #e7e9ef',borderRadius:8,cursor:'pointer',padding:'3px 10px',fontSize:12,color:'#64748b',fontWeight:600}} onClick={()=>setDashActionOpen(null)}>Collapse ▴</button>
           </div>
-          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:480,overflow:'auto'}}>
+          {/* Taller while a mock preview is open so the gallery isn't squeezed into a scroll sliver */}
+          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:dashArtRow?760:480,overflow:'auto'}}>
             {_rows.length===0&&<div style={{padding:'20px 12px',fontSize:14,color:'#64748b'}}>✓ Nothing here — you're caught up.</div>}
             {_rows.length>0&&<div className="dash2x-head"><span>{_isMsgs?'Message':'Item'}</span><span>Account</span><span>SO / Job #</span><span style={{textAlign:'right'}}>Action</span></div>}
             {!_isMsgs&&_rows.map((t,i)=>{
               const _acct=cust.find(c=>c.id===(t.so?.customer_id||t.est?.customer_id||t.inv?.customer_id||t.customer_id))?.name||'';
               const _ref=t.so?.id||t.est?.id||t.inv?.id||(t.jobId?'Job '+t.jobId:'');
               const _sub=[_acct?null:t.detail,t.date&&_fmtDueDate?_fmtDueDate(t.date):null].filter(Boolean).join(' · ')||t.detail;
-              return<div className="dash2x-row" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openDashPriority(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openDashPriority(t)}}}>
-                <span className="dash2x-main"><strong>{t.msg}</strong><small>{_sub}</small></span>
-                <span className="dash2x-acct">{_acct||'—'}</span>
-                <span className="dash2x-ref">{_ref||'—'}</span>
-                <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button></span>
+              const _key=t.dismissKey||('row-'+i);
+              // Inline art preview — the mocks render right here so the rep can eyeball a proof
+              // without leaving the dashboard. Scoped to the art to-dos (the set the 🎨 tile
+              // counts) because resolving mocks means walking the SO's jobs. Read-only: every
+              // state change (Approve / Send to Coach / Request changes) still lives behind the
+              // action button, in the order editor where its gates are.
+              const _job=_ART_TYPES.includes(t.type)&&t.so&&t.jobId?_jobOf(t):null;
+              const _pv=_job?dashArtShots(_job,t.so):null;
+              const _canPv=!!(_pv&&_pv.shots.length>0);
+              const _pvOpen=_canPv&&dashArtRow===_key;
+              const _togglePv=()=>setDashArtRow(k=>k===_key?null:_key);
+              // A previewable row opens its art on click; the action button still opens the order.
+              const _rowAct=()=>_canPv?_togglePv():_openDashPriority(t);
+              const _deco=String(_job?.deco_type||_pv?.artFiles[0]?.deco_type||'').replace(/_/g,' ');
+              const _inks=_pv?[...new Set(_pv.artFiles.flatMap(a=>String(a?.ink_colors||a?.thread_colors||'').split(/[,\n]/).map(s=>s.trim()).filter(Boolean)))]:[];
+              return<div className={`dash2x-item ${_pvOpen?'is-open':''}`} key={_key}>
+                <div className="dash2x-row" role="button" tabIndex={0} aria-expanded={_canPv?_pvOpen:undefined} onClick={_rowAct} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_rowAct()}}}>
+                  <span className="dash2x-main">
+                    {_canPv&&<span className="dash2x-thumb" aria-hidden="true"><img src={_cloudinaryDisplay(_pv.shots[0].thumb,240)} alt="" loading="lazy" onError={e=>{e.target.style.visibility='hidden'}}/>{_pv.shots.length>1&&<i>+{_pv.shots.length-1}</i>}</span>}
+                    <span className="dash2x-txt"><strong>{t.msg}</strong><small>{_sub}</small></span>
+                  </span>
+                  <span className="dash2x-acct">{_acct||'—'}</span>
+                  <span className="dash2x-ref">{_ref||'—'}</span>
+                  <span className="dash2x-act">
+                    {_canPv&&<button className="dash2x-pv" onClick={e=>{e.stopPropagation();_togglePv()}}>{_pvOpen?'Hide art ▴':(_pv.hasMock?'View mock ▾':'View art ▾')}</button>}
+                    <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button>
+                  </span>
+                </div>
+                {_pvOpen&&<div className="dash2x-drawer">
+                  {!_pv.hasMock&&<div className="dash2x-warn">⚠️ No garment mockup yet — this is the raw design art, not a proof. Set up a mockup before this goes to the coach.</div>}
+                  <div className="dash2x-shots">
+                    {_pv.shots.map((s,si)=><button type="button" className="dash2x-shot" key={s.url} title={s.name||s.label}
+                      onClick={e=>{e.stopPropagation();setDashArtLb({shots:_pv.shots,idx:si,title:_job.art_name||t.msg,sub:[_acct,_ref].filter(Boolean).join(' · ')})}}>
+                      <img src={_cloudinaryDisplay(s.thumb,700)} alt={s.label} loading="lazy"/>
+                      <span className="dash2x-shot-cap">{s.label}</span>
+                    </button>)}
+                  </div>
+                  <div className="dash2x-facts">
+                    {_deco&&<span className="dash2x-chip">🖨️ {_deco}</span>}
+                    {_inks.length>0&&<span className="dash2x-chip">🎨 {_inks.join(', ')}</span>}
+                    {_pv.units>0&&<span className="dash2x-chip">👕 {_pv.units} unit{_pv.units!==1?'s':''}</span>}
+                    {_pv.garments.slice(0,6).map((g,gi)=><span className="dash2x-chip soft" key={gi}>{[g.sku,g.color].filter(Boolean).join(' · ')}{g.qty?' ×'+g.qty:''}</span>)}
+                    {_pv.garments.length>6&&<span className="dash2x-chip soft">+{_pv.garments.length-6} more</span>}
+                  </div>
+                  <div className="dash2x-drawer-foot">
+                    <span>{t.detail}</span>
+                    <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'} →</button>
+                  </div>
+                </div>}
               </div>})}
             {_isMsgs&&_rows.map(m=>{
               const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;
@@ -8708,6 +8811,27 @@ export default function App(){
                 <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_open()}}>Open</button></span>
               </div>})}
           </div>
+        </div>})()}
+      {/* Full-size mock viewer for the inline art preview — display only (no upload/delete here;
+          those stay in the order editor's art panel). Esc / ← / → are bound in the state effect. */}
+      {dashArtLb&&dashArtLb.shots.length>0&&(()=>{
+        const _n=dashArtLb.shots.length;const _i=Math.min(dashArtLb.idx,_n-1);const _s=dashArtLb.shots[_i];
+        const _go=d=>setDashArtLb(l=>l?{...l,idx:(l.idx+d+_n)%_n}:l);
+        return<div className="dash2lb" onClick={()=>setDashArtLb(null)}>
+          <div className="dash2lb-bar" onClick={e=>e.stopPropagation()}>
+            <div className="dash2lb-ttl"><strong>{dashArtLb.title}</strong><span>{[dashArtLb.sub,_s.label,_n>1?(_i+1)+' of '+_n:null].filter(Boolean).join(' · ')}</span></div>
+            <button className="dash2lb-btn" onClick={()=>openFile(_s.file)}>Download</button>
+            <button className="dash2lb-btn" onClick={()=>setDashArtLb(null)} aria-label="Close preview">✕</button>
+          </div>
+          <div className="dash2lb-stage" onClick={()=>setDashArtLb(null)}>
+            {_n>1&&<button className="dash2lb-nav prev" onClick={e=>{e.stopPropagation();_go(-1)}} aria-label="Previous">&#8249;</button>}
+            <img src={_cloudinaryDisplay(_s.thumb,2000)} alt={_s.label} onClick={e=>e.stopPropagation()}/>
+            {_n>1&&<button className="dash2lb-nav next" onClick={e=>{e.stopPropagation();_go(1)}} aria-label="Next">&#8250;</button>}
+          </div>
+          {_n>1&&<div className="dash2lb-strip" onClick={e=>e.stopPropagation()}>
+            {dashArtLb.shots.map((s,si)=><button key={s.url} className={`dash2lb-th ${si===_i?'is-on':''}`} onClick={()=>setDashArtLb(l=>l?{...l,idx:si}:l)} title={s.label}>
+              <img src={_cloudinaryDisplay(s.thumb,200)} alt=""/></button>)}
+          </div>}
         </div>})()}
       <div className="dash2-sec">Performance<span className="dash2-link" onClick={()=>setPg('reports')}>View full report →</span></div>
       <div className="dash2-grid dash2-kpis">
