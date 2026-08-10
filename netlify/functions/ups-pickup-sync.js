@@ -5,20 +5,14 @@
 // while a tab is open. This function runs on a schedule regardless, so packages
 // are marked picked up every day even if nobody opens the portal.
 //
-// Two ways a package leaves "Awaiting Pickup" here:
-//   1. UPS scan check — for UPS (1Z…) tracking numbers, ask UPS's public tracking
-//      endpoint whether the package has actually been scanned (real confirmation).
-//      NOTE: UPS has started tarpitting/blocking server-side callers of that free
-//      endpoint (it hangs instead of answering), so this is now best-effort and
-//      time-bounded — the age backstop below is the reliable clear. Restoring real
-//      UPS confirmation would mean moving to UPS's official OAuth Track API.
-//   2. Age backstop — for ANY carrier (UPS, FedEx, USPS), a package still awaiting
-//      pickup PICKUP_AGE_CLEAR_DAYS days after its ship date is auto-cleared.
-//      Carriers scan daily, so a tracked label that old has certainly been picked
-//      up. This is what keeps packages from lingering forever now that neither UPS
-//      nor FedEx exposes a free tracking endpoint we can query server-side (FedEx
-//      bot-blocks the public one and gates the official API behind OAuth). Time is
-//      the signal.
+// For UPS (1Z…) tracking numbers, ask UPS's public tracking endpoint whether the
+// package has actually been scanned (real confirmation). NOTE: UPS has started
+// tarpitting/blocking server-side callers of that free endpoint (it hangs instead
+// of answering), so this is best-effort and time-bounded. A package is only ever
+// marked picked up on real scan evidence — there is deliberately NO age-based
+// auto-clear: the daily AI tracking check (a scheduled Claude session that looks
+// up each awaiting-pickup number on the carrier's own site in a real browser)
+// is what confirms UPS numbers this endpoint can't reach, plus FedEx/USPS.
 //
 // Confirmed packages get carrier_picked_up=true + pickup_date + pickup_source written
 // back to Supabase, which moves them from "Awaiting Pickup" to "Shipped" in the view.
@@ -26,45 +20,20 @@
 // Schedule is defined in netlify.toml under [functions."ups-pickup-sync"].
 // Environment variables:
 //   REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (required)
-//   PICKUP_AGE_CLEAR_DAYS (optional, default 4) — age backstop threshold in days
 
 const MAX_CHECKS_PER_RUN = 150; // sanity cap on UPS lookups per run
-const AGE_CLEAR_DAYS = Math.max(1, parseInt(process.env.PICKUP_AGE_CLEAR_DAYS || '4', 10) || 4);
 
 // UPS's free tracking endpoint now tarpits/blocks server-side callers (it hangs
 // until the function is killed instead of answering). Bound it hard so a broken
 // UPS never stalls the run: each call is aborted after UPS_CALL_TIMEOUT_MS, and
 // once UPS_TIME_BUDGET_MS total has been spent trying UPS we stop attempting it
-// for the rest of the run and let the (free, instant) age backstop do the work.
+// for the rest of the run — anything unconfirmed waits for the daily AI check.
 const UPS_CALL_TIMEOUT_MS = 6000;
 const UPS_TIME_BUDGET_MS = 15000;
 
 // Match the client's updated_at convention (locale string, Pacific time) so
 // open tabs' poll-merge sees a changed timestamp and refreshes the SO.
 const ptNow = () => new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
-
-// Whole days between a shipment's ship_date (fallback created_at) and now.
-// Returns -1 when neither date parses, so an unparseable date never triggers a
-// clear. ship_date is "M/D/YYYY"; created_at is "M/D/YYYY, h:mm:ss AM" — both parse
-// with the JS Date constructor. `now` is injectable for testing.
-function shipmentAgeDays(shp, now = Date.now()) {
-  const raw = (shp && (shp.ship_date || shp.created_at)) || '';
-  if (!raw) return -1;
-  const t = Date.parse(raw);
-  if (Number.isNaN(t)) return -1;
-  return Math.floor((now - t) / 86400000);
-}
-
-// Is this shipment past the age backstop and eligible for an auto-clear? Only
-// packages that (a) have a tracking number, (b) aren't already picked up, and
-// (c) shipped at least `ageDays` ago qualify. The empty-tracking "No label" rows
-// are left alone — there's nothing to have been scanned.
-function agedOut(shp, ageDays = AGE_CLEAR_DAYS, now = Date.now()) {
-  if (!shp || shp.carrier_picked_up) return false;
-  const tn = shp.tracking_number ? String(shp.tracking_number).trim() : '';
-  if (!tn) return false;
-  return shipmentAgeDays(shp, now) >= ageDays;
-}
 
 // Same status logic as netlify/functions/ups-tracking.js (the browser endpoint).
 // AbortSignal.timeout keeps a hanging UPS endpoint from stalling the whole run —
@@ -137,15 +106,11 @@ exports.handler = async () => {
   const startedAt = Date.now();
   const upsBudgetLeft = () => (Date.now() - startedAt) < UPS_TIME_BUDGET_MS;
 
-  let agedConfirmed = 0;
   for (const row of rows) {
     const shipments = Array.isArray(row._shipments) ? row._shipments : [];
-    // Something to do here if any tracked, not-yet-picked-up shipment is either a
-    // UPS number to scan or old enough for the age backstop to clear.
-    const hasPending = shipments.some(s => {
-      if (!s || !s.tracking_number || s.carrier_picked_up) return false;
-      return /^1Z/i.test(String(s.tracking_number).trim()) || agedOut(s);
-    });
+    // Something to do here only if a tracked, not-yet-picked-up UPS number remains.
+    const hasPending = shipments.some(s =>
+      s && s.tracking_number && !s.carrier_picked_up && /^1Z/i.test(String(s.tracking_number).trim()));
     if (!hasPending) continue;
 
     let changed = false;
@@ -157,11 +122,11 @@ exports.handler = async () => {
         continue;
       }
 
-      // 1) UPS real-time scan (only for 1Z numbers, within the per-run lookup + time
+      // UPS real-time scan (only for 1Z numbers, within the per-run lookup + time
       // budgets). A cached result is always honored — only NEW lookups respect the
       // time budget, so once UPS has burned the budget we stop calling it but still
       // reuse any answer we already got this run.
-      let pickedUp = false, statusStr = '', source = '';
+      let pickedUp = false, statusStr = '';
       if (/^1Z/i.test(tn) && checked < MAX_CHECKS_PER_RUN && (cache.has(tn) || upsBudgetLeft())) {
         let res = cache.get(tn);
         if (!res) {
@@ -176,27 +141,18 @@ exports.handler = async () => {
           checked++;
           await new Promise(rs => setTimeout(rs, 150)); // be polite to the UPS endpoint
         }
-        if (res.pickedUp) { pickedUp = true; statusStr = res.status || ''; source = 'ups-auto'; }
-      }
-
-      // 2) Age backstop — any carrier the scan didn't confirm but that shipped long
-      // enough ago is treated as picked up (see the header note).
-      if (!pickedUp && agedOut(s)) {
-        pickedUp = true;
-        statusStr = 'Auto-cleared (aged ' + AGE_CLEAR_DAYS + 'd+)';
-        source = 'age-auto';
+        if (res.pickedUp) { pickedUp = true; statusStr = res.status || ''; }
       }
 
       if (pickedUp) {
         updated.push({
           ...s,
           carrier_picked_up: true,
-          pickup_date: source === 'age-auto' ? (s.ship_date || s.created_at || ptNow()) : ptNow(),
+          pickup_date: ptNow(),
           ups_status: statusStr,
-          pickup_source: source,
+          pickup_source: 'ups-auto',
         });
         confirmed++;
-        if (source === 'age-auto') agedConfirmed++;
         changed = true;
       } else {
         updated.push(s);
@@ -218,11 +174,6 @@ exports.handler = async () => {
     }
   }
 
-  console.log(`[ups-pickup-sync] checked=${checked} confirmed=${confirmed} (aged=${agedConfirmed}) sos_updated=${updatedSOs} errors=${errors}`);
-  return { statusCode: 200, body: JSON.stringify({ ok: true, checked, confirmed, aged: agedConfirmed, sos_updated: updatedSOs, errors }) };
+  console.log(`[ups-pickup-sync] checked=${checked} confirmed=${confirmed} sos_updated=${updatedSOs} errors=${errors}`);
+  return { statusCode: 200, body: JSON.stringify({ ok: true, checked, confirmed, sos_updated: updatedSOs, errors }) };
 };
-
-// Exported for unit tests (netlify/functions/__tests__).
-exports.shipmentAgeDays = shipmentAgeDays;
-exports.agedOut = agedOut;
-exports.AGE_CLEAR_DAYS = AGE_CLEAR_DAYS;
