@@ -41,7 +41,7 @@ const soRoute=(so)=>{
   return{route:'nsa',vendorName:null};
 };
 
-export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calcMargin,companyInfo,onOpenCustomer,currentUser}){
+export default function SalesMap({customers=[],orders=[],invoices=[],historicalInvoices=[],vendors=[],reps=[],calcMargin,companyInfo,onOpenCustomer,currentUser}){
   const [range,setRange]=useState('12mo');
   const [routesOn,setRoutesOn]=useState({nsa:true,deco:true,vendor:true});
   const [repF,setRepF]=useState('all');
@@ -89,28 +89,52 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
     return null;
   },[range]);
 
-  // Aggregate: per customer {total, orders, routes:{nsa,deco,vendor}}, and per-arc flows.
+  // Aggregate per customer. Dollars = BILLED revenue — portal invoices + NetSuite history
+  // (customer_invoices), deduped on document id exactly like the dashboard Sales box, so the
+  // map's totals tie out to Billed. Ship routes/arcs come from portal sales orders (the only
+  // era that has PO routing data — the portal cut over in Apr 2026).
   const data=useMemo(()=>{
     const byCust=new Map();
     const arcs=new Map();
     let unmappedRev=0,unmappedCount=0;
+    const _custFor=(id)=>custById.get(id);
+    const _repOk=(c)=>repF==='all'||(c.primary_rep_id||custById.get(c.parent_id)?.primary_rep_id)===repF;
+    const _aggFor=(c,pt)=>{
+      const key=c.parent_id&&!(_zip5(c.shipping_zip)||_zip5(c.billing_zip))?c.parent_id:c.id;
+      let agg=byCust.get(key);
+      if(!agg){agg={c:custById.get(key)||c,pt,total:0,invoices:0,orders:0,routes:{nsa:0,deco:0,vendor:0},routeRev:{nsa:0,deco:0,vendor:0}};byCust.set(key,agg)}
+      return agg;
+    };
+    // 1) Billed dollars (bubble + heat totals)
+    const histIds=new Set((historicalInvoices||[]).map(hi=>hi&&hi.id));
+    const billedRows=[...(historicalInvoices||[]).filter(hi=>hi&&hi.status!=='void'),
+      ...(invoices||[]).filter(iv=>iv&&iv.status!=='void'&&!iv.deleted_at&&!histIds.has(iv.id))];
+    billedRows.forEach(row=>{
+      const dt=_pd(row.date);
+      if(rangeStart&&(!dt||dt<rangeStart))return;
+      const rev=Number(row.total)||0;
+      if(rev<=0)return;
+      const c=_custFor(row.customer_id);
+      if(!c||!_repOk(c))return;
+      const pt=custPoint(c);
+      if(!pt){unmappedRev+=rev;unmappedCount++;return}
+      const agg=_aggFor(c,pt);
+      agg.total+=rev;agg.invoices++;
+    });
+    // 2) Ship routes + flow arcs from portal SOs
     orders.forEach(so=>{
       if(!so||so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;
       const dt=_pd(so.created_at);
       if(rangeStart&&(!dt||dt<rangeStart))return;
-      const c=custById.get(so.customer_id);
-      if(!c)return;
-      if(repF!=='all'&&(c.primary_rep_id||custById.get(c.parent_id)?.primary_rep_id)!==repF)return;
+      const c=_custFor(so.customer_id);
+      if(!c||!_repOk(c))return;
       let rev=0;try{rev=Number(calcMargin?.(so,orders)?.rev)||0}catch{rev=0}
       if(rev<=0)return;
       const {route,vendorName}=soRoute(so);
       const pt=custPoint(c);
-      if(!pt){unmappedRev+=rev;unmappedCount++;return}
-      const key=c.parent_id&&!(_zip5(c.shipping_zip)||_zip5(c.billing_zip))?c.parent_id:c.id;
-      const agg=byCust.get(key)||{c:custById.get(key)||c,pt,total:0,orders:0,routes:{nsa:0,deco:0,vendor:0},routeRev:{nsa:0,deco:0,vendor:0}};
-      agg.total+=rev;agg.orders++;agg.routes[route]++;agg.routeRev[route]+=rev;
-      byCust.set(key,agg);
-      // Flow arc: origin depends on route.
+      if(!pt)return;
+      const agg=_aggFor(c,pt);
+      agg.orders++;agg.routes[route]++;agg.routeRev[route]+=rev;
       const originZip=route==='nsa'?nsaZip:route==='vendor'?(vendorZip(vendorName)||null):(vendorZip(vendorName)||nsaZip);
       if(originZip&&ZIPS[originZip]){
         const op=projection([ZIPS[originZip][1],ZIPS[originZip][0]]);
@@ -121,6 +145,7 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
         }
       }
     });
+    byCust.forEach((agg,key)=>{if(agg.total<=0)byCust.delete(key)});
     const custs=[...byCust.values()].sort((a,b)=>b.total-a.total);
     const byState={};
     custs.forEach(a=>{const st=String(a.pt.geo.shipping_state||a.pt.geo.billing_state||'').trim().toUpperCase();if(st)byState[st]=(byState[st]||0)+a.total});
@@ -128,20 +153,22 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
     const maxTotal=Math.max(1,...custs.map(x=>x.total));
     const maxFlow=Math.max(1,...flows.map(f=>f.rev));
     return {custs,flows,maxTotal,maxFlow,unmappedRev,unmappedCount,byState};
-  },[orders,custById,rangeStart,repF,calcMargin,custPoint,vendorZip,nsaZip,projection]);
+  },[orders,invoices,historicalInvoices,custById,rangeStart,repF,calcMargin,custPoint,vendorZip,nsaZip,projection]);
 
   const visCusts=useMemo(()=>{
     const needle=q.trim().toLowerCase();
     return data.custs.filter(a=>{
       if(needle&&!String(a.c.name||'').toLowerCase().includes(needle))return false;
-      // A customer stays visible if any of its enabled routes has revenue.
+      // Route chips filter customers with known routes; pre-portal customers (no
+      // route data) stay visible unless every route is toggled off.
+      const hasRouteData=a.orders>0;
+      if(!hasRouteData)return routesOn.nsa||routesOn.deco||routesOn.vendor;
       return ['nsa','deco','vendor'].some(r=>routesOn[r]&&a.routeRev[r]>0);
     });
   },[data.custs,q,routesOn]);
   const visKeys=useMemo(()=>new Set(visCusts.map(a=>a.c.id)),[visCusts]);
   const visFlows=useMemo(()=>data.flows.filter(f=>routesOn[f.route]),[data.flows,routesOn]);
   const mappedTotal=visCusts.reduce((s,a)=>s+a.total,0);
-  const mappedOrders=visCusts.reduce((s,a)=>s+a.orders,0);
 
   const rScale=useCallback((v)=>2+15*Math.sqrt(v/data.maxTotal),[data.maxTotal]);
 
@@ -260,7 +287,7 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
       {tip&&(()=>{const a=tip.c;const m=a.routes;return<div style={{position:'absolute',left:Math.min(tip.x+14,740),top:Math.max(tip.y-10,8),background:'#101D42',border:'1px solid #2A3A6B',borderRadius:10,padding:'10px 13px',pointerEvents:'none',boxShadow:'0 8px 28px rgba(0,0,0,.45)',minWidth:200,zIndex:5}}>
         <div style={{fontSize:13,fontWeight:800}}>{a.c.name}</div>
         <div style={{fontSize:11,color:'#93A1C0',marginBottom:6}}>{[a.pt.geo.shipping_city||a.pt.geo.billing_city,a.pt.geo.shipping_state||a.pt.geo.billing_state].filter(Boolean).join(', ')}</div>
-        <div style={{fontSize:17,fontWeight:800,letterSpacing:-.3}}>{MONEY(a.total)}<span style={{fontSize:11,fontWeight:600,color:'#93A1C0',marginLeft:6}}>{a.orders} order{a.orders!==1?'s':''}</span></div>
+        <div style={{fontSize:17,fontWeight:800,letterSpacing:-.3}}>{MONEY(a.total)}<span style={{fontSize:11,fontWeight:600,color:'#93A1C0',marginLeft:6}}>{a.invoices} invoice{a.invoices!==1?'s':''} billed</span></div>
         <div style={{display:'flex',flexDirection:'column',gap:3,marginTop:7}}>
           {['nsa','deco','vendor'].filter(r=>m[r]>0).map(r=><div key={r} style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#C9D4EE'}}>
             <span style={{width:8,height:8,borderRadius:99,background:ROUTE_META[r].color}}/>{ROUTE_META[r].label}
@@ -271,10 +298,11 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
       </div>})()}
       {/* Stats overlay */}
       <div style={{position:'absolute',top:12,left:12,background:'rgba(16,29,66,.88)',border:'1px solid #2A3A6B',borderRadius:12,padding:'12px 15px',backdropFilter:'blur(4px)'}}>
-        <div style={{fontSize:10.5,fontWeight:700,letterSpacing:.8,color:'#93A1C0',textTransform:'uppercase'}}>Sales on the map</div>
+        <div style={{fontSize:10.5,fontWeight:700,letterSpacing:.8,color:'#93A1C0',textTransform:'uppercase'}}>Billed on the map</div>
         <div style={{fontSize:24,fontWeight:800,letterSpacing:-.5}}>{_fmtK(mappedTotal)}</div>
-        <div style={{fontSize:11.5,color:'#93A1C0'}}>{visCusts.length} schools · {mappedOrders} orders</div>
-        {data.unmappedCount>0&&<div style={{fontSize:10.5,color:'#6E7FA8',marginTop:4}}>{data.unmappedCount} orders unmapped (no address) · {_fmtK(data.unmappedRev)}</div>}
+        <div style={{fontSize:11.5,color:'#93A1C0'}}>{visCusts.length} schools · {visCusts.reduce((x,a)=>x+a.invoices,0)} invoices</div>
+        <div style={{fontSize:10,color:'#6E7FA8'}}>Portal + NetSuite history, deduped · routes from portal orders (Apr '26+)</div>
+        {data.unmappedCount>0&&<div style={{fontSize:10.5,color:'#6E7FA8',marginTop:4}}>{data.unmappedCount} invoices unmapped (no address) · {_fmtK(data.unmappedRev)}</div>}
       </div>
       {/* Top schools */}
       <div style={{position:'absolute',bottom:12,right:12,background:'rgba(16,29,66,.88)',border:'1px solid #2A3A6B',borderRadius:12,padding:'11px 14px',minWidth:210,backdropFilter:'blur(4px)'}}>
@@ -300,14 +328,14 @@ export default function SalesMap({customers=[],orders=[],vendors=[],reps=[],calc
     {view==='list'&&<div style={{maxHeight:560,overflow:'auto'}}>
       <table style={{width:'100%',borderCollapse:'collapse',fontSize:12.5}}>
         <thead><tr style={{position:'sticky',top:0,background:'#101D42'}}>
-          {['#','School','City','State','Orders','Ship mix','Total'].map(h=><th key={h} style={{textAlign:h==='Total'||h==='Orders'?'right':'left',padding:'9px 14px',fontSize:10.5,letterSpacing:.7,textTransform:'uppercase',color:'#93A1C0',borderBottom:'1px solid #2A3A6B'}}>{h}</th>)}
+          {['#','School','City','State','Invoices','Ship mix','Total'].map(h=><th key={h} style={{textAlign:h==='Total'||h==='Orders'?'right':'left',padding:'9px 14px',fontSize:10.5,letterSpacing:.7,textTransform:'uppercase',color:'#93A1C0',borderBottom:'1px solid #2A3A6B'}}>{h}</th>)}
         </tr></thead>
         <tbody>{visCusts.map((a,i)=><tr key={a.c.id} onClick={()=>onOpenCustomer?.(a.c)} style={{cursor:'pointer',borderBottom:'1px solid #1E2C55'}}>
           <td style={{padding:'8px 14px',color:'#6E7FA8'}}>{i+1}</td>
           <td style={{padding:'8px 14px',fontWeight:700}}>{a.c.name}</td>
           <td style={{padding:'8px 14px',color:'#93A1C0'}}>{a.pt.geo.shipping_city||a.pt.geo.billing_city||'—'}</td>
           <td style={{padding:'8px 14px',color:'#93A1C0'}}>{(a.pt.geo.shipping_state||a.pt.geo.billing_state||'—').toUpperCase()}</td>
-          <td style={{padding:'8px 14px',textAlign:'right',fontVariantNumeric:'tabular-nums'}}>{a.orders}</td>
+          <td style={{padding:'8px 14px',textAlign:'right',fontVariantNumeric:'tabular-nums'}}>{a.invoices}</td>
           <td style={{padding:'8px 14px'}}>{['nsa','deco','vendor'].filter(r=>a.routes[r]>0).map(r=><span key={r} title={ROUTE_META[r].label+': '+a.routes[r]+' orders'} style={{display:'inline-flex',alignItems:'center',gap:3,marginRight:8,fontSize:11,color:'#C9D4EE'}}><span style={{width:8,height:8,borderRadius:99,background:ROUTE_META[r].color}}/>{a.routes[r]}</span>)}</td>
           <td style={{padding:'8px 14px',textAlign:'right',fontWeight:800,fontVariantNumeric:'tabular-nums'}}>{MONEY(a.total)}</td>
         </tr>)}</tbody>
