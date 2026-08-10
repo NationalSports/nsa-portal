@@ -6213,6 +6213,37 @@ export default function App(){
     Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{_dbSavePendingIds.delete(sl.id)});
     return _p;
   };
+  // ── Auto-close fully-invoiced finished orders ──
+  // "Ready to Invoice" is a to-do bucket: production is done and the order still needs
+  // billing. When the order is ALREADY fully billed (every line's qty covered by non-void
+  // invoices — the same buildInvoicedQtyMap test that gates OrderEditor's "Close Sales
+  // Order" button), leaving it there is a stale prompt that invites double-invoicing
+  // (SO-1149 / SO-1288, Aug 2026). So the moment production finishes or the last job
+  // ships on a fully-invoiced order, persist status='complete'. Deliberately never fires
+  // on under-invoiced orders — those must stay visible in the invoicing funnel, and
+  // orders whose invoices are later deleted are reverted by the delete handler, not here.
+  const _autoClosedSOs=React.useRef(new Set());
+  React.useEffect(()=>{
+    if(dbLoading)return;
+    sos.forEach(so=>{
+      if(!so||so.status==='complete'||so.deleted_at||_autoClosedSOs.current.has(so.id))return;
+      let st;try{st=calcSOStatus(so)}catch{return}
+      if(st!=='ready_to_invoice')return;
+      const soInvs=invs.filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
+      if(soInvs.length===0)return;
+      const invMap=buildInvoicedQtyMap(so,soInvs);
+      const hasRemaining=safeItems(so).some((it,idx)=>{
+        const _szTot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        const qty=_szTot>0?_szTot:safeNum(it.est_qty);
+        return qty-(invMap.get(soLineKey(it,idx))||0)>0;
+      });
+      if(hasRemaining)return;
+      _autoClosedSOs.current.add(so.id);
+      savSO({...so,status:'complete',updated_at:new Date().toLocaleString()});
+      logChange('auto_closed','SO',so.id,'Fully invoiced and production complete');
+      nf(so.id+' closed — fully invoiced and production complete');
+    });
+  },[sos,invs,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
   const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
