@@ -68,9 +68,15 @@ was never entered: the jersey's art file ("Reversible Chest Logo") has
 `color_ways: []` and the deco's `color_way_id` / `color_way_id_b` are both null. So
 its spec line still shows no inks for either side — the white-side answer currently
 lives only in the mockup images (white body: cardinal text, gold number). The rep
-needs to define the two colorways on the art file and pick them on the deco. Worth
-considering: the art-approval gate already enforces "all four slots mocked" for
-reversibles (`skusMissingMockups`); it does not enforce colorways A/B being set.
+needs to define the two colorways on the art file and pick them on the deco.
+
+**Now enforced** (follow-up commit): `skusMissingRevColorWays` (`src/safeHelpers.js`)
+blocks Approve Artwork / Send to Coach when a reversible art deco is missing either
+side's colorway (art file needs ≥2 colorways defined, both Side A and Side B picked
+and resolving; DTF exempt). Same surfaces and message style as the existing
+`skusMissingMockups` gate. SO-1469 in its current state would be blocked with:
+`Cannot approve — reversible color ways not set for: 506CR ("Reversible Chest Logo"
+needs 2 color ways)`.
 
 ## Bigger-picture options (not done — needs a decision)
 

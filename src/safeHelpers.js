@@ -480,6 +480,11 @@ export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.t
 export const missingMockupsMsg = (action, missing) =>
   'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. A sew-out proof isn\'t enough: reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
 
+// Companion message for the reversible color-way gate (skusMissingRevColorWays) — enforced
+// at the same rep surfaces as the mock gate (Approve Artwork / Send to Coach / openCoachSend).
+export const missingRevColorWaysMsg = (action, missing) =>
+  'Cannot ' + action + ' — reversible color ways not set for: ' + missing.join(', ') + '. Define both color ways on the art file, then pick Side A and Side B on the decoration — the decorator needs the reverse side\'s inks (not just the mockup).';
+
 // ── Colorway image bridging (Momentec & other big-catalog API vendors) ──
 // The Momentec catalog (vendor v8) is excluded from the capped in-memory `prod`, and its
 // order lines are usually saved at STYLE level — sku '705A', product_id null, color as
@@ -731,6 +736,43 @@ export const skusMissingMockups = (job, so) => {
     // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
     // so approval screens still show what exists — it just can't pass the gate.
     if (mSku) missing.push(mSku);
+  });
+  return missing;
+};
+
+// Reversible art decorations must have BOTH ink color ways picked (Side A + Side B)
+// before a proof is approved or sent. Mockups alone don't tell the decorator the
+// reverse side's inks — on SO-1469 the white-side colors existed only inside the
+// mockup JPGs and the decorator had to email asking for them. Same job/deco scoping
+// as skusMissingMockups; returns ['506CR (Side A CW, Side B CW)'] style entries.
+// DTF art is exempt (full-color print — ColorWaysEditor doesn't require CWs there).
+export const skusMissingRevColorWays = (job, so) => {
+  const items = safeArr(job?.items);
+  if (items.length === 0) return [];
+  const allArt = safeArt(so);
+  const soItems = safeItems(so);
+  const jobArtIds = jobArtFileIds(job, soItems);
+  const missing = [];
+  items.forEach(gi => {
+    const it = soItems[gi?.item_idx];
+    if (!it) return;
+    const dis = jobItemDecoIdxs(gi);
+    const mSku = it?.sku || gi?.sku || '';
+    if (!mSku) return;
+    const probs = [];
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
+      if (!d || d.kind !== 'art' || !d.reversible) return;
+      if (!d.art_file_id || d.art_file_id === '__tbd' || !jobArtIds.has(d.art_file_id)) return;
+      const af = allArt.find(a => a?.id === d.art_file_id);
+      if ((af?.deco_type || d.type) === 'dtf') return;
+      const cws = safeArr(af?.color_ways);
+      if (cws.length < 2) { probs.push((af?.name ? '"' + af.name + '"' : 'art file') + ' needs 2 color ways'); return; }
+      // A picked id must resolve to a live color way — a deleted CW leaves a dangling id.
+      if (!(d.color_way_id && cws.some(c => c?.id === d.color_way_id))) probs.push('Side A CW');
+      if (!(d.color_way_id_b && cws.some(c => c?.id === d.color_way_id_b))) probs.push('Side B CW');
+    });
+    if (probs.length > 0) missing.push(mSku + ' (' + [...new Set(probs)].join(', ') + ')');
   });
   return missing;
 };
