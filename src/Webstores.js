@@ -8281,6 +8281,17 @@ async function buildStyleRows(matched) {
 const rowItemIn = (r, existingPids) => [...r.picked].some((id) => !existingPids.has(id));
 const rowItemAvail = (r, existingPids) => r.colors.some((c) => !existingPids.has(c.id));
 const rowsTotalPicked = (rows, existingPids) => rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+// The colors an item comes back with when it's (re)checked: its saved/palette defaults (or
+// every color when it has none), minus anything already in the store. When ALL of those
+// defaults are already in the store that set comes back empty — and since a row counts as
+// "included" only while it has an addable color picked, the checkbox would snap straight
+// back off and the item could never be brought in again. Fall back to whatever colorways
+// are still addable so checking an item always does something.
+const rowDefaultPick = (r, existingPids) => {
+  const addable = r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id);
+  const base = [...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id));
+  return new Set(base.length ? base : addable);
+};
 // Build the apply plan applyTemplateColors expects (colors already in store are re-filtered there).
 const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
 
@@ -8290,15 +8301,19 @@ const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colo
 function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtra }) {
   const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
   const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
-  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() } : r));
   return (
     <>
       {rows.map((r, ri) => { const included = rowItemIn(r, existingPids); const avail = rowItemAvail(r, existingPids); return (
         <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0, flexWrap: 'wrap' }}>
             <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
-            {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            {/* Deselecting an item hides its swatches, leaving only the small checkbox to click.
+                The image + name toggle it too, so a greyed-out row is easy to bring back. */}
+            <div onClick={() => avail && toggleItem(ri, !included)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: avail ? 'pointer' : 'default' }}>
+              {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            </div>
             {included && renderRowExtra && renderRowExtra(r, ri, included)}
             {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
             {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
@@ -8353,7 +8368,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), teamHexes = [], on
     })();
     return () => { cancelled = true; };
   }, [tpl, teamKey]);
-  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() })));
   const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
   const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
   const totalPicked = rowsTotalPicked(rows, existingPids);
@@ -9422,7 +9437,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
   const setMeta = (ri, patch) => setRows((rs) => rs.map((r, i) => (i === ri ? { ...r, meta: { ...r.meta, ...patch } } : r)));
   const totalPicked = rowsTotalPicked(rows, existingPids);
   const stylesIn = rows.filter((r) => rowItemIn(r, existingPids)).length;
-  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() })));
 
   const doImport = async () => {
     if (!totalPicked || !onApplyColors) return;
