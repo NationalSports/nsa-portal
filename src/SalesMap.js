@@ -41,7 +41,7 @@ const soRoute=(so)=>{
   return{route:'nsa',vendorName:null};
 };
 
-export default function SalesMap({customers=[],orders=[],invoices=[],historicalInvoices=[],vendors=[],reps=[],calcMargin,companyInfo,onOpenCustomer,currentUser}){
+export default function SalesMap({customers=[],orders=[],invoices=[],historicalInvoices=[],vendors=[],reps=[],calcMargin,companyInfo,onOpenCustomer,currentUser,compact=false,onOpenFullMap}){
   const [range,setRange]=useState('12mo');
   const [routesOn,setRoutesOn]=useState({nsa:true,deco:true,vendor:true});
   const [repF,setRepF]=useState('all');
@@ -213,32 +213,36 @@ export default function SalesMap({customers=[],orders=[],invoices=[],historicalI
     </button>;
   };
 
-  return<div style={{background:SURFACE,borderRadius:16,overflow:'hidden',border:'1px solid #1E2C55',position:'relative',color:'#E7ECF7'}}>
+  return<div style={{background:SURFACE,borderRadius:16,overflow:'hidden',border:'1px solid #1E2C55',position:'relative',color:'#E7ECF7',boxShadow:compact?'0 18px 46px rgba(15,26,56,.14)':'none'}}>
     <style>{`
       @keyframes smFlow{to{stroke-dashoffset:-32}}
       .sm-arc{stroke-dasharray:5 11;animation:smFlow 1.6s linear infinite;fill:none;stroke-linecap:round}
       .sm-bub{transition:opacity .15s}
       .sm-bub:hover{opacity:1 !important}
     `}</style>
-    {/* Filters row */}
-    <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',padding:'14px 16px',borderBottom:'1px solid #1E2C55'}}>
-      <span style={{fontSize:15,fontWeight:800,letterSpacing:.3,marginRight:4}}>🗺️ Sales Map</span>
+    {/* Filters / homepage header */}
+    <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',padding:compact?'18px 20px':'14px 16px',borderBottom:'1px solid #1E2C55'}}>
+      {compact?<div style={{marginRight:'auto',minWidth:220}}>
+        <div style={{display:'flex',alignItems:'center',gap:9,fontSize:16,fontWeight:800,letterSpacing:.2}}><span aria-hidden="true">🗺️</span> Where sales are going</div>
+        <div style={{fontSize:11.5,color:'#93A1C0',marginTop:3}}>School destinations, billed value, and the route every shipment takes</div>
+      </div>:<span style={{fontSize:15,fontWeight:800,letterSpacing:.3,marginRight:4}}>🗺️ Sales Map</span>}
       <select value={range} onChange={e=>setRange(e.target.value)} style={{background:'#16234A',color:'#E7ECF7',border:'1px solid #2A3A6B',borderRadius:8,padding:'6px 10px',fontSize:12,fontWeight:600}}>
         <option value="month">This month</option><option value="ytd">Year to date</option><option value="12mo">Last 12 months</option><option value="all">All time</option>
       </select>
-      {isAdmin&&<select value={repF} onChange={e=>setRepF(e.target.value)} style={{background:'#16234A',color:'#E7ECF7',border:'1px solid #2A3A6B',borderRadius:8,padding:'6px 10px',fontSize:12,fontWeight:600}}>
+      {!compact&&isAdmin&&<select value={repF} onChange={e=>setRepF(e.target.value)} style={{background:'#16234A',color:'#E7ECF7',border:'1px solid #2A3A6B',borderRadius:8,padding:'6px 10px',fontSize:12,fontWeight:600}}>
         <option value="all">All reps</option>
         {reps.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
       </select>}
       {['nsa','deco','vendor'].map(chip)}
-      <input placeholder="Find a school…" value={q} onChange={e=>setQ(e.target.value)} style={{background:'#16234A',color:'#E7ECF7',border:'1px solid #2A3A6B',borderRadius:8,padding:'6px 10px',fontSize:12,minWidth:150}}/>
-      <div style={{display:'flex',gap:2,background:'#16234A',borderRadius:8,padding:2,border:'1px solid #2A3A6B'}}>
+      {!compact&&<input placeholder="Find a school…" value={q} onChange={e=>setQ(e.target.value)} style={{background:'#16234A',color:'#E7ECF7',border:'1px solid #2A3A6B',borderRadius:8,padding:'6px 10px',fontSize:12,minWidth:150}}/>}
+      {!compact&&<div style={{display:'flex',gap:2,background:'#16234A',borderRadius:8,padding:2,border:'1px solid #2A3A6B'}}>
         <button onClick={()=>setZoom(WEST_VIEW)} style={{fontSize:12,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'none',cursor:'pointer',background:'transparent',color:'#93A1C0'}}>West</button>
         <button onClick={()=>setZoom(US_VIEW)} style={{fontSize:12,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'none',cursor:'pointer',background:'transparent',color:'#93A1C0'}}>Whole US</button>
-      </div>
-      <div style={{marginLeft:'auto',display:'flex',gap:2,background:'#16234A',borderRadius:8,padding:2,border:'1px solid #2A3A6B'}}>
+      </div>}
+      {!compact&&<div style={{marginLeft:'auto',display:'flex',gap:2,background:'#16234A',borderRadius:8,padding:2,border:'1px solid #2A3A6B'}}>
         {['map','list'].map(v=><button key={v} onClick={()=>setView(v)} style={{fontSize:12,fontWeight:700,padding:'5px 14px',borderRadius:6,border:'none',cursor:'pointer',background:view===v?'#5B8DEF':'transparent',color:view===v?'#fff':'#93A1C0'}}>{v==='map'?'Map':'List'}</button>)}
-      </div>
+      </div>}
+      {compact&&<button type="button" onClick={onOpenFullMap} style={{fontSize:12,fontWeight:800,padding:'7px 12px',borderRadius:8,cursor:'pointer',border:'1px solid #6F9CF5',background:'#5B8DEF',color:'#fff',boxShadow:'0 5px 14px rgba(91,141,239,.24)'}}>Explore full map →</button>}
     </div>
 
     {view==='map'&&<div style={{position:'relative'}}>
@@ -305,14 +309,14 @@ export default function SalesMap({customers=[],orders=[],invoices=[],historicalI
         {data.unmappedCount>0&&<div style={{fontSize:10.5,color:'#6E7FA8',marginTop:4}}>{data.unmappedCount} invoices unmapped (no address) · {_fmtK(data.unmappedRev)}</div>}
       </div>
       {/* Top schools */}
-      <div style={{position:'absolute',bottom:12,right:12,background:'rgba(16,29,66,.88)',border:'1px solid #2A3A6B',borderRadius:12,padding:'11px 14px',minWidth:210,backdropFilter:'blur(4px)'}}>
+      {!compact&&<div style={{position:'absolute',bottom:12,right:12,background:'rgba(16,29,66,.88)',border:'1px solid #2A3A6B',borderRadius:12,padding:'11px 14px',minWidth:210,backdropFilter:'blur(4px)'}}>
         <div style={{fontSize:10.5,fontWeight:700,letterSpacing:.8,color:'#93A1C0',textTransform:'uppercase',marginBottom:6}}>Top schools</div>
         {visCusts.slice(0,6).map((a,i)=><div key={a.c.id} onClick={()=>onOpenCustomer?.(a.c)} style={{display:'flex',gap:8,alignItems:'baseline',fontSize:12,padding:'2.5px 0',cursor:'pointer'}}>
           <span style={{color:'#6E7FA8',fontVariantNumeric:'tabular-nums'}}>{i+1}</span>
           <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:130}}>{a.c.name}</span>
           <b style={{marginLeft:'auto',fontVariantNumeric:'tabular-nums'}}>{_fmtK(a.total)}</b>
         </div>)}
-      </div>
+      </div>}
       {/* Legend: size key + zoom hint */}
       <div style={{position:'absolute',bottom:12,left:12,background:'rgba(16,29,66,.88)',border:'1px solid #2A3A6B',borderRadius:12,padding:'10px 14px',backdropFilter:'blur(4px)'}}>
         <div style={{display:'flex',alignItems:'flex-end',gap:10}}>

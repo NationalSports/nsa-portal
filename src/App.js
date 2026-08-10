@@ -8594,6 +8594,13 @@ export default function App(){
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
     />}
+    {uiMode==='new'&&canAccess('salesmap')&&<div style={{marginTop:20}}>
+      <ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}>
+        <SalesMap compact customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu}
+          onOpenFullMap={()=>setPg('salesmap')}
+          onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/>
+      </React.Suspense></ComponentErrorBoundary>
+    </div>}
     {uiMode==='new'&&dashView!=='admin'&&_renderWorkspace()}
 
     {/* ═══ ADMIN VIEW ═══ */}
