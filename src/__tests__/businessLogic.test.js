@@ -150,8 +150,9 @@ describe('Screen Print Pricing — spP()', () => {
   });
 
   test('returns null-based price as 0 for small qty + high colors', () => {
-    // Bracket 0 (qty 1-11), colors 4 and 5 are null in the matrix
-    expect(BL.spP(5, 4)).toBe(0);
+    // Bracket 0 (qty 1-11): 4 colors is now the $100 flat charge; 5 colors is still blank.
+    // A blank cell prices at 0 — dP flags it as _unpriced so it can't bill silently (SO-1727).
+    expect(BL.spP(5, 4)).toBe(100);
     expect(BL.spP(5, 5)).toBe(0);
   });
 
@@ -513,6 +514,52 @@ describe('SO Status Calculation — calcSOStatus()', () => {
       jobs: []
     };
     expect(BL.calcSOStatus(ord)).not.toBe('need_order');
+  });
+
+  test('reloaded Topstar DIGITIZING line (no _topstar flag — never persisted) is still covered, not need_order', () => {
+    // so_items has no _topstar column, so the flag is dropped on save. After a reload the line
+    // comes back as a plain qty_only custom good identifiable only by sku 'DIGITIZING'. It must
+    // still be treated as covered by its deco PO — otherwise the SO sits in need_order forever.
+    const ord = {
+      items: [
+        { sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [], no_deco: true },
+        { sku: 'DIGITIZING', name: 'Topstar — DST Embroidery File', brand: 'Topstar', sizes: {}, qty_only: true, est_qty: 1, pick_lines: [], po_lines: [], decorations: [], no_deco: true, is_custom: true }
+      ],
+      deco_pos: [{ po_id: 'PO-100-D1', vendor: 'Topstar', topstar_service: 'dst', status: 'waiting' }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
+  test('reloaded digitizing-only order (sku marker only) is not need_order', () => {
+    const ord = {
+      items: [{ sku: 'DIGITIZING', name: 'Topstar — Vector File', brand: 'Topstar', sizes: {}, qty_only: true, est_qty: 1, pick_lines: [], po_lines: [], decorations: [], no_deco: true, is_custom: true }],
+      deco_pos: [{ po_id: 'PO-101-D1', vendor: 'Topstar', topstar_service: 'vector', status: 'waiting' }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).not.toBe('need_order');
+  });
+
+  test('Artwork service line does not hold the SO in need_order (SO-1566 — art time, no vendor PO ever)', () => {
+    const ord = {
+      items: [
+        { sku: 'KV2186', sizes: { M: 8, L: 30 }, pick_lines: [], po_lines: [{ M: 8, L: 30 }], decorations: [{ kind: 'art', fulfillment: 'outside' }] },
+        { sku: 'Artwork', name: 'Artwork', sizes: { OSFA: 1 }, pick_lines: [], po_lines: [], decorations: [], no_deco: true }
+      ],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('waiting_receive');
+  });
+
+  test('Artwork line is covered case-insensitively (sku "ARTWORK")', () => {
+    const ord = {
+      items: [
+        { sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [], no_deco: true },
+        { sku: 'ARTWORK', sizes: { OSFA: 1 }, pick_lines: [], po_lines: [], decorations: [], no_deco: true }
+      ],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
   });
 
   test('mixed job statuses — some shipped, some active → in_production', () => {

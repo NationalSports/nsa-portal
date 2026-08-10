@@ -6,12 +6,29 @@ import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, T
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
-import { dP, rQ, DTF, mergeColors, calcPaidQualifyingSpend } from './pricing';
+import { MsgAttachments, msgAttachments } from './lib/msgAttach';
+import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
+
+// Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
+// ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
+// rows). Blind .slice() on those leaves junk like '7/10/2026,' and sorts/compares wrong,
+// so everything that reads a date here goes through these two.
+const _pDate=ds=>{if(!ds)return null;if(ds instanceof Date)return isNaN(ds)?null:ds;const s=String(ds).trim();
+  const iso=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(iso)return new Date(+iso[1],+iso[2]-1,+iso[3]);
+  const us=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if(us){let y=parseInt(us[3]);if(y<100)y+=2000;const d=new Date(y,parseInt(us[1])-1,parseInt(us[2]));return isNaN(d)?null:d}
+  const d2=new Date(s);return isNaN(d2)?null:d2};
+// -> 'YYYY-MM-DD' (sortable, unambiguous), or '' when unparseable.
+const _fmtDate=ds=>{const d=_pDate(ds);if(!d)return'';
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+// -> 'M-D' (no year), for the dense Active Orders columns.
+const _fmtMD=ds=>{const d=_pDate(ds);return d?(d.getMonth()+1)+'-'+d.getDate():''};
 
 // Multi-select garment-color picker — tie ONE web-logo cutout to any number of garment
 // colors (reuse without re-uploading the same file per color). Colors come from the art's
@@ -64,7 +81,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 // CUSTOMER DETAIL
 
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
-  const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
+  const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
@@ -341,7 +358,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:5,overflow:'hidden'}}><div style={{height:5,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
               <span style={{fontSize:11,fontWeight:600}}>{pct}% ({fulU}/{totalU})</span></div></td>
             <td style={{textAlign:'right',fontWeight:700,color:'#1e293b'}}>${soGrand.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-            <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
+            <td style={{color:'#64748b',textAlign:'center'}}>{_fmtMD(so.created_at||so.date)||'—'}</td>
+            <td style={{textAlign:'center',color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{_fmtMD(so.expected_date)||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
           </tr>
           {/* Nested jobs under this SO — collapsed by default */}
           {isExp&&jobs.length>0&&jobs.map(j=><tr key={j.id} style={{background:'#f8fafc',cursor:'pointer'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
@@ -357,14 +375,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}><div style={{height:4,borderRadius:3,background:j.fulfilled_units>=j.total_units?'#22c55e':j.fulfilled_units>0?'#f59e0b':'#e2e8f0',width:(j.total_units>0?j.fulfilled_units/j.total_units*100:0)+'%'}}/></div>
               <span style={{fontSize:10}}>{j.fulfilled_units}/{j.total_units}</span></div></td>
             <td/>
-            <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
+            <td/>
+            <td style={{textAlign:'center'}}><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
           </tr>)}
-          {isExp&&jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
+          {isExp&&jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?10:8} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
         </React.Fragment>};
-      const renderTable=(list)=><table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th>Expected</th></tr></thead><tbody>{list.map(renderSORow)}</tbody></table>;
+      const _todayISO=_fmtDate(new Date());
+      const renderTable=(list)=><table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'center'}}>Created</th><th style={{textAlign:'center'}}>Expected</th></tr></thead><tbody>{list.map(renderSORow)}</tbody></table>;
       return<>
         {(activeSOs.length>0||custWebstores.length>0)&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Orders</h2></div><div className="card-body" style={{padding:0}}>{custWebstores.length>0&&<><table style={{fontSize:12}}><thead><tr><th>Store</th><th>Status</th><th>Opens</th><th>Closes</th>{isP&&<th>Director</th>}</tr></thead><tbody>{custWebstores.map(ws=><tr key={ws.id}><td style={{fontWeight:700,color:'#0369a1'}}>{ws.name}</td><td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ws.status==='open'?'#dcfce7':ws.status==='closed'?'#fee2e2':'#f1f5f9',color:ws.status==='open'?'#166534':ws.status==='closed'?'#dc2626':'#64748b'}}>{ws.status}</span></td><td style={{color:'#64748b'}}>{ws.open_at?(ws.open_at||'').slice(0,10):'—'}</td><td style={{color:'#64748b'}}>{ws.close_at?(ws.close_at||'').slice(0,10):'—'}</td>{isP&&<td style={{color:'#64748b'}}>{ws.director_name||'—'}</td>}</tr>)}</tbody></table>{activeSOs.length>0&&<div style={{borderTop:'2px solid #f1f5f9'}}/>}</>}{activeSOs.length>0&&renderTable(activeSOs)}</div></div>}
-        {(recentEsts.length>0||openPortalInvs.length>0)&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#fdf4ff',borderBottom:'1px solid #e9d5ff'}}><h2 style={{color:'#7c3aed'}}>Open Estimates & Invoices</h2></div><div className="card-body" style={{padding:0}}>{recentEsts.length>0&&<><div style={{padding:'4px 12px 2px',background:'#fdf4ff',fontSize:10,color:'#a855f7',fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>Estimates — pending approval</div><table style={{fontSize:12}}><thead><tr><th>EST</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th>Created</th></tr></thead><tbody>{recentEsts.map(e=>{const o=orders.find(ord=>ord.id===e.id);const subC=allCustomers.find(c=>c.id===e.customer_id);return<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>onOpenEst&&onOpenEst(e)}><td style={{fontWeight:700,color:'#7c3aed'}}>{e.id}</td><td>{e.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:e.status==='sent'?'#fef3c7':'#f1f5f9',color:e.status==='sent'?'#92400e':'#64748b'}}>{e.status==='draft'?'Draft':'Sent'}</span></td><td style={{textAlign:'right',fontWeight:700}}>{o?.total!=null?'$'+o.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</td><td style={{color:'#64748b'}}>{(e.created_at||'').slice(0,10)}</td></tr>})}</tbody></table></>}{openPortalInvs.length>0&&<><div style={{padding:'4px 12px 2px',background:'#fff7ed',borderTop:recentEsts.length>0?'2px solid #f1f5f9':undefined,fontSize:10,color:'#c2410c',fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>Open Invoices</div><table style={{fontSize:12}}><thead><tr><th>INV</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Balance</th></tr></thead><tbody>{openPortalInvs.map(inv=>{const subC=allCustomers.find(c=>c.id===inv.customer_id);const bal=safeNum(inv.total)-safeNum(inv.paid);return<tr key={inv.id} style={{cursor:'pointer'}} onClick={()=>onOpenInv&&onOpenInv(inv)}><td style={{fontWeight:700}}>{inv.id}</td><td>{inv.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:inv.status==='partial'?'#fef3c7':'#fee2e2',color:inv.status==='partial'?'#92400e':'#dc2626'}}>{inv.status==='partial'?'Partial':'Open'}</span></td><td style={{textAlign:'right',fontWeight:700}}>${safeNum(inv.total).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td style={{textAlign:'right',fontWeight:700}}>${bal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>})}</tbody></table></>}</div></div>}
+        {(recentEsts.length>0||openPortalInvs.length>0)&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#fdf4ff',borderBottom:'1px solid #e9d5ff'}}><h2 style={{color:'#7c3aed'}}>Open Estimates & Invoices</h2></div><div className="card-body" style={{padding:0}}>{recentEsts.length>0&&<><div style={{padding:'4px 12px 2px',background:'#fdf4ff',fontSize:10,color:'#a855f7',fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>Estimates — pending approval</div><table style={{fontSize:12}}><thead><tr><th>EST</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th>Created</th></tr></thead><tbody>{recentEsts.map(e=>{const o=orders.find(ord=>ord.id===e.id);const subC=allCustomers.find(c=>c.id===e.customer_id);return<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>onOpenEst&&onOpenEst(e)}><td style={{fontWeight:700,color:'#7c3aed'}}>{e.id}</td><td>{e.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:e.status==='sent'?'#fef3c7':'#f1f5f9',color:e.status==='sent'?'#92400e':'#64748b'}}>{e.status==='draft'?'Draft':'Sent'}</span></td><td style={{textAlign:'right',fontWeight:700}}>{o?.total!=null?'$'+o.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</td><td style={{color:'#64748b'}}>{_fmtDate(e.created_at||e.date)||'—'}</td></tr>})}</tbody></table></>}{openPortalInvs.length>0&&<><div style={{padding:'4px 12px 2px',background:'#fff7ed',borderTop:recentEsts.length>0?'2px solid #f1f5f9':undefined,fontSize:10,color:'#c2410c',fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>Open Invoices</div><table style={{fontSize:12}}><thead><tr><th>INV</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Balance</th><th>Date</th><th>Due</th></tr></thead><tbody>{openPortalInvs.map(inv=>{const subC=allCustomers.find(c=>c.id===inv.customer_id);const bal=safeNum(inv.total)-safeNum(inv.paid);const dueStr=_fmtDate(inv.due_date);const overdue=!!dueStr&&dueStr<_todayISO&&bal>0;return<tr key={inv.id} style={{cursor:'pointer'}} onClick={()=>onOpenInv&&onOpenInv(inv)}><td style={{fontWeight:700}}>{inv.id}</td><td>{inv.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:inv.status==='partial'?'#fef3c7':'#fee2e2',color:inv.status==='partial'?'#92400e':'#dc2626'}}>{inv.status==='partial'?'Partial':'Open'}</span></td><td style={{textAlign:'right',fontWeight:700}}>${safeNum(inv.total).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td style={{textAlign:'right',fontWeight:700}}>${bal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td style={{color:'#64748b'}}>{_fmtDate(inv.date||inv.created_at)||'—'}</td><td style={{color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}} title={overdue?'Past due':undefined}>{dueStr||'—'}</td></tr>})}</tbody></table></>}</div></div>}
         {bookingSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#eef2ff',borderBottom:'1px solid #c7d2fe'}}><h2 style={{color:'#4338ca'}}>Booking Orders ({bookingSOs.length})</h2><span style={{fontSize:11,color:'#6366f1',marginLeft:8}}>Future ship dates — not yet in production</span></div><div className="card-body" style={{padding:0}}>{renderTable(bookingSOs)}</div></div>}
       </>})()}
     {/* All transactions — unified: est, SO, inv, IF, PO, payments */}
@@ -399,23 +419,27 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const statusBadge=st=>{if(!st)return'badge-gray';if(['open','sent','waiting','needs_pull'].includes(st))return'badge-amber';if(['approved','paid','pulled','received','complete'].includes(st))return'badge-green';if(['draft','cancelled'].includes(st))return'badge-gray';return'badge-blue'};
 
       // Filter
+      const txnCurY=new Date().getFullYear();
       const filt=deduped.filter(t=>{
         if(oF!=='all'&&t.type!==oF)return false;
+        if(yF!=='all'){const d=_pDate(t.date);if(!d||d.getFullYear()!==(yF==='lastyear'?txnCurY-1:txnCurY))return false}
         if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','items_received','ready_to_invoice','booking','partial'].includes(t.status)||(t.type==='estimate'&&t.status==='approved');
         if(sF==='closed')return(t.type==='estimate'?['converted','cancelled']:['approved','paid','pulled','received','complete','completed','shipped','cancelled']).includes(t.status);
         return true;
-      }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+      }).sort((a,b)=>_fmtDate(b.date).localeCompare(_fmtDate(a.date)));
 
       return<div className="card"><div className="card-header"><h2>All Transactions</h2><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
         {[['all','All'],['estimate','Est'],['sales_order','SO'],['invoice','Inv'],['if','IF'],['po','PO']].map(([v,l])=><button key={v} className={`btn btn-sm ${oF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOF(v)}>{l}</button>)}
         <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
         {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
+        <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
+        {[['all','All Years'],['thisyear','This Year'],['lastyear','Last Year']].map(([v,l])=><button key={v} className={`btn btn-sm ${yF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setYF(v)}>{l}</button>)}
       </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
         filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){const inv2=(invs||[]).find(x=>x.id===t.id)||t;onOpenInv(inv2)}}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
           <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
           <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
-          <td style={{fontSize:11,color:'#64748b'}}>{t.date}</td>
+          <td style={{fontSize:11,color:'#64748b'}}>{_fmtDate(t.date)||'—'}</td>
           <td style={{fontSize:11,color:'#94a3b8'}}>{t.so_id&&t._src!=='order'?t.so_id:'—'}</td>
           <td>{t.memo}</td>
           {isP&&<td><span className="badge badge-gray" title={gn(t.customer_id)}>{teamName(t.customer_id)||gn(t.customer_id)}</span></td>}
@@ -438,6 +462,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div>{g.msgs.map((m,mi)=>{const un=isUnread(m);return<div key={m.id||mi} style={{padding:'8px 12px',borderBottom:mi<g.msgs.length-1?'1px solid #f1f5f9':'none',borderLeft:un?'3px solid #dc2626':'3px solid transparent',background:un?'#fef2f2':'white'}}>
         <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{m.is_system?'System':authorName(m.author_id)} <span style={{fontWeight:400,color:'#94a3b8',fontSize:9}}>{msgTs(m)?new Date(msgTs(m)).toLocaleString():''}</span>{un&&<span style={{marginLeft:6,fontSize:9,color:'#dc2626',fontWeight:700}}>● NEW</span>}</div>
         <div style={{fontSize:12,color:'#334155',marginTop:2,whiteSpace:'pre-wrap'}}>{m.text}</div>
+        <MsgAttachments items={msgAttachments(m)} size={72}/>
       </div>})}</div>
     </div>)}
   </div></div>}
@@ -1306,6 +1331,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {isOwnLib&&<div style={{display:'flex',gap:14,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap',alignItems:'flex-end'}}>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Type</div><Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>editLib({deco_type:v})}/></div>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Size</div><input className="form-input" value={art.art_size||''} onChange={e=>editLib({art_size:e.target.value})} placeholder='e.g. 12" x 4"' style={{fontSize:12,width:150}}/></div>
+          <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Default location</div><select className="form-select" value={art.location||''} onChange={e=>editLib({location:e.target.value})} style={{fontSize:12,width:150}} title="Where this art usually goes — decorations default here when it's added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
           <div><div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:3}}>Status</div><select value={art.status||'waiting_for_art'} onChange={e=>editLib({status:e.target.value})} style={{padding:'5px 8px',borderRadius:8,fontSize:12,fontWeight:600,border:'1px solid #e2e8f0',background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c,cursor:'pointer'}}><option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved</option></select></div>
         </div>}
         {!isOwnLib&&<div style={{display:'flex',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap'}}>
@@ -1674,7 +1700,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           const toList=stmtEmail.split(',').map(s=>s.trim()).filter(s=>s&&/@/.test(s));
           if(toList.length===0){nf('Enter a valid email address','error');return}
           setStmtSending(true);
-          const portalUrl=customer.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)):'';
+          const portalUrl=customer.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+'&page=billing'):'';
           const rep=REPS.find(r=>r.id===customer.primary_rep_id);
           const repEmail=rep&&cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'';
           const senderEmail=stmtFrom==='rep'&&repEmail?repEmail:'accounting@nationalsportsapparel.com';
@@ -1951,7 +1977,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const downloadInvPdf=()=>{
         const _$=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         const _rep=(REPS||[]).find(r=>r.id===customer?.primary_rep_id);
-        const poNum=inv._po_number||linkedSO?.po_number;
+        const poNum=inv.po_number||inv._po_number||linkedSO?.po_number;
         const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
         const rows=[];let subTotal=0;
         const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
@@ -2087,12 +2113,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div style={{padding:'20px 28px'}}>
 
         {/* Payment success banner */}
-        {portalPaySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
-          <div style={{fontSize:32,marginBottom:8}}>&#10003;</div>
-          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
-          <div style={{fontSize:14,color:'#166534'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{portalPaySuccess.fee>0?' + $'+portalPaySuccess.fee.toFixed(2)+' processing fee':''}</div>
-          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to the customer's email.</div>
-        </div>}
+        {portalPaySuccess&&(portalPaySuccess.processing
+          ?<div style={{padding:16,background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+            <div style={{fontSize:32,marginBottom:8}}>&#9203;</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#92400e',marginBottom:4}}>Bank Payment Processing</div>
+            <div style={{fontSize:14,color:'#92400e'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} submitted by bank (ACH) — settles in 1&#8211;4 business days.</div>
+            <div style={{fontSize:12,color:'#92400e',marginTop:4}}>The invoice stays open until it clears — <b>don't collect this payment again</b>.</div>
+          </div>
+          :<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+            <div style={{fontSize:32,marginBottom:8}}>&#10003;</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
+            <div style={{fontSize:14,color:'#166534'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{portalPaySuccess.fee>0?' + $'+portalPaySuccess.fee.toFixed(2)+' processing fee':''}</div>
+            <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to the customer's email.</div>
+          </div>)}
 
         {/* Pay Now button */}
         {totalDue>0&&<div style={{marginBottom:16}}>
@@ -2272,7 +2305,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       customerName={customer.name}
       customerEmail={(customer.contacts||[])[0]?.email||''}
       alphaTag={customer.alpha_tag}
-      onSuccess={(result)=>{setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});setPortalShowPay(null);setPortalInvView(null);setPortalPayLoading(false)}}
+      onSuccess={(result)=>{
+        // An ACH/bank payment comes back 'processing' — submitted but NOT settled, and the
+        // invoice stays open until the Stripe webhook confirms it days later. Only a
+        // settled ('succeeded') payment gets the server-side reconcile; the banner must
+        // never say "paid" for a processing debit or staff will collect twice.
+        if(result.status==='succeeded'&&result.intentId){
+          fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:result.intentId}),keepalive:true}).catch(()=>{});
+        }
+        setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,processing:result.status==='processing'});
+        setPortalShowPay(null);setPortalInvView(null);setPortalPayLoading(false)
+      }}
       onClose={()=>{setPortalShowPay(null);setPortalPayLoading(false)}}
     />}
     </div>})()}

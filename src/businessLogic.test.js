@@ -8,6 +8,7 @@ const {
   checkInventoryConflicts,
   calcQualifyingSpend,
   itemEditReconciles, itemsWithWipedQty,
+  jobAllRoutedOutside,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -987,7 +988,7 @@ describe('Job Building', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test('numbers and names decorations each generate their own production job', () => {
+  test('numbers and names on the same garment combine into one mixed-media job', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -999,11 +1000,12 @@ describe('Job Building', () => {
       jobs: [],
     });
     const jobs = buildJobs(so);
-    // Numbers (heat transfer) and names (heat press) are distinct production
-    // applications, so each gets its own job.
-    expect(jobs).toHaveLength(2);
-    expect(jobs.some(j => j.art_name.includes('Numbers'))).toBe(true);
-    expect(jobs.some(j => j.art_name.includes('Names'))).toBe(true);
+    // Numbers (heat transfer) and names (heat press) on one garment travel production
+    // together — one job, one tech sheet — with both methods declared in deco_types.
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_name.includes('Numbers')).toBe(true);
+    expect(jobs[0].art_name.includes('Names')).toBe(true);
+    expect(jobs[0].deco_types).toEqual(expect.arrayContaining(['heat_transfer', 'heat_press']));
   });
 
   test('art status from art file propagates to job', () => {
@@ -2201,21 +2203,19 @@ describe('Cross-Module Integration Scenarios', () => {
         jobs: [],
       });
       const jobs = buildJobs(so);
-      // buildJobs groups by deco TYPE then by decoration signature within each type:
-      // SHIRT-1: art_af1 + art_af2 (both screen_print) → 1 screen_print job
-      // SHIRT-2: art_af1 (screen_print) → 1 screen_print job (different sig from SHIRT-1 — different art set)
-      // SHIRT-2: numbers@Back (heat_transfer) → 1 heat_transfer job
-      // = 3 separate jobs (different deco types go to different machines/vendors)
-      expect(jobs).toHaveLength(3);
+      // buildJobs groups by full decoration signature; mixed-media garments stay ONE job:
+      // SHIRT-1: art_af1 + art_af2 (both screen_print) → 1 job
+      // SHIRT-2: art_af1 + heat-transfer numbers@Back → 1 combined mixed-media job
+      // = 2 jobs (each garment travels production as a single tech sheet)
+      expect(jobs).toHaveLength(2);
       const shirt1Job = jobs.find(j => j.key === 'screen_print::art_af1|art_af2');
-      const shirt2ScreenJob = jobs.find(j => j.key === 'screen_print::art_af1');
-      const shirt2HeatJob = jobs.find(j => j.key.startsWith('heat_transfer::'));
+      const shirt2Job = jobs.find(j => j.key === 'screen_print::art_af1|numbers_heat_transfer@Back');
       expect(shirt1Job.items).toHaveLength(1);
       expect(shirt1Job.total_units).toBe(20);
-      expect(shirt2ScreenJob.items).toHaveLength(1);
-      expect(shirt2ScreenJob.total_units).toBe(5);
-      expect(shirt2HeatJob.items).toHaveLength(1);
-      expect(shirt2HeatJob.total_units).toBe(5);
+      expect(shirt2Job.items).toHaveLength(1);
+      expect(shirt2Job.total_units).toBe(5);
+      expect(shirt2Job.deco_type).toBe('screen_print');
+      expect(shirt2Job.deco_types).toEqual(expect.arrayContaining(['screen_print', 'heat_transfer']));
     });
   });
 });
@@ -2821,5 +2821,64 @@ describe('Per-item quantity-wipe guard (itemsWithWipedQty)', () => {
     expect(itemsWithWipedQty(null, [dbRow()])).toEqual([]);
     expect(itemsWithWipedQty([{ sku: 'NSF', sizes: {} }], null)).toEqual([]);
     expect(itemsWithWipedQty(undefined, undefined)).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// jobAllRoutedOutside — art-board visibility for outside-routed jobs (SO-1009 / SO-1660)
+// ═══════════════════════════════════════════════
+describe('jobAllRoutedOutside', () => {
+  const mkArtFile = (id, deco_type, name) => ({ id, deco_type, name, status: 'approved' });
+  const job = (items) => ({ id: 'JOB-X-01', items });
+
+  test('every claimed deco explicitly routed outside → true (SO-1009)', () => {
+    const so = makeSO({
+      items: [makeSOItem({ decorations: [
+        { kind: 'art', art_file_id: 'a1', position: 'Front Center', fulfillment: 'outside', vendor: 'Silver Screen' },
+        { kind: 'art', art_file_id: 'a2', position: 'Front Center', fulfillment: 'outside', vendor: 'Silver Screen' },
+      ] })],
+      art_files: [mkArtFile('a1', 'screen_print'), mkArtFile('a2', 'screen_print')],
+    });
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 0, deco_idxs: [0, 1] }]))).toBe(true);
+  });
+
+  test('partial deco-PO coverage is a transfers purchase — job stays in-house → false (SO-1660)', () => {
+    const so = makeSO({
+      items: [makeSOItem({ decorations: [
+        { kind: 'art', art_file_id: 'a1', position: 'Front Center' },
+        { kind: 'art', art_file_id: 'a2', position: 'Back' },
+      ] })],
+      art_files: [mkArtFile('a1', 'screen_print'), mkArtFile('a2', 'dtf')],
+      deco_pos: [{ po_id: 'DPO 1', vendor: 'Astra Sport', deco_type: 'screen_print', item_idxs: [0] }],
+    });
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 0, deco_idxs: [0, 1] }]))).toBe(false);
+  });
+
+  test('deco PO covering every decoration on the item → true (vendor decorates the garment)', () => {
+    const so = makeSO({
+      items: [makeSOItem({ decorations: [
+        { kind: 'art', art_file_id: 'a1', position: 'Front Center' },
+      ] })],
+      art_files: [mkArtFile('a1', 'screen_print')],
+      deco_pos: [{ po_id: 'DPO 1', vendor: 'Astra Sport', deco_type: 'screen_print', item_idxs: [0] }],
+    });
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 0, deco_idxs: [0] }]))).toBe(true);
+  });
+
+  test('one outside deco + one in-house deco claimed → false', () => {
+    const so = makeSO({
+      items: [makeSOItem({ decorations: [
+        { kind: 'art', art_file_id: 'a1', position: 'Front Center', fulfillment: 'outside', vendor: 'Silver Screen' },
+        { kind: 'art', art_file_id: 'a2', position: 'Back' },
+      ] })],
+      art_files: [mkArtFile('a1', 'screen_print'), mkArtFile('a2', 'dtf')],
+    });
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 0, deco_idxs: [0, 1] }]))).toBe(false);
+  });
+
+  test('no claims / missing item → false (snapshot preservation is the sync\'s business)', () => {
+    const so = makeSO({ items: [], art_files: [] });
+    expect(jobAllRoutedOutside(so, job([]))).toBe(false);
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 3, deco_idxs: [0] }]))).toBe(false);
   });
 });

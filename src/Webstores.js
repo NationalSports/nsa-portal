@@ -410,35 +410,60 @@ async function fetchOverrideSkuStock(lines) {
   const skus = [...new Set((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku))];
   if (!skus.length || !supabase) return {};
   try {
-    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date').in('sku', skus);
+    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
     const out = {};
     (data || []).forEach((r) => {
-      const e = out[r.sku] || (out[r.sku] = { sizes: {}, eta: false });
+      const e = out[r.sku] || (out[r.sku] = { sizes: {}, sizeEta: {}, sizeIncoming: {}, eta: false, syncedAt: null });
       e.sizes[r.size] = (Number(e.sizes[r.size]) || 0) + (Number(r.stock_qty) || 0);
-      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) e.eta = true;
+      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) {
+        e.eta = true;
+        e.sizeEta[r.size] = r.future_delivery_date;
+        if ((Number(r.future_delivery_qty) || 0) > 0) e.sizeIncoming[r.size] = Number(r.future_delivery_qty);
+      }
+      if (r.last_synced && (!e.syncedAt || r.last_synced > e.syncedAt)) e.syncedAt = r.last_synced;
     });
     return out;
   } catch { return {}; }
 }
+// ── Deliveries that have already landed ──────────────────────────────
+// Vendor stock is a synced SNAPSHOT, not a live feed. When the last sync recorded a
+// size as 0-on-hand with units due on a date that has since PASSED, those units are
+// at the vendor — our row just hasn't been refreshed yet. Reading that stale 0 as a
+// hard shortfall invents shortages that don't exist: JL5412's 5" run was synced
+// 2026-07-31 as 0 on hand with 103 / 17 / 13 units due 2026-08-03, so on 2026-08-05
+// a two-unit batch reported "need 2, have 0 — more on order" with the goods sitting
+// in Adidas' warehouse. Credit the delivered quantity, and label it as inferred so
+// nobody mistakes it for a confirmed count.
+// Deliberately NOT applied to the public storefront's sold-out math — inferring
+// stock there would oversell to customers; here it only softens an internal warning.
+const todayIso = () => new Date().toISOString().slice(0, 10);
+export function arrivedVendorQty(sizeEta, sizeIncoming, size, today = todayIso()) {
+  const eta = String((sizeEta || {})[size] || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(eta) || eta > today) return 0;
+  return Math.max(0, Number((sizeIncoming || {})[size]) || 0);
+}
 // Stock picture for one line, override-aware: overridden lines read the
 // override SKU's vendor stock (warehouse stock is unknown for a bare SKU → 0);
 // normal lines read the product's stock record as before.
-function lineStock(i, stockByPid, stockBySku, madeToOrder) {
+// `arrived` = units the vendor said would land on/before today that our snapshot
+// still shows as 0 (see arrivedVendorQty); `arrivedEta` / `syncedAt` let callers
+// say WHY they're counting them.
+export function lineStock(i, stockByPid, stockBySku, madeToOrder) {
   const size = i.size || 'OS';
   if (i._skuOv) {
     const vst = stockBySku[i._effSku];
     const base = i.product_id ? stockByPid[i.product_id] : null;
     // known: we have real stock numbers to SHOW even when the item is untracked
     // (tracking off = never blocked/short, but availability is still informative).
-    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
+    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, arrived: vst ? arrivedVendorQty(vst.sizeEta, vst.sizeIncoming, size) : 0, arrivedEta: vst ? String((vst.sizeEta || {})[size] || '') : '', syncedAt: (vst && vst.syncedAt) || null, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
   }
   const st = i.product_id ? stockByPid[i.product_id] : null;
-  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
+  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, arrived: st ? arrivedVendorQty(st.vendor_size_eta, st.vendor_size_incoming, size) : 0, arrivedEta: String(((st && st.vendor_size_eta) || {})[size] || ''), syncedAt: (st && st.vendor_synced_at) || null, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
 }
 // Aggregation key: overridden sizes pool stock separately from the base SKU.
 const lineStockKey = (i) => (i.product_id || i.sku || 'x') + (i._skuOv ? '§' + i._effSku : '') + '|' + (i.size || 'OS');
 
-function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
+export function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
   const agg = {};
   lines.forEach((i) => {
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
@@ -446,15 +471,19 @@ function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
     const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
     if (!agg[k]) agg[k] = {
       name: ls.name || i.name || i.sku || pid, sku: i._effSku || i.sku || '', size, need: 0,
-      ours: ls.ours, vendor: ls.vendor, tracked: ls.tracked, known: ls.known, onOrder: ls.onOrder,
+      ours: ls.ours, vendor: ls.vendor, arrived: ls.arrived, tracked: ls.tracked, known: ls.known, onOrder: ls.onOrder,
     };
     agg[k].need += need;
   });
   return Object.values(agg).map((r) => {
+    // Deliveries already past their date count as sourceable from the vendor —
+    // same rule the batch shortfall check uses, so the report can't call a line
+    // backordered that the batch modal cleared.
+    const vendorAvail = r.vendor + (r.arrived || 0);
     const fillOurs = Math.min(r.need, r.ours);
-    const poVendor = Math.min(Math.max(0, r.need - r.ours), r.vendor);
-    const backorder = r.tracked ? Math.max(0, r.need - r.ours - r.vendor) : 0;
-    return { ...r, fillOurs, poVendor, backorder };
+    const poVendor = Math.min(Math.max(0, r.need - r.ours), vendorAvail);
+    const backorder = r.tracked ? Math.max(0, r.need - r.ours - vendorAvail) : 0;
+    return { ...r, vendorAvail, fillOurs, poVendor, backorder };
   });
 }
 
@@ -469,7 +498,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
   const fillable = rows.filter((r) => r.tracked && r.need <= r.ours).sort((a, b) => a.name.localeCompare(b.name) || (sizeRank(a.size) - sizeRank(b.size)) || a.size.localeCompare(b.size));
   const untracked = rows.filter((r) => !r.tracked);
   const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendor}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
+  const srcRow = (r) => `<tr${r.backorder > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td><td class="c">${r.vendorAvail}</td><td class="c b">${r.poVendor > 0 ? r.poVendor : '—'}${r.onOrder && r.poVendor > 0 ? ' <span class="oo">on order</span>' : ''}</td><td class="c b">${r.backorder > 0 ? `<span class="neg">${r.backorder}</span>` : '—'}</td></tr>`;
   const fillRow = (r) => `<tr><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.need}</td><td class="c">${r.ours}</td></tr>`;
   printHtml(`<!doctype html><html><head><title>Stock report — ${esc(store.name)}</title><style>
     body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0b1220;max-width:780px;margin:32px auto;padding:0 24px}
@@ -498,6 +527,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
       ${chip(sum((r) => r.backorder), 'Backordered', sum((r) => r.backorder) > 0)}
     </div>
     ${untracked.length ? `<div class="meta" style="margin-top:8px">${untracked.reduce((a, r) => a + r.need, 0)} made-to-order unit(s) (no stock record) are not counted as shortfalls.</div>` : ''}
+    ${sum((r) => r.arrived || 0) ? `<div class="meta" style="margin-top:8px">Adidas counts include ${sum((r) => r.arrived || 0)} unit(s) from deliveries dated on or before today that our last stock sync hadn't picked up yet — re-run the Adidas sync to confirm.</div>` : ''}
     ${needSrc.length
       ? `<h3>Need to source <span class="ct">${needSrc.length} line${needSrc.length === 1 ? '' : 's'}</span></h3>
          <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">PO Adidas</th><th class="c">Backorder</th></tr></thead><tbody>${needSrc.map(srcRow).join('')}</tbody></table>`
@@ -1301,17 +1331,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, itemRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
+    const [catRes, bundleRes, stockRes, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,name,color,category,image_front_url').eq('store_id', sid),
+      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,vendor_size_incoming,vendor_synced_at,name,color,category,image_front_url').eq('store_id', sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
-      supabase.from('webstore_order_items').select('*'),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
+    // Order items are fetched SCOPED to this store's orders, chunked by order_id.
+    // A blanket `select('*')` across webstore_order_items silently truncates at the
+    // PostgREST 1000-row cap once the table grows, dropping newer stores' lines and
+    // showing every order as "0 items" (matches the chunked pattern used elsewhere).
+    const _oidArr = [...new Set((ordRes.data || []).map((o) => o.id))];
+    const _itemRows = [];
+    for (let ii = 0; ii < _oidArr.length; ii += 300) {
+      const { data: chunk } = await supabase.from('webstore_order_items').select('*').in('order_id', _oidArr.slice(ii, ii + 300));
+      if (chunk) _itemRows.push(...chunk);
+    }
+    const itemRes = { data: _itemRows };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
@@ -1868,6 +1908,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
+
+  // Change close date from the list row dropdown, without opening the full store editor.
+  // Extending an already-closed store into the future reopens it (and clears the sweep's
+  // idempotency stamp so the next close still notifies the rep/CSR).
+  const changeCloseDate = useCallback(async (store, newDate) => {
+    const patch = { close_at: newDate || null, updated_at: new Date().toISOString() };
+    if (store.status === 'closed' && (!newDate || new Date(newDate + 'T23:59:59') > new Date())) {
+      if (!window.confirm(`"${store.name}" is closed. ${newDate ? 'Setting a future close date' : 'Removing the close date'} will reopen it and start taking orders again. Continue?`)) return;
+      patch.status = 'open';
+      patch.closed_notified_at = null;
+    }
+    const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
+    if (error) { flash('Could not update close date: ' + error.message); return; }
+    setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
+    if (sel?.id === store.id) setSel(data);
+    flash(newDate ? 'Close date updated' : 'Close date cleared — store stays open');
+  }, [sel, flash]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
@@ -3015,7 +3072,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
       const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
-        .map((r) => [r.name, r.sku, r.size, r.need, (r.tracked || r.known) ? r.ours : '', (r.tracked || r.known) ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
+        .map((r) => [r.name, r.sku, r.size, r.need, (r.tracked || r.known) ? r.ours : '', (r.tracked || r.known) ? r.vendorAvail : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
     } else {
       const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
@@ -3066,9 +3123,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         const pid = i.product_id, size = i.size || 'OS';
         const ls = lineStock(i, stockByPid, stockBySku, mto);
         if (!ls.tracked) return; // made-to-order / no stock record — never a shortfall
-        const avail = ls.ours + ls.vendor;
+        // Stock we can actually source = ours + the vendor's on-hand + any delivery
+        // whose date has already passed (arrivedVendorQty). Without that last term a
+        // snapshot taken before a landed delivery reports a shortfall that isn't real.
+        const avail = ls.ours + ls.vendor + ls.arrived;
         const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
-        if (q > avail) shortages.push({ pid, size, sku: i._effSku || i.sku || '', label: `${nm}${i._skuOv ? ` (${i._effSku})` : ''} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas)${ls.onOrder ? ' — more on order' : ''}` });
+        const who = `${nm}${i._skuOv ? ` (${i._effSku})` : ''}`;
+        const sku = i._effSku || i.sku || '';
+        if (q > avail) {
+          shortages.push({ kind: 'short', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas${ls.arrived ? ` + ${ls.arrived} delivered ${ls.arrivedEta}` : ''})${ls.onOrder ? ' — more on order' : ''}` });
+        } else if (ls.arrived && q > ls.ours + ls.vendor) {
+          // Covered only BECAUSE we credited a landed delivery — say so rather than
+          // showing a silent all-clear on numbers we know are out of date.
+          shortages.push({ kind: 'assumed', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, on hand 0 as of our last sync — Adidas had ${ls.arrived} due ${ls.arrivedEta}, which has passed, so it's counted as available.` });
+        }
       });
       return shortages;
     };
@@ -3543,7 +3611,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -3841,7 +3909,13 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
   // the cutoff", so clear the date — otherwise the SO would persist a cutoff that
   // misdescribes which orders are actually in the batch.
   const toggle = (id) => { setCutoff(''); setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
-  const shortages = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  const rows = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  // 'short' rows warn and offer a substitute; 'assumed' rows are covered — but only
+  // by crediting a vendor delivery whose date has passed and whose arrival our stock
+  // snapshot predates, so they're surfaced as a note rather than as a shortfall.
+  const shortages = useMemo(() => rows.filter((r) => r.kind !== 'assumed'), [rows]);
+  const assumed = useMemo(() => rows.filter((r) => r.kind === 'assumed'), [rows]);
+  const syncedAt = useMemo(() => rows.map((r) => r.syncedAt).filter(Boolean).sort()[0] || null, [rows]);
   const count = selIds.size;
   const leftOut = orders.length - count;
   const go = async () => {
@@ -3900,11 +3974,23 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
                   </div>
                 ))}
               </div>
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.{syncedAt ? ` Vendor stock last synced ${new Date(syncedAt).toLocaleDateString()}.` : ''}</div>
             </>
           ) : (
             <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>{count === 0 ? 'No orders selected — pick at least one order (or clear the cutoff) to create a batch.' : 'Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?'}</div>
           )}
+          {assumed.length ? (
+            <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 10, padding: '10px 12px', marginTop: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: '#1d4ed8', marginBottom: 6 }}>ℹ️ Counted from a delivery we haven't re-synced</div>
+              {assumed.map((s, i) => (
+                <div key={i} style={{ fontSize: 12.5, color: '#1e3a8a', lineHeight: 1.45, marginTop: i ? 6 : 0 }}>
+                  {s.label}
+                  {s.sku && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 12, color: '#1e40af', background: '#dbeafe', borderRadius: 4, padding: '1px 5px' }}>{s.sku}</span>}
+                </div>
+              ))}
+              <div style={{ fontSize: 11.5, color: '#475569', marginTop: 8, lineHeight: 1.5 }}>Re-run the Adidas inventory sync to confirm{syncedAt ? ` — stock last synced ${new Date(syncedAt).toLocaleDateString()}` : ''}.</div>
+            </div>
+          ) : null}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
           <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
@@ -3982,7 +4068,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -3991,6 +4077,9 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
   const [copiedId, setCopiedId] = useState(null);
+  // Inline close-date editor in the expanded row (id of the store being edited + draft value).
+  const [editCloseId, setEditCloseId] = useState(null);
+  const [closeDraft, setCloseDraft] = useState('');
   // Live-inventory panel (Reporting view): per-store stock for every item.
   const [invStoreId, setInvStoreId] = useState('');
   const [invItems, setInvItems] = useState([]);
@@ -4316,6 +4405,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                               }
                             </button>
                             <button
+                              data-tour-id="ws-row-open-store"
                               onClick={(e) => { e.stopPropagation(); onOpen(s); }}
                               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#192853', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
                             >
@@ -4356,7 +4446,17 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                  {onChangeCloseDate && editCloseId !== s.id && (
+                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); }}>Change Close Date</button>
+                                  )}
                                 </div>
+                                {onChangeCloseDate && editCloseId === s.id && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                                    <input className="form-input" type="date" value={closeDraft} onChange={(e) => setCloseDraft(e.target.value)} style={{ width: 160, padding: '6px 8px', fontSize: 13 }} autoFocus />
+                                    <button className="btn btn-sm btn-primary" onClick={() => { onChangeCloseDate(s, closeDraft); setEditCloseId(null); }}>Save</button>
+                                    <button className="btn btn-sm btn-secondary" onClick={() => setEditCloseId(null)}>Cancel</button>
+                                  </div>
+                                )}
                               </div>
                               {/* Col 3: Store Setup */}
                               <div>
@@ -4633,7 +4733,7 @@ function Quick({ label, children }) {
 }
 
 function Chip({ label, tone = 'slate' }) {
-  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' } };
+  const tones = { slate: { bg: '#f1f5f9', fg: '#475569' }, green: { bg: '#dcfce7', fg: '#166534' }, blue: { bg: '#dbeafe', fg: '#1e40af' }, gray: { bg: '#f8fafc', fg: '#94a3b8' }, amber: { bg: '#fef3c7', fg: '#92400e' }, violet: { bg: '#ede9fe', fg: '#6d28d9' } };
   const t = tones[tone] || tones.slate;
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 6, background: t.bg, color: t.fg, fontFamily: tone === 'gray' ? 'monospace' : 'inherit' }}>{label}</span>;
 }
@@ -4692,7 +4792,7 @@ const BLANK = {
   name: '', slug: '', customer_id: '', rep_id: '', csr_id: '', status: 'draft',
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
-  delivery_mode: 'ship_home',
+  delivery_mode: 'deliver_club',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
@@ -4707,8 +4807,15 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
+// New stores default to closing on the third Sunday from today (midnight): orders are
+// processed Monday mornings, so a store built today runs ~3 weekends and lands on that cycle.
+const defaultCloseDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + (((7 - d.getDay()) % 7) || 7) + 14); // next Sunday (strictly ahead), then +2 weeks
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
@@ -4923,7 +5030,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
-          <Row label="Close date (optional)"><input className="form-input" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
+          <Row label="Close date (optional)"><input className="form-input" data-tour-id="ws-close-date" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
         </div>
         <Row label="Decoration">
           <div style={{ display: 'flex', gap: 8 }}>
@@ -5125,7 +5232,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         {page === 'setup'
           ? <button type="button" onClick={() => setPage('delivery')} style={{ background: '#191919', color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>Next: Delivery &amp; branding →</button>
           : <button type="button" onClick={() => setPage('setup')} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>← Back to setup</button>}
-        <button disabled={busy || uploading > 0} onClick={submit} style={{ background: (busy || uploading > 0) ? '#6A7180' : (page === 'delivery' ? '#191919' : '#fff'), color: (page === 'delivery' || busy || uploading > 0) ? '#fff' : '#191919', border: (page === 'delivery' || busy || uploading > 0) ? 'none' : '1px solid #191919', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: (busy || uploading > 0) ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : uploading > 0 ? 'Uploading…' : store ? 'Save changes' : 'Create store'}</button>
+        <button data-tour-id="ws-save" disabled={busy || uploading > 0} onClick={submit} style={{ background: (busy || uploading > 0) ? '#6A7180' : (page === 'delivery' ? '#191919' : '#fff'), color: (page === 'delivery' || busy || uploading > 0) ? '#fff' : '#191919', border: (page === 'delivery' || busy || uploading > 0) ? 'none' : '1px solid #191919', borderRadius: 10, padding: '12px 24px', fontSize: 14, fontWeight: 800, cursor: (busy || uploading > 0) ? 'wait' : 'pointer', fontFamily: DISPLAY, textTransform: 'uppercase', letterSpacing: '.04em' }}>{busy ? 'Saving…' : uploading > 0 ? 'Uploading…' : store ? 'Save changes' : 'Create store'}</button>
         <button disabled={busy} onClick={onCancel} style={{ background: '#fff', border: '1px solid #e2e6ec', borderRadius: 10, padding: '12px 20px', fontSize: 13.5, fontWeight: 700, color: '#3A4150', cursor: 'pointer' }}>Cancel</button>
       </div>
     </div>
@@ -5522,6 +5629,10 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const roster = detail?.roster || [];
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
+  // Product name lookup for order lines. Order items store a SKU + color but no name;
+  // the descriptive name lives on the storefront product (same resolution _itemName uses).
+  const nameByPid = {};
+  catalog.forEach((c) => { const st = stockByWp[c.id]; if (c.product_id && st && st.name && !nameByPid[c.product_id]) nameByPid[c.product_id] = st.name; });
 
   // Real per-store batch numbers for the linked SOs (webstore_batch_no lives on the
   // Sales Order, not the order row). Fetched once here and shared by the "Batches
@@ -5664,9 +5775,9 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           ]} />
           {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
           {onSetStatus && !s.is_template && (s.status !== 'open'
-            ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
+            ? <button data-tour-id="ws-launch-store" className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
-          <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
+          <button data-tour-id="ws-detail-settings" className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
         </div>
       </div>
       {launchOpen && <LaunchStoreModal store={s} onClose={() => setLaunchOpen(false)} onLaunch={(opts) => { onSetStatus(s, 'open', opts); setLaunchOpen(false); }} />}
@@ -5719,7 +5830,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} nameByPid={nameByPid} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -6119,7 +6230,20 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
+      {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => {
+        const list = products || [];
+        // Add all chosen colors as ONE grouped card (shared variant_group_id) in a single
+        // call. Looping onAddSingle here dropped every color as its own card: addSingle's
+        // auto-group reads detail.catalog, which is stale between awaits in this loop, so
+        // the colors never saw each other as twins. onAddGrouped assigns the group in one
+        // shot (colorways of the same style fold into one item with a color picker).
+        if (onAddGrouped && list.length) {
+          await onAddGrouped(list, rest.decorations || [], { price: rest.price, fundraise: rest.fundraise, takes_number: rest.takes_number, takes_name: rest.takes_name, name_upcharge: rest.name_upcharge, category: rest.category, kit_name: rest.kit_name, required: rest.required, options: rest.options });
+        } else {
+          for (let i = 0; i < list.length; i++) await onAddSingle({ ...rest, product: list[i], image_url: i === 0 ? rest.image_url : null });
+        }
+        setPending(null);
+      }} />}
       {mode === 'bundle' && <BundleBuilder designOptions={designOptions} numberSets={numberSets} categories={[...new Set([...(standardCategories || []), ...catalog.map((c) => (c.category || '').trim()).filter(Boolean), ...catalog.map((c) => (stockByWp[c.id]?.category || '').trim()).filter(Boolean)])].sort()} components={pkgItems} setComponents={setPkgItems} onCreate={(b) => { onCreateBundle(b); setMode(null); setPkgItems([]); }} onClose={() => { setMode(null); setPkgItems([]); }} />}
 
       {catalog.length === 0 ? (
@@ -6666,23 +6790,41 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
           <div style={card}>
             <div style={cardTitle}>Color <span style={cardHint}>· change one color, or recolor the whole logo</span></div>
             {/* Color-way switcher — flip the placed logo between the art's real CW cutouts
-                (the artist-made variants) without re-adding it. Explicit pick: stamps
-                color_way_id/cw_pick and clears cw_by_color so exactly this cutout renders. */}
+                (the artist-made variants) without re-adding it. Decorations are shared across
+                every garment color in the variant group, so a global stamp would force one
+                cutout onto ALL colors. With multiple colors we instead scope the pick to the
+                previewed color via cw_by_color (which decoUrlForColor honors on the stage,
+                storefront and order handoff); a single-color item still stamps globally. */}
             {(() => {
               const art = (library || []).find((a) => a.id === current.art_id);
               const wls = normalizeWebLogos(art && art.web_logos, art && art.color_ways).filter((w) => w && w.url);
               if (wls.length < 2) return null;
+              const perColor = (colorRows || []).length > 1 && !!_prevColorName;
+              // The cutout resolved for the color currently on the stage — highlights the
+              // active tile per-color instead of by the shared base art_url.
+              const activeUrl = decoUrlForColor(current, _prevColorName, wls);
+              const pickCutout = (w) => {
+                if (perColor) {
+                  const cur = decos[sel]; if (!cur) return;
+                  const m = { ...(cur.cw_by_color || {}) };
+                  m[colorKeyOf(_prevColorName)] = w.color_way_id ? { url: w.url, color_way_id: w.color_way_id } : w.url;
+                  update(sel, { cw_by_color: m });
+                } else {
+                  update(sel, { art_url: w.url, orig_url: w.url, cw_pick: true, color_way_id: w.color_way_id || null, color_label: w.color_way || 'original', cw_by_color: null });
+                }
+              };
               return (
                 <div style={{ marginBottom: 9 }}>
-                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 5 }}>Color way · tap to switch the cutout</div>
+                  <div style={{ fontSize: 10.5, color: '#94a3b8', marginBottom: 5 }}>Color way · {perColor ? <>tap to set the cutout for <b>{_prevColorName}</b></> : 'tap to switch the cutout'}</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {wls.map((w, wi) => { const on = current.art_url === w.url; return (
-                      <button key={w.url + wi} type="button" onClick={() => update(sel, { art_url: w.url, orig_url: w.url, cw_pick: true, color_way_id: w.color_way_id || null, color_label: w.color_way || 'original', cw_by_color: null })} title={(w.color_way || 'All garments') + ' cutout'} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: 5, borderRadius: 8, border: on ? '2px solid #191919' : '1px solid #d1d5db', background: '#fff', cursor: 'pointer', width: 56 }}>
+                    {wls.map((w, wi) => { const on = activeUrl === w.url; return (
+                      <button key={w.url + wi} type="button" onClick={() => pickCutout(w)} title={(w.color_way || 'All garments') + ' cutout' + (perColor ? ' — ' + _prevColorName : '')} style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: 5, borderRadius: 8, border: on ? '2px solid #191919' : '1px solid #d1d5db', background: '#fff', cursor: 'pointer', width: 56 }}>
                         <img src={w.url} alt="" style={{ width: 38, height: 30, objectFit: 'contain' }} />
                         <span style={{ fontSize: 8.5, fontWeight: 800, textTransform: 'uppercase', color: on ? '#191919' : '#64748b', maxWidth: 48, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{w.color_way || 'All'}</span>
                       </button>
                     ); })}
                   </div>
+                  {perColor && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 4 }}>Switch colors in the strip below the mockup to set each one.</div>}
                 </div>
               );
             })()}
@@ -10462,27 +10604,90 @@ async function swapColorToBlob(url, fromHex, toHex, tol = 78) {
 // or a full-garment mockup) can't be placed cleanly on a storefront garment; dropping a
 // transparent PNG/SVG here saves a web-ready cutout onto the record (web_logo_url) so the
 // art becomes placeable & recolorable — on this store, future stores, and orders.
-function WebLogoSlot({ art, onAttach, compact }) {
+function WebLogoSlot({ art, onAttach, onSaveForCw, compact }) {
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [err, setErr] = useState('');
+  const [staged, setStaged] = useState(null); // uploaded url awaiting a color-way choice
+  const [newCw, setNewCw] = useState('');
   const ref = useRef();
   const has = !!(art?.web_logo_url || (Array.isArray(art?.web_logos) && art.web_logos.some((w) => w && w.url)));
+  const colorWays = Array.isArray(art?.color_ways) ? art.color_ways.filter((c) => c && String(c.garment_color || '').trim()) : [];
+  const close = () => { setOpen(false); setStaged(null); setNewCw(''); setErr(''); };
   const pick = async (file) => {
     if (!file || !onAttach) return;
     const ok = file.type?.startsWith('image/') || /\.(svg|png)$/i.test(file.name || '');
-    if (!ok) return;
-    setBusy(true);
-    try { const url = await cloudUpload(file, 'nsa-store-art'); await onAttach(art, url); }
-    catch (e) { /* cloudUpload surfaces errors via toast */ }
+    if (!ok) { setErr('That file isn’t an image — attach a transparent PNG or SVG.'); return; }
+    setErr(''); setBusy(true);
+    try {
+      const url = await cloudUpload(file, 'nsa-store-art');
+      // If per-color-way saving is available, ask which one; else attach as default.
+      if (onSaveForCw) setStaged(url);
+      else { await onAttach(art, url); close(); }
+    } catch (e) { /* cloudUpload surfaces errors via toast */ }
     setBusy(false);
   };
+  const saveDefault = async () => { if (!staged) return; setBusy(true); try { await onAttach(art, staged); close(); } catch (e) { /* toast */ } setBusy(false); };
+  const saveForCw = async (name) => { if (!staged) return; setBusy(true); try { await onSaveForCw(art, staged, name || ''); close(); } catch (e) { /* toast */ } setBusy(false); };
   return (
     <>
-      <button onClick={(e) => { e.stopPropagation(); ref.current && ref.current.click(); }} disabled={busy}
+      <button onClick={(e) => { e.stopPropagation(); setErr(''); setStaged(null); setNewCw(''); setOpen(true); }} disabled={busy}
         title={has ? 'Replace the web logo — the clean PNG/SVG used to place this art on garments' : 'Add a clean transparent PNG/SVG so this art can be placed & recolored on garments'}
         style={{ fontSize: compact ? 9.5 : 10.5, padding: compact ? '2px 6px' : '3px 8px', fontWeight: 800, borderRadius: 6, lineHeight: 1.3, cursor: busy ? 'wait' : 'pointer', border: has ? '1px solid #166534' : '1px dashed #2563eb', background: has ? '#ecfdf5' : '#eff6ff', color: has ? '#166534' : '#1d4ed8', whiteSpace: 'nowrap' }}>
         {busy ? '…' : has ? 'web ✓' : '+ web logo'}
       </button>
       <input ref={ref} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) pick(f); e.target.value = ''; }} />
+      {open && (
+        <div onClick={(e) => { e.stopPropagation(); if (!busy) close(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 20, width: 420, maxWidth: '92vw', boxShadow: '0 20px 50px rgba(0,0,0,.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>{staged ? 'Which color way?' : has ? 'Replace web logo' : 'Add a web logo'}</div>
+              <button onClick={() => !busy && close()} style={{ border: 'none', background: 'none', fontSize: 20, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+            </div>
+            {!staged ? (
+              <>
+                <div style={{ fontSize: 12.5, color: '#64748b', marginBottom: 12 }}>A clean transparent <b>PNG</b> or <b>SVG</b> — the web-ready cutout used to place &amp; recolor <b>{art?.name || 'this logo'}</b> on garments.</div>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!dragOver) setDragOver(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); }}
+                  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = e.dataTransfer?.files && e.dataTransfer.files[0]; if (f) pick(f); }}
+                  onClick={() => { if (!busy && ref.current) ref.current.click(); }}
+                  style={{ border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), background: dragOver ? '#eff6ff' : '#f8fafc', borderRadius: 12, padding: '30px 16px', textAlign: 'center', cursor: busy ? 'wait' : 'pointer', transition: 'border-color .12s, background .12s' }}>
+                  {busy ? <div style={{ fontWeight: 700, color: '#1d4ed8' }}>Uploading…</div>
+                    : (<>
+                      <div style={{ fontSize: 26, marginBottom: 6 }}>⬆️</div>
+                      <div style={{ fontWeight: 700, fontSize: 13.5, color: '#334155' }}>Drag &amp; drop your file here</div>
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>or <span style={{ color: '#2563eb', fontWeight: 700 }}>browse</span> — PNG or SVG</div>
+                    </>)}
+                </div>
+                {err && <div style={{ marginTop: 10, fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>{err}</div>}
+              </>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <img src={staged} alt="" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 8, border: '1px solid #eef2f7', background: '#f8fafc' }} />
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Which garment color is this cutout for? Pick a color way, or save it for every garment.</div>
+                </div>
+                {colorWays.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8' }}>Existing color ways</div>
+                    {colorWays.map((cw, ci) => <button key={cw.id || ci} disabled={busy} onClick={() => saveForCw(cw.garment_color || ('Color way ' + (ci + 1)))} style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: busy ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, color: '#1e293b' }}><span style={{ fontSize: 10, fontWeight: 700, color: '#fff', background: '#64748b', borderRadius: 5, padding: '1px 6px', flexShrink: 0 }}>CW {ci + 1}</span>{cw.garment_color || ('Color way ' + (ci + 1))}</button>)}
+                  </div>
+                )}
+                <div style={{ paddingTop: 12, borderTop: '1px solid #eef2f7' }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8', marginBottom: 6 }}>Or create a new color way</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input value={newCw} onChange={(e) => setNewCw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newCw.trim()) saveForCw(newCw.trim()); }} placeholder="e.g. Royal, White" style={{ flex: 1, fontSize: 13, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, outline: 'none' }} />
+                    <button className="btn btn-primary" disabled={busy || !newCw.trim()} onClick={() => saveForCw(newCw.trim())}>Create &amp; save</button>
+                  </div>
+                  <button disabled={busy} onClick={saveDefault} style={{ marginTop: 10, fontSize: 11.5, fontWeight: 700, color: '#475569', background: 'none', border: 'none', cursor: busy ? 'wait' : 'pointer', padding: 0 }}>or save as the “all garments” default →</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -10795,9 +11000,20 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // "tap a logo" and "place it" are one gesture (no separate activate step the rep can
   // miss). Removing the active logo hands active off to another logo in the set, so the
   // panel never strands the rep with styles selected and nothing left to apply.
-  const toggleStoreArt = (a) => {
+  const toggleStoreArt = async (a) => {
     const cur = storeArt || [];
     if (inStore(a.id)) {
+      // Removing the art from the store also strips it from every item it was placed on:
+      // an orphaned decoration would otherwise keep the logo on the garment (storefront +
+      // order handoff) with no tile left to manage it. Build one entry per affected item
+      // (all color rows carry the shared decorations) and clear it via the bulk apply.
+      const affected = (catalog || [])
+        .filter((it) => (Array.isArray(it.decorations) ? it.decorations : []).some((d) => d && d.art_id === a.id))
+        .map((it) => ({ id: it.id, decorations: it.decorations.filter((d) => !(d && d.art_id === a.id)) }));
+      if (affected.length && onApplyLogoBulk) {
+        if (!window.confirm(`Remove "${a.name || 'this logo'}" from the store? It's on ${affected.length} item${affected.length === 1 ? '' : 's'} and will be taken off ${affected.length === 1 ? 'it' : 'them'} too.`)) return;
+        await onApplyLogoBulk(affected);
+      }
       const next = cur.filter((x) => x.id !== a.id);
       onSaveStoreArt && onSaveStoreArt(next);
       if (activeId === a.id) setActiveId(next[0]?.id || null);
@@ -11181,7 +11397,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 </div>
                 <div style={{ fontSize: 9.5, fontWeight: 700, color: '#475569', textAlign: 'center', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={view.label}>{view.label || '—'}</div>
               </div>}
-              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} compact /></div>
               <button onClick={() => toggleStoreArt(a)} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer', lineHeight: '20px', textAlign: 'center', padding: 0 }}>×</button>
             </div>
           ); })}
@@ -11201,12 +11417,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {sel2 && !on2 && <span style={{ position: 'absolute', top: -6, left: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
                 </button>
                 {sel2 && <button onClick={(e) => { e.stopPropagation(); toggleStoreArt(a); }} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, lineHeight: '18px', textAlign: 'center', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>}
-                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} compact /></div>
               </div>
             ); })}
           </div>
         </div>}
-        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} /></div>}
+        {!activeUrl && activeArt && <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>This logo has no web-ready image (likely .ai / mockup only). Attach a clean transparent PNG or SVG to place &amp; recolor it: <WebLogoSlot art={activeArt} onAttach={onAttachWebLogo} onSaveForCw={onSaveRepWebLogo} /></div>}
         </>)}
       </div></div>
 
@@ -12463,7 +12679,23 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
+// Per-line production lifecycle for the order detail's Status column. Mirrors the
+// line_status stages that already drive the order-level badge and the parent
+// tracking page; a line reads 'Shipped' once shipped_qty covers its quantity.
+const WS_LINE_STAGE = {
+  pending: { label: 'Waiting', tone: 'gray' },
+  on_order: { label: 'On order', tone: 'amber' },
+  received: { label: 'Received', tone: 'blue' },
+  in_production: { label: 'In deco', tone: 'violet' },
+  bagging: { label: 'Bagging', tone: 'slate' },
+  shipped: { label: 'Shipped', tone: 'green' },
+  complete: { label: 'Complete', tone: 'green' },
+  cancelled: { label: 'Cancelled', tone: 'gray' },
+};
+const wsLineFullyShipped = (i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped';
+const wsLineStage = (i) => WS_LINE_STAGE[wsLineFullyShipped(i) ? 'shipped' : (i.line_status || 'pending')] || WS_LINE_STAGE.pending;
+
+function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -12641,6 +12873,9 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             {sorted.map(({ o, items, players, numbers, lineStatus }) => {
               const isOpen = expanded === o.id;
               const lineItems = items.filter((i) => !i.is_bundle_parent);
+              // Individual orders are entirely one player (shown in the header row), so the
+              // per-line Player column is redundant — only bulk orders mix players per line.
+              const showPlayer = o.order_kind === 'bulk';
               const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
@@ -12666,21 +12901,27 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <tr style={{ background: '#eff6ff' }}>
                   <td colSpan={colCount} style={{ padding: '4px 16px 16px' }} onClick={(e) => e.stopPropagation()}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginTop: 4 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', 'Player', 'Qty', 'Ship', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
+                      <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>{['Item', 'Size', ...(showPlayer ? ['Player'] : []), 'Qty', 'Status', 'Short / missing'].map((h) => <th key={h} style={{ ...th, fontSize: 10.5 }}>{h}</th>)}</tr></thead>
                       <tbody>
-                        {lineItems.map((i) => (
+                        {lineItems.map((i) => {
+                          const nm = nameByPid[i.product_id] || i.name || '';
+                          // Show the product name up top; color + SKU beneath. When no name
+                          // resolves, the SKU takes the top line so we don't repeat it.
+                          const sub = [i.color, nm ? i.sku : null].filter(Boolean).join(' · ');
+                          return (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}><div style={{ fontWeight: 600 }}>{i.sku || '—'}</div>{i.name && i.name !== i.sku && <div style={{ fontSize: 11, color: '#64748b' }}>{i.name}</div>}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}</td>
                             <td style={td}>{i.size || '—'}</td>
-                            <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
+                            {showPlayer && <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>}
                             <td style={td}>{i.qty}</td>
-                            <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
+                            <td style={td}><Chip label={wsLineStage(i).label} tone={wsLineStage(i).tone} />{!wsLineFullyShipped(i) && (Number(i.shipped_qty) || 0) > 0 && <div style={{ fontSize: 10.5, color: '#1d4ed8', fontWeight: 700, marginTop: 2 }}>{i.shipped_qty}/{i.qty} shipped</div>}</td>
                             <td style={td}>
                               <input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} />
                               {Number(i.missing_qty) > 0 && <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 10.5, color: '#94a3b8' }}>ETA</span><input type="date" value={i.backorder_eta || ''} onChange={(e) => setItemBackEta(i, e.target.value)} title="Expected arrival — shown to the coach" style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12 }} /></div>}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                     <div style={{ marginTop: 8, fontSize: 11.5, color: '#94a3b8' }}>Lines marked short are held back when you create shipping labels — the order stays open so you can ship the rest later.</div>

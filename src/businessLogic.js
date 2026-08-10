@@ -26,7 +26,7 @@ const _hasMockupContent = (af) => Math.max((af.mockup_files || af.files || []).l
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
 const rT = v => Math.round(v * 10) / 10;
-const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 80, null, null], 1: [3.33, 4.33, 5.33, 6, null], 2: [2.33, 3, 4, 4.67, 5.33], 3: [2.13, 2.83, 3.17, 4, 5], 4: [1.97, 2.57, 2.83, 3.33, 4], 5: [1.83, 2.33, 2.63, 3, 3.5], 6: [1.67, 2.13, 2.47, 2.67, 3.17], 7: [1.5, 2, 2.33, 2.5, 2.83], 8: [1.4, 1.9, 2.07, 2.2, 2.67], 9: [1.27, 1.83, 1.93, 2.07, 2.5] }, mk: 1.5, ub: 0.15 };
+const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 80, 100, null], 1: [3.33, 4.33, 5.33, 6, null], 2: [2.33, 3, 4, 4.67, 5.33], 3: [2.13, 2.83, 3.17, 4, 5], 4: [1.97, 2.57, 2.83, 3.33, 4], 5: [1.83, 2.33, 2.63, 3, 3.5], 6: [1.67, 2.13, 2.47, 2.67, 3.17], 7: [1.5, 2, 2.33, 2.5, 2.83], 8: [1.4, 1.9, 2.07, 2.2, 2.67], 9: [1.27, 1.83, 1.93, 2.07, 2.5] }, mk: 1.5, ub: 0.15 };
 // Mirrors EM in pricing.js / App.js (schema _v:4 defaults). This copy had drifted — it still
 // carried the pre-_v:4 cost table, so tests validated embroidery prices production doesn't use.
 // Guarded against re-drift by src/__tests__/pricingDrift.test.js.
@@ -126,12 +126,16 @@ function calcSOStatus(ord) {
 
   let totalSz = 0, coveredSz = 0, fulfilledSz = 0;
   safeItems(ord).forEach(it => {
-    // Topstar digitizing/vector billing lines (_topstar) are covered by their SO-level deco PO
+    // Topstar digitizing/vector billing lines are covered by their SO-level deco PO
     // (so.deco_pos) — an item-level PO is never created for them, so counting them as goods
     // held the whole SO in need_order forever ("Items need ordering — Create PO" on every
     // order with a digitizing PO). Count them covered+fulfilled: the file service has its own
     // tracking on the deco PO and must not gate the garment fulfillment ladder.
-    if (it._topstar) {
+    // Mirrors constants.js isServiceLine — match the persisted sku markers ('DIGITIZING',
+    // 'Artwork'), not just the in-memory _topstar flag (never saved to so_items, so it's gone
+    // after a reload). Artwork charge lines are in-house art time with no vendor PO — they
+    // must not hold the SO in need_order (SO-1566).
+    if (it._topstar || it.sku === 'DIGITIZING' || /^artwork$/i.test(safeStr(it.sku).trim())) {
       let units = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
       if (units === 0) units = safeNum(it.est_qty);
       totalSz += units; coveredSz += units; fulfilledSz += units;
@@ -246,6 +250,34 @@ const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   return decoIsOutsourced(map[itemIdx], decoConcreteType(o, d));
 };
 
+// Every decoration this job claims is routed to an outside vendor — explicitly (fulfillment
+// 'outside' / deco_po_id / legacy outside_deco kind) or because its whole item is deco-PO covered
+// (the vendor decorates the garment). Such a job retires on the order's next sync (OrderEditor's
+// _jobAllOutsourced), but boards that read stored jobs directly (Art Dashboard) need the same
+// answer WITHOUT waiting for a sync (SO-1009: a job moved to outside deco sat in Needs Approval).
+// Partial PO coverage — a transfers purchase on an item that keeps in-house work — does NOT count:
+// that job is still produced in-house. Missing item/deco pairs don't count as outside (deleted-line
+// snapshot preservation is the sync's business, not the board's).
+const jobAllRoutedOutside = (o, j, outByItem) => {
+  const map = outByItem || outsourcedDecoTypes(o);
+  const pairs = [];
+  safeArr(j?.items).forEach(gi => {
+    const dis = Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : (gi?.deco_idx != null ? [gi.deco_idx] : []);
+    dis.forEach(di => pairs.push([gi.item_idx, di]));
+  });
+  if (!pairs.length) return false;
+  const _itemFullyOut = (ii) => {
+    const it = safeItems(o)[ii];
+    const ds = it ? safeDecos(it).filter(d => d && (d.kind === 'art' || d.kind === 'numbers' || d.kind === 'names')) : [];
+    return ds.length > 0 && ds.every(d => isDecoOutsourced(o, ii, d, map));
+  };
+  return pairs.every(([ii, di]) => {
+    const it = safeItems(o)[ii]; if (!it) return false;
+    const d = safeDecos(it)[di]; if (!d) return false;
+    return d.kind === 'outside_deco' || d.fulfillment === 'outside' || !!d.deco_po_id || _itemFullyOut(ii);
+  });
+};
+
 // ── Underbase rule ── Screen-print on anything darker than white / light grey / vegas gold needs
 // a white underbase (NSA rule). Returns true when the garment color needs one; blank color → false
 // (unknown, don't auto-charge). Used to auto-apply the underbase upcharge on pricing lookups.
@@ -312,8 +344,12 @@ function normalizeWebLogos(webLogos, colorWays) {
   });
 }
 
-// ── Job Building ── Groups items by their full decoration signature, split by deco type
-// Different deco types (e.g. screen_print vs embroidery) always create separate jobs
+// ── Job Building ── Groups items by their full decoration signature. Mixed-media garments
+// (e.g. screen-print front + heat-press numbers) stay ONE job so the garments travel through
+// production on a single tech sheet — the per-deco-type split (SO-1395/SO-1639) sent the same
+// hoodies through the floor as two jobs. Split-art designs still get their own job (per-size
+// allocation), and outsourced decorations never enter a bucket (syncJobs), so those still
+// separate. The job's deco_type is the primary method (art first); deco_types lists all of them.
 const buildJobs = (o) => {
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
   // Build decoration entries per item, grouped by deco type
@@ -331,36 +367,41 @@ const buildJobs = (o) => {
         const part = d.art_file_id ? 'art_' + d.art_file_id : 'unassigned@' + safeStr(d.position);
         // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
         // split across several lines — and a standalone copy of it — all consolidate into ONE job.
-        // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
-        // bundle into a single combined job (the established Split-Art behavior).
-        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : dt;
+        // Everything else shares the item's single combined bucket: all of a garment's in-house
+        // decorations — mixed methods included — form one job.
+        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : '__combined';
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
         const dt = d.num_method || 'heat_transfer';
         const part = 'numbers_' + dt + '@' + (d.position || '');
-        if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di, _dt: dt });
+        if (!decosByType['__combined']) decosByType['__combined'] = [];
+        decosByType['__combined'].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'names') {
         const dt = d.name_method || 'heat_press';
         const part = 'names_' + dt + '@' + (d.position || '');
-        if (!decosByType[dt]) decosByType[dt] = [];
-        decosByType[dt].push({ part, d, di, _dt: dt });
+        if (!decosByType['__combined']) decosByType['__combined'] = [];
+        decosByType['__combined'].push({ part, d, di, _dt: dt });
       }
     });
     Object.entries(decosByType).forEach(([bk, decos]) => {
-      const dt = decos[0]._dt || bk;
+      // Primary method for the sig prefix / job deco_type: an art deco's method wins (sorted so
+      // the choice is deterministic whatever order the decos were added in); numbers/names methods
+      // only lead on garments with no art. All methods still appear in the sorted parts, so two
+      // garments group only when their FULL decoration sets (methods included) match.
+      const artDts = decos.filter(x => x.d.kind === 'art').map(x => x._dt).sort();
+      const dt = artDts[0] || decos.map(x => x._dt).sort()[0] || bk;
       // De-dupe parts so the same logo applied at two positions on one garment keys the same as a
       // single application (one art = one signature = one job).
       const parts = Array.from(new Set(decos.map(x => x.part))).sort();
       const sig = dt + '::' + parts.join('|');
-      if (sig) itemSigs.push({ idx, it, sig, decos });
+      if (sig) itemSigs.push({ idx, it, sig, decos, decoType: dt });
     });
   });
   // Group by signature
   const sigGroups = {};
-  itemSigs.forEach(({ idx, it, sig, decos }) => {
-    if (!sigGroups[sig]) sigGroups[sig] = { sig, items: [] };
+  itemSigs.forEach(({ idx, it, sig, decos, decoType }) => {
+    if (!sigGroups[sig]) sigGroups[sig] = { sig, items: [], decoType };
     sigGroups[sig].items.push({ idx, it, decos });
   });
   return Object.values(sigGroups).map((grp, gi) => {
@@ -387,6 +428,8 @@ const buildJobs = (o) => {
           // in before the seps exist) is NOT enough, so an approved job waits in its production-files
           // stage until someone confirms. Same rule as artProdFilesConfirmed in constants.js — a .dst
           // confirms on its own; staleness after a recall is gated by af.status, not this check.
+          // CANONICAL copy of constants.artStatusForFile (this module is import-free CommonJS and can't
+          // share the symbol). The 'uploaded' branch below is load-bearing — keep both in lockstep.
           const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { if (f && typeof f === 'object' && f.stale) return false; const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
           const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : (af.status === 'needs_approval' || af.status === 'uploaded') ? (_hasMockupContent(af) ? 'waiting_approval' : 'needs_art') : 'needs_art';
@@ -421,7 +464,8 @@ const buildJobs = (o) => {
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
-      _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
+      _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: grp.decoType || decoTypes[0] || 'screen_print',
+      deco_types: Array.from(new Set(decoTypes.length ? decoTypes : [grp.decoType].filter(Boolean))),
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
       total_units: totalUnits, fulfilled_units: 0, split_from: null, split_group: null, items, _auto: true };
   });
@@ -1206,7 +1250,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

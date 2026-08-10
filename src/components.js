@@ -1,9 +1,9 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
-import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
+import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
-import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment } from './utils';
+import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
 
 // allowVector: when true the gallery also accepts vector (.ai/.eps/.svg) and .pdf
 // artwork — used by the Topstar digitizing/Vector PO flow where production-ready
@@ -98,6 +98,20 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
   // and snap a cleared field back to "0".
   React.useEffect(()=>{if(!focused&&parseFloat(raw)!==value)setRaw(String(value))},[value,focused]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onFocus={()=>setFocused(true)} onChange={e=>{const v=e.target.value;if(!/^-?\d*\.?\d*$/.test(v))return;setRaw(v);if(v===''||v==='.'||v==='-')return;const n=parseFloat(v);if(!isNaN(n))onChange(n)}} onBlur={()=>{setFocused(false);const n=parseFloat(raw)||0;setRaw(String(n));onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
 
+// Buffered text input — keystrokes stay in local `raw` state and only commit to
+// the parent onBlur / Enter, so typing a long note or ink color no longer fires a
+// setO() (and full OrderEditor re-render) on every character. Mirrors $In's
+// focus-guarded sync: the box is only re-seeded from `value` while NOT being edited.
+function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFocus}){
+  const cur=value==null?'':String(value);
+  const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
+  React.useEffect(()=>{if(!focused&&raw!==cur)setRaw(cur)},[cur,focused]);// eslint-disable-line react-hooks/exhaustive-deps
+  const commit=()=>{setFocused(false);if(raw!==cur)onChange(raw)};
+  return<input className={className} style={style} placeholder={placeholder} title={title} autoFocus={autoFocus} value={raw}
+    onFocus={()=>setFocused(true)} onChange={e=>setRaw(e.target.value)} onBlur={commit}
+    onKeyDown={e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}}/>;
+}
+
 function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
 function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim()})};
@@ -188,7 +202,7 @@ function FollowUpAutoPanel({value,onChange,defaultMessage}){
 
 // SEND ESTIMATE MODAL
 
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo,supabase}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo,supabase,docTotal}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);
   const[checkedEmails,setCheckedEmails]=useState({});const[customEmails,setCustomEmails]=useState([]);const[addingEmail,setAddingEmail]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
@@ -204,6 +218,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const estimateRef=React.useRef(estimate);estimateRef.current=estimate;
   const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
   const repUserRef=React.useRef(repUser);repUserRef.current=repUser;
+  const docTotalRef=React.useRef(docTotal);docTotalRef.current=docTotal;
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
     const lbl=dt==='so'?'Sales Order':'Estimate';
@@ -213,19 +228,31 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     // Greet by first name only — "Hi Jabari," not the full "Hi Jabari Carr," which reads too formal.
     const _firstName=(primaryContact?.name||'Coach').trim().split(/\s+/)[0]||'Coach';
     const initChecked={};emails.forEach(em=>{initChecked[em]=true});
+    // Everyone pre-selected gets named in the greeting; it re-writes as the rep checks/unchecks.
+    const _greeting=greetLine(emails,cust2.contacts);
     setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
     // Deep-link the portal straight to this estimate (?est=<id>) / SO (?so=<id>)
     // instead of the portal home — the coach portal opens the matching view on load.
     const _dl=est2?.id?(dt==='so'?'&so='+est2.id:'&est='+est2.id):'';
     const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag)+_dl:'';
-    setBody(`Hi ${_firstName},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag||'')}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    const _job=(est2?.memo||'').trim();
+    const _forJob=_job?` for "${_job}"`:'';
+    const _total=Number(docTotalRef.current||0);
+    const _totalTxt=_total>0?`, totalling ${emailMoney(_total)}`:'';
+    setBody(`${_greeting}\n\nAttached below is your ${lbl.toLowerCase()}${_forJob}${_totalTxt}. You can ${dt==='so'?'view it':'review and approve it'} right in your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag||'')}\n\nPlease let us know if you have any questions, and thank you for your business!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=portalLink;
     setSmsMsg('Hi '+_firstName+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setFollowUp(seedFollowUp(est2));
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
+  // Keep the greeting in step with the recipient checkboxes ("Hi Cam and Hillary,").
+  // Only the greeting line is swapped, so edits to the rest of the message survive.
+  const _toKey=allTargets.join('|');
+  // (No recipients selected — leave the drafted greeting alone rather than blanking it to "Hi there,".)
+  React.useEffect(()=>{if(!isOpen||!_toKey)return;
+    setBody(b=>withGreeting(b,greetLine(_toKey.split('|'),customerRef.current?.contacts)))},[_toKey,isOpen]);
   React.useEffect(()=>{let cancelled=false;
     if(!isOpen||!supabase||!estimate?.source_inbox_message_id)return()=>{cancelled=true};
     supabase.from('ai_inbox_messages').select('draft_body_text').eq('id',estimate.source_inbox_message_id).maybeSingle()
@@ -240,7 +267,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(emails.length===0){alert('Please select at least one recipient');return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
-    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag):'';
+    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+(estimate?.id?(docType==='so'?'&so=':'&est=')+encodeURIComponent(estimate.id):''):'';
     const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
@@ -378,7 +405,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         </div>
       ):(
         <div style={{marginBottom:12}}>
-          <FollowUpAutoPanel value={followUp} onChange={setFollowUp} defaultMessage={`Hi ${(customer?.contacts||[])[0]?.name||'Coach'},\n\nJust following up on the ${label.toLowerCase()} we sent over${estimate?.memo?` for ${estimate.memo}`:''}. Let us know if you'd like to move forward or have any questions — we're happy to help!\n\n${repUser?.name||'National Sports Apparel'}\nNational Sports Apparel`}/>
+          <FollowUpAutoPanel value={followUp} onChange={setFollowUp} defaultMessage={`${greetLine(allTargets,customer?.contacts)}\n\nJust following up on the ${label.toLowerCase()} we sent over${estimate?.memo?` for "${estimate.memo}"`:''}. Let us know if you'd like to move forward or have any questions — we're happy to help!\n\n${repUser?.name||'National Sports Apparel'}\nNational Sports Apparel`}/>
         </div>
       )}
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
@@ -409,6 +436,17 @@ function calcSOStatus(ord,opts){
   // Fully automatic SO status based on item + job state
   let totalSz=0,coveredSz=0,fulfilledSz=0;
   safeItems(ord).forEach(it=>{
+    // Billed-back service lines — Topstar digitizing/vector (sku 'DIGITIZING') and Artwork
+    // charges (sku 'Artwork') — never get an item-level PO (digitizing tracks on its SO-level
+    // deco PO; artwork is in-house art time), so counting them as goods held the whole SO in
+    // need_order forever ("Items need ordering — Create PO" on every order carrying one).
+    // Count them covered+fulfilled so they don't gate the garment fulfillment ladder.
+    if(isServiceLine(it)){
+      let units=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      if(units===0)units=safeNum(it.est_qty);
+      totalSz+=units;coveredSz+=units;fulfilledSz+=units;
+      return;
+    }
     let entries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
     // qty_only items hold their quantity in est_qty (sizes is empty); POs/picks track them under the 'QTY' key
     if(entries.length===0&&safeNum(it.est_qty)>0)entries=[['QTY',safeNum(it.est_qty)]];
@@ -585,7 +623,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
           <div style={{display:'flex',gap:6,alignItems:'center',padding:'8px 10px',background:'#f8fafc',borderBottom:'1px solid #eef2f6'}}>
             <span style={{fontSize:10,fontWeight:800,color:'#fff',background:'#475569',borderRadius:6,padding:'2px 7px',flexShrink:0}}>CW {ci+1}</span>
             <span title={cw.garment_color||'Set garment color'} style={{width:16,height:16,borderRadius:4,flexShrink:0,border:'1px solid #cbd5e1',background:gHex||'repeating-linear-gradient(45deg,#f8fafc,#f8fafc 3px,#e2e8f0 3px,#e2e8f0 6px)'}}/>
-            <input className="form-input" value={cw.garment_color||''} onChange={e=>updCw(ci,{garment_color:e.target.value})} placeholder="Garment color..." style={{fontSize:12,fontWeight:600,flex:1,padding:'4px 8px'}}/>
+            <$Txt className="form-input" value={cw.garment_color||''} onChange={v=>updCw(ci,{garment_color:v})} placeholder="Garment color..." style={{fontSize:12,fontWeight:600,flex:1,padding:'4px 8px'}}/>
             <button onClick={()=>onChange([...cws.slice(0,ci+1),{...cw,id:'cw'+Date.now(),inks:[...(cw.inks||[])],garment_color:''},...cws.slice(ci+1)])} title="Duplicate this color way (same colors, new garment)" style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,display:'flex'}}><Icon name="copy" size={13}/></button>
             <button onClick={()=>onChange(cws.filter((_,x)=>x!==ci))} title="Remove color way" style={{background:'none',border:'none',cursor:'pointer',color:'#ef4444',padding:2,display:'flex'}}><Icon name="trash" size={13}/></button>
           </div>
@@ -598,7 +636,7 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
             {(cw.inks||[]).map((ink,ii)=>{const hex=isEmb?threadHex(ink):(pantoneHex(ink)||threadHex(ink));return<div key={ii} style={{display:'flex',gap:5,alignItems:'center',marginBottom:4}}>
               <span style={{fontSize:10,color:'#cbd5e1',width:12,textAlign:'right',flexShrink:0}}>{ii+1}</span>
               <span style={{width:14,height:14,borderRadius:3,flexShrink:0,border:'1px solid #d1d5db',background:hex||'#f1f5f9'}}/>
-              <input className="form-input" value={ink} onChange={e=>{const inks=[...(cw.inks||[])];inks[ii]=e.target.value;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
+              <$Txt className="form-input" value={ink} onChange={v=>{const inks=[...(cw.inks||[])];inks[ii]=v;updCw(ci,{inks})}} placeholder={isEmb?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1,padding:'4px 8px'}}/>
               <button onClick={()=>updCw(ci,{inks:(cw.inks||[]).filter((_,x)=>x!==ii)})} title="Remove color" style={{background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',padding:2,display:'flex'}} onMouseOver={e=>e.currentTarget.style.color='#ef4444'} onMouseOut={e=>e.currentTarget.style.color='#cbd5e1'}><Icon name="x" size={11}/></button>
             </div>})}
             {isEmb?<ThreadQuickPicks colors={threadColors} onPick={v=>addInk(ci,v)}/>:<PantoneQuickPicks colors={pantoneColors} onPick={v=>addInk(ci,v)}/>}
@@ -609,4 +647,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

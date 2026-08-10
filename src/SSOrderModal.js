@@ -4,7 +4,9 @@
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildSSOrderPayload } from './ssOrder';
-import { ssResolveSkus, ssSubmitOrder } from './vendorApis';
+import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
+import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
+import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // S&S ships integrated orders to NSA's receiving dock (caller can override via shipTo).
@@ -18,10 +20,13 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, onClose, onSubmitted, onLearnSkus }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', onClose, onSubmitted, onLearnSkus }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
-  const [testMode, setTestMode] = useState(true);
+  // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
+  // validated end-to-end. Every submission is a real order — the confirm checkbox below is
+  // the gate. Kept as a const so the existing `live` branches render the production copy.
+  const testMode = false;
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -30,8 +35,24 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,size,sku}]
   const [resolveErr, setResolveErr] = useState('');
+  // Manual SKU picker: a rep searches S&S live and hand-picks the exact per-size Sku for a
+  // line the auto-resolver couldn't match. manualSku overrides the auto-resolved value.
+  const [manualSku, setManualSku] = useState({}); // line key -> S&S sku chosen by hand
+  const [searchLine, setSearchLine] = useState(null); // the line being matched, or null
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchErr, setSearchErr] = useState('');
 
-  const ship = shipTo || NSA_SHIP_TO;
+  // Auto-selected destination (NSA dock, or the deco/customer address the caller
+  // passed), plus the rep's optional hand-edited override.
+  const autoShip = shipTo || NSA_SHIP_TO;
+  const [shipOverride, setShipOverride] = useState(null);
+  const ship = shipOverride || autoShip;
+
+  // Per-warehouse availability for the resolved SKUs — informational "ships from"
+  // display only; a lookup failure just leaves the column blank, never blocks.
+  const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
 
   // Base lines (no network) — flatten the batch.
   const baseLines = useMemo(() => buildSSOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
@@ -48,14 +69,28 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     return () => { cancelled = true; };
   }, [missing]);
 
-  // Overlay resolved skus, recompute warnings + the order that will be submitted.
-  const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus]);
+  // Overlay resolved skus (a hand-picked sku wins over the auto-resolved one), recompute
+  // warnings + the order that will be submitted.
+  const lines = useMemo(() => baseLines.map(l => (l.sku ? l : { ...l, sku: manualSku[l.key] || resolvedSkus[l.key] || '' })), [baseLines, resolvedSkus, manualSku]);
   const warnings = useMemo(() => lines.filter(l => !l.sku).map(l => `Line (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) has no matched S&S SKU`), [lines]);
   const built = useMemo(() => buildSSOrderPayload({ poNumber, lineItems: lines, shipTo: ship, testOrder: testMode }), [poNumber, lines, ship, testMode]);
   const totals = built.summary;
   const unresolvedStyles = useMemo(() => [...new Set(lines.filter(l => !l.sku).map(l => String(l.style || '').toUpperCase().trim()))], [lines]);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving;
+  // Once SKUs are known, fetch each one's per-warehouse stock (one chunked call).
+  const skuKey = useMemo(() => [...new Set(lines.map(l => String(l.sku || '').toUpperCase()).filter(Boolean))].sort().join(','), [lines]);
+  useEffect(() => {
+    let cancelled = false;
+    if (resolving || !skuKey) return;
+    setWhseBySku(null);
+    ssGetWarehouseStock(skuKey.split(','))
+      .then(m => { if (!cancelled) setWhseBySku(m || {}); })
+      .catch(() => { if (!cancelled) setWhseBySku({}); });
+    return () => { cancelled = true; };
+  }, [skuKey, resolving]);
+
+  const shipIncomplete = shipToIncomplete(ship);
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || shipIncomplete;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const live = !testMode;
@@ -91,6 +126,27 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
       }
     }
   };
+
+  // ── Manual SKU search ──────────────────────────────────────────────────────
+  const openSearch = (l) => { setSearchLine(l); setSearchQuery(l.style || ''); setSearchResults([]); setSearchErr(''); };
+  const closeSearch = () => { setSearchLine(null); setSearchResults([]); setSearchErr(''); setSearchBusy(false); };
+  const runSearch = async () => {
+    const q = searchQuery.trim();
+    if (q.length < 2) { setSearchErr('Type at least 2 characters (a style like NL1580, or a keyword).'); return; }
+    setSearchBusy(true); setSearchErr(''); setSearchResults([]);
+    try {
+      const rows = await ssSearchProducts(q);
+      setSearchResults(rows);
+      if (!rows.length) setSearchErr('No S&S products found for "' + q + '".');
+    } catch (e) { setSearchErr(e.message || 'S&S search failed — try again.'); }
+    finally { setSearchBusy(false); }
+  };
+  const pickSku = (row) => {
+    if (!searchLine || !row || !row.sku) return;
+    setManualSku(m => ({ ...m, [searchLine.key]: row.sku }));
+    closeSearch();
+  };
+  const clearManual = (key) => setManualSku(m => { const n = { ...m }; delete n[key]; return n; });
 
   const safeClose = submitting ? undefined : onClose;
 
@@ -164,9 +220,59 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                       <code>{st}</code>: {[...new Set((candidates[st] || []).map(c => c.color).filter(Boolean))].slice(0, 16).join(' · ') || '(no colors returned)'}
                     </div>
                   ) : null)}
-                  <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color/size is in that list but didn't match, it's a naming difference — send me a screenshot and I'll fix the match. Otherwise order those lines manually.</div>
+                  <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color/size is in that list but didn't match, it's a naming difference — send me a screenshot and I'll fix the match. Or click <strong>🔍 find SKU</strong> on the line below to search S&S and pick the right item yourself.</div>
                 </div>
               )}
+            </div>
+          )}
+
+          {!done && searchLine && (
+            <div style={{ padding: 12, background: '#f5f3ff', border: '2px solid #6366f1', borderRadius: 8, marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#3730a3' }}>
+                  🔍 Find S&S SKU for <code>{searchLine.style}</code> · {searchLine.color || '—'} · {searchLine.size}
+                </div>
+                <button className="btn btn-secondary" style={{ fontSize: 11, padding: '2px 8px' }} onClick={closeSearch}>Close</button>
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+                  placeholder="S&S style # or keyword (e.g. 1580, Next Level crop)"
+                  style={{ flex: 1, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13 }} />
+                <button className="btn btn-primary" onClick={runSearch} disabled={searchBusy} style={{ background: '#4f46e5', borderColor: '#4f46e5' }}>
+                  {searchBusy ? 'Searching…' : 'Search S&S'}
+                </button>
+              </div>
+              {searchErr && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 6 }}>{searchErr}</div>}
+              {searchResults.length > 0 && (
+                <div style={{ maxHeight: 240, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff' }}>
+                  <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                    <thead style={{ background: '#eef2ff', position: 'sticky', top: 0 }}>
+                      <tr>
+                        <th style={th}>S&S SKU</th><th style={th}>Style</th><th style={th}>Color</th><th style={th}>Size</th>
+                        <th style={{ ...th, textAlign: 'right' }}>$</th><th style={th}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {searchResults.map((r, i) => {
+                        const sizeMatch = _norm(r.size) === _norm(searchLine.size);
+                        return (
+                          <tr key={r.sku + '-' + i} style={{ borderTop: '1px solid #f1f5f9', background: sizeMatch ? '#f0fdf4' : 'transparent' }}>
+                            <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#0f766e' }}>{r.sku}</td>
+                            <td style={{ ...td, fontFamily: 'monospace' }}>{r.style || '—'}</td>
+                            <td style={td}>{r.color || '—'}</td>
+                            <td style={{ ...td, fontWeight: 700 }}>{r.size || '—'}{sizeMatch ? ' ✓' : ''}</td>
+                            <td style={{ ...td, textAlign: 'right' }}>${(r.price || 0).toFixed(2)}</td>
+                            <td style={td}><button className="btn btn-primary" style={{ fontSize: 11, padding: '2px 10px', background: '#16a34a', borderColor: '#16a34a' }} onClick={() => pickSku(r)}>Use</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+                Pick the row matching this line's color and size (size-matching rows are highlighted). The chosen S&S SKU fills this line so the order can submit.
+              </div>
             </div>
           )}
 
@@ -176,9 +282,19 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             <Stat label="Total Units" value={totals.totalQty} />
             <Stat label="Total Cost" value={'$' + totals.totalCost.toFixed(2)} />
           </div>
-          <div style={{ fontSize: 12, color: '#475569', marginBottom: 12, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-            <strong>Ships to:</strong> {ship.companyName} · {ship.address1}{ship.address2 ? ', ' + ship.address2 : ''}, {ship.city} {ship.region} {ship.postalCode} · UPS Ground
-          </div>
+          {!done && shipWarning && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e', fontWeight: 600 }}>
+              <strong>⚠ Mixed destinations in this batch.</strong> {shipWarning}
+            </div>
+          )}
+          <ShipToEditor
+            auto={autoShip}
+            override={shipOverride}
+            onChange={setShipOverride}
+            disabled={done || submitting}
+            shipVia="UPS Ground"
+            autoLabel={shipTo ? 'selected' : 'warehouse'}
+          />
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>
             <TabBtn active={tab === 'lines'} onClick={() => setTab('lines')}>Line Items ({lines.length})</TabBtn>
@@ -198,6 +314,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                     <th style={{ ...th, textAlign: 'right' }}>Qty</th>
                     <th style={{ ...th, textAlign: 'right' }}>Unit $</th>
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                    <th style={th}>Ships From (stock)</th>
                     <th style={th}>Source SO</th>
                   </tr>
                 </thead>
@@ -205,19 +322,41 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                   {lines.map((l, i) => (
                     <tr key={l.key} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={td}>{i + 1}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>{l.sku || (resolving ? '…' : '⚠ missing')}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.sku ? '#0f766e' : '#dc2626' }}>
+                        {l.sku
+                          ? (manualSku[l.key]
+                              ? <span title="Hand-picked SKU — click ✕ to clear and re-match">{l.sku} <span style={{ fontSize: 9, color: '#7c3aed', fontFamily: 'sans-serif', fontWeight: 700 }}>✎ picked</span> <button onClick={() => clearManual(l.key)} style={{ border: 'none', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: 12 }}>✕</button></span>
+                              : l.sku)
+                          : resolving
+                            ? '…'
+                            : <button onClick={() => openSearch(l)} title="Search S&S and pick the matching SKU for this line" style={{ border: '1px solid #fca5a5', background: '#fef2f2', color: '#dc2626', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', padding: '2px 6px' }}>🔍 find SKU</button>}
+                      </td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
                       <td style={td}>{l.color || '—'}</td>
                       <td style={{ ...td, fontWeight: 700 }}>{l.size}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{l.quantity}</td>
                       <td style={{ ...td, textAlign: 'right' }}>${(l.unitPrice || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
+                      <td style={td}>
+                        <WarehouseChips
+                          loading={l.sku ? whseBySku === null : false}
+                          entries={rankWarehouses(
+                            (whseBySku?.[String(l.sku || '').toUpperCase()] || []).map(w => ({ label: w.abbr, city: SS_WAREHOUSES[w.abbr], qty: w.qty, closest: w.closest })),
+                            l.quantity
+                          ).filter(e => e.primary)}
+                        />
+                      </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
+              {lines.length > 0 && (
+                <div style={{ padding: '6px 10px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderTop: '1px solid #f1f5f9' }}>
+                  📦 = expected ship-from warehouse (S&S routes each line from the nearest warehouse with stock at submission — split shipments possible). Hover the chip for the city and current stock.
+                </div>
+              )}
             </div>
           )}
 
@@ -236,22 +375,16 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             </>
           ) : (
             <>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155', cursor: 'pointer' }} title="S&S creates and cancels test orders — nothing ships">
-                <input type="checkbox" checked={testMode} disabled={submitting} onChange={e => { setTestMode(e.target.checked); setConfirmed(false); }} />
-                Test order
-              </label>
               <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: blocked ? '#94a3b8' : '#334155', cursor: blocked ? 'not-allowed' : 'pointer' }}>
                 <input type="checkbox" checked={confirmed} disabled={blocked || submitting} onChange={e => setConfirmed(e.target.checked)} />
-                {live
-                  ? <span>I confirm this is a real order — place it with S&S and ship the goods.</span>
-                  : <span>Confirm test submission (validates only — nothing ships).</span>}
+                <span>I confirm this is a real order — place it with S&S and ship the goods.</span>
               </label>
               <button className="btn btn-secondary" onClick={onClose} disabled={submitting}>Cancel</button>
               <button
                 className="btn btn-primary"
                 onClick={doSubmit}
                 disabled={!canSubmit}
-                title={resolving ? 'Looking up SKUs…' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
+                title={resolving ? 'Looking up SKUs…' : shipIncomplete ? 'The ship-to address is incomplete — company, street, city, state and zip are all required' : blocked ? 'Every line needs a matched S&S SKU first' : !confirmed ? 'Check the confirmation box first' : ''}
                 style={{ background: live ? '#b91c1c' : '#1e40af', borderColor: live ? '#b91c1c' : '#1e40af', opacity: canSubmit ? 1 : 0.55 }}
               >
                 {submitting ? 'Submitting…' : resolving ? 'Looking up SKUs…' : live ? '🚀 Place Order with S&S' : '🧪 Submit Test Order'}
@@ -266,6 +399,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
 
 const th = { padding: '6px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#475569', borderBottom: '1px solid #e2e8f0' };
 const td = { padding: '6px 8px', fontSize: 12 };
+const _norm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); // size compare in the SKU search
 
 function Stat({ label, value, mono }) {
   return (

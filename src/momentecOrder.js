@@ -17,12 +17,13 @@
 export const MT_SHIP_MODES = { ground: '103' }; // 103 = FedEx Ground per the spec's shipping-mode table
 
 // Flatten batch PO entries into Momentec order lines (one per size).
+// Drop-ship lines are included: the modal resolves the batch's drop-ship
+// destination as its ship-to and the rep can edit it before submitting.
 export function buildMomentecOrderLines(batchPOs) {
   const lines = [];
   const warnings = [];
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
-      if (it.drop_ship) return; // drop-ship lines ship direct to the customer, not via the NSA-warehouse API order
       const style = it._mt_style || it.sku || '';
       const color = it._mt_color || it.color || '';
       const skuBySize = it._mt_skus || {};

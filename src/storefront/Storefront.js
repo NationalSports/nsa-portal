@@ -1193,8 +1193,15 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // One reusable set of size buttons for a variant row. A click selects both the
   // variant (its SKU) and the size, so a fit row resolves to the right SKU.
   const renderSizeButtons = (c, cSizes) => cSizes.map((sz) => {
-    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz; const out = isTracked(c) ? (q <= 0 && !soon && !isIncoming(c)) : false; const up = sizeUp(c, sz);
-    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock', up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
+    const q = effSizeQty(c, sz); const soon = sizeSoon(c, sz); const etaD = (c.vendor_size_eta || {})[sz] || Object.entries(c.vendor_size_eta || {}).filter(([k]) => String(regularSize(k)).toUpperCase() === String(sz).toUpperCase()).map(([, v]) => v).filter(Boolean).sort()[0]; const selB = colorId === c.webstore_product_id && size === sz;
+    // A not-tracked / made-to-order item, or a tracked style whose stock hasn't
+    // synced yet, sells every size — sizesFor lists them all and checkout skips the
+    // stock guard (webstore-checkout: both stock maps null → allowed). Never strike
+    // these out, or the size can't be picked and the item can't be added to cart
+    // (the reported "sold out but sizes shown" webstore bug on unsynced styles).
+    const alwaysSell = !isTracked(c) || !hasStockData(c);
+    const out = !alwaysSell && q <= 0 && !soon && !isIncoming(c); const up = sizeUp(c, sz);
+    return <button key={sz} disabled={out} onClick={() => { setColorId(c.webstore_product_id); setSize(sz); }} title={[alwaysSell ? '' : (q > 0 ? `${q} available` : soon ? `Arriving ~${etaD}` : isIncoming(c) ? 'Backorder' : 'Out of stock'), up > 0 ? `+${money(up)} for ${sz}` : ''].filter(Boolean).join(' · ')}
       style={{ ...sizeBtn(theme, selB), opacity: out ? 0.35 : 1, cursor: out ? 'not-allowed' : 'pointer', textDecoration: out ? 'line-through' : 'none' }}>{sz}{up > 0 ? <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 4, fontWeight: 700 }}>+${up}</span> : null}</button>;
   });
   const nameUp = Number(p.name_upcharge) || 0;
@@ -1272,7 +1279,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             </div>
           </div>}
 
-          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} /></div>}
+          {!isFitGroup && <div style={{ marginBottom: 4 }}><StockLine onHand={onHand} incoming={incoming} eta={etaOf(p)} onOrder={p.on_order_qty} alwaysSell={!isTracked(p) || !hasStockData(p)} /></div>}
 
           {isFitGroup ? (
             <div style={{ margin: '22px 0' }}>
@@ -1797,6 +1804,13 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
       return;
     }
+    if (r.paymentProcessing) {
+      // Replay of an order whose ACH debit is mid-settlement (or awaiting micro-deposit
+      // verification) — the money is already in motion, so never re-show a payment form.
+      clearOrderRef();
+      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}${r.bankVerify ? '?bankverify=1' : ''}`);
+      return;
+    }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
     setPendingOrder(r.order);
     setClientSecret(r.clientSecret);
@@ -1812,6 +1826,17 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
     clearOrderRef();
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+  };
+
+  // Bank (ACH) debit initiated but not yet settled — no finalize (the server
+  // requires a succeeded intent; the Stripe webhook flips the order to paid on
+  // settlement). Land on the order page, which shows the processing notice, so
+  // the buyer never retries and stacks duplicate bank debits. `verifying` =
+  // micro-deposit verification still pending (no debit yet) — different notice.
+  const confirmProcessing = async (paymentIntentId, verifying) => {
+    if (!pendingOrder) { setErr('Order reference lost — your bank payment was submitted. Please contact us and we’ll confirm your order.'); return; }
+    clearOrderRef();
+    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}${verifying ? '?bankverify=1' : ''}`);
   };
 
   return (
@@ -1884,7 +1909,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
           clientSecret ? (
             <>
               <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-                <CardForm theme={theme} onPaid={confirmPaid} />
+                <CardForm theme={theme} onPaid={confirmPaid} onProcessing={confirmProcessing} />
               </Elements>
               {/* Escape hatch: go back to change the cart/coupon/details. Resuming with the
                   same order reuses its PaymentIntent (idempotent clientRef) — no duplicate. */}
@@ -1900,7 +1925,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   );
 }
 
-function CardForm({ theme, onPaid }) {
+function CardForm({ theme, onPaid, onProcessing }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -1911,6 +1936,16 @@ function CardForm({ theme, onPaid }) {
     const { error, paymentIntent } = await stripe.confirmPayment({ elements, redirect: 'if_required' });
     if (error) { setErr(error.message || 'Payment failed.'); setBusy(false); return; }
     if (paymentIntent && paymentIntent.status === 'succeeded') { await onPaid(paymentIntent.id); }
+    // A US bank account (ACH) debit confirms as 'processing' — the debit IS initiated
+    // and settles in 1–4 business days (the webhook flips the order to paid then).
+    // Treating it as a failure here made buyers re-submit and stack real bank debits.
+    else if (paymentIntent && paymentIntent.status === 'processing' && onProcessing) { await onProcessing(paymentIntent.id, false); }
+    // Manually-entered bank account: Stripe first verifies it with two micro-deposits
+    // (no debit yet). Also NOT a failure — the buyer finishes via Stripe's emailed
+    // verification link, so land them on the order page with that explanation.
+    else if (paymentIntent && paymentIntent.status === 'requires_action'
+      && paymentIntent.next_action && paymentIntent.next_action.type === 'verify_with_microdeposits'
+      && onProcessing) { await onProcessing(paymentIntent.id, true); }
     else { setErr('Payment not completed.'); setBusy(false); }
   };
   return (
@@ -1978,6 +2013,16 @@ function OrderStatusPage({ store, theme, orderId }) {
 
   // Financials
   const paid = order.payment_mode === 'paid';
+  // A card order settles instantly, but an ACH bank debit leaves the order in
+  // pending_payment for 1–4 business days until the webhook confirms settlement.
+  // The data model doesn't record which method was attempted (a card order can
+  // also sit briefly in pending_payment before finalize/webhook lands), so the
+  // notice copy below stays method-conditional ("if you paid by bank…").
+  const achPending = paid && order.status === 'pending_payment';
+  // Set when checkout routed here after a manual bank entry: Stripe still needs
+  // the buyer to verify two micro-deposits before the debit starts.
+  const bankVerify = achPending && new URLSearchParams(window.location.search).get('bankverify') === '1';
+  const wasCancelled = ['cancelled', 'refunded', 'void'].includes(order.status);
   const discount = Number(order.discount_amt) || 0;
   const shipping = Number(order.shipping_fee) || 0;
   const processing = Number(order.processing_fee) || 0;
@@ -2046,10 +2091,22 @@ function OrderStatusPage({ store, theme, orderId }) {
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 34, lineHeight: 1, textTransform: 'uppercase', color: P, margin: '0 0 5px' }}>Order Confirmed</h1>
-          <p style={{ fontSize: 14.5, color: SUB, margin: 0 }}>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <strong style={{ color: INK }}>{order.buyer_email}</strong></p>
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 34, lineHeight: 1, textTransform: 'uppercase', color: P, margin: '0 0 5px' }}>{wasCancelled ? 'Order Cancelled' : achPending ? 'Order Placed' : 'Order Confirmed'}</h1>
+          <p style={{ fontSize: 14.5, color: SUB, margin: 0 }}>
+            {wasCancelled ? <>This order is no longer active — see the messages below or contact us with any questions.</>
+              : achPending ? <>Payment processing · we’ll email your confirmation to <strong style={{ color: INK }}>{order.buyer_email}</strong> once it clears</>
+              : <>{paid ? 'Paid in full' : 'Invoiced to the team'} · confirmation sent to <strong style={{ color: INK }}>{order.buyer_email}</strong></>}
+          </p>
         </div>
       </div>
+
+      {achPending && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '13px 16px', fontSize: 13.5, lineHeight: 1.55, marginBottom: 18 }}>
+          {bankVerify
+            ? <>Almost done — Stripe emailed you a link to verify two small deposits in your bank account. Your payment starts once you verify (bank debits then take 1–4 business days to clear). Your order is saved, so <b>please don’t pay again</b>.</>
+            : <>Your payment is still processing. If you paid by US bank account (ACH), this typically takes 1–4 business days — your order is placed and the debit is underway, so <b>please don’t pay again</b>. If the payment can’t be completed, we’ll post a note here.</>}
+        </div>
+      )}
 
       {/* Meta strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', background: P, borderRadius: 8, overflow: 'hidden', marginBottom: 18 }}>
@@ -2263,8 +2320,13 @@ const inp = { width: '100%', padding: '12px 13px', borderRadius: 4, border: `1px
 const methodBtn = (t, sel) => ({ flex: 1, padding: '13px', borderRadius: 4, border: `2px solid ${sel ? t.primary : t.line}`, background: sel ? t.primary : '#fff', color: sel ? '#fff' : t.ink, fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: 0.5, textTransform: 'uppercase', cursor: 'pointer' });
 function Field({ label, children }) { return <div style={{ marginBottom: 14, flex: 1 }}><div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: NEUTRAL.subText, marginBottom: 6 }}>{label}</div>{children}</div>; }
 
-function StockLine({ onHand, incoming, eta, onOrder }) {
-  if (onHand > 0) return <Pill bg="#EAF3EC" fg={STOCK.in}>● In stock — ready to decorate</Pill>;
+function StockLine({ onHand, incoming, eta, onOrder, alwaysSell }) {
+  // A not-tracked / made-to-order item, or a tracked drop-ship style whose stock
+  // hasn't synced yet (alwaysSell), sells every size — sizesFor surfaces the full
+  // scale and the card badge reads "In stock". Its raw on-hand is 0, so guard here
+  // too; without it the pill falls through to "Sold out" while every size button is
+  // enabled and Add to Cart works (the reported webstore bug).
+  if (onHand > 0 || alwaysSell) return <Pill bg="#EAF3EC" fg={STOCK.in}>● In stock — ready to decorate</Pill>;
   if (incoming) return <Pill bg="#FAF1DB" fg={STOCK.low}>{eta ? `Arriving around ${eta}` : `On the way${onOrder ? ` — ${onOrder} on order` : ''}`} · backorder available</Pill>;
   return <Pill bg="#F6E7E7" fg="#962C32">Sold out</Pill>;
 }

@@ -105,6 +105,18 @@ const CP_HEX_RGB = Object.fromEntries(Object.entries(CP_HEX).map(([f, h]) => {
   const n = h.replace('#', '');
   return [f, [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)]];
 }));
+// Nearest catalog color-family to a raw hex, by squared RGB distance. Returns
+// null for a missing/malformed hex.
+function cpNearestFamily(hex) {
+  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  const h = hex.replace('#', ''), rgb = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  let best = null, bestD = Infinity;
+  for (const [f, c] of Object.entries(CP_HEX_RGB)) {
+    const d = (rgb[0] - c[0]) ** 2 + (rgb[1] - c[1]) ** 2 + (rgb[2] - c[2]) ** 2;
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return best;
+}
 // Map one saved Pantone color (customer.pantone_colors entry: {code,name,hex})
 // to a catalog color-family name. The color NAME wins over the hex, so a
 // mis-stored swatch still resolves — e.g. "1815 Cardinal" → Cardinal even though
@@ -115,51 +127,87 @@ function cpPantoneFamily(entry) {
   const label = `${entry.code || ''} ${entry.name || ''}`.trim();
   const named = Object.keys(CP_HEX).find((f) => new RegExp(`\\b${f}\\b`, 'i').test(label));
   if (named) return named;
-  const hex = pantoneHex(entry.code) || entry.hex;
-  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return null;
-  const h = hex.replace('#', ''), rgb = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  let best = null, bestD = Infinity;
-  for (const [f, c] of Object.entries(CP_HEX_RGB)) {
-    const d = (rgb[0] - c[0]) ** 2 + (rgb[1] - c[1]) ** 2 + (rgb[2] - c[2]) ** 2;
-    if (d < bestD) { bestD = d; best = f; }
-  }
-  return best;
+  return cpNearestFamily(pantoneHex(entry.code) || entry.hex);
 }
-// The catalog color-families a customer effectively carries for portal theming:
-// the explicit family picker (school_colors) when set, otherwise derived from the
-// team's saved Pantone colors (pantone_colors). Most customers only ever fill the
-// "School Colors (Pantone)" card, so without this fallback the portal ignores
-// their real colors and paints the NSA navy/red default instead.
-function cpEffectiveFamilies(customer) {
+// The hex the portal actually PAINTS for a resolved family. Prefer the team's own
+// Pantone hex (canonical PMS hex by code, else the saved swatch) so a rich forest
+// #215732 renders as itself instead of the washed-out generic Green swatch — but
+// only when that hex genuinely lands back in the family we assigned it. A
+// mis-stored swatch ("1815 Cardinal" saved as grey) fails that test and falls back
+// to the curated CP_HEX family color, so the guard that fixed the San Juan bug
+// still holds. Explicit school_colors carry no hex of their own → curated swatch.
+function cpFamilyHex(entry, family) {
+  const raw = (entry && (pantoneHex(entry.code) || entry.hex)) || '';
+  if (/^#[0-9a-f]{6}$/i.test(raw) && cpNearestFamily(raw) === family) return raw.toUpperCase();
+  return CP_HEX[family];
+}
+// A customer's effective portal colors as {family, hex} pairs. `family` drives the
+// primary/accent ROLE choice (dark banner vs bright accent); `hex` is what gets
+// painted — the real Pantone when trustworthy, else the curated swatch. Explicit
+// family picker (school_colors) wins when set; otherwise derived from the saved
+// Pantone colors, which is all ~95% of customers ever fill in.
+function cpEffectiveColors(customer) {
   const explicit = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
-  if (explicit.length) return explicit;
+  if (explicit.length) return explicit.map((f) => ({ family: f, hex: CP_HEX[f] }));
   const pan = Array.isArray(customer && customer.pantone_colors) ? customer.pantone_colors : [];
-  const fams = [];
-  for (const p of pan) { const f = cpPantoneFamily(p); if (f && !fams.includes(f)) fams.push(f); }
-  return fams;
+  const out = [];
+  for (const p of pan) {
+    const family = cpPantoneFamily(p);
+    if (!family || out.some((o) => o.family === family)) continue;
+    out.push({ family, hex: cpFamilyHex(p, family) });
+  }
+  return out;
 }
-// Resolve a {primary, accent} header theme from a customer's colors.
-// primary is always a dark, readable banner color (a dark team color or the NSA
-// navy default); accent is the team's brightest color (or a tonal fallback).
+// Back-compat: just the family names (callers/tests that don't need the hexes).
+function cpEffectiveFamilies(customer) {
+  return cpEffectiveColors(customer).map((c) => c.family);
+}
+// Perceptual luminance (0–255) of a hex — for the white-text-on-banner check below.
+const cpLum = (hex) => {
+  try { const h = (hex || '').replace('#', ''); const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    return 0.2126 * parseInt(n.slice(0, 2), 16) + 0.7152 * parseInt(n.slice(2, 4), 16) + 0.0722 * parseInt(n.slice(4, 6), 16);
+  } catch { return 0; }
+};
+// Darken a hex toward black by pct (0–1), returning a hex. Used only to rescue a
+// too-light primary: the banner carries white text, so it must stay dark enough to
+// read even when a team's real primary Pantone is on the brighter side.
+const cpHexDarken = (hex, pct) => {
+  try { const h = hex.replace('#', ''); const n = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const f = (v) => Math.max(0, Math.round(parseInt(v, 16) * (1 - pct))).toString(16).padStart(2, '0');
+    return '#' + f(n.slice(0, 2)) + f(n.slice(2, 4)) + f(n.slice(4, 6));
+  } catch { return hex; }
+};
+// Deepen the banner hex only when it's genuinely too light for white text; a
+// normal dark team color passes straight through untouched (stays bold/rich).
+const cpBannerSafe = (hex) => { let c = hex, i = 0; while (cpLum(c) > 155 && i < 6) { c = cpHexDarken(c, 0.14); i++; } return c; };
+// Resolve a {primary, accent} header theme from a customer's colors. primary is a
+// dark, readable banner color painted in the team's REAL Pantone (or the NSA navy
+// default); accent is the team's brightest real color (or a tonal fallback). Both
+// `customer`-derived colors and the parent `supplement` are {family, hex} lists.
 function cpTeamTheme(customer, supplement) {
-  const own = cpEffectiveFamilies(customer);
+  const own = cpEffectiveColors(customer);
+  const ownFams = own.map((c) => c.family);
   // Parent-department colors the team doesn't already carry — used to fill the
   // accent only (e.g. a sub-team borrows the school's gold), never the primary.
-  const sup = Array.isArray(supplement) ? supplement.filter((f) => CP_HEX[f] && !own.includes(f)) : [];
+  const sup = (Array.isArray(supplement) ? supplement : []).filter((c) => c && CP_HEX[c.family] && !ownFams.includes(c.family));
   if (!own.length && !sup.length) return { ...CP_DEFAULT_THEME };
   // Primary comes from the team's OWN colors first, so a sub-team keeps its own
   // banner color; borrow the parent's only when the team has none of its own.
   const primaryPool = own.length ? own : sup;
-  const darkFam = CP_PRIMARY_PREF.find((f) => primaryPool.includes(f));
-  const primary = darkFam ? CP_HEX[darkFam] : CP_DEFAULT_THEME.primary;
+  const darkFam = CP_PRIMARY_PREF.find((f) => primaryPool.some((c) => c.family === f));
+  const primaryColor = darkFam ? primaryPool.find((c) => c.family === darkFam) : null;
+  const primary = cpBannerSafe(primaryColor ? primaryColor.hex : CP_DEFAULT_THEME.primary);
   // Accent from the team's OWN colors first (keep its identity); only borrow the
   // parent department's colors when the team has no distinct accent of its own.
-  const pickAccent = (pool) => CP_ACCENT_PREF.find((f) => pool.includes(f) && f !== darkFam)
-    || pool.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Silver' && f !== 'Black');
-  const accentFam = pickAccent(own) || pickAccent(sup);
+  const pickAccent = (pool) => {
+    const pref = CP_ACCENT_PREF.find((f) => f !== darkFam && pool.some((c) => c.family === f));
+    if (pref) return pool.find((c) => c.family === pref);
+    return pool.find((c) => c.family !== darkFam && !['White', 'Grey', 'Silver', 'Black'].includes(c.family));
+  };
+  const accentColor = pickAccent(own) || pickAccent(sup);
   // No distinct second color anywhere? Deepen the primary for the accent — never
   // lighten, which would desaturate a warm primary (red) into pink.
-  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, -24);
+  const accent = accentColor ? accentColor.hex : cpShade(primary, -24);
   return { primary, accent };
 }
 
@@ -727,8 +775,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
   const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
-  // Deep-link: emails/texts can point straight at one estimate (?est=<id>) or art
-  // proof (?so=<id>&job=<id>) instead of the portal home. The params ride on the
+  // Deep-link: emails/texts can point straight at one estimate (?est=<id>), art
+  // proof (?so=<id>&job=<id>), or invoice (?inv=<id>) instead of the portal home. The params ride on the
   // portal's own URL when it's opened directly; embedded in the marketing /coach
   // iframe (which forwards only the portal tag) they're recovered from the parent
   // page URL via document.referrer. Applied once, as soon as the target record has
@@ -738,12 +786,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     if(_deepLinked.current)return;
     let sp=null;try{sp=new URLSearchParams(window.location.search);}catch(_){}
     const _param=k=>{const v=sp&&sp.get(k);if(v)return v;try{const r=document.referrer||'';const qi=r.indexOf('?');if(qi>=0)return new URLSearchParams(r.slice(qi)).get(k);}catch(_){}return null;};
-    const estId=_param('est'),soId=_param('so'),jobId=_param('job');
-    if(!estId&&!soId){_deepLinked.current=true;return;}
+    const estId=_param('est'),soId=_param('so'),jobId=_param('job'),invId=_param('inv'),pageId=_param('page');
+    if(!estId&&!soId&&!invId){
+      // Page-only deep-link (?page=billing etc.) — used by statement/past-due emails
+      // that cover several invoices, so there's no single record to open.
+      if(pageId&&['orders','roster','store','art','billing','shop'].includes(pageId))setPage(pageId);
+      _deepLinked.current=true;return;
+    }
     if(estId){const e=(ests||[]).find(x=>x.id===estId);if(e){setEstView(e);setUpdateRequestSent(false);setUpdateRequestText('');setPage('orders');_deepLinked.current=true;}return;}
+    if(invId){const inv=(invs||[]).find(x=>x.id===invId);if(inv){setInvView(inv);setPage('billing');_deepLinked.current=true;}return;}
     const s=(sos||[]).find(x=>x.id===soId);
     if(s){setSoView(s);const j=jobId?(safeJobs(s)||[]).find(jj=>jj.id===jobId):null;if(j){setJobView({job:j,so:s});setComment('');}setPage('orders');_deepLinked.current=true;}
-  },[sos,ests]);
+  },[sos,ests,invs]);
   const isP=!customer.parent_id;
   // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
   // A sub-team's own colors drive the theme; its parent department's colors only
@@ -751,20 +805,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // still borrows the school's gold — which is what stops a red-only team's
   // accent from falling back to a lightened tint that reads pink.
   const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
-  const cpTheme=cpTeamTheme(customer,_parentCust?cpEffectiveFamilies(_parentCust):null);
+  const cpTheme=cpTeamTheme(customer,_parentCust?cpEffectiveColors(_parentCust):null);
   const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
   // Effective families come from the family picker (school_colors) or, for the
   // ~95% of customers who only filled the "School Colors (Pantone)" card, from
   // their saved Pantone colors — so the portal wears the real team colors.
-  const _cpFamilies=cpEffectiveFamilies(customer);
-  const _nsaHasColors=_cpFamilies.length>0||(!!_parentCust&&cpEffectiveFamilies(_parentCust).length>0);
+  const _cpColors=cpEffectiveColors(customer);
+  const _nsaHasColors=_cpColors.length>0||(!!_parentCust&&cpEffectiveColors(_parentCust).length>0);
   const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
   const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
   const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
   const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
   // Hero "Team Colors" swatches: the team's actual colors, not the themed
   // primary/accent. Falls back to the theme tokens only when no colors are known.
-  const cpSwatches=_cpFamilies.length?_cpFamilies.map(f=>CP_HEX[f]):[tPrimary,tAccent,'#ffffff'];
+  const cpSwatches=_cpColors.length?_cpColors.map(c=>c.hex):[tPrimary,tAccent,'#ffffff'];
   const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
   const _nsaFont="'Source Sans 3',system-ui,sans-serif";
   const _nsaImport="@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');";
@@ -1267,7 +1321,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
             const _res=await _portalAction({alphaTag:customer.alpha_tag,
               estimates:[{id:est.id,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt}],
-              email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
+              email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
             });
             // Server FIRST — portal-action only lands the approval on an estimate still
             // awaiting one (H1 estimate guard); local state flips after it commits, so a
@@ -1294,7 +1348,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   estimates:[{id:est.id,update_requests:_newReqs,updated_at:_updatedAt}],
-                  email:_urRep?.email?{to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:_urRep.email,name:_urRep.name}}:undefined,
+                  email:_urRep?.email?{to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:_urRep.email,name:_urRep.name}}:undefined,
                 });
                 if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
                 // Local state flips only after the server write commits — no phantom request.
@@ -1745,7 +1799,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // local state only flips after it commits, so a stale tab never shows a phantom approval.
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   artDecision:{so_id:liveSO.id,job_id:j.id,decision:'approve',comment:coachComment||null,art_ids:jArtIds,approved_status:_apSt,seen_mocks:_seenMocks},
-                  email:{to:[{email:_apprTo}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
+                  email:{to:[{email:_apprTo}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
                 if(!_res.ok){alert(_res.error||'Could not save your approval — please try again or contact your rep.');return}
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
@@ -1772,7 +1826,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // if this tab is stale; local state only flips after it commits.
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   artDecision:{so_id:liveSO.id,job_id:j.id,decision:'reject',comment:_fb,art_ids:rArtIds},
-                  email:{to:[{email:_rejTo}],subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
+                  email:{to:[{email:_rejTo}],subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
                 if(!_res.ok){alert(_res.error||'Could not send your request — please try again or contact your rep.');return}
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null,coach_approved_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
@@ -1807,7 +1861,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // the admin invoice layout, but shows the school PO number (not the internal SO).
     const downloadInvPdf=()=>{
       const _$=n=>'$'+(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-      const poNum=inv._po_number||linkedSO?.po_number;
+      const poNum=inv.po_number||inv._po_number||linkedSO?.po_number;
       const isDeposit=inv.inv_type==='deposit';const depPct=isDeposit?(inv.deposit_pct||50)/100:1;
       const rows=[];let subTotal=0;
       const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
@@ -2942,4 +2996,4 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
 export default CoachPortal;
 // Exported for unit tests — pure color-resolution helpers (no React/Supabase).
-export { cpPantoneFamily, cpEffectiveFamilies, cpTeamTheme, CP_HEX };
+export { cpPantoneFamily, cpEffectiveFamilies, cpEffectiveColors, cpTeamTheme, CP_HEX };

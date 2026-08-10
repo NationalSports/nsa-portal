@@ -9,7 +9,7 @@ import { supabase, _dbSaveInvoice } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo } from './components';
-import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled } from './utils';
+import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms } from './App';
 
 // Fires its `run` callback exactly once, when it mounts. Used to auto-trigger the
@@ -24,6 +24,13 @@ function AutoRunOnce({run}){
 
 export default function InvoicesPage(){
   const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+
+    // Invoices usually go to a coach plus a billing/AP contact, so the greeting names whoever
+    // is checked ("Hi Cam and Hillary,"). Only the greeting line is swapped — edits below it stay.
+    const _siToKey=React.useMemo(()=>{const si=invSendModalDirect;if(!si)return'';
+      return[...Object.entries(si.checked||{}).filter(([,v])=>v).map(([k])=>k),...(si.customEmails||[])].join('|')},[invSendModalDirect]);
+    React.useEffect(()=>{if(!_siToKey)return;
+      setInvSendModalDirect(s=>s?{...s,msg:withGreeting(s.msg,greetLine(_siToKey.split('|'),s.sendContacts))}:s)},[_siToKey,setInvSendModalDirect]);
 
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
@@ -141,7 +148,7 @@ export default function InvoicesPage(){
         const shipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
         const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
-        const poNum=inv._po_number||so?.po_number;
+        const poNum=inv.po_number||inv._po_number||so?.po_number;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',date:inv.date,
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
@@ -258,6 +265,7 @@ export default function InvoicesPage(){
                   memo:inv.memo||'',
                   date:inv.date||'',
                   due_date:inv.due_date||'',
+                  po_number:inv.po_number||inv._po_number||so?.po_number||'',
                   billing_name:inv.billing_name||'',
                   billing_address:inv.billing_address||'',
                   billing_custom:_billingCustom,
@@ -274,9 +282,7 @@ export default function InvoicesPage(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
-                const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag):'';
-                const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
-                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||'');
+                const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
                 // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
                 const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
                 const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
@@ -284,6 +290,11 @@ export default function InvoicesPage(){
                 const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
                 const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
                 if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
+                // Greet everyone pre-checked; the greeting re-writes as boxes are ticked in the modal.
+                // Job name comes off the SO — the invoice memo carries a "Final Invoice — " prefix.
+                const _job=((so?.memo||inv.memo)||'').trim();
+                const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
+                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
                 setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
@@ -315,7 +326,7 @@ export default function InvoicesPage(){
               <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>Bill To</div>
                 {inv.billing_name?<><div style={{fontSize:14,fontWeight:700}}>{inv.billing_name}</div><div style={{fontSize:11,color:'#64748b'}}>{inv.billing_address||''}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>on behalf of {ic?.name}</div></>
                 :<><div style={{fontSize:14,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}{ic?.billing_address_line1&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>{ic.billing_address_line1}{ic.billing_city?', '+ic.billing_city:''}{ic.billing_state?' '+ic.billing_state:''}{ic.billing_zip?' '+ic.billing_zip:''}</div>}</>}
-                {(inv._po_number||so?.po_number)&&<div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginTop:4,fontFamily:'monospace'}}>PO# {inv._po_number||so?.po_number}</div>}
+                {(inv.po_number||inv._po_number||so?.po_number)&&<div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginTop:4,fontFamily:'monospace'}}>PO# {inv.po_number||inv._po_number||so?.po_number}</div>}
                 {(()=>{const parentCust2=ic?.parent_id?cust.find(c=>c.id===ic.parent_id):ic;const altAddrs2=(parentCust2?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
                   return altAddrs2.length>0&&<select className="form-select" style={{fontSize:10,marginTop:4,padding:'2px 4px',width:'auto'}} value={inv.billing_name?JSON.stringify({label:inv.billing_name,street:(inv.billing_address||'').split(',')[0]?.trim(),city:(inv.billing_address||'').split(',')[1]?.trim(),state:(inv.billing_address||'').split(',')[2]?.trim(),zip:(inv.billing_address||'').split(',')[3]?.trim()}):''} onChange={e=>{const v=e.target.value;const upd=v?{...inv,billing_name:JSON.parse(v).label,billing_address:[JSON.parse(v).street,JSON.parse(v).city,JSON.parse(v).state,JSON.parse(v).zip].filter(Boolean).join(', ')}:{...inv,billing_name:null,billing_address:null};setInvs(prev=>prev.map(i=>i.id===inv.id?upd:i));setViewInvoice(upd)}}>
                     <option value="">Bill to: {ic?.name}</option>
@@ -745,6 +756,11 @@ export default function InvoicesPage(){
               </div>}
             </div>
 
+            {/* School PO # — customer's purchase order, shows on the invoice PDF (mirrors the SO field). */}
+            <div style={{width:180,marginBottom:14}}>
+              <label className="form-label">School PO #</label>
+              <input className="form-input" value={em.po_number||''} onChange={e=>setInvEditModal(s=>({...s,po_number:e.target.value}))} placeholder="e.g. PO-12345" style={{fontFamily:'monospace',fontWeight:600}}/></div>
+
             {/* Memo + Invoice Date + Due Date + Shipping + Tax */}
             <div style={{display:'grid',gridTemplateColumns:'1fr 140px 140px 120px 120px',gap:10,marginBottom:14}}>
               <div><label className="form-label">Memo</label>
@@ -856,6 +872,7 @@ export default function InvoicesPage(){
                 memo:em.memo,
                 date:em.date,
                 due_date:em.due_date,
+                po_number:em.po_number?em.po_number.trim():null,
                 billing_name:em.billing_name||null,
                 billing_address:em.billing_address||null,
                 shipping_name:em.shipping_name||null,
@@ -926,7 +943,7 @@ export default function InvoicesPage(){
               </div>}
               {/* Automated follow-ups (server sweep) — falls back to the manual todo reminder below when off */}
               <div style={{marginBottom:12}}>
-                <FollowUpAutoPanel value={si.followUp} onChange={val=>setInvSendModalDirect(s=>({...s,followUp:val}))} defaultMessage={'Hi '+((si.sendContacts||[])[0]?.name||'Coach')+',\n\nJust a friendly reminder that invoice '+si.inv.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
+                <FollowUpAutoPanel value={si.followUp} onChange={val=>setInvSendModalDirect(s=>({...s,followUp:val}))} defaultMessage={greetLine(siRecipients,si.sendContacts)+'\n\nJust a friendly reminder that invoice '+si.inv.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
               </div>
               {!si.followUp?.auto&&<div style={{marginBottom:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
                 <label style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
@@ -959,7 +976,7 @@ export default function InvoicesPage(){
                 const siBal=siInv.total-(siInv.paid||0);
                 const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
                 const siRepObj=REPS.find(r=>r.id===(siCust?.primary_rep_id||siSo?.created_by))||null;
-                const siPoNum=siInv._po_number||siSo?.po_number;
+                const siPoNum=siInv.po_number||siInv._po_number||siSo?.po_number;
                 const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
                 const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
                 const siShipName=siInv.shipping_name||(!siInv.shipping_address?resolveOrderShipTo(siSo,siCust)?.name:null)||siCust?.name||'—';
@@ -1002,7 +1019,7 @@ export default function InvoicesPage(){
                   brevoAttachments.push({name:_siPdfName,content:pdfB64});
                 }catch(err){console.warn('Failed to build invoice PDF:',err)}
                 // Build email with portal link
-                const portalUrl=siCust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(siCust.alpha_tag):'';
+                const portalUrl=siCust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(siCust.alpha_tag)+'&inv='+encodeURIComponent(siInv.id):'';
                 const emailHtml=buildBrandedEmailHtml(si.msg.replace(/\n/g,'<br>')
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
                   +(si.review?buildReviewButtonHtml():''),companyInfo);
@@ -1343,7 +1360,7 @@ export default function InvoicesPage(){
 
       {/* Filter bar */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
-        <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
+        <div className="search-bar" data-tour-id="invoices-search" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={invF.rep} onChange={e=>setInvF(f=>({...f,rep:e.target.value}))}>
           <option value="all">All Reps</option><option value="_me_">My Invoices</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
@@ -1408,7 +1425,7 @@ export default function InvoicesPage(){
                 const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
                 const fShipName=inv.shipping_name||(!inv.shipping_address?resolveOrderShipTo(so,ic)?.name:null)||ic?.name||'—';
                 const fShipAddr=(inv.shipping_name||inv.shipping_address?(inv.shipping_address||'').replace(/\n/g,'<br/>'):'')||orderShipToSub(so,ic)||custShipAddrSub(ic);
-                const fPoNum=inv._po_number||so?.po_number;
+                const fPoNum=inv.po_number||inv._po_number||so?.po_number;
                 // Build rows from the invoice's own line items (honors per-line price overrides)
                 const fStoredLi=inv.line_items||[];
                 const {rows:fRows,subtotal:fSubTotal}=buildInvoicePdfRows(inv,so,_$f);
@@ -1568,6 +1585,9 @@ export default function InvoicesPage(){
         const sendAll=async()=>{
           if(sendableCustomers.length===0){nf('Pick at least one recipient','error');return}
           upd(s=>({...s,sending:true,progress:{done:0,total:sendableCustomers.length,sent:0,failed:0}}));
+          // Local tallies — the `pd` closure is a stale render snapshot, so reading
+          // pd.progress after the loop always reported 0. Count here instead.
+          let _sentN=0,_failedN=0;
           const portalBase='https://nationalsportsapparel.com/coach?portal=';
           const _$ = n => '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           for(const t of sendableCustomers){
@@ -1575,13 +1595,13 @@ export default function InvoicesPage(){
             // Build statement HTML — every past-due invoice for this customer.
             const stmtRows=t.invoices.map(inv=>{
               const memo=inv.memo||'—';
-              const po=inv._po_number||(sos.find(s=>s.id===inv.so_id)?.po_number)||'—';
+              const po=inv.po_number||inv._po_number||(sos.find(s=>s.id===inv.so_id)?.po_number)||'—';
               const date=inv.date||inv.invoice_date||'—';
               const due=inv.due_date||'—';
               return '<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-weight:600">'+(inv.id||'')+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+memo+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-size:11px">'+po+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+date+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">'+due+'</td><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:#b91c1c;font-weight:600">'+_$(inv._bal)+'</td></tr>';
             }).join('');
             const stmtTable=pd.options.includeStatement?'<div style="margin:18px 0"><div style="font-size:13px;font-weight:700;color:#1e293b;margin-bottom:6px">Past-Due Invoices</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9"><th style="padding:8px 10px;text-align:left">Invoice</th><th style="padding:8px 10px;text-align:left">Memo</th><th style="padding:8px 10px;text-align:left">PO #</th><th style="padding:8px 10px;text-align:left">Date</th><th style="padding:8px 10px;text-align:left">Due</th><th style="padding:8px 10px;text-align:right">Balance</th></tr></thead><tbody>'+stmtRows+'<tr><td colspan="5" style="padding:8px 10px;text-align:right;font-weight:700;border-top:2px solid #1e293b">Total Owed</td><td style="padding:8px 10px;text-align:right;font-weight:800;color:#b91c1c;border-top:2px solid #1e293b">'+_$(t.total)+'</td></tr></tbody></table></div>':'';
-            const portalUrl=c.alpha_tag?(portalBase+encodeURIComponent(c.alpha_tag)):'';
+            const portalUrl=c.alpha_tag?(portalBase+encodeURIComponent(c.alpha_tag)+(t.invoices.length===1?'&inv='+encodeURIComponent(t.invoices[0].id):'&page=billing')):'';
             const payButton=(pd.options.includePayLink&&portalUrl)?'<div style="margin:20px 0"><a href="'+portalUrl+'" style="display:inline-block;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:700;font-size:14px">View & Pay in Portal</a></div>':'';
             const greeting=(getBillingContacts(c,cust)[0]?.name||(c.contacts||[])[0]?.name||'Coach');
             const personalizedMsg=pd.message.replace(/\{name\}/g,greeting).replace(/\n/g,'<br/>');
@@ -1596,11 +1616,23 @@ export default function InvoicesPage(){
               replyTo:{email:activeSender.email,name:activeSender.name},
             });
             const ok=res.ok;
+            if(ok){
+              _sentN++;
+              // Record the send on every past-due invoice in this statement so it
+              // shows in the invoice's Send History (mirrors the single-invoice path).
+              const _toStr=toList.map(x=>x.email).join(', ');
+              const histEntry={sent_at:new Date().toISOString(),sent_by:cu?.name||cu?.id||'NSA',type:'past_due',methods:['email'],to:_toStr,messageId:res.messageId||null};
+              const _nowLocal=new Date().toLocaleString();
+              const _ids=new Set(t.invoices.map(iv=>iv.id));
+              setInvs(prev=>prev.map(i=>_ids.has(i.id)?{...i,email_status:'sent',email_sent_at:_nowLocal,sent_history:[...(i.sent_history||[]),histEntry]}:i));
+            }else{
+              _failedN++;
+              console.warn('[past-due] failed for '+c.name+':',res.error);
+            }
             upd(s=>({...s,progress:{...s.progress,done:s.progress.done+1,sent:s.progress.sent+(ok?1:0),failed:s.progress.failed+(ok?0:1)}}));
-            if(!ok)console.warn('[past-due] failed for '+c.name+':',res.error);
           }
           upd(s=>({...s,sending:false}));
-          nf('Past-due email: '+pd.progress.sent+' sent'+(pd.progress.failed>0?', '+pd.progress.failed+' failed':''));
+          nf('Past-due email: '+_sentN+' sent'+(_failedN>0?', '+_failedN+' failed':''),_failedN>0&&_sentN===0?'error':undefined);
         };
         return<div className="modal-overlay" onClick={()=>{if(!pd.sending)setPdBulkModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>

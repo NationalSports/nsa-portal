@@ -10,6 +10,21 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
 export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
+// Topstar digitizing / vector-file billing line. This qty_only line bills the customer for a
+// file-creation service whose PO lives in so.deco_pos (a deco PO) — an item-level vendor PO is
+// never created for it. It must therefore be treated as already covered in SO status math and
+// must never be offered its own vendor PO. The _topstar flag is set at creation but is NOT a
+// persisted so_items column (not in _itemCols), so it vanishes on the first reload — recognize the
+// line by its stable persisted marker (sku 'DIGITIZING') as well, or a saved SO forgets it and
+// falls back to need_order forever (see #1846, which only caught the in-memory _topstar case).
+export const isTopstarLine=(it)=>!!(it&&(it._topstar||it.sku==='DIGITIZING'));
+// 'Artwork' service line (catalog product, sku 'Artwork') — bills the customer for art time.
+// There is no vendor and nothing physical to purchase, so like a Topstar line it must never
+// gate the SO ordering ladder (a lone unordered Artwork line held whole orders in "Need to
+// Order" forever, SO-1566) and must never be offered its own vendor PO.
+export const isArtworkLine=(it)=>!!(it&&/^artwork$/i.test((it.sku||'').trim()));
+// Billed-back service lines with no item-level vendor PO: covered by definition in status math.
+export const isServiceLine=(it)=>isTopstarLine(it)||isArtworkLine(it);
 export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
@@ -23,9 +38,9 @@ export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inboun
 export const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
-export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
-export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','mock_links','design_id','sample_art','prod_files','prod_files_attached','preview_url','web_logos','web_logo_url','notes','status','archived','uploaded'];
+export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id','attachments'];
+export const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id','attachments']);
+export const _artCols=['id','name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','mock_links','design_id','sample_art','prod_files','prod_files_attached','preview_url','web_logos','web_logo_url','location','notes','status','archived','uploaded'];
 // Maps a DB art-file row (estimate_art_files / so_art_files) to the client shape. Single shared mapper
 // so every column in _artCols round-trips: a column saved but missing from this map silently reverts on
 // reload — and worse, postgrest bulk upserts send the UNION of keys across all rows (PostgREST substitutes
@@ -33,16 +48,16 @@ export const _artCols=['id','name','deco_type','ink_colors','thread_colors','sti
 // doesn't send), so one loaded row in a mixed batch can wipe the DB value to NULL — or 400 the whole batch
 // on a NOT NULL column like mock_links (the SO-1459 blank-order bug; _sanitizeArtRow force-fills it).
 // artRowRoundTrip.test.js guards this.
-export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,stitches:a.stitches??null,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,sample_art:a.sample_art||[],prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',web_logos:a.web_logos||[],web_logo_url:a.web_logo_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version});
+export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,stitches:a.stitches??null,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,sample_art:a.sample_art||[],prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',web_logos:a.web_logos||[],web_logo_url:a.web_logo_url||'',location:a.location||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version});
 // Columns that may not exist in art file tables — stripped on retry (incl. mock_links/design_id
 // until migration 00152 is applied, so the app keeps saving art if the columns aren't there yet)
-export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','web_logos','web_logo_url','sample_art','stitches','archived','prod_files_attached']);
+export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','web_logos','web_logo_url','sample_art','stitches','location','archived','prod_files_attached']);
 // Columns that may not exist in so_jobs — stripped on retry
 export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','priced_separately','price_override','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 // `_draft` is deliberately absent: it is a session-only flag marking an uncommitted job (see
 // splitJobPricing), has no so_jobs column, and sending it made PostgREST reject the whole batch.
-export const _jobCols=['id','key','art_file_id','_art_ids','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
-export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','uniform_discount_percent','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','netsuite_internal_id','disable_cc_pay'];
+export const _jobCols=['id','key','art_file_id','_art_ids','art_name','deco_type','deco_types','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','uniform_discount_percent','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','logo_url','school_colors','netsuite_internal_id','disable_cc_pay'];
 
 // Pantone color lookup
 export const PANTONE_MAP={
@@ -342,6 +357,22 @@ export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art
 // Post-approval production-file stage. Screen print etc. stay 'production_files_needed' (artist uploads seps);
 // embroidery/DTF get rep-owned statuses so they read clearly and filter on their own.
 export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers','upload_emb_files'];
+// Prod statuses meaning a job has already entered decoration (staging=In Line, in_process=On Press)
+// or moved past it (completed, shipped). Once here, the warehouse "All items received" hand-off
+// notification is stale — the job has moved through that process — so it should no longer surface.
+export const DECO_OR_LATER_STATUSES=['staging','in_process','completed','shipped'];
+// "All items received — art needs attention" is a nag, so it should only fire when nobody is
+// already on the art: either it has never been handed to an artist (needs_art / unset), or it
+// HAS been submitted but hasn't cleared in ART_ATTENTION_STALE_DAYS and is now overdue.
+// sinceDate is the job's receive moment (the date the to-do already shows), because no per-job
+// art-submitted timestamp is persisted — so the row's visible age and this rule always agree.
+export const ART_ATTENTION_STALE_DAYS=10;
+export const artNeedsAttention=(artStatus,sinceDate)=>{
+  if(!artStatus||artStatus==='needs_art')return true;// never submitted to the artist
+  const t=sinceDate?new Date(sinceDate).getTime():NaN;
+  if(!Number.isFinite(t))return true;// no reliable clock — keep surfacing it rather than hiding it
+  return Math.floor((Date.now()-t)/86400000)>ART_ATTENTION_STALE_DAYS;
+};
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
@@ -396,6 +427,25 @@ export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i)
 // looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
 // (which only runs its .dst check under the af.status==='approved' branch).
 export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return artLiveDsts(af).length>0;return false};
+// "Does this art file have anything to review" — mirrors App.js totalMocks / the approval-card UI.
+// An art file can carry a stale 'needs_approval'/'uploaded' status with 0 files/0 mockups (e.g. a
+// recall that didn't reset status), which must NOT read as waiting_approval or it regenerates a
+// phantom "Mockup ready for review" action item forever (SO-1038).
+export const hasMockupContent=(af)=>!!af&&Math.max((af.mockup_files||af.files||[]).length,Object.values(af.item_mockups||{}).reduce((a,arr)=>a+((arr||[]).length),0))>0;
+// SINGLE source of truth for deriving a JOB's art_status from ONE of its art files. buildJobs
+// (businessLogic.js:~394) inlines this exact ladder — that module is deliberately import-free
+// CommonJS (see its module.exports note) so it can't share this symbol; the two copies MUST stay
+// identical. They drifted once: the OrderEditor rebuild copy dropped the 'uploaded' branch, so an
+// artist-uploaded proof derived 'needs_art' on the order page and PERSISTED on the next save — a
+// submitted mockup silently reverting to "Needs Art" (F5 / SO-1023 / SO-1625 class). 'uploaded'
+// and 'needs_approval' share the waiting-approval track; the hasMockupContent guard keeps a
+// mockless uploaded file at needs_art so this never masks a genuinely missing mock.
+export const artStatusForFile=(af,fallbackDt)=>{
+  if(!af)return'needs_art';
+  if(af.status==='approved')return artProdFilesConfirmed(af)?'art_complete':prodFilesStatusFor(af.deco_type||fallbackDt);
+  if(af.status==='needs_approval'||af.status==='uploaded')return hasMockupContent(af)?'waiting_approval':'needs_art';
+  return'needs_art';
+};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
 // 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
 // dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.
@@ -491,7 +541,26 @@ export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','
 // instead of dropping them. A plain `SZ_ORD.filter(...)` silently omits every label not in
 // SZ_ORD, which hid ordered units from the Sales Order / Production Sheet / Invoice printouts
 // (a line ordered S/M/L/Womens-XL/Womens-2XL printed only S/M/L while the total still read 12).
-const _szCompare=(a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return (ia===-1?999:ia)-(ib===-1?999:ib)};
+// Adidas B2B labels the half shoe size with a trailing dash ("10-" = 10.5) and runs past 17 (18,
+// 19). Neither form is in SZ_ORD, so both landed in the unknown-label bucket and piled up at the
+// end of a size row — a shoe grid read 4,7,8,…,12,4-,5-,…,14-,18,19 instead of by number. Rank
+// those numerically inside the footwear block so a run reads 9, 9-, 10, 10-, 11 … left to right.
+// Ordering only: unrecognized labels still sort last, and nothing here changes size membership.
+const _FW_NUM=/^(\d{1,2})(\.5|-|½)?$/;
+const _I17=SZ_ORD.indexOf('17');
+export const szRank=(s)=>{
+  const i=SZ_ORD.indexOf(s);
+  if(i>=0)return i;
+  const m=_FW_NUM.exec(String(s).trim());
+  if(m){
+    const n=Number(m[1])+(m[2]?0.5:0);
+    const j=SZ_ORD.indexOf(String(n));// "10-" ranks alongside "10.5"
+    if(j>=0)return j;
+    if(n>17&&n<=20)return _I17+(n-17)/100;// 18/19 sit just past 17, ahead of the waist run
+  }
+  return 999;
+};
+const _szCompare=(a,b)=>szRank(a)-szRank(b);
 // Union of the size labels present across one or more size maps (pass their flattened keys),
 // ordered for display with custom/unrecognized labels last.
 export const orderedSizeKeys=(keys)=>[...new Set(keys)].sort(_szCompare);

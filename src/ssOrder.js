@@ -15,12 +15,13 @@ export const SS_SHIP_METHODS = { ground: '1', next_day: '2', second_day: '3', fe
 // style (its sku field), color and sizes{}. The S&S Sku is looked up per size; if
 // absent we flag it via `warnings` so the preview blocks rather than send an
 // invalid line.
+// Drop-ship lines are included: the modal resolves the batch's drop-ship
+// destination as its ship-to and the rep can edit it before submitting.
 export function buildSSOrderLines(batchPOs) {
   const lines = [];
   const warnings = [];
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
-      if (it.drop_ship) return; // drop-ship lines ship direct to the customer, not via the NSA-warehouse API order
       const style = it._ss_style || it.sku || '';
       const color = it._ss_color || it.color || '';
       const skuBySize = it._ss_skus || it._ssSkus || {};

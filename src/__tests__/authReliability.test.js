@@ -2,7 +2,7 @@
  * refresh signs the user out (PR: auth-reliability-fixes). The behavioral guarantee under test:
  * a transient/network refresh failure must NEVER be classified 'fatal', because 'fatal' is the only
  * path that force-logs-out — that misclassification was the "it randomly logged me out" bug. */
-import { _classifyRefresh, _isAuthError, _isPermissionDenied } from '../lib/dbEngine';
+import { _classifyRefresh, _isAuthError, _isPermissionDenied, _handleAuthSaveFailure, _permDenialParked, _clearSaveError, _dbSaveFailedIds } from '../lib/dbEngine';
 
 describe('_classifyRefresh — transient failures never force logout', () => {
   test('ok: refresh returned a session with no error', () => {
@@ -66,6 +66,65 @@ describe('_isPermissionDenied — terminal RLS denial vs recoverable expiry', ()
     expect(_isPermissionDenied({ code: 'PGRST301' })).toBe(false);
     expect(_isPermissionDenied(null)).toBe(false);
     expect(_isPermissionDenied({ message: 'duplicate key' })).toBe(false);
+  });
+});
+
+/* Terminal-denial retry cap (2026-08-03 RLS-storm root cause). A perm=true save failure — the anon/wrong
+ * role hitting a staff-only RLS policy — cannot be fixed by a refresh, so the background retry drivers
+ * (App.js doRetry / onVis) replayed it every 60s→4min forever: one zombie tab looped the SO-save graph
+ * against RLS for 16+ hours. _handleAuthSaveFailure counts consecutive perm denials per id and parks the
+ * id after the cap so the drivers stop re-POSTing. The behavioral guarantees:
+ *   1. a perm=true streak parks ONLY after the cap (not on the first failure),
+ *   2. a recoverable expiry (perm=false) resets the streak — a flapping-then-recovering session can't
+ *      accumulate its way to a park,
+ *   3. a successful save (_clearSaveError) un-parks so the id can retry again.
+ * The edit is never dropped by parking — this suite pins the retry gate only. */
+describe('_permDenialParked — bounds the perm-denial retry storm without losing the edit', () => {
+  const perm = { code: '42501', message: 'new row violates row-level security policy for table "sales_orders"' };
+  const expired = { message: 'JWT expired' };
+  const cleanup = (id) => { _clearSaveError(id); _dbSaveFailedIds.delete(id); };
+
+  test('a single perm denial does NOT park — genuine expiries get time to recover', () => {
+    const id = 'SO-park-1';
+    _handleAuthSaveFailure(id, perm);
+    expect(_permDenialParked(id)).toBe(false);
+    cleanup(id);
+  });
+
+  test('parks only after the cap of consecutive perm denials', () => {
+    const id = 'SO-park-2';
+    for (let i = 0; i < 4; i++) _handleAuthSaveFailure(id, perm);
+    expect(_permDenialParked(id)).toBe(false); // 4 < cap(5)
+    _handleAuthSaveFailure(id, perm);
+    expect(_permDenialParked(id)).toBe(true);  // 5th trips it
+    cleanup(id);
+  });
+
+  test('a recoverable expiry resets the streak — no park by accumulation across a flap', () => {
+    const id = 'SO-park-3';
+    for (let i = 0; i < 4; i++) _handleAuthSaveFailure(id, perm);
+    _handleAuthSaveFailure(id, expired); // perm=false → reset
+    for (let i = 0; i < 4; i++) _handleAuthSaveFailure(id, perm);
+    expect(_permDenialParked(id)).toBe(false); // only 4 since the reset
+    cleanup(id);
+  });
+
+  test('a successful save (_clearSaveError) un-parks the id', () => {
+    const id = 'SO-park-4';
+    for (let i = 0; i < 5; i++) _handleAuthSaveFailure(id, perm);
+    expect(_permDenialParked(id)).toBe(true);
+    _clearSaveError(id); // save succeeded / id removed
+    expect(_permDenialParked(id)).toBe(false);
+    _dbSaveFailedIds.delete(id);
+  });
+
+  test('ids are parked independently', () => {
+    const a = 'SO-park-5a', b = 'SO-park-5b';
+    for (let i = 0; i < 5; i++) _handleAuthSaveFailure(a, perm);
+    _handleAuthSaveFailure(b, perm);
+    expect(_permDenialParked(a)).toBe(true);
+    expect(_permDenialParked(b)).toBe(false);
+    cleanup(a); cleanup(b);
   });
 });
 

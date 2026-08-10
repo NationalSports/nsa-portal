@@ -9,7 +9,7 @@ import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
 import { buildSsOrdersQuery } from './ssOrders';
 import { normSzName } from './pricing';
-import { smColorSubset, smSizeMatch } from './lib/vendorColorMatch';
+import { smColorSubset, smSizeMatch, ssStyleSearchVariants } from './lib/vendorColorMatch';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -1094,69 +1094,200 @@ const ssPutCrossRef = async (yourSku, identifier) => {
 // S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
 // order lines carry style/color/size, so resolve the Sku live from the Products API.
 // CORRECTNESS RULE: only fill a Sku on an exact color+size match — never guess, so an
-// unmatched line stays blocked (caller falls back to manual ordering).
+// unmatched line stays blocked (caller falls back to manual ordering). Our style codes are
+// often SanMar's brand-prefixed form (Bella+Canvas "BC3945", Next Level "NL3600") while S&S
+// catalogs the bare manufacturer number ("3945", "3600"); ssStyleSearchVariants supplies the
+// as-is code plus the looser bare-number fallback to try (see lib/vendorColorMatch).
 const ssResolveSkus = async (descriptors) => {
   const resolved = {};
   const candidates = {};
   const styles = [...new Set((descriptors || []).map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
-  for (const style of styles) {
-    let items = [];
+
+  // Fetch a style's S&S products by a search code. S&S /Products?style= expects a numeric
+  // styleID, not the style name — so resolve the styleID first via /Styles?search= (the same
+  // path our other S&S lookups use), then fetch that style's products.
+  //  - not strict (the exact code / suffix-trimmed code): first returned style, as before.
+  //  - strict (a prefix-stripped bare number): never the first fuzzy result. When the brand is
+  //    known (from the stripped prefix) pin to the S&S style of THAT brand — a bare number can
+  //    belong to several brands ("1580" is Next Level's crop top AND another brand's style), so
+  //    picking by brand yields ours, not whichever S&S lists first. With no brand (or none of
+  //    the exact hits carry it) accept the exact match only when it's unambiguous (exactly one),
+  //    so a shared number is left blocked rather than guessed.
+  const fetchItems = async ({ code, strict, brand }) => {
     try {
-      // S&S /Products?style= expects a numeric styleID, not the style name — so resolve
-      // the styleID first via /Styles?search= (the same path our other S&S lookups use),
-      // then fetch that style's products.
-      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(style));
+      const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(code));
       const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
-      const match = sa.find(s => _smNorm(s.partNumber) === _smNorm(style) || _smNorm(s.styleName) === _smNorm(style)) || sa[0];
-      const styleID = match && (match.styleID || match.StyleID);
-      if (styleID) {
-        const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
-        items = Array.isArray(data) ? data : (data ? [data] : []);
-      }
-    } catch (e) { console.warn('[S&S] SKU lookup failed for', style, e.message); }
-    const cand = [];
-    const map = {}; // normalized "color|size" -> sku
-    for (const r of items) {
-      const sku = String(r.sku || r.Sku || r.gtin || '');
-      if (!sku) continue;
-      const color = r.colorName || r.color || '';
-      const size = r.sizeName || r.size || '';
-      cand.push({ color, size, sku });
-      const mk = _smNorm(color) + '|' + _smSizeNorm(size);
-      if (color && size && !(mk in map)) map[mk] = sku;
-    }
-    candidates[style] = cand;
-    for (const d of descriptors) {
-      if (String(d.style || '').toUpperCase().trim() !== style) continue;
-      const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
-      if (map[mk]) resolved[d.key] = map[mk];
-    }
-    // Some catalog style codes append a color suffix (e.g. "AT300-50" → base style "AT300").
-    // For any line still unmatched, retry against the base style — still an exact color+size match.
-    const _dash = style.lastIndexOf('-');
-    const _base = _dash > 0 ? style.slice(0, _dash) : '';
-    if (_base && descriptors.some(d => String(d.style || '').toUpperCase().trim() === style && !resolved[d.key])) {
-      let items2 = [];
-      try {
-        const sl2 = await ssApiCall('/Styles?search=' + encodeURIComponent(_base));
-        const sa2 = Array.isArray(sl2) ? sl2 : (sl2 ? [sl2] : []);
-        const m2 = sa2.find(s => _smNorm(s.partNumber) === _smNorm(_base) || _smNorm(s.styleName) === _smNorm(_base)) || sa2[0];
-        const sid2 = m2 && (m2.styleID || m2.StyleID);
-        if (sid2) { const d2 = await ssApiCall('/Products/?style=' + encodeURIComponent(sid2)); items2 = Array.isArray(d2) ? d2 : (d2 ? [d2] : []); }
-      } catch (e) { /* leave unresolved */ }
-      for (const r of items2) {
-        const sku = String(r.sku || r.Sku || r.gtin || ''); if (!sku) continue;
-        const color = r.colorName || r.color || '', size = r.sizeName || r.size || '';
-        candidates[style].push({ color, size, sku });
-        const mk2 = _smNorm(color) + '|' + _smSizeNorm(size);
-        for (const d of descriptors) {
-          if (resolved[d.key] || String(d.style || '').toUpperCase().trim() !== style) continue;
-          if (_smNorm(d.color) + '|' + _smSizeNorm(d.size) === mk2) resolved[d.key] = sku;
+      let match;
+      if (!strict) {
+        match = sa.find(s => _smNorm(s.partNumber) === _smNorm(code) || _smNorm(s.styleName) === _smNorm(code)) || sa[0];
+      } else {
+        const exacts = sa.filter(s => _smNorm(s.partNumber) === _smNorm(code) || _smNorm(s.styleName) === _smNorm(code));
+        let chosen = null;
+        if (brand) {
+          const bn = _smNorm(brand);
+          const branded = exacts.filter(s => { const sb = _smNorm(s.brandName || s.BrandName); return sb && (sb.includes(bn) || bn.includes(sb)); });
+          if (branded.length) chosen = branded[0];
         }
+        // No brand, or the brand didn't match any exact hit: use the exact match only if there's
+        // exactly one (a number shared across brands stays blocked, never guessed).
+        if (!chosen && exacts.length === 1) chosen = exacts[0];
+        match = chosen;
       }
+      const styleID = match && (match.styleID || match.StyleID);
+      if (!styleID) return [];
+      const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
+      return Array.isArray(data) ? data : (data ? [data] : []);
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', code, e.message); return []; }
+  };
+
+  for (const style of styles) {
+    const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
+    const cand = [];
+    candidates[style] = cand;
+    for (const variant of ssStyleSearchVariants(style)) {
+      if (mine.every(d => resolved[d.key])) break; // all lines matched — no looser search needed
+      const items = await fetchItems(variant);
+      const map = {}; // normalized "color|size" -> sku, from this variant's products
+      for (const r of items) {
+        const sku = String(r.sku || r.Sku || r.gtin || '');
+        if (!sku) continue;
+        const color = r.colorName || r.color || '';
+        const size = r.sizeName || r.size || '';
+        cand.push({ color, size, sku });
+        const mk = _smNorm(color) + '|' + _smSizeNorm(size);
+        if (color && size && !(mk in map)) map[mk] = sku;
+      }
+      for (const d of mine) {
+        if (resolved[d.key]) continue;
+        const mk = _smNorm(d.color) + '|' + _smSizeNorm(d.size);
+        if (map[mk]) resolved[d.key] = map[mk];
+      }
+    }
+    // Safe fuzzy fallback for lines the exact color+size match missed — same rule the SanMar
+    // resolver uses. It closes two vendor-naming gaps once spacing/case is ignored: (1) the
+    // order color carries extra qualifier words S&S abbreviates ("Green/White Pl" vs S&S's
+    // "Green/ White Plaid"); (2) youth sizes labelled "YL"/"YS" against a bare "L"/"S".
+    // smColorSubset is one-directional (S&S's words must be a subset of the order's, never the
+    // reverse) and we assign ONLY when exactly one S&S sku qualifies — any ambiguity leaves the
+    // line blank so it's ordered manually. Never risk shipping the wrong colorway or size.
+    for (const d of mine) {
+      if (resolved[d.key]) continue;
+      const dsz = _smSizeNorm(d.size);
+      const skus = new Set();
+      let hit = '';
+      for (const c of cand) {
+        if (!c.sku) continue;
+        if (!smSizeMatch(dsz, _smSizeNorm(c.size))) continue;
+        if (!smColorSubset(c.color, d.color)) continue;
+        skus.add(c.sku); hit = c.sku;
+      }
+      if (skus.size === 1) resolved[d.key] = hit;
     }
   }
   return { resolved, candidates };
+};
+
+// ─── Per-warehouse availability (order-modal "ships from" display) ───
+// Neither vendor lets an integrated order pick its warehouse: both route each line
+// from the warehouse nearest the ship-to that has stock (splitting when needed).
+// These lookups surface that per-warehouse picture so the rep can see the likely
+// ship-from before submitting. Read-only and best-effort — a failure returns {}
+// and the modal simply omits the column; it must never block an order.
+
+// S&S: GET /Products/{sku,…} — every product row carries a warehouses[] breakdown
+// (warehouseAbbr, qty, and S&S's own `closest` flag = nearest to the account's
+// default ship-to). Returns { SKUUPPER: [{ abbr, qty, closest }] }.
+// Chunked 25/call like ssGetProductStyles to keep URLs short and inside rate limits.
+const ssGetWarehouseStock = async (skus) => {
+  const list = [...new Set((Array.isArray(skus) ? skus : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  const map = {};
+  for (let i = 0; i < list.length; i += 25) {
+    const chunk = list.slice(i, i + 25);
+    try {
+      const data = await ssApiCall('/Products/' + chunk.map(encodeURIComponent).join(','));
+      (Array.isArray(data) ? data : (data ? [data] : [])).forEach(p => {
+        const k = String(p?.sku || p?.Sku || '').trim().toUpperCase();
+        const wh = Array.isArray(p?.warehouses) ? p.warehouses : [];
+        if (!k) return;
+        map[k] = wh.map(w => ({
+          abbr: String(w?.warehouseAbbr || w?.WarehouseAbbr || '').trim().toUpperCase(),
+          qty: Number(w?.qty) || 0,
+          closest: w?.closest === true || w?.Closest === true,
+        })).filter(w => w.abbr);
+      });
+    } catch (e) { console.warn('[S&S] warehouse stock lookup failed:', e.message); }
+    if (i + 25 < list.length) await new Promise(r => setTimeout(r, 350));
+  }
+  return map;
+};
+
+// SanMar: per-warehouse detail lives ONLY in PromoStandards Inventory 2.0.0
+// (InventoryServiceBindingV2) — its PartInventory rows carry an
+// InventoryLocationArray with warehouse id/name/quantity, keyed by the same
+// partId (Unique_Key) sendPO uses. V1 getInventoryLevels has no location detail
+// and the legacy getInventoryQtyForStyleColorSize errors on our order-line color
+// spellings (verified live 2026-08-06). One V2 call per style, parts matched to
+// modal lines by partId. descriptors: [{ key, style, partId }] → { key: [{ id,
+// name, qty }] }. Best-effort: a failed style just omits its keys ("—" cells).
+const sanmarGetWarehouseStock = async (descriptors) => {
+  const out = {};
+  const arr = (x) => (Array.isArray(x) ? x : (x !== undefined && x !== null) ? [x] : []);
+  const list = (Array.isArray(descriptors) ? descriptors : []).filter(d => d && d.key && d.style && d.partId);
+  const byPart = {};
+  // One V2 call per style, all styles in flight together — the responses are big
+  // (every part of the style) and serializing them made the modal feel slow.
+  await Promise.all([...new Set(list.map(d => String(d.style).toUpperCase().trim()))].map(async (style) => {
+    try {
+      const inv = await sanmarApiCall('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+      const parts = arr(inv?.Inventory?.PartInventoryArray?.PartInventory || inv?.PartInventoryArray?.PartInventory);
+      for (const p of parts) {
+        const pid = String(p?.partId || '').trim();
+        if (!pid) continue;
+        const locs = arr(p?.InventoryLocationArray?.InventoryLocation || p?.inventoryLocationArray?.inventoryLocation);
+        const rows = locs.map(loc => ({
+          id: String(loc?.inventoryLocationId || '').trim(),
+          name: String(loc?.inventoryLocationName || '').trim(),
+          qty: parseInt(loc?.inventoryLocationQuantity?.Quantity?.value ?? loc?.inventoryLocationQuantity?.quantity?.value ?? NaN, 10),
+        })).filter(r => r.id && !Number.isNaN(r.qty));
+        if (rows.length) byPart[pid] = rows;
+      }
+    } catch (e) { console.warn('[SanMar] V2 warehouse lookup failed for', style, e.message); }
+  }));
+  for (const d of list) { const rows = byPart[String(d.partId)]; if (rows) out[d.key] = rows; }
+  return out;
+};
+
+// Free-text S&S product search for the order modal's manual SKU picker: when a line can't be
+// auto-resolved (a color/size S&S doesn't carry under our style, a mis-spec'd style), the rep
+// searches S&S live and picks the exact per-size Sku to drop onto the line. Returns flat,
+// pickable rows [{ sku, style, brand, color, size, price, qty }] — the `sku` is the S&S order
+// `identifier`. Best-effort: a lookup miss/failure returns [] (or throws to surface a real
+// network error to the caller's catch).
+const ssSearchProducts = async (query, { limit = 80 } = {}) => {
+  const q = String(query || '').trim();
+  if (q.length < 2) return [];
+  const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(q));
+  const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
+  const styleIDs = [...new Set(sa.map(s => s.styleID || s.StyleID).filter(Boolean))].slice(0, 5);
+  if (!styleIDs.length) return [];
+  const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleIDs.join(',')));
+  const items = Array.isArray(data) ? data : (data ? [data] : []);
+  const rows = [];
+  for (const r of items) {
+    const sku = String(r.sku || r.Sku || r.gtin || '');
+    if (!sku) continue;
+    rows.push({
+      sku,
+      style: String(r.styleName || r.StyleName || '').trim(),
+      brand: String(r.brandName || r.BrandName || '').trim(),
+      color: String(r.colorName || r.color || '').trim(),
+      size: String(r.sizeName || r.size || '').trim(),
+      price: parseFloat(r.customerPrice || r.piecePrice || 0) || 0,
+      qty: typeof r.qty === 'number' ? r.qty : (parseInt(r.qty, 10) || 0),
+    });
+    if (rows.length >= limit) break;
+  }
+  return rows;
 };
 
 // Submit a built S&S order (the `order` object from buildSSOrderPayload) via
@@ -1665,4 +1796,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

@@ -1193,6 +1193,13 @@ const _refreshMaxId=async(table,prefix)=>{
   return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
 };
 const _refreshSoMaxId=()=>_refreshMaxId('sales_orders','SO-');
+// Map an in-memory PO line to its so_item_po_lines row shape. Extracted so the full-SO save (below)
+// and the durable create-time write (_dbPersistNewPoLine) build the row IDENTICALLY — a lesson from
+// this codebase's hand-synced-duplicate history: two copies of this column mapping WILL drift.
+const _poLineToRow=(itemId,po)=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
+  return{so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
+    billed:billed||{},tracking_numbers:tracking_numbers||[],
+    sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}};};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
@@ -1978,10 +1985,7 @@ const _dbSaveSOInner = async (so) => {
         const{decorations,pick_lines,po_lines}=item;
         if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
         if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes})});
-        if(po_lines?.length)po_lines.forEach(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
-          allPoRows.push({so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
-            billed:billed||{},tracking_numbers:tracking_numbers||[],
-            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}})});
+        if(po_lines?.length)po_lines.forEach(po=>{allPoRows.push(_poLineToRow(itemId,po))});
       });
       // Batch insert decorations
       if(allDecoRows.length){
@@ -2183,8 +2187,10 @@ const _dbSaveArtFilesInner = async (so) => {
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveArtFilesInner), true/*addOnly: art-only success must not clear a failed full-SO payload*/);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','po_number','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+// po_number is in _invExtraCols too so a save still lands (minus the PO) if the column-add
+// migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','po_number','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -2204,9 +2210,17 @@ const _dbSaveInvoiceInner = async (inv) => {
     // IDENTITY GUARD (2026-07-27, mirrors the SO/estimate paths). nextInvId mints from the same
     // page-load-stale _dbMaxIds, and this path had NO new-vs-existing check at all — a bare upsert, so
     // a stale tab that re-minted a live invoice number would silently replace another customer's
-    // invoice, payments and line items included. No invoice collision appears in the audit history
-    // (the INV range moves fast and invoices are minted-then-saved in one burst, so the window is
-    // narrow), but the hole is the same one that cost SO-1507 its header, on a money document.
+    // invoice, payments and line items included — the same hole that cost SO-1507 its header, on a
+    // money document.
+    //
+    // CORRECTION (2026-08-07): the original note here said no invoice collision appears in the audit
+    // history. That was wrong, and the detector behind it was blind by construction. It looked for
+    // created_at CHANGING between old_data and new_data, but invoices.created_at is a DB-owned
+    // `timestamptz DEFAULT now()` that an overwriting upsert never rewrites — so a collision leaves it
+    // untouched and the query returns nothing. Searching on customer_id changing instead surfaces
+    // seven, of which INV-63144 (2026-07-10) was a real loss: Palos Verdes HS Football's $384.41
+    // invoice, already emailed to the school, replaced 92 seconds later by another rep's session that
+    // had minted the same number. Restored as INV-63450.
     //
     // Unlike sales_orders/estimates, invoices.created_at is `timestamptz DEFAULT now()`, NOT text — so
     // the two sides legitimately differ in FORMAT for the same instant: a client that just created the
@@ -2219,23 +2233,48 @@ const _dbSaveInvoiceInner = async (inv) => {
       if(!Number.isFinite(ta)||!Number.isFinite(tb))return true;// unparseable → can't tell → allow
       return Math.abs(ta-tb)<=5000;// one document across two formats stays far inside this
     };
-    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at').eq('id',inv.id).maybeSingle();
-    if(!_existInvErr&&_existInv&&inv.created_at&&_existInv.created_at&&!_invSameDoc(_existInv.created_at,inv.created_at)){
+    // ...and created_at alone cannot carry this guard, because the path that creates almost every
+    // invoice — the Create Invoice button in OrderEditor — builds its object without one (the column
+    // has a DB default, so nothing client-side ever needed to stamp it). `inv.created_at` is undefined
+    // there, the condition short-circuits, and the guard never runs. That is the gap INV-63144 fell
+    // through, and it stayed open after the 2026-07-27 fix shipped.
+    //
+    // So: compare created_at when both sides have one (strongest signal, and the only one that can
+    // tell two docs apart once a client has loaded the row), and otherwise fall back to the document's
+    // own identity. A client with no _version believes it is CREATING this invoice, so an existing row
+    // at that id is either our own save being retried — same customer, SO and total — or somebody
+    // else's invoice, which differs on at least one. A client that does hold a _version loaded the row
+    // from the DB, so its edits are deliberate (re-pointing an invoice to another customer is a real
+    // workflow — the Lincoln XC split did exactly that) and must not be second-guessed here.
+    const _invDifferentDoc=ex=>{
+      if(inv.created_at&&ex.created_at)return!_invSameDoc(ex.created_at,inv.created_at);
+      if(inv._version)return false;// loaded from the DB — this is an edit, not a mint
+      const _n=v=>Number(v)||0;
+      return(ex.customer_id??null)!==(inv.customer_id??null)
+        ||(ex.so_id??null)!==(inv.so_id??null)
+        ||Math.abs(_n(ex.total)-_n(inv.total))>=0.005;
+    };
+    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total').eq('id',inv.id).maybeSingle();
+    if(!_existInvErr&&_existInv&&_invDifferentDoc(_existInv)){
       const oldId=inv.id;
+      // Which signal caught it — the alerts are read during incident triage, so say which.
+      const _why=(inv.created_at&&_existInv.created_at)
+        ?'created_at mismatch: theirs '+_existInv.created_at+' vs ours '+inv.created_at
+        :'identity mismatch: theirs '+_existInv.customer_id+'/'+_existInv.so_id+'/'+_existInv.total+' vs ours '+inv.customer_id+'/'+inv.so_id+'/'+inv.total;
       if(!inv._version){
         // Never saved, so no payments or items hang off this id yet — renumbering is clean. Scan on
         // the 'INV' prefix, NOT 'INV-': some live ids carry no dash ('INV63316'), and a 'INV-%' scan
         // would happily re-mint straight into one of them.
         const freshMax=await _refreshMaxId('invoices','INV');
         inv.id=invRow.id='INV-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
-        console.warn('[DB] Invoice',oldId,'is held by a different invoice (created',_existInv.created_at,'vs ours',inv.created_at,') — re-minted to',inv.id);
+        console.warn('[DB] Invoice',oldId,'is held by a different invoice (',_why,') — re-minted to',inv.id);
         if(_dbNotify)_dbNotify(oldId+' was already taken by another invoice — this one saved as '+inv.id+'. Reload to keep editing it.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'inv_id_reminted',soId:inv.id,reason:oldId+' belonged to a different invoice (created_at mismatch) — re-minted to '+inv.id});
+        if(_dataLossAlert)_dataLossAlert({kind:'inv_id_reminted',soId:inv.id,reason:oldId+' belonged to a different invoice ('+_why+') — re-minted to '+inv.id});
       }else{
         // Already saved under this id: renumbering would strand its payments and line items.
-        console.error('[DB] SAFETY: Blocking invoice save —',oldId,'is held by a different invoice (created',_existInv.created_at,'vs ours',inv.created_at,')');
+        console.error('[DB] SAFETY: Blocking invoice save —',oldId,'is held by a different invoice (',_why,')');
         if(_dbNotify)_dbNotify('Save blocked — '+oldId+' now belongs to a different invoice. Please reload before editing.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice (created_at mismatch) — refused overwrite'});
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice ('+_why+') — refused overwrite'});
         _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
         return false;
       }
@@ -2461,8 +2500,23 @@ const _isPermissionDenied=(err)=>{
 // Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
 // restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
 const _authFailLoggedAt=new Map();// entity id → last auth_save_failed telemetry ts (10-min throttle)
+// Terminal-denial retry cap (root-caused 2026-08-03). A perm=true failure — the anon/wrong role hitting
+// a staff-only RLS policy — can NEVER be fixed by a token refresh, so the background retry drivers would
+// otherwise replay the write every 60s→4min forever: a single zombie/anon tab looped the SO-save graph
+// against RLS for 16+ hours, ~5k rejected inserts/day. After _PERM_DENIAL_CAP consecutive perm denials
+// for an id we PARK it — the retry drivers (App.js doRetry / onVis) skip parked ids, so the doomed write
+// stops going out. The edit is NOT lost: the id stays in _dbSaveFailedIds (still surfaced as unsaved),
+// its payload is held in the outbox, and the recorded save-error tells the rep to contact an admin. The
+// streak is in-memory, so a page reload re-arms the retry; a successful save or _clearSaveError() resets
+// it. The counter only advances on perm=true — transient/expiry/version failures retry as before.
+const _PERM_DENIAL_CAP=5;
+const _permDenialStreak=new Map();// id → consecutive perm=true failures
+const _permDenialParked=(id)=>(_permDenialStreak.get(id)||0)>=_PERM_DENIAL_CAP;
 const _handleAuthSaveFailure=(id,err)=>{
   const perm=_isPermissionDenied(err);
+  // perm=true streak advances toward the park cap; a recoverable expiry (perm=false) resets it so a
+  // flapping-then-recovering session never accumulates its way to a park.
+  if(id){if(perm)_permDenialStreak.set(id,(_permDenialStreak.get(id)||0)+1);else _permDenialStreak.delete(id)}
   // perm=true → a live account lacking rights (won't self-heal); perm=false → expired/zombie session
   // (recoverable). This row is what separates the two in the client_events dashboard. Event name must
   // stay in the anon INSERT whitelist (migration client_events_anon_auth_failure_telemetry); sent
@@ -2903,6 +2957,41 @@ const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
     }
   }catch(e){console.error('[DB] Direct pick_line update error:',e)}
 };
+// Durably persist a just-created PO line the instant it's made, decoupled from the debounced whole-SO
+// save. A Create-PO line otherwise lives ONLY in the editing tab's memory until the async SO save
+// flushes it; if a second tab saves first (or this tab reloads/closes before the flush) the line is
+// dropped before it ever reaches so_item_po_lines — the "PO dropped from portal" loss (SO-1663,
+// PO 28950 SANBA, 2026-07-31). The number is already claimed on form-open, so the result is a
+// po_number_claims row with no matching PO line. This write closes that window.
+//   * Idempotent: skips if a row for this (so_item, po_id) already exists, so it can't duplicate the
+//     line the subsequent full save also writes. (A rare race dup is harmless — the duplicate-PO
+//     guard in _dbSaveSOInner drops it, and an individual PO line is a procurement RECORD, not a
+//     placed vendor order, so this can NEVER double-order inventory.)
+//   * No-op when the item isn't in the DB yet (brand-new order): the full save will persist it, and a
+//     just-created order has no stale second tab to race it.
+// Fire-and-forget from the editor, exactly like the po_number_claims breadcrumb write.
+const _dbPersistNewPoLine=async(soId,itemIndex,poLine)=>{
+  if(!supabase||!soId||itemIndex==null||!poLine||!poLine.po_id)return;
+  return _dbSavingGuard(async()=>{try{
+    const{data:itemRow,error:selErr}=await supabase.from('so_items').select('id').eq('so_id',soId).eq('item_index',itemIndex).maybeSingle();
+    if(selErr||!itemRow||!itemRow.id)return;// item not in DB yet — the full SO save will persist it
+    const{data:existing}=await supabase.from('so_item_po_lines').select('id').eq('so_item_id',itemRow.id).eq('po_id',poLine.po_id);
+    if(Array.isArray(existing)&&existing.length)return;// already persisted — don't duplicate
+    const row=_poLineToRow(itemRow.id,poLine);
+    const{error:insErr}=await supabase.from('so_item_po_lines').insert(row);
+    if(insErr){
+      // Older schema without billed/tracking_numbers columns — same fallback the full save uses.
+      const{billed:_b,tracking_numbers:_tn,...core}=row;
+      const{error:coreErr}=await supabase.from('so_item_po_lines').insert({...core,sizes:{...(core.sizes||{}),_billed:_b||{},_tracking_numbers:_tn||[]}});
+      if(coreErr){console.error('[DB] persist new PO line failed for',soId,'item',itemIndex,':',coreErr.message);return}
+    }
+    // Intentionally NOT bumping sales_orders.updated_at here: the whole-SO save (onSave) fires moments
+    // later and owns the timestamp/version bump. Once this row is in the DB, that trailing save — or a
+    // racing second tab's save — preserves it via the existing PO-line restore pass (re-injects DB PO
+    // lines the client's payload lacks), which is exactly how the dropped line now survives.
+    console.log('[DB] Persisted new PO line',poLine.po_id,'on',soId,'item',itemIndex,'at creation');
+  }catch(e){console.error('[DB] persist new PO line error for',soId,'item',itemIndex,':',e?.message||e)}});
+};
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
 // When a save is in-progress and a newer version arrives, the newer version is queued.
 // After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
@@ -2971,7 +3060,7 @@ const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_sa
 // instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
 const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
 const _recordSaveError=(id,msg)=>{if(!id)return;_dbSaveFailedErrors.set(id,{msg:String(msg||'unknown error').slice(0,400),ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}};
-const _clearSaveError=(id)=>{if(!id)return;if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
+const _clearSaveError=(id)=>{if(!id)return;_permDenialStreak.delete(id);if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
 // On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
@@ -3218,6 +3307,7 @@ export {
   _dbSavingGuard,
   _batchPosDirtyUntil,
   _dbUpdatePickLineStatus,
+  _dbPersistNewPoLine,
   _dbSaveInFlight,
   _dbSavePending,
   _queuedEntitySave,
@@ -3232,6 +3322,8 @@ export {
   _dbSaveFailedIds,
   _dbSaveFailedErrors,
   _clearSaveError,
+  _permDenialParked,
+  _handleAuthSaveFailure,
   _outboxAdd,
   _outboxRemove,
   _outboxRemoveById,

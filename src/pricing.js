@@ -97,6 +97,9 @@ export function spFlatShare(q,c,u=1){return DECO.spFlatShare(_tables(),q,c,u)}
 // Split-job screen print: price each production run's qty at its own tier and blend — see
 // decoPricing.spRunBlend/decoSplitRuns (jobs split with priced_separately).
 export function spRunBlend(runs,c,u=1){return DECO.spRunBlend(_tables(),runs,c,u)}
+// True when the SP matrix has no price for a (qty × colors) combination — dP stamps the same
+// condition as `_unpriced` on its result so the deco row can flag it instead of showing $0.
+export function spUnpriced(q,c){return DECO.spUnpriced(_tables(),q,c)}
 export const decoSplitRuns=DECO.decoSplitRuns;
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
 export function emP(st,q,s=true){return DECO.emP(_tables(),st,q,s)}

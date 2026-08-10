@@ -1098,23 +1098,23 @@ export default function CommissionsPage(){
                       </tr>
                       {iOpen&&(()=>{
                         const dtl=[];const g=calcGP(l.inv,dtl);
-                        // Push the "Outside deco POs" SO-level cost back onto the outsourced
-                        // deco lines it pays for, so each art/deco line shows a real cost and
-                        // margin instead of a misleading $0 / 100%. Display only — total cost is
-                        // unchanged (it only moves between rows); the split is proportional to
-                        // each outsourced line's revenue, so it's exact in total and approximate
-                        // per line across mixed deco types.
+                        // Collapse the per-garment outsourced deco sub-lines into ONE "Outside deco"
+                        // row that carries the deco-PO cost bucket and names the PO(s), so the
+                        // drill-down shows a single line to reconcile — grab that PO, update its cost —
+                        // instead of a repeated "$0 COST" sub-line under every garment. Display only:
+                        // the order total is unchanged, revenue and cost just move onto the one row.
                         (()=>{
-                          const bkt=dtl.find(d=>d.kind==='bucket'&&d.label==='Outside deco POs');
-                          if(!bkt||!(bkt.cost>0))return;
-                          const outs=dtl.filter(d=>d.kind==='deco'&&d.outsourced&&(d.cost||0)===0);
+                          const outs=dtl.filter(d=>d.kind==='deco'&&d.outsourced);
                           if(!outs.length)return;
-                          const byRev=outs.reduce((a,d)=>a+(d.rev||0),0)>0;
-                          const base=byRev?outs.reduce((a,d)=>a+(d.rev||0),0):outs.reduce((a,d)=>a+(d.qty||0),0);
-                          if(!(base>0))return;
-                          let assigned=0;
-                          outs.forEach((d,i)=>{const share=i===outs.length-1?Math.round((bkt.cost-assigned)*100)/100:Math.round(bkt.cost*((byRev?(d.rev||0):(d.qty||0))/base)*100)/100;assigned+=share;d.cost=share;d.allocated=true});
-                          bkt._folded=true;// cost now lives on the deco lines — drop the bucket row
+                          const bkt=dtl.find(d=>d.kind==='bucket'&&d.label==='Outside deco POs');
+                          const rev=outs.reduce((a,d)=>a+(d.rev||0),0);
+                          const qty=outs.reduce((a,d)=>a+(d.qty||0),0);
+                          const cost=bkt?safeNum(bkt.cost):0;// deco-PO total, or 0 when no unit cost entered yet
+                          const pos=[...new Set((l.so?.deco_pos||[]).map(dp=>dp&&dp.po_id).filter(Boolean))];
+                          const types=[...new Set(outs.map(d=>d.type).filter(Boolean))];
+                          outs.forEach(d=>{d._folded=true});
+                          if(bkt)bkt._folded=true;
+                          dtl.push({kind:'deco',_group:true,outsourced:true,allocated:cost>0,type:types.join(', ')||'deco',pos,qty,rev,cost});
                         })();
                         const rows2=dtl.filter(d=>!d._folded);
                         const dRev=rows2.reduce((a,d)=>a+(d.rev||0),0);const dCost=rows2.reduce((a,d)=>a+(d.cost||0),0);
@@ -1136,12 +1136,12 @@ export default function CommissionsPage(){
                               // >60% GP flag now applies to allocated deco lines too — they carry a
                               // real (approximate) cost, so a high margin there is worth a look.
                               const hot=!zero&&(d.kind==='item'||d.kind==='deco')&&d.rev>0&&lgp/d.rev>0.6;
-                              const label=d.kind==='item'?((d.sku?d.sku+' ':'')+(d.name||'Item')+(d.color?' · '+d.color:'')):d.kind==='deco'?('↳ '+d.type+(d.outsourced?(d.allocated?' (outsourced — deco PO allocated)':' (outsourced — cost in Outside deco POs)'):'')):d.label;
+                              const label=d.kind==='item'?((d.sku?d.sku+' ':'')+(d.name||'Item')+(d.color?' · '+d.color:'')):d.kind==='deco'?(d._group?('Outside deco'+(d.type?' ('+d.type+')':'')+(d.pos&&d.pos.length?' · '+d.pos.join(', '):'')):('↳ '+d.type+(d.outsourced?(d.allocated?' (outsourced — deco PO allocated)':' (outsourced — cost in Outside deco POs)'):''))):d.label;
                               return<tr key={di} style={{background:zero?'#fee2e2':hot?'#fef9c3':'white'}}>
-                                <td style={{fontWeight:d.kind==='item'?600:400,color:d.kind==='bucket'?'#64748b':'#0f172a',paddingLeft:d.kind==='deco'?18:6}}>{label}{zero&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#dc2626'}}>$0 COST</span>}</td>
+                                <td style={{fontWeight:d.kind==='item'?600:d._group?600:400,color:d.kind==='bucket'?'#64748b':'#0f172a',paddingLeft:(d.kind==='deco'&&!d._group)?18:6}}>{label}{zero&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#dc2626'}}>$0 COST</span>}</td>
                                 <td style={{textAlign:'center'}}>{d.qty!=null?d.qty:'—'}</td>
                                 <td style={{textAlign:'right'}}>{d.qty>0?'$'+(d.rev/d.qty).toFixed(2):'—'}</td>
-                                <td style={{textAlign:'right',color:'#dc2626'}}>{d.qty>0?'$'+(d.cost/d.qty).toFixed(2):'—'}{d.kind==='item'&&d.poCovered&&<span title="This unit cost comes from the actual PO line — edit the PO unit cost in ✎ Edit job costs to change it; the catalog cost only covers non-PO quantity" style={{marginLeft:3,fontSize:8,fontWeight:700,color:'#6d28d9',cursor:'help'}}>PO</span>}{d.allocated&&<span title="Outsourced decoration — the outside deco PO cost is allocated onto this line proportional to revenue, so the order total reconciles. Edit the deco PO unit cost in ✎ Edit job costs." style={{marginLeft:3,fontSize:8,fontWeight:700,color:'#0d9488',cursor:'help'}}>alloc</span>}</td>
+                                <td style={{textAlign:'right',color:'#dc2626'}}>{d.qty>0?'$'+(d.cost/d.qty).toFixed(2):'—'}{d.kind==='item'&&d.poCovered&&<span title="This unit cost comes from the actual PO line — edit the PO unit cost in ✎ Edit job costs to change it; the catalog cost only covers non-PO quantity" style={{marginLeft:3,fontSize:8,fontWeight:700,color:'#6d28d9',cursor:'help'}}>PO</span>}{d.allocated&&<span title="The order's total outside deco PO cost. Edit the deco PO unit cost in ✎ Edit job costs to change it." style={{marginLeft:3,fontSize:8,fontWeight:700,color:'#0d9488',cursor:'help'}}>deco PO</span>}</td>
                                 <td style={{textAlign:'right'}}>{fmt(Math.round((d.rev||0)*100)/100)}</td>
                                 <td style={{textAlign:'right',color:'#dc2626'}}>{fmt(Math.round((d.cost||0)*100)/100)}</td>
                                 <td style={{textAlign:'right',fontWeight:600,color:lgp>=0?'#166534':'#dc2626'}}>{fmt(Math.round(lgp*100)/100)}</td>

@@ -183,6 +183,63 @@ export function healFrozenJobArtDrift(job, resolveLiveArtClaim) {
 }
 
 /**
+ * True when the healed art-id set kept EVERY previously-declared design and only ADDED ids —
+ * a new print location placed on garments that already carried the old design(s) (e.g. a
+ * "Back Marketing" print added to shirts that already had the approved front logo).
+ *
+ * On a pure expansion the existing designs' art_status must be preserved. The heal's caller
+ * otherwise recomputes the job's status as the WORST per-file state across all ids, so a freshly
+ * added location sitting at 'uploaded' dragged a submitted (waiting_approval) job all the way back
+ * to needs_art — and that regressed status was SAVED, hiding a submitted proof from the order page
+ * (SO-1625 / JOB-1625-01). A real art-identity change (a declared design removed or swapped) is NOT
+ * an expansion and still recomputes, which is what the heal exists for.
+ */
+export function isPureArtExpansion(declaredIds, healedIds) {
+  const declared = (declaredIds || []).filter(Boolean);
+  const healed = new Set((healedIds || []).filter(Boolean));
+  return declared.length > 0 && healed.size > declared.length && declared.every((id) => healed.has(id));
+}
+
+/**
+ * Prod statuses meaning a job's press run is CLOSED — the work came off the floor. Deliberately
+ * narrower than DECO_OR_LATER_STATUSES (which also counts staging/in_process): a job still in line
+ * or on press can legitimately absorb another garment, a finished one cannot.
+ */
+export const CLOSED_PROD_STATUSES = ['completed', 'shipped'];
+
+export const isClosedJob = (job) => !!job && CLOSED_PROD_STATUSES.includes(job.prod_status);
+
+/**
+ * Partition a rebuilt job's garment rows against the run its CLOSED predecessor committed to.
+ *
+ * The auto-builder groups every live decoration sharing a signature into one job, so a garment
+ * added to the SO after that job finished — a reprint for misprinted pieces, a late add-on — lands
+ * on the finished job and re-opens it: SO-1514's JOB-1514-02 went from 26/26 Items Received and
+ * shipped back to 26/35 Partially Received when 9 replacement tees were added, and the whole
+ * design re-billed at the new qty tier. Added garments are a NEW press run and belong in their
+ * own job (what a rep does by hand with ✂️ Split).
+ *
+ * Rows match on (item_idx, sku) — the identity the split/merge paths already key on. Only WHOLE
+ * rows move: a quantity bump on a garment the closed run already printed is left alone, because a
+ * plain auto job stores no per-size record of what that run committed to, so any share we carved
+ * off it would be a guess.
+ *
+ * @param {object[]} rebuiltItems — the freshly built job's rows
+ * @param {object[]} committedItems — the closed job's saved rows
+ * @returns {{keep: object[], added: object[]}}
+ */
+export function splitClosedJobAdditions(rebuiltItems, committedItems) {
+  const committed = new Set();
+  (committedItems || []).forEach((gi) => { if (gi) committed.add(gi.item_idx + '-' + gi.sku); });
+  const keep = []; const added = [];
+  (rebuiltItems || []).forEach((gi) => {
+    if (!gi) return;
+    (committed.has(gi.item_idx + '-' + gi.sku) ? keep : added).push(gi);
+  });
+  return { keep, added };
+}
+
+/**
  * Workflow fields that must not cross-contaminate across distinct jobs.
  * Copied only when matchExistingJob found a real match (key or unique art id).
  */
