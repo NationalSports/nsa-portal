@@ -7,6 +7,28 @@ const { verifyUser, verifyAdmin, getSupabaseAdmin, reconcileInvoiceFromIntent } 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
 
+// Find a still-'processing' PaymentIntent overlapping any of realIds within the last
+// `days`. Stripe lists newest-first at up to 100/page, so this PAGINATES (bounded)
+// instead of trusting page one: an ACH debit settles over 1–4 business days, and on a
+// busy week the older in-flight intent — exactly the one the double-debit guard exists
+// to find — is the first thing pushed off page 1 by newer volume from every channel
+// sharing the Stripe account. maxPages bounds serverless runtime; exported for tests.
+const findInFlightIntent = async (client, realIds, { days = 7, maxPages = 20 } = {}) => {
+  const gte = Math.floor(Date.now() / 1000) - days * 86400;
+  let startingAfter;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await client.paymentIntents.list({ created: { gte }, limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) });
+    const data = (res && res.data) || [];
+    const hit = data.find((p) => p.status === 'processing' && p.metadata && p.metadata.invoice_id
+      && String(p.metadata.invoice_id).split(/[\s,]+/).some((v) => realIds.includes(v)));
+    if (hit) return hit;
+    if (!res || !res.has_more || !data.length) return null;
+    startingAfter = data[data.length - 1].id;
+  }
+  return null;
+};
+exports.findInFlightIntent = findInFlightIntent;
+
 exports.handler = async (event) => {
   // Handle CORS preflight
   if (event.httpMethod === 'OPTIONS') {
@@ -84,13 +106,11 @@ exports.handler = async (event) => {
             // invoice. Refuse (any method) while a 'processing' intent overlaps these
             // invoice ids. Scoped inside the invRows branch so a non-invoice
             // identifier (e.g. a legacy webstore slug shared across buyers) can never
-            // block one buyer on another's in-flight payment. One 100-item page over
-            // 7 days covers NSA's volume; fail-open on Stripe errors (outer catch) so
+            // block one buyer on another's in-flight payment. Paginated 7-day scan
+            // (see findInFlightIntent); fail-open on Stripe errors (outer catch) so
             // the check can never block payments outright.
             const realIds = invRows.map((r) => String(r.id));
-            const recent = await client.paymentIntents.list({ created: { gte: Math.floor(Date.now() / 1000) - 7 * 86400 }, limit: 100 });
-            const inFlight = (recent.data || []).find((p) => p.status === 'processing' && p.metadata && p.metadata.invoice_id
-              && String(p.metadata.invoice_id).split(/[\s,]+/).some((v) => realIds.includes(v)));
+            const inFlight = await findInFlightIntent(client, realIds);
             if (inFlight) {
               return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'A bank payment for this invoice is already processing (submitted ' + new Date(inFlight.created * 1000).toLocaleDateString('en-US') + '). Bank payments take 1–4 business days to clear, so please don’t pay again — contact NSA if you believe this is an error.' }) };
             }
