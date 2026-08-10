@@ -253,10 +253,10 @@ function designMaskPatternTexture(url, patternCanvas, patternKey, accentHex, rep
   img.src = url;
 }
 
-// AYSONSA is a complete front/back garment layout, not a repeating print tile.
-// Recolor its five stable source inks, then project the two approved elevations
-// over the actual AGI-1012 surface. This preserves the artist's rising hem and
-// underarm pattern while the original PBR fabric, folds and seams stay intact.
+// AYSONSA's artwork band is rebuilt from the artist's front elevation as a
+// seamless recolored tile, then wrapped cylindrically below an analytic hem
+// boundary by the shader in applyAysonSurface. Only the tile is sampled; the
+// elevations themselves are never projected directly.
 function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
   // The SVG's four magenta shades are one production artwork ink. Keep them
   // visually unified and expose body, artwork, and collar/cuffs as the three
@@ -268,18 +268,7 @@ function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
     const image = new Image(); image.crossOrigin = 'anonymous';
     image.onload = () => resolve(image); image.src = url;
   });
-  Promise.all([load(frontUrl), load(backUrl)]).then(([frontImage, backImage]) => {
-    const make = (image, url) => {
-      const canvas = tintedTile(image, url, colors[0], colors[1], colors[2], colors[3], 'atlas', colors[4]);
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.generateMipmaps = false;
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.anisotropy = 16;
-      texture.userData.shared = true;
-      return texture;
-    };
+  load(frontUrl).then((frontImage) => {
     // Build a seamless motif tile from the supplied vector-derived elevation.
     // Mirroring the crop makes both texture edges identical, so cylindrical
     // sampling can wrap the torso without introducing another painted seam.
@@ -313,7 +302,7 @@ function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
     pattern.magFilter = THREE.LinearFilter;
     pattern.anisotropy = 16;
     pattern.userData.shared = true;
-    const pair = { front: make(frontImage, frontUrl), back: make(backImage, backUrl), pattern };
+    const pair = { pattern };
     _aysonProjectionTextures[key] = pair;
     onReady(pair);
   }).catch(() => {});
@@ -322,35 +311,25 @@ function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
 function applyAysonSurface(st, mat, tpl, zone, meshName) {
   const bounds = tpl.projectionBounds || { xMin: -0.334, xMax: 0.334, yMin: 0, yMax: 0.677, depthCenter: 0 };
   const isBody = meshName === 'body_front' || meshName === 'body_back';
-  const sourceU = isBody
-    ? (tpl.projectionBodyU || { frontMin: 0.251, frontMax: 0.687, backMin: 0.348, backMax: 0.747 })
-    : (tpl.projectionSleeveU || { frontMin: 0.086, frontMax: 0.852, backMin: 0.180, backMax: 0.916 });
   const geometryX = isBody ? { min: -0.212, max: 0.212 } : { min: bounds.xMin, max: bounds.xMax };
-  const fixedSide = meshName === 'body_front' ? 1 : meshName === 'body_back' ? 0 : -1;
   const base = new THREE.Color(textileAlbedo(ds.toHex(zone.color, '#31132a')));
-  const data = mat.userData.nsaAyson || { base, front: null, back: null, pattern: null, shader: null };
+  const data = mat.userData.nsaAyson || { base, pattern: null, shader: null };
   data.base.copy(base);
   mat.userData.nsaAyson = data;
   if (!mat.userData.nsaAysonInstalled) {
     mat.userData.nsaAysonInstalled = true;
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.nsaAysonBase = { value: data.base };
-      shader.uniforms.nsaAysonFront = { value: data.front };
-      shader.uniforms.nsaAysonBack = { value: data.back };
       shader.uniforms.nsaAysonPattern = { value: data.pattern };
       shader.uniforms.nsaAysonBounds = { value: new THREE.Vector4(geometryX.min, geometryX.max, bounds.yMin, bounds.yMax) };
-      shader.uniforms.nsaAysonSourceU = { value: new THREE.Vector4(sourceU.frontMin, sourceU.frontMax, sourceU.backMin, sourceU.backMax) };
-      shader.uniforms.nsaAysonDepth = { value: bounds.depthCenter || 0 };
-      shader.uniforms.nsaAysonSide = { value: fixedSide };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNsaAysonPosition = position;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;\nuniform vec3 nsaAysonBase;\nuniform sampler2D nsaAysonFront;\nuniform sampler2D nsaAysonBack;\nuniform sampler2D nsaAysonPattern;\nuniform vec4 nsaAysonBounds;\nuniform vec4 nsaAysonSourceU;\nuniform float nsaAysonDepth;\nuniform float nsaAysonSide;')
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;\nuniform vec3 nsaAysonBase;\nuniform sampler2D nsaAysonPattern;\nuniform vec4 nsaAysonBounds;')
         .replace('#include <color_fragment>', `#include <color_fragment>
           float nsaAysonX = clamp((vNsaAysonPosition.x - nsaAysonBounds.x) / max(0.00001, nsaAysonBounds.y - nsaAysonBounds.x), 0.0, 1.0);
           float nsaAysonY = clamp((vNsaAysonPosition.y - nsaAysonBounds.z) / max(0.00001, nsaAysonBounds.w - nsaAysonBounds.z), 0.0, 1.0);
-          bool nsaAysonIsFront = nsaAysonSide > 0.5 || (nsaAysonSide < -0.5 && vNsaAysonPosition.z >= nsaAysonDepth);
           // A continuous analytic boundary replaces the disconnected front and
           // back UV masks: low across the center and rising at both side seams.
           float nsaAysonEdge = smoothstep(0.52, 0.94, abs(nsaAysonX * 2.0 - 1.0));
@@ -363,16 +342,13 @@ function applyAysonSurface(st, mat, tpl, zone, meshName) {
           diffuseColor.rgb = mix(nsaAysonBase, nsaAysonInk.rgb, nsaAysonArt);`);
       data.shader = shader;
     };
-    mat.customProgramCacheKey = () => `nsa-ayson-projection-v5-${fixedSide}`;
+    mat.customProgramCacheKey = () => 'nsa-ayson-projection-v5';
   }
   mat.color.set('#ffffff');
   mat.needsUpdate = true;
   aysonProjectionTextures(tpl.projectionFront, tpl.projectionBack, zone, (pair) => {
-    data.front = pair.front; data.back = pair.back;
     data.pattern = pair.pattern;
     if (data.shader) {
-      data.shader.uniforms.nsaAysonFront.value = pair.front;
-      data.shader.uniforms.nsaAysonBack.value = pair.back;
       data.shader.uniforms.nsaAysonPattern.value = pair.pattern;
       data.shader.uniforms.nsaAysonBase.value.copy(data.base);
     }
