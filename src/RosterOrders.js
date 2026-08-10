@@ -61,6 +61,261 @@ const parsePastedRoster = (text) => {
   return rows;
 };
 
+// ─── Shared size-totals matrix ────────────────────────────────────────────────
+// One tight grid: items down the side, sizes across the top, each cell showing
+// need/in-stock colored by coverage. Used under each team's grid and for the
+// session-level rollup. needBySlot: { [slot]: { [cat]: { [size]: need|[{qty}] } } }.
+const _SZ_ABBREV = { 'Youth Sleeves': 'YSlv', 'Small': 'Sm', 'Medium': 'Med', 'Large': 'Lg', 'OSFA': 'OS' };
+function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
+  const needOf = (v) => Array.isArray(v) ? v.reduce((s, x) => s + (x.qty || 1), 0) : (v || 0);
+
+  // Per item: merge categories into one entry per size — need summed, stock
+  // summed across the distinct products that size resolves to (YM/WM/AM cells
+  // sharing a product are only counted once).
+  const items = (kitItems || []).map(ki => {
+    const byCat = needBySlot[ki.slot] || {};
+    const bySize = {}; // size -> { need, pids:Set }
+    ['YM', 'WM', 'AM'].forEach(cat => {
+      const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id)
+        : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
+      Object.entries(byCat[cat] || {}).forEach(([sz, v]) => {
+        const need = needOf(v);
+        if (!need) return;
+        const e = bySize[sz] || (bySize[sz] = { need: 0, pids: new Set() });
+        e.need += need;
+        if (productId) e.pids.add(productId);
+      });
+    });
+    const units = Object.values(bySize).reduce((s, e) => s + e.need, 0);
+    return { ki, bySize, units };
+  }).filter(x => x.units > 0);
+  if (!items.length) return null;
+
+  // Column order: youth scale, adult scale, then sock sizes — only those in use.
+  const masterOrder = [...SZ_YOUTH, ...SZ_ADULT, ...SZ_SOCKS.filter(s => !SZ_ADULT.includes(s))];
+  const cols = masterOrder.filter(sz => items.some(x => x.bySize[sz]));
+
+  const cellFor = (entry) => {
+    if (!entry) return null;
+    if (!entry.pids.size) return { need: entry.need, avail: null, color: '#475569', bg: '#f8fafc', deliveries: [] };
+    let avail = 0, incoming = 0;
+    const deliveries = [];
+    entry.pids.forEach(pid => {
+      const s = getStock(pid, entry.size);
+      avail += s.avail; incoming += s.incoming;
+      (s.deliveries || []).forEach(dv => deliveries.push(dv));
+    });
+    deliveries.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')));
+    if (avail >= entry.need) return { need: entry.need, avail, incoming, deliveries, color: '#15803d', bg: '#f0fdf4' };
+    if (avail + incoming >= entry.need) return { need: entry.need, avail, incoming, deliveries, color: '#b45309', bg: '#fffbeb' };
+    return { need: entry.need, avail, incoming, deliveries, color: '#dc2626', bg: '#fef2f2' };
+  };
+
+  // Visual grouping: a hairline between the youth scale, adult scale, and sock
+  // sizes, so the eye doesn't read one undifferentiated row of columns.
+  const scaleOf = (sz) => SZ_YOUTH.includes(sz) ? 'Y' : SZ_ADULT.includes(sz) ? 'A' : 'S';
+  const groupEdge = (i) => i > 0 && scaleOf(cols[i]) !== scaleOf(cols[i - 1]);
+
+  const th = { padding: '8px 6px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'center', whiteSpace: 'nowrap', letterSpacing: 0.3 };
+  return (
+    <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,.05)' }}>
+      <style>{`.ktt-row:hover td{background:#f0f6ff}`}</style>
+      <div style={{ background: '#0b1220', color: '#fff', padding: '11px 16px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span>📊 {title}</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 10, fontWeight: 600, fontSize: 10 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#4ade80' }} />covered</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#fbbf24' }} />covered by incoming</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#f87171' }} />short</span>
+          <span style={{ opacity: 0.65 }}>need / in stock</span>
+        </span>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12.5, width: '100%' }}>
+          <thead>
+            <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+              <th style={{ ...th, textAlign: 'left', padding: '8px 14px', minWidth: 150, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2 }}>Item</th>
+              {cols.map((sz, i) => <th key={sz} style={{ ...th, borderLeft: groupEdge(i) ? '1px solid #e2e8f0' : 'none' }} title={sz}>{_SZ_ABBREV[sz] || sz}</th>)}
+              <th style={{ ...th, borderLeft: '2px solid #e2e8f0' }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(({ ki, bySize, units }, ri) => {
+              const rowBg = ri % 2 ? '#fafbfc' : '#fff';
+              return (
+                <tr key={ki.slot} className="ktt-row" style={{ borderTop: '1px solid #f1f5f9', background: rowBg }}>
+                  <td style={{ padding: '7px 14px', whiteSpace: 'nowrap', position: 'sticky', left: 0, background: rowBg, zIndex: 1 }}
+                    title={[ki.sku_youth, ki.sku].filter(Boolean).join(' / ') || undefined}>
+                    <span style={{ fontWeight: 700, color: '#0b1220' }}>{ki.label}</span>
+                    {ki.color && <span style={{ color: '#94a3b8', fontSize: 11 }}> {ki.color}</span>}
+                  </td>
+                  {cols.map((sz, i) => {
+                    const c = cellFor(bySize[sz] ? { ...bySize[sz], size: sz } : null);
+                    const edge = groupEdge(i) ? '1px solid #eef2f7' : 'none';
+                    if (!c) return <td key={sz} style={{ padding: '4px 3px', textAlign: 'center', color: '#e2e8f0', borderLeft: edge }}>·</td>;
+                    // Short cells wear their next arrival inline, so the answer to
+                    // "when can we fill this?" doesn't require a hover.
+                    const nextDv = c.avail != null && c.avail < c.need && c.deliveries.length ? c.deliveries[0] : null;
+                    return (
+                      <td key={sz} style={{ padding: '4px 3px', textAlign: 'center', borderLeft: edge }}
+                        title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.deliveries.length ? ` · arriving: ${_fmtDeliveries(c.deliveries)}` : ''}`}`}>
+                        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', minWidth: 42, borderRadius: 7, padding: '3px 5px', background: c.bg, lineHeight: 1.25 }}>
+                          <span style={{ whiteSpace: 'nowrap' }}>
+                            <span style={{ fontWeight: 800, color: c.color }}>{c.need}</span>
+                            <span style={{ fontSize: 10, color: c.avail == null ? '#94a3b8' : c.color, opacity: 0.75 }}>/{c.avail == null ? '—' : c.avail}</span>
+                          </span>
+                          {nextDv && <span style={{ fontSize: 9, fontWeight: 700, color: c.color, opacity: 0.85, whiteSpace: 'nowrap' }}>+{nextDv.qty} {_fmtDate(nextDv.date)}</span>}
+                        </span>
+                      </td>
+                    );
+                  })}
+                  <td style={{ padding: '4px 10px', textAlign: 'center', fontWeight: 800, color: '#0b1220', borderLeft: '2px solid #e2e8f0' }}>{units}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Incoming deliveries — everything on order, grouped by arrival date ───────
+// Reads product_incoming for every product linked in the kit and lays it out as
+// a date timeline: what lands when, for which items/sizes, with the PO note.
+function IncomingDeliveriesCard({ kitItems }) {
+  const [rows, setRows] = useState(null);
+  const pidKey = (kitItems || []).flatMap(ki => [ki.product_id, ki.product_youth_id, ki.product_womens_id]).filter(Boolean).join(',');
+
+  // A product can back several kit items (both jersey colors share a SKU) —
+  // label deliveries with every item they serve.
+  const labelsByPid = useMemo(() => {
+    const m = {};
+    (kitItems || []).forEach(ki => {
+      [ki.product_id, ki.product_youth_id, ki.product_womens_id].filter(Boolean).forEach(pid => {
+        (m[pid] = m[pid] || new Set()).add(ki.label);
+      });
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pidKey]);
+
+  useEffect(() => {
+    const pids = pidKey ? pidKey.split(',') : [];
+    if (!pids.length) { setRows([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('product_incoming')
+        .select('product_id,size,qty,expected_date,note')
+        .in('product_id', [...new Set(pids)]).gt('qty', 0)
+        .order('expected_date');
+      if (!cancelled) setRows(data || []);
+    })();
+    return () => { cancelled = true; };
+  }, [pidKey]);
+
+  if (!rows || !rows.length) return null;
+
+  const byDate = {};
+  rows.forEach(r => { (byDate[r.expected_date || 'TBD'] = byDate[r.expected_date || 'TBD'] || []).push(r); });
+  const dates = Object.keys(byDate).sort();
+  const prettyDate = (d) => {
+    if (d === 'TBD') return 'Date TBD';
+    const dt = new Date(d + 'T00:00:00');
+    return isNaN(dt.getTime()) ? d : dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+
+  const th = { padding: '8px 14px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'left', whiteSpace: 'nowrap', letterSpacing: 0.3, textTransform: 'uppercase' };
+  return (
+    <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,.05)' }}>
+      <div style={{ background: '#0b1220', color: '#fff', padding: '11px 16px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center' }}>
+        <span>🚚 Incoming deliveries</span>
+        <span style={{ marginLeft: 'auto', fontWeight: 600, fontSize: 10.5, opacity: 0.75 }}>
+          {rows.reduce((s, r) => s + r.qty, 0).toLocaleString()} units on order
+        </span>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12.5, width: '100%' }}>
+          <thead>
+            <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+              <th style={{ ...th, minWidth: 110 }}>Arrives</th>
+              <th style={{ ...th, textAlign: 'right', width: 60 }}>Qty</th>
+              <th style={th}>Item</th>
+              <th style={{ ...th, width: 70 }}>Size</th>
+              <th style={{ ...th, width: 90 }}>PO</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((d, di) => {
+              const group = byDate[d];
+              const groupUnits = group.reduce((s, r) => s + r.qty, 0);
+              const rowBg = di % 2 ? '#fafbfc' : '#fff';
+              return group.map((r, i) => (
+                <tr key={d + i} style={{ background: rowBg, borderTop: i === 0 ? '1px solid #e2e8f0' : '1px solid #f1f5f9' }}>
+                  {i === 0 && (
+                    <td rowSpan={group.length} style={{ padding: '7px 14px', verticalAlign: 'top', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontWeight: 800, color: '#0b1220' }}>{prettyDate(d)}</span>
+                      <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>{groupUnits} unit{groupUnits !== 1 ? 's' : ''}</div>
+                    </td>
+                  )}
+                  <td style={{ padding: '7px 14px', textAlign: 'right', fontWeight: 800, color: '#15803d', whiteSpace: 'nowrap' }}>+{r.qty}</td>
+                  <td style={{ padding: '7px 14px', fontWeight: 700, color: '#0b1220' }}>{[...(labelsByPid[r.product_id] || ['Item'])].join(' / ')}</td>
+                  <td style={{ padding: '7px 14px', fontWeight: 700, color: '#475569', whiteSpace: 'nowrap' }}>{r.size}</td>
+                  <td style={{ padding: '7px 14px', fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>{r.note || '—'}</td>
+                </tr>
+              ));
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Session rollup — every team's sizes summed, shown on the main page ───────
+// "Middles 2026" is the order; each team rolls up into this one table so the
+// coach sees the whole order's needs vs. stock without opening each team.
+function SessionSizeRollup({ session, teams, kitItems }) {
+  const [needBySlot, setNeedBySlot] = useState(null);
+  const { getStock } = useKitInventory(kitItems);
+  const teamKey = (teams || []).map(t => t.id).join(',');
+
+  useEffect(() => {
+    if (!teamKey) { setNeedBySlot(null); return; }
+    let cancelled = false;
+    (async () => {
+      const teamIds = teamKey.split(',');
+      const { data: ps } = await supabase.from('roster_players').select('*').in('team_id', teamIds);
+      const playerList = ps || [];
+      if (!playerList.length) { if (!cancelled) setNeedBySlot(null); return; }
+      const { data: sz } = await supabase.from('roster_player_sizes').select('player_id,kit_slot,size,qty').in('player_id', playerList.map(p => p.id));
+      if (cancelled) return;
+      const smap = {};
+      (sz || []).forEach(r => { (smap[r.player_id] = smap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty }; });
+      const result = {};
+      (kitItems || []).forEach(ki => {
+        const byCat = {};
+        const groups = linkedGroups(ki);
+        playerList.forEach(p => {
+          if (ki.gk_only && !p.is_gk) return;
+          const cell = (smap[p.id] || {})[ki.slot];
+          const s = cell?.size;
+          if (!s || s === '-') return;
+          const cat = resolveSizeGroup(s, p, groups);
+          if (!byCat[cat]) byCat[cat] = {};
+          byCat[cat][s] = (byCat[cat][s] || 0) + (cell.qty ?? (ki.qty || 1));
+        });
+        result[ki.slot] = byCat;
+      });
+      setNeedBySlot(result);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, teamKey]);
+
+  if (!needBySlot) return null;
+  return <KitTotalsTable title={`${session?.name || 'Order'} — totals across all teams`} kitItems={kitItems} needBySlot={needBySlot} getStock={getStock} />;
+}
+
 // ─── Inventory hook (product_inventory + inventory_unified) ───────────────────
 function useKitInventory(items) {
   const [inv, setInv] = useState({});
@@ -72,9 +327,12 @@ function useKitInventory(items) {
     let cancelled = false;
     (async () => {
       try {
-        const [{ data: prods }, { data: inHouse }] = await Promise.all([
+        const [{ data: prods }, { data: inHouse }, { data: onOrder }] = await Promise.all([
           supabase.from('products').select('id,sku').in('id', productIds),
           supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', productIds),
+          // NSA's own on-order record — expected deliveries entered at purchase
+          // time (qty + landing date), distinct from the vendor snapshot below.
+          supabase.from('product_incoming').select('product_id,size,qty,expected_date').in('product_id', productIds).order('expected_date'),
         ]);
         const skuByPid = {};
         (prods || []).forEach(p => { if (p.sku) skuByPid[p.id] = p.sku; });
@@ -89,25 +347,30 @@ function useKitInventory(items) {
         }
         if (cancelled) return;
         const map = {};
-        (inHouse || []).forEach(r => {
-          if (!map[r.product_id]) map[r.product_id] = {};
-          const s = map[r.product_id][r.size] || { ih: 0, vendor: 0, incoming: 0, eta: null };
-          s.ih += (r.quantity || 0);
-          map[r.product_id][r.size] = s;
-        });
+        const cell = (pid, size) => {
+          if (!map[pid]) map[pid] = {};
+          return map[pid][size] || (map[pid][size] = { ih: 0, vendor: 0, incoming: 0, eta: null, deliveries: [] });
+        };
+        (inHouse || []).forEach(r => { cell(r.product_id, r.size).ih += (r.quantity || 0); });
         const pidBySku = {};
         Object.entries(skuByPid).forEach(([pid, sku]) => { pidBySku[sku] = pid; });
         vendorRows.forEach(r => {
           const pid = pidBySku[r.sku];
           if (!pid) return;
-          if (!map[pid]) map[pid] = {};
-          const s = map[pid][r.size] || { ih: 0, vendor: 0, incoming: 0, eta: null };
+          const s = cell(pid, r.size);
           s.vendor += (r.stock_qty || 0);
           if ((r.future_delivery_qty || 0) > 0) {
             s.incoming += r.future_delivery_qty;
             if (!s.eta) s.eta = r.future_delivery_date;
+            s.deliveries.push({ qty: r.future_delivery_qty, date: r.future_delivery_date });
           }
-          map[pid][r.size] = s;
+        });
+        (onOrder || []).forEach(r => {
+          if ((r.qty || 0) <= 0) return;
+          const s = cell(r.product_id, r.size);
+          s.incoming += r.qty;
+          if (!s.eta || (r.expected_date && r.expected_date < s.eta)) s.eta = r.expected_date;
+          s.deliveries.push({ qty: r.qty, date: r.expected_date });
         });
         setInv(map);
       } catch (e) { console.error('[RosterOrders] inv:', e); }
@@ -117,8 +380,8 @@ function useKitInventory(items) {
 
   const getStock = useCallback((productId, size) => {
     const s = inv[productId]?.[size];
-    if (!s) return { avail: 0, incoming: 0, eta: null };
-    return { avail: (s.ih || 0) + (s.vendor || 0), incoming: s.incoming || 0, eta: s.eta };
+    if (!s) return { avail: 0, incoming: 0, eta: null, deliveries: [] };
+    return { avail: (s.ih || 0) + (s.vendor || 0), incoming: s.incoming || 0, eta: s.eta, deliveries: s.deliveries || [] };
   }, [inv]);
 
   return { inv, getStock };
@@ -127,6 +390,15 @@ function useKitInventory(items) {
 // Availability dot color
 const _dotColor = (avail, incoming) =>
   avail > 0 ? '#15803d' : incoming > 0 ? '#b45309' : '#dc2626';
+
+// Short M/D date + "+12 on 8/18, +6 on 9/5" delivery summaries for hovers.
+const _fmtDate = (d) => {
+  if (!d) return '';
+  const dt = new Date(String(d).length === 10 ? d + 'T00:00:00' : d);
+  return isNaN(dt.getTime()) ? String(d) : `${dt.getMonth() + 1}/${dt.getDate()}`;
+};
+const _fmtDeliveries = (deliveries) => (deliveries || [])
+  .map(dv => `+${dv.qty}${dv.date ? ' on ' + _fmtDate(dv.date) : ''}`).join(', ');
 
 // ─── Dismissible step-by-step instructions ─────────────────────────────────────
 // A small "how this works" card a coach can dismiss for good (per browser, via
@@ -841,7 +1113,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
             )}
             {stock && val !== '-' && productId && (
               <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
-                background: _dotColor(stock.avail, stock.incoming) }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
+                background: _dotColor(stock.avail, stock.incoming) }} title={`${stock.avail} avail${stock.deliveries?.length ? ` · arriving: ${_fmtDeliveries(stock.deliveries)}` : ''}`} />
             )}
           </div>
         ) : (
@@ -1024,41 +1296,9 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
       </div>
 
       {/* Quick totals — every size entered so far on this team, summed live as
-          the grid above is filled in. The full cross-team buy-sheet with
-          availability/incoming/ETA lives in the session's separate Totals view. */}
-      {players.length > 0 && kitItems.some(ki => Object.values(teamTotals[ki.slot] || {}).some(bySz => Object.keys(bySz).length)) && (
-        <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-          <div style={{ background: '#f8fafc', padding: '10px 14px', fontWeight: 800, fontSize: 12.5, color: '#0b1220', borderBottom: '1px solid #e2e8f0' }}>
-            📊 {team.name}'s totals so far
-          </div>
-          <div style={{ padding: 14 }}>
-            {kitItems.map(ki => {
-              const byCat = teamTotals[ki.slot] || {};
-              const cats = ['YM', 'WM', 'AM'].filter(cat => Object.keys(byCat[cat] || {}).length);
-              if (!cats.length) return null;
-              return (
-                <div key={ki.slot} style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 700, fontSize: 12.5, color: '#0b1220', minWidth: 120 }}>
-                    {ki.label}{ki.color ? ` (${ki.color})` : ''}
-                  </span>
-                  {cats.flatMap(cat => Object.entries(byCat[cat]).map(([sz, pqs]) => {
-                    const need = pqs.reduce((s, pq) => s + pq.qty, 0);
-                    const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id)
-                      : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
-                    const stock = productId ? getStock(productId, sz) : null;
-                    const label = ki.no_size ? 'Incl.' : sz;
-                    return (
-                      <span key={cat + sz} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#f1f5f9', borderRadius: 999, padding: '4px 11px', fontSize: 12 }}>
-                        {stock && <span style={{ width: 7, height: 7, borderRadius: '50%', background: _dotColor(stock.avail, stock.incoming) }} />}
-                        <b>{label}</b> × {need}
-                      </span>
-                    );
-                  }))}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+          the grid above is filled in, compared against in-stock inventory. */}
+      {players.length > 0 && (
+        <KitTotalsTable title={`${team.name} — totals so far`} kitItems={kitItems} needBySlot={teamTotals} getStock={getStock} />
       )}
     </div>
   );
@@ -1374,7 +1614,9 @@ function RosterTotals({ session, teams, kitTemplate }) {
                                 {productId ? avail.toLocaleString() : '—'}
                               </td>
                               <td style={{ padding: '7px 14px', textAlign: 'right', fontSize: 12, color: incoming > 0 ? '#1e40af' : '#94a3b8' }}>
-                                {productId ? (incoming > 0 ? `${incoming.toLocaleString()}${eta ? ` · ${eta}` : ''}` : '—') : '—'}
+                                <span title={stock.deliveries?.length ? `Arriving: ${_fmtDeliveries(stock.deliveries)}` : undefined}>
+                                  {productId ? (incoming > 0 ? `${incoming.toLocaleString()}${eta ? ` · ${_fmtDate(eta)}` : ''}` : '—') : '—'}
+                                </span>
                               </td>
                               <td style={{ padding: '7px 14px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: statusColor, whiteSpace: 'nowrap' }}>
                                 {statusLabel}
@@ -2410,10 +2652,19 @@ export function RosterOrdersCoach({ customer }) {
                   {(newTeam[session.id] || {}).saving ? '…' : '+ Team'}
                 </button>
               </div>
+
+              {/* Whole-order rollup: every team's sizes summed vs. stock */}
+              <SessionSizeRollup session={session} teams={sessTeams} kitItems={effectiveKit(session, catalog)} />
             </div>
           </div>
         );
       })}
+
+      {/* Everything on order for this kit, laid out by arrival date */}
+      {sessions.length > 0 && (
+        <IncomingDeliveriesCard
+          kitItems={[...new Map(sessions.flatMap(s => effectiveKit(s, catalog)).map(ki => [ki.slot, ki])).values()]} />
+      )}
     </div>
   );
 }
