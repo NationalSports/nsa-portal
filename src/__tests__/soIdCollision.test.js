@@ -303,3 +303,89 @@ describe('_dbSaveInvoiceInner — document-identity guard on id collision', () =
     expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBeGreaterThan(0);
   });
 });
+
+// ── The gap the created_at guard left open (INV-63144, 2026-07-10) ──────────────────────────
+// Every test above hands the guard a client-side created_at. The Create Invoice button in
+// OrderEditor never sets one — the column has a DB default — so in the path that makes almost every
+// invoice, `inv.created_at` is undefined, the guard short-circuits, and a collision walks straight
+// through to the upsert. That is how Palos Verdes HS Football's $384.41 invoice was replaced 92
+// seconds after it was created (and after it had already been emailed to the school) by another
+// rep's session that had minted the same number off a stale page load.
+describe('_dbSaveInvoiceInner — identity guard with no client created_at', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  // The INV-63144 reproduction.
+  test('never-saved invoice re-mints when the number is held by another customer', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        // Steve's PV Football invoice, already live at this number.
+        { data: { id: 'INV-63144', created_at: '2026-07-10T15:56:20.352168+00:00', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: 384.41 }, error: null },
+        { data: [{ id: 'INV-63144' }], error: null }, // _refreshMaxId scan
+        { error: null }, // the re-minted upsert
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    // Sharon's session: a brand-new invoice for a different customer, no created_at, no _version.
+    const inv = { id: 'INV-63144', customer_id: 'c1782506750436', so_id: 'SO-1353', total: 11898.76, payments: [], items: [] };
+    await _dbSaveInvoice(inv);
+
+    expect(inv.id).toBe('INV-63145');
+    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
+    expect(writes.length).toBe(1);
+    expect(writes[0].args[0].id).toBe('INV-63145');
+    expect(writes[0].args[0].customer_id).toBe('c1782506750436');
+  });
+
+  // The false positive to avoid: the failed-ids retry loop re-saves an invoice object that never
+  // recorded its _version, so it looks "new" while its own row already exists. Same document —
+  // renumbering it here would mint a duplicate invoice out of a successful save.
+  test('retry of our own save keeps its number when customer, SO and total all match', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: { id: 'INV-63144', created_at: '2026-07-10T15:56:20.352168+00:00', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: '384.41' }, error: null },
+        { error: null }, // upsert under the same id
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = { id: 'INV-63144', customer_id: 'c-ns-2625', so_id: 'SO-1495', total: 384.41, payments: [], items: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).not.toBe(false);
+    expect(inv.id).toBe('INV-63144'); // not renumbered
+    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
+    expect(writes.length).toBe(1);
+    expect(writes[0].args[0].id).toBe('INV-63144');
+  });
+
+  // Re-pointing a loaded invoice to another customer is a real workflow (the Lincoln XC split did
+  // exactly that). A _version means the client read this row from the DB, so the change is deliberate.
+  test('deliberate re-point of a loaded invoice is not treated as a collision', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: { _version: 3 }, error: null }, // _checkVersion runs first
+        { data: { id: 'INV-63183', created_at: '2026-07-16T17:20:00.000000+00:00', customer_id: 'c-ns-4976', so_id: 'SO-1436', total: 1597.75 }, error: null },
+        { error: null }, // upsert
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = { id: 'INV-63183', customer_id: 'c-ns-4601', so_id: 'SO-1436', total: 265, _version: 3, payments: [], items: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).not.toBe(false);
+    expect(inv.id).toBe('INV-63183');
+    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBe(1);
+  });
+});

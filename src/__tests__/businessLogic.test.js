@@ -540,6 +540,28 @@ describe('SO Status Calculation — calcSOStatus()', () => {
     expect(BL.calcSOStatus(ord)).not.toBe('need_order');
   });
 
+  test('Artwork service line does not hold the SO in need_order (SO-1566 — art time, no vendor PO ever)', () => {
+    const ord = {
+      items: [
+        { sku: 'KV2186', sizes: { M: 8, L: 30 }, pick_lines: [], po_lines: [{ M: 8, L: 30 }], decorations: [{ kind: 'art', fulfillment: 'outside' }] },
+        { sku: 'Artwork', name: 'Artwork', sizes: { OSFA: 1 }, pick_lines: [], po_lines: [], decorations: [], no_deco: true }
+      ],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('waiting_receive');
+  });
+
+  test('Artwork line is covered case-insensitively (sku "ARTWORK")', () => {
+    const ord = {
+      items: [
+        { sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [], no_deco: true },
+        { sku: 'ARTWORK', sizes: { OSFA: 1 }, pick_lines: [], po_lines: [], decorations: [], no_deco: true }
+      ],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
   test('mixed job statuses — some shipped, some active → in_production', () => {
     const ord = {
       items: [{ sizes: { S: 10 }, pick_lines: [{ S: 10, status: 'pulled' }], po_lines: [], decorations: [{ kind: 'art' }] }],

@@ -48,3 +48,34 @@ describe('orderedSizeKeys — production sheet / job-grid columns', () => {
     expect(orderedSizeKeys(keys)).toEqual(['S', 'M', 'XL', 'Unisex Large']);
   });
 });
+
+// Adidas B2B footwear labels the half size with a trailing dash ("10-" = 10.5) and runs past 17
+// (18, 19). Neither form is in SZ_ORD, so every one of them tied at the unknown-label rank and
+// piled up at the end of the size grid — KI6713 rendered 4,7,8,…,12,4-,5-,…,14-,18,19 instead of
+// in numeric order. szRank ranks those numerically inside the footwear block.
+describe('szRank — Adidas footwear half sizes and 18/19', () => {
+  test('KI6713 grid ordering: half sizes sit next to their whole size', () => {
+    const grid = ['4', '7', '8', '9', '10', '11', '12', '4-', '5-', '6-', '7-', '8-', '9-',
+      '10-', '11-', '12-', '13-', '14-', '18', '19'];
+    expect(orderedSizeKeys(grid)).toEqual(['4', '4-', '5-', '6-', '7', '7-', '8', '8-', '9', '9-',
+      '10', '10-', '11', '11-', '12', '12-', '13-', '14-', '18', '19']);
+  });
+
+  test('a full Adidas run orders 4 … 19 by number', () => {
+    const run = ['9', '9-', '10', '10-', '17', '18', '19', '4', '4-'];
+    expect(orderedSizeKeys(run)).toEqual(['4', '4-', '9', '9-', '10', '10-', '17', '18', '19']);
+  });
+
+  test('dash and decimal halves of the same size both land between 10 and 11', () => {
+    // "10-" and "10.5" are the same size, so they tie and keep input order relative to each other.
+    const out = orderedSizeKeys(['11', '10-', '10.5', '10']);
+    expect(out[0]).toBe('10');
+    expect(out.slice(1, 3).sort()).toEqual(['10-', '10.5']);
+    expect(out[3]).toBe('11');
+  });
+
+  test('apparel and custom labels are unaffected', () => {
+    expect(orderedSizeKeys(['2XL', 'S', 'Womens X-Large', 'M', 'OSFA']))
+      .toEqual(['S', 'M', '2XL', 'OSFA', 'Womens X-Large']);
+  });
+});

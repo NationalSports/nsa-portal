@@ -254,6 +254,7 @@
    "coach_rejected",
    "created_at",
    "deco_type",
+   "deco_types",
    "decorated_at",
    "decorated_by",
    "digitizing_due_at",
@@ -405,6 +406,7 @@
    "webstore_id"
   ],
   "messages": [
+   "attachments",
    "author",
    "author_id",
    "created_at",

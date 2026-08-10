@@ -191,6 +191,43 @@ export const getInheritedContactsByRole=(customer,allCustomers,role)=>{
 export const getBillingContacts=(customer,allCustomers)=>getInheritedContactsByRole(customer,allCustomers,'billing');
 export const getAthleticDirectorContacts=(customer,allCustomers)=>getInheritedContactsByRole(customer,allCustomers,'athletic director');
 
+// ── Email greetings ──
+// Estimates, art proofs and invoices usually go to several people at once, so the greeting
+// names everyone actually selected as a recipient — first names only ("Hi Cam and Hillary,").
+// Hand-typed addresses have no contact record and contribute no name; when nothing is left
+// (or nobody is selected yet) we fall back to "Hi there,".
+export const greetFirstNames=(emails,contacts)=>{
+  const byEmail=new Map();
+  (contacts||[]).forEach(c=>{
+    const em=String(c?.email||'').trim().toLowerCase();
+    const nm=String(c?.name||'').trim().split(/\s+/)[0]||'';
+    if(em&&nm&&!byEmail.has(em))byEmail.set(em,nm);
+  });
+  const out=[];
+  (emails||[]).forEach(em=>{
+    const nm=byEmail.get(String(em||'').trim().toLowerCase());
+    if(nm&&!out.some(n=>n.toLowerCase()===nm.toLowerCase()))out.push(nm);
+  });
+  return out;
+};
+export const greetLine=(emails,contacts)=>{
+  const n=greetFirstNames(emails,contacts);
+  if(n.length===0)return'Hi there,';
+  if(n.length===1)return'Hi '+n[0]+',';
+  if(n.length===2)return'Hi '+n[0]+' and '+n[1]+',';
+  return'Hi '+n.slice(0,-1).join(', ')+' and '+n[n.length-1]+',';
+};
+// Re-greet an already-drafted message as the recipient list changes, without touching any
+// edits the rep made to the rest of the body. Only a first line that still looks like a
+// greeting is swapped — once it's been rewritten by hand we leave it alone.
+export const withGreeting=(body,line)=>{
+  const lines=String(body||'').split('\n');
+  if(lines.length&&/^(hi|hello|hey)\b[^\n]*,\s*$/i.test(lines[0].trim())){lines[0]=line;return lines.join('\n')}
+  return body;
+};
+// "$1,234.56" — used in customer-facing email copy.
+export const emailMoney=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+
 // ── Cloudinary Upload ──
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';

@@ -182,17 +182,21 @@ export const shippedSizesByLine = (shipments) => {
 // share a size, jobs earlier in the list claim shipped units first (mirroring
 // allocateJobFulfillment / the released-heal's sibBefore apportioning). Whole-line items
 // keep the full-line count, matching the pre-split behavior.
-export const jobShippedUnits = (job, allJobs, shippedSizes) => {
+// Resolved per size and per job-item (keyed by the job's items[] index) so the warehouse's
+// per-job Ready-to-Ship rows can subtract exactly what shipped for THAT job's garments.
+// jobShippedUnits is the sum of this map — one apportioning rule, no second copy to sync.
+export const jobShippedSizes = (job, allJobs, shippedSizes) => {
   const jobs = safeArr(allJobs);
   const jobIdx = jobs.findIndex(j2 => j2 && job && j2.id === job.id);
   const before = jobIdx > 0 ? jobs.slice(0, jobIdx) : [];
-  let total = 0;
-  safeArr(job?.items).forEach(gi => {
+  const out = {};
+  safeArr(job?.items).forEach((gi, gidx) => {
     if (!gi) return;
     const shipped = (shippedSizes || {})[(gi.sku || '') + '|' + (gi.color || '')];
     if (!shipped) return;
+    const row = out[gidx] || (out[gidx] = {});
     const share = gi.split_group && gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : null;
-    if (!share) { total += Object.values(shipped).reduce((a, v) => a + safeNum(v), 0); return; }
+    if (!share) { Object.entries(shipped).forEach(([sz, v]) => { row[sz] = (row[sz] || 0) + safeNum(v); }); return; }
     Object.entries(share).forEach(([sz, want]) => {
       const w = safeNum(want);
       if (w <= 0) return;
@@ -200,11 +204,14 @@ export const jobShippedUnits = (job, allJobs, shippedSizes) => {
       before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
         if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
       }));
-      total += Math.max(0, Math.min(w, avail));
+      row[sz] = (row[sz] || 0) + Math.max(0, Math.min(w, avail));
     });
   });
-  return total;
+  return out;
 };
+export const jobShippedUnits = (job, allJobs, shippedSizes) =>
+  Object.values(jobShippedSizes(job, allJobs, shippedSizes))
+    .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
 
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
