@@ -4831,7 +4831,7 @@ const BLANK = {
   size_upcharge_enabled: true,
   public_listed: true,
   decoration_mode: 'in_house',
-  theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
+  theme: 'classic', storefront_template: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
   featured_product_ids: null,
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
@@ -5169,6 +5169,28 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
 
       <Section title="Branding">
         <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>These control how the storefront looks — logo in the header, banner behind the hero, and your team colors throughout.</div>
+        {/* Storefront layout. 'classic' is the long-standing look; 'spotlight' is the
+            logo-led layout (big display type, crest as the hero, live countdown).
+            Stored on webstores.storefront_template and read by the public storefront
+            through the webstores_public view. */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: '#6A7180', display: 'block', marginBottom: 6 }}>Storefront layout</label>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {[
+              { id: 'classic', name: 'Classic', desc: 'Product collage hero, cream background' },
+              { id: 'spotlight', name: 'Spotlight', desc: 'Team logo hero, big type, countdown' },
+            ].map((opt) => {
+              const on = (f.storefront_template || 'classic') === opt.id;
+              return (
+                <button type="button" key={opt.id} onClick={() => set('storefront_template', opt.id)}
+                  style={{ flex: '1 1 190px', textAlign: 'left', cursor: 'pointer', borderRadius: 8, padding: '10px 12px', background: on ? '#eff6ff' : '#fff', border: `2px solid ${on ? '#2563eb' : '#e2e8f0'}` }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: on ? '#1e40af' : '#0f172a' }}>{on ? '\u25c9 ' : '\u25cb '}{opt.name}</div>
+                  <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>{opt.desc}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
         <Row label="Theme"><select className="form-select" value={f.theme} onChange={(e) => set('theme', e.target.value)}>{['classic', 'bold', 'minimal'].map((t) => <option key={t} value={t}>{t}</option>)}</select></Row>
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
           <ColorField label="Primary color" value={f.primary_color} onChange={(v) => set('primary_color', v)} fallback="#0b1f3a" />

@@ -123,6 +123,8 @@ function StoreStyles() {
         @media (max-width:860px){
           .sf-showcase .sf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
           .sf-hero-grid{grid-template-columns:1fr !important}
+          .sf-sl-hero{grid-template-columns:1fr !important}
+          .sf-sl-hide-sm{display:none !important}
           .sf-hero-collage{display:none !important}
           .sf-2col{grid-template-columns:1fr !important}
           .sf-pdp-media{position:static !important;top:auto !important}
@@ -248,7 +250,12 @@ function useTheme(store) {
     // we intentionally do NOT key it off the legacy `theme` field, which used to
     // mean corner-radius style and would mis-trigger Bold on many existing stores.
     const look = store?.hero_look === 'bold' ? 'bold' : 'open';
+    // Storefront template (webstores.storefront_template). 'spotlight' is the
+    // logo-led layout; anything else — including null on every pre-existing
+    // store — renders the classic look exactly as before.
+    const tpl = store?.storefront_template === 'spotlight' ? 'spotlight' : 'classic';
     return {
+      tpl,
       primary,
       primaryDark: darken(primary, 0.16),
       deep: darken(primary, 0.34),
@@ -499,15 +506,28 @@ export default function Storefront() {
     <div className={`sf-root${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
       <StoreStyles />
       <div style={{ position: 'sticky', top: 0, zIndex: 30 }}>
-        <TopStrip store={store} theme={theme} collapsed={scrolled} />
-        <Header store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled} />
-        <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
+        {theme.tpl === 'spotlight' ? (
+          <>
+            <SpotlightStrip store={store} theme={theme} />
+            <SpotlightHeader store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled} />
+            {/* Spotlight puts the category tabs inline with the collection heading, so
+                the sticky sub-nav is only rendered off the home page (product, cart,
+                checkout) where that inline row doesn't exist. */}
+            {route.view !== 'home' && <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />}
+          </>
+        ) : (
+          <>
+            <TopStrip store={store} theme={theme} collapsed={scrolled} />
+            <Header store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled} />
+            <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
+          </>
+        )}
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
       {store.presentation_preview && <AppearancePreviewBanner mode={store.presentation_mode} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} categories={categories} onCat={onCat} setQuery={setQuery} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
@@ -654,7 +674,7 @@ function splitHeadline(name) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', query = '' }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', query = '', categories = [], onCat, setQuery }) {
   const grouped = groupProducts(products);
   // wpById also resolves archived items kept alive only inside a package, so package
   // previews keep their custom photo/name even though those items aren't in the grid.
@@ -675,15 +695,18 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 
   return (
     <>
-      {theme.look === 'bold'
+      {theme.tpl === 'spotlight'
+        ? <HeroSpotlight store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} />
+        : theme.look === 'bold'
         ? <HeroBold store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} />
         : <HeroOpen store={store} theme={theme} lead={lead} goBundle={goBundle} scrollGrid={scrollGrid} products={products} compExtras={compExtras} />}
 
-      <ValueStrip store={store} theme={theme} />
+      {theme.tpl !== 'spotlight' && <ValueStrip store={store} theme={theme} />}
 
       {firstBundle && !filtered && <PackPromo store={store} theme={theme} bundle={firstBundle} bundleItems={bundleItems} onClick={goBundle} />}
 
       <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(24px,3vw,40px) 24px clamp(48px,6vw,72px)' }}>
+        {theme.tpl === 'spotlight' && onCat && setQuery && <CollectionHead theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} />}
         {products.length === 0
           ? <Splash>No products in this store yet.</Splash>
           : visible.length === 0
@@ -717,6 +740,174 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
             })()}
       </div>
     </>
+  );
+}
+
+// ── Spotlight template ───────────────────────────────────────────────
+// Logo-led alternative to the classic look: the team crest is the hero image
+// (no product photography), oversized condensed display type, and a live
+// countdown to the close date. Opt in per store via storefront_template.
+
+// Live d/h/m/s remaining. Ticks once a second; all zeros once the window shuts.
+function useCountdown(close_at) {
+  const target = useMemo(() => {
+    if (!close_at) return null;
+    const d = new Date(close_at);
+    return isNaN(d) ? null : d.getTime();
+  }, [close_at]);
+  const calc = useCallback(() => {
+    if (!target) return null;
+    const ms = Math.max(0, target - Date.now());
+    return {
+      d: Math.floor(ms / 86400000),
+      h: Math.floor(ms / 3600000) % 24,
+      m: Math.floor(ms / 60000) % 60,
+      s: Math.floor(ms / 1000) % 60,
+      done: ms === 0,
+    };
+  }, [target]);
+  const [left, setLeft] = useState(calc);
+  useEffect(() => {
+    if (!target) { setLeft(null); return; }
+    setLeft(calc());
+    const t = setInterval(() => setLeft(calc()), 1000);
+    return () => clearInterval(t);
+  }, [target, calc]);
+  return left;
+}
+
+const pad2 = (n) => String(Math.max(0, Number(n) || 0)).padStart(2, '0');
+
+// Four bordered digit tiles under the hero.
+function CountdownBoxes({ left, theme }) {
+  if (!left) return null;
+  const cells = [[left.d, 'Days'], [left.h, 'Hrs'], [left.m, 'Min'], [left.s, 'Sec']];
+  return (
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      {cells.map(([v, l]) => (
+        <div key={l} style={{ minWidth: 74, border: `1px solid ${theme.line}`, background: '#fff', borderRadius: 4, padding: '12px 10px', textAlign: 'center' }}>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, lineHeight: 1, color: theme.primary, fontVariantNumeric: 'tabular-nums' }}>{pad2(v)}</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 10.5, fontWeight: 700, letterSpacing: 1.4, textTransform: 'uppercase', color: theme.subText, marginTop: 6 }}>{l}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Navy announcement strip with the live countdown.
+function SpotlightStrip({ store, theme }) {
+  const left = useCountdown(store.close_at);
+  const tail = store.delivery_mode === 'ship_home' ? 'ships to each address after the window' : 'ships to the team after the window';
+  const msg = !left ? `Order now — ${tail}`
+    : left.done ? 'This store has closed'
+    : `Store closes in ${pad2(left.d)}d ${pad2(left.h)}h ${pad2(left.m)}m ${pad2(left.s)}s — ${tail}`;
+  return (
+    <div style={{ background: theme.primary, color: '#fff' }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '9px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+        <span aria-hidden style={{ width: 7, height: 7, borderRadius: 999, background: theme.accent, flexShrink: 0 }} />
+        <span style={{ fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{msg}</span>
+      </div>
+    </div>
+  );
+}
+
+// Centered crest + name + OFFICIAL STORE badge; cart on the right.
+function SpotlightHeader({ store, theme, cartCount = 0, collapsed = false }) {
+  const size = collapsed ? 26 : 34;
+  return (
+    <header style={{ background: '#fff', borderBottom: `1px solid ${theme.line}` }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '8px 20px' : '13px 20px', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 12, transition: 'padding .2s ease' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+          <span style={{ background: theme.primary, color: '#fff', fontFamily: DISPLAY, fontWeight: 800, fontSize: 11, letterSpacing: 1.2, padding: '5px 8px', borderRadius: 3 }}>NTS</span>
+          <span className="sf-sl-hide-sm" style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 2, textTransform: 'uppercase', color: theme.subText, whiteSpace: 'nowrap' }}>Team Stores</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, cursor: 'pointer', justifyContent: 'center' }} onClick={() => navTo('/shop/' + store.slug)}>
+          <Crest store={store} theme={theme} size={size} />
+          <span style={{ fontFamily: DISPLAY, fontSize: collapsed ? 'clamp(14px,3.6vw,17px)' : 'clamp(15px,4vw,20px)', fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', color: theme.primary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{store.name}</span>
+          <span className="sf-sl-hide-sm" style={{ background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontSize: 10.5, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase', padding: '4px 8px', borderRadius: 3, whiteSpace: 'nowrap' }}>Official Store</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ background: theme.primary, color: '#fff', border: 'none', borderRadius: 3, padding: '10px 16px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 800, fontSize: 13, letterSpacing: 1.4, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+            Cart · {cartCount}
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// The hero: crest as the centerpiece over a ghosted wordmark, oversized
+// two-tone headline, proof chips, and the countdown.
+function HeroSpotlight({ store, theme, lead, goBundle, scrollGrid }) {
+  const left = useCountdown(store.close_at);
+  const { head, tail } = splitHeadline(store.name);
+  // Eyebrow: "<STORE NAME> · <SPORT>" when a sport is set, else a generic line.
+  const eyebrow = [store.name, store.sport].filter(Boolean).join(' · ') || 'Official Team Store';
+  // Giant ghost letters behind the crest — the store's initials.
+  const ghost = (store.name || '').split(/\s+/).map((w) => w[0]).filter(Boolean).join('').slice(0, 2).toUpperCase();
+  const chips = ['No minimums', 'Coach approved', store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team', 'Decoration included'];
+  return (
+    <section style={{ background: theme.cream, borderBottom: `1px solid ${theme.line}`, overflow: 'hidden' }}>
+      <div className="sf-sl-hero" style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(36px,5vw,72px) 24px', display: 'grid', gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,0.9fr)', gap: 'clamp(24px,4vw,48px)', alignItems: 'center' }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+            <span aria-hidden style={{ width: 34, height: 3, background: theme.accent, flexShrink: 0 }} />
+            <span style={{ fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 700, letterSpacing: 2.2, textTransform: 'uppercase', color: theme.accentDeep, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{eyebrow}</span>
+          </div>
+          <h1 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(44px,7vw,92px)', lineHeight: 0.88, textTransform: 'uppercase', letterSpacing: -0.5, margin: '0 0 22px', color: theme.primary }}>
+            {head ? <>{head} {tail}</> : tail}
+            <br />
+            <em style={{ fontStyle: 'italic', color: theme.accent }}>Team Store.</em>
+          </h1>
+          <p style={{ margin: '0 0 26px', maxWidth: 460, fontSize: 16.5, lineHeight: 1.65, color: theme.subText }}>{lead}</p>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 28 }}>
+            {goBundle && <SkewBtn theme={theme} variant="accent" onClick={goBundle}>Build the Player Pack →</SkewBtn>}
+            <SkewBtn theme={theme} variant="primary" onClick={scrollGrid}>Shop the Collection</SkewBtn>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {chips.map((c) => (
+              <span key={c} style={{ border: `1px solid ${theme.line}`, background: '#fff', borderRadius: 3, padding: '9px 14px', fontFamily: DISPLAY, fontSize: 12, fontWeight: 700, letterSpacing: 1.3, textTransform: 'uppercase', color: theme.inkText }}>{c}</span>
+            ))}
+          </div>
+        </div>
+        <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 26, minWidth: 0 }}>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+            <span aria-hidden style={{ position: 'absolute', fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(160px,22vw,300px)', lineHeight: 1, color: theme.primary, opacity: 0.05, letterSpacing: -8, userSelect: 'none', pointerEvents: 'none', whiteSpace: 'nowrap' }}>{ghost}</span>
+            <div style={{ position: 'relative', zIndex: 1 }}>
+              <Crest store={store} theme={theme} size={260} />
+            </div>
+          </div>
+          {left && !left.done && <CountdownBoxes left={left} theme={theme} />}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// "The Collection." heading with inline category tabs + search — replaces the
+// sticky sub-nav in the Spotlight layout so there is only one filter row.
+function CollectionHead({ theme, categories, cat, onCat, query, setQuery }) {
+  const tabs = [['all', 'All'], ...categories.map((c) => [c, c])];
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', margin: '0 0 26px' }}>
+      <h2 style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(30px,4.6vw,52px)', lineHeight: 0.95, textTransform: 'uppercase', letterSpacing: -0.3, color: theme.primary, margin: 0 }}>
+        The <em style={{ fontStyle: 'italic', color: theme.accent }}>Collection.</em>
+      </h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        {tabs.map(([key, label]) => {
+          const active = cat === key;
+          return (
+            <button key={key} onClick={() => onCat(key)} style={{ background: active ? theme.primary : '#fff', color: active ? '#fff' : theme.subText, border: `1px solid ${active ? theme.primary : theme.line}`, borderRadius: 3, padding: '9px 15px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 1.3, textTransform: 'uppercase' }}>
+              {label}
+            </button>
+          );
+        })}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#fff', border: `1px solid ${theme.line}`, borderRadius: 3, padding: '0 12px', height: 38, minWidth: 170 }}>
+          <SearchIcon color={theme.subText} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search" style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: theme.inkText, width: '100%' }} />
+        </div>
+      </div>
+    </div>
   );
 }
 
