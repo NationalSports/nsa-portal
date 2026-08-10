@@ -729,6 +729,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[poDropShip,setPoDropShip]=useState(null);// product PO form — In-House(false) vs Drop Ship(true); null = rep hasn't chosen
     const[dpoDropShip,setDpoDropShip]=useState(true);// standalone deco PO form — deco POs are always drop ship
     const[dpoMode,setDpoMode]=useState(null);// Deco PO kind: 'send' (we ship garments to the decorator) | 'dtf' (buying transfers/material) | null = auto from the order
+    const[linkDpoId,setLinkDpoId]=useState(null);// Deco PO modal: id of an EXISTING deco PO to add the checked items to, instead of creating a new one
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     // Topstar digitizing/vector service catalog — shared by the PO modal and the send-to-vendor action.
@@ -2411,34 +2412,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const buildApiOrderFromPO=(po,lines)=>{
     if(!po||po.po_type==='outside_deco')return null;
     const vk=_apiVendorKey(po.vendor);if(!vk)return null;
-    // For drop-ship POs, only allow API ordering when blanks are going to a decorator
-    // (not directly to the customer — we can't pre-determine customer ship-to here).
     const lineIdxs=new Set((lines||[]).map(ln=>ln.lineIdx));
     const relDeco=po.drop_ship?(o.deco_pos||[]).find(dp=>(dp.item_idxs||[]).some(ix=>lineIdxs.has(ix))&&dp.deco_vendor_id):null;
-    if(po.drop_ship&&!relDeco)return null;
     const poId=po.po_id;const items=safeItems(o);const payloadItems=[];
+    let writeIn=null;// first write-in "new address" found on this PO's lines
     (lines||[]).forEach(ln=>{const it=items[ln.lineIdx];if(!it)return;
       const pl=(it.po_lines||[]).find(p=>p.po_id===poId);if(!pl)return;
       const sizes={};Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&typeof v==='number'&&v>0)sizes[k]=v});
       if(!Object.keys(sizes).length)return;
+      if(!writeIn&&pl.ship_to&&(pl.ship_to.line1||pl.ship_to.city))writeIn={addr:pl.ship_to,attention:pl.attention||pl.ship_to.attention||''};
       payloadItems.push({sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
         ...(pl._size_costs?{_size_costs:pl._size_costs}:{}),
         ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
     });
     if(!payloadItems.length)return null;
-    // Decorator drop-ship: SanMar's modal resolves the address itself from shipToDecoId +
-    // decoVendors, but SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — so
-    // without this the S&S order silently defaults to the NSA warehouse. Resolve the decorator's
-    // address (with DPO on the attention line) the same way the batch-ready popup S&S path does.
+    // Ship-to for a drop-ship PO, same precedence the batch flow uses (see
+    // resolveBatchDestination): the PO's write-in address, then the decorator this PO's
+    // blanks belong to, then the SO's ship-to customer. The modals take a PRE-RESOLVED
+    // shipTo — without one an S&S/Momentec drop ship silently goes to the NSA dock.
+    // Every address stays editable in the modal, so an unresolved one is a warning, not
+    // a block: this used to bail out entirely on a customer drop ship, which left those
+    // POs with no API path at all.
+    const _shape=(a,attn)=>(a&&(a.line1||a.city))?{companyName:a.name||'',attentionTo:attn||a.attention||'',address1:a.line1||'',address2:a.line2||'',city:a.city||'',region:a.state||'',postalCode:a.zip||'',country:'US'}:null;
     const _decoShip=relDeco?resolveDecoShipToClient({decoId:relDeco.deco_vendor_id,so:o,decoVendors,vendors:vendorList,itemIdxs:[...lineIdxs]}):null;
+    // `o` first so an unsaved edit to this SO's ship-to wins over the stale copy in allOrders.
+    const _custShip=(po.drop_ship&&!relDeco&&!writeIn)?resolveShipToClient(o.id,[o,...(allOrders||[])],allCustomers):null;
+    const shipTo=writeIn?_shape(writeIn.addr,writeIn.attention):(_decoShip?_shape(_decoShip):_shape(_custShip));
     return {
       vendorKey:vk,poNumber:poId,vendorName:po.vendor,
       batchPOs:[{so_id:o.id,items:payloadItems}],
+      ...(shipTo?{shipTo}:{}),
+      ...(po.drop_ship&&!shipTo?{shipWarning:'This PO is drop ship but no delivery address is on file'+(relDeco?' for the decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" for the SO's ship-to customer")+' — it has fallen back to the NSA warehouse. Edit the address below if it should go elsewhere.'}:{}),
       // Decorator drop-ship: pre-lock ship-to and pre-fill DPO number in attention line
       ...(relDeco?{
         shipToDecoId:relDeco.deco_vendor_id,
         initialDpoNumber:String(relDeco.po_id||'').replace(/^DPO\s*/i,''),
-        ...(_decoShip?{shipTo:{companyName:_decoShip.name,attentionTo:_decoShip.attention||'',address1:_decoShip.line1,city:_decoShip.city,region:_decoShip.state,postalCode:_decoShip.zip}}:{}),
       }:{}),
     };
   };
@@ -5357,7 +5365,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {/* Deco-PO chip is SO-only — estimates can't create POs. On an estimate, Outside is just a flag. */}
               {isSO&&_outside&&(_dp
                 ? <span onClick={()=>setPoFullPage({decoPo:_dp,soId:o.id,soItems:safeItems(o)})} title="On a Deco PO — click to open it (edit items / per-item costing)" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',cursor:'pointer',whiteSpace:'nowrap'}}>▣ {_dp.po_id||'on Deco PO'}{_dp.vendor?' · '+_dp.vendor:''}</span>
-                : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setDpoMode(null);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
+                : <span onClick={()=>{const v=_orderOutsideVendor();if(v){setDpoDropShip(true);setDpoMode(null);setLinkDpoId(null);setShowPO('deco:'+v)}else setShowPO('select')}} title="Marked outside but not yet on a Deco PO — click to create / bundle one" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'pointer',whiteSpace:'nowrap'}}>⚠ needs PO</span>)}
               {!isSO&&_outside&&<span title="Routed to an outside decorator — a Deco PO is created when this estimate becomes a sales order" style={{fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,background:'#f5f3ff',color:'#6d28d9',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}}>🎨 Outside deco{_orderOutsideVendor()?' · '+_orderOutsideVendor():''}</span>}
             </>})()}
             {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
@@ -8234,7 +8242,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {decoMatches.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:'2px 4px'}}>No decorators match.</div>:decoMatches.map(dv=>
                   <button key={dv} className="btn btn-sm" style={{fontSize:12,padding:'3px 8px',background:_pre===dv?'#7c3aed':'#fff',color:_pre===dv?'#fff':'#334155',border:'1px solid '+(_pre===dv?'#7c3aed':'#cbd5e1'),borderRadius:6,cursor:'pointer',fontWeight:_pre===dv?700:400}} onClick={()=>setDecoSel(dv)}>{dv}</button>)}
               </div>
-              <button className="btn btn-sm" disabled={!_pre} style={{background:_pre?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:_pre?'pointer':'not-allowed'}} onClick={()=>{if(_pre){setDpoDropShip(true);setDpoMode(null);setShowPO('deco:'+_pre)}}}>{_pre?'Create Deco PO for '+_pre:'Create Deco PO'}</button>
+              <button className="btn btn-sm" disabled={!_pre} style={{background:_pre?'#7c3aed':'#cbd5e1',color:'white',border:'none',width:'100%',marginTop:6,cursor:_pre?'pointer':'not-allowed'}} onClick={()=>{if(_pre){setDpoDropShip(true);setDpoMode(null);setLinkDpoId(null);setShowPO('deco:'+_pre)}}}>{_pre?'Create Deco PO for '+_pre:'Create Deco PO'}</button>
             </>})()}
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
@@ -8336,9 +8344,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const wEl=document.getElementById('dpo-type-warn-'+poId);
           if(wEl){wEl.style.display=_mm.length?'block':'none';if(_mm.length)wEl.textContent=_dpoWarnText(_mm,dt)}
         };
+        // Existing send-items deco POs on this SO that later-added items can join, this
+        // decorator's first. DTF-purchase POs buy art, not garment decoration, so they
+        // aren't offered.
+        const _linkableDpos=(o.deco_pos||[]).filter(dp=>dp&&dp.po_mode!=='dtf_purchase')
+          .sort((a,b)=>((b.vendor===decoVendor)-(a.vendor===decoVendor))||String(a.po_id||'').localeCompare(String(b.po_id||'')));
+        const linkDpo=linkDpoId?_linkableDpos.find(dp=>dp.id===linkDpoId)||null:null;
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body" key={_dpoMode}>
+            {/* Join an existing deco PO instead of opening a second one. Items added to an SO after
+                its deco PO was written would otherwise each spawn their own DPO for the same
+                decorator; here they can be folded into the one that's already out. */}
+            {_dpoMode!=='dtf'&&_linkableDpos.length>0&&<div style={{marginBottom:12,padding:'10px 12px',background:linkDpo?'#f0fdf4':'#f8fafc',border:'1px solid '+(linkDpo?'#bbf7d0':'#e2e8f0'),borderRadius:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Add to an existing deco PO on this order</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                <button type="button" onClick={()=>setLinkDpoId(null)} style={{padding:'5px 10px',borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',border:'1px solid '+(!linkDpo?'#7c3aed':'#e2e8f0'),background:!linkDpo?'#faf5ff':'white',color:!linkDpo?'#6d28d9':'#64748b'}}>
+                  ✨ New PO ({autoPoId})
+                </button>
+                {_linkableDpos.map(dp=>{const sel=linkDpo&&linkDpo.id===dp.id;const n=(dp.item_idxs||[]).length;
+                  return<button key={dp.id} type="button" onClick={()=>setLinkDpoId(dp.id)} title={'Add the checked items to '+dp.po_id+' — its qty and expected cost are recalculated'} style={{padding:'5px 10px',borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',border:'1px solid '+(sel?'#16a34a':'#e2e8f0'),background:sel?'#dcfce7':'white',color:sel?'#166534':'#334155'}}>
+                    ▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''} <span style={{fontWeight:500,color:sel?'#15803d':'#94a3b8'}}>({n} item{n!==1?'s':''}{dp.unit_cost?' · $'+safeNum(dp.unit_cost).toFixed(2)+'/pc':''})</span>
+                  </button>})}
+              </div>
+              {linkDpo&&<div style={{marginTop:8,fontSize:11,color:'#166534'}}>
+                Adding to <strong>{linkDpo.po_id}</strong> — the checked items below join it at its existing rate
+                {linkDpo.unit_cost?<> (<strong>${safeNum(linkDpo.unit_cost).toFixed(2)}/pc</strong>)</>:null}. The PO number, deco type and cost fields below are ignored.
+              </div>}
+            </div>}
             {/* What is this PO buying? Sending garments out vs purchasing transfers/material.
                 Only offered when the order carries DTF prints — otherwise it's always Sending Items. */}
             {_orderHasDtf&&<div style={{display:'flex',gap:8,marginBottom:12}}>
@@ -8410,7 +8443,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('')}}>← Back</button>
             <button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('')}}>Cancel</button>
-            <button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+            {linkDpo?<button className="btn btn-primary" style={{background:'#16a34a',borderColor:'#16a34a'}} onClick={()=>{
+              // Fold the checked items into the chosen deco PO. Coverage is the union with
+              // whatever it already carries; qty and expected cost are recomputed from the SO
+              // so the DPO's total reflects everything it now covers, at its existing rate.
+              const add=[];allItems.forEach((it,vi)=>{if(document.getElementById('dpo-sel-'+vi)?.checked)add.push(it._idx)});
+              if(!add.length){nf('Check at least one item to add to '+linkDpo.po_id,'error');return}
+              const merged=[...new Set([...(linkDpo.item_idxs||[]),...add])];
+              const fresh=merged.filter(ix=>!(linkDpo.item_idxs||[]).includes(ix));
+              if(!fresh.length){nf('Those items are already on '+linkDpo.po_id,'error');return}
+              const soItemsNow=safeItems(o);
+              const qty=merged.reduce((a,ix)=>a+Object.values(safeSizes(soItemsNow[ix]||{})).reduce((b,v)=>b+safeNum(v),0),0);
+              const unitCost=safeNum(linkDpo.unit_cost);
+              const updatedDeco=(o.deco_pos||[]).map(dp=>dp.id===linkDpo.id
+                ?{...dp,item_idxs:merged,qty,expected_cost:Math.round(qty*unitCost*100)/100}
+                :dp);
+              const updated={...o,deco_pos:updatedDeco,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setLinkDpoId(null);
+              nf('🎨 '+fresh.length+' item'+(fresh.length!==1?'s':'')+' added to '+linkDpo.po_id+' — now '+merged.length+' item'+(merged.length!==1?'s':'')+', '+qty+' pcs ($'+(qty*unitCost).toFixed(2)+')');
+            }}>➕ Add to {linkDpo.po_id}</button>:<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
               const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
               const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
@@ -8465,8 +8517,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               nf(_dpoMode==='dtf'
                 ?'🖨️ '+effectivePoId+' '+(preexistingPO?'applied':'created')+' — DTF purchase from '+decoVendor+(artIds.length?' — '+artIds.length+' art folder'+(artIds.length!==1?'s':'')+' marked DTF Purchased':'')+' ($'+expectedCost.toFixed(2)+')'
                 :'🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
-            }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>
-            {dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
+            }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>}
+            {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
               if(_poCreatingRef.current)return;
               const effectiveDpoId=autoPoId;
               const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
