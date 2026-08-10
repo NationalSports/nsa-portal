@@ -8439,12 +8439,14 @@ export default function App(){
     };
 
     const ROLE_TABS=[
-      {id:'admin',label:'Admin overview',icon:'home',roles:['admin','gm']},
-      {id:'sales',label:'Sales rep',icon:'dollar',roles:['admin','gm','rep']},
-      {id:'warehouse',label:'Warehouse',icon:'warehouse',roles:['admin','gm','warehouse']},
-      {id:'decorator',label:'Decorator',icon:'image',roles:['admin','gm','artist','art']},
-      {id:'production',label:'Production',icon:'grid',roles:['admin','gm','production']},
-      {id:'csr',label:'CSR',icon:'mail',roles:['admin','gm','rep','csr']},
+      // label = the classic tab text (must stay byte-identical to production); labelNew is
+      // the redesign's text, which pairs with an <Icon> so it carries no emoji.
+      {id:'admin',label:'🏢 Admin Overview',labelNew:'Admin overview',icon:'home',roles:['admin','gm']},
+      {id:'sales',label:'💼 Sales Rep',labelNew:'Sales rep',icon:'dollar',roles:['admin','gm','rep']},
+      {id:'warehouse',label:'📦 Warehouse',labelNew:'Warehouse',icon:'warehouse',roles:['admin','gm','warehouse']},
+      {id:'decorator',label:'🎨 Decorator',labelNew:'Decorator',icon:'image',roles:['admin','gm','artist','art']},
+      {id:'production',label:'🏭 Production',labelNew:'Production',icon:'grid',roles:['admin','gm','production']},
+      {id:'csr',label:'📞 CSR',labelNew:'CSR',icon:'mail',roles:['admin','gm','rep','csr']},
     ];
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
     const _dashActionSource=(isAdmin?adminTodos:myTodos).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
@@ -8606,7 +8608,7 @@ export default function App(){
     {/* Role Selector — only show tabs relevant to the user's role */}
     {uiMode==='new'&&visibleTabs.length>1&&<div className="connect-dashboard__roles" aria-label="Dashboard view">
       {visibleTabs.map(r=><button key={r.id} type="button" className={`connect-dashboard__role ${dashView===r.id?'is-active':''}`}
-        onClick={()=>setDashView(r.id)}><Icon name={r.icon} size={14}/>{r.label}</button>)}
+        onClick={()=>setDashView(r.id)}><Icon name={r.icon} size={14}/>{r.labelNew||r.label}</button>)}
     </div>}
     {uiMode==='new'&&<DashboardOverview
       view={dashView}
