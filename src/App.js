@@ -951,7 +951,7 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
   // Display surfaces dedupe so it renders once for the linked set.
   const _src=resolveMockLink(artFiles,sku,gi.color);
   if(_src)return mockLinkSourceFiles(artFiles,_src);
-  const _isNN=k=>/\|(numbers|names)(_\d+)?$/.test(k);
+  const _isNN=k=>/\|(numbers|names)(_\d+)?(_b)?$/.test(k);
   const out=[];const seen=new Set();
   const push=f=>{if(!f)return;const u=typeof f==='string'?f:(f?.url||'');if(u&&seen.has(u))return;if(u)seen.add(u);out.push(f)};
   const it=safeItems(so)[gi.item_idx];
@@ -969,12 +969,15 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
         :(m[sku]&&m[sku].length>0)?m[sku]
         :(Object.entries(m).find(([k,arr])=>k.startsWith(_mk+'|')&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
       _dedupMockDupes(v).forEach(push);
+      // Reversible decos have a second mockup slot (Side B) keyed |<color_way_id_b> with
+      // |d<i>_1 as the positional fallback — same contract as mockSlotKeys (safeHelpers).
+      if(d.reversible){const kb=_mk+'|'+(d.color_way_id_b||('d'+i+'_1'));if(m[kb]&&m[kb].length>0)_dedupMockDupes(m[kb]).forEach(push)}
     });
   }else{
     // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
     artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
   }
-  const rank=k=>/\|numbers(_\d+)?$/.test(k)?1:2;
+  const rank=k=>/\|numbers(_\d+)?(_b)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
     Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
@@ -11847,15 +11850,18 @@ export default function App(){
                         const dt=artF?.deco_type||d.deco_type||'screen_print';
                         const isEmb=dt==='embroidery';
                         const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+                        const cwObjB=d.reversible&&d.color_way_id_b&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id_b):null;
                         const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
                         const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
                         const colors=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
+                        const colorsB=cwObjB?(cwObjB.inks||[]).filter(c2=>c2&&c2.trim()):[];
                         const size=artF?.art_sizes?.[d.position]||artF?.art_size||'—';
                         return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:di>0?'1px solid #e9ecef':'none'}}>
                           <div style={{minWidth:130,paddingTop:2}}>
                             <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{d.position||'—'}</div>
                             {artF&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{artF.name||'—'}</div>}
-                            {cwObj&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {cwObj.name||cwObj.label||'—'}</div>}
+                            {cwObj&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW{cwObjB?' A':''}: {cwObj.name||cwObj.label||cwObj.garment_color||'—'}</div>}
+                            {cwObjB&&<div style={{fontSize:10,fontWeight:600,color:'#9a3412',background:'#ffedd5',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2,marginLeft:cwObj?4:0}}>CW B: {cwObjB.name||cwObjB.label||cwObjB.garment_color||'—'}</div>}
                           </div>
                           <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
                             <span style={{fontSize:11,color:'#475569',fontWeight:700}}>{dt.replace(/_/g,' ')}</span>
@@ -11873,6 +11879,17 @@ export default function App(){
                                 })}
                               </div>
                               <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{colors.length} {isEmb?'thread':'ink'} color{colors.length!==1?'s':''}</span>
+                            </>}
+                            {colorsB.length>0&&<>
+                              <span style={{fontSize:10,color:'#9a3412',fontWeight:700}}>Side B:</span>
+                              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                                {colorsB.map((cl,ci)=>{const sw=_swatchFor(cl);
+                                  return<span key={'b'+ci} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}>
+                                    <span style={{width:12,height:12,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>
+                                    {cl}
+                                  </span>;
+                                })}
+                              </div>
                             </>}
                           </div>
                         </div>;
