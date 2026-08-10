@@ -61,6 +61,133 @@ const parsePastedRoster = (text) => {
   return rows;
 };
 
+// ─── Shared size-totals table ─────────────────────────────────────────────────
+// One readable table for "what does this group need vs. what's in stock" —
+// used under each team's grid and for the session-level rollup. needBySlot:
+// { [slot]: { [cat]: { [size]: need | [{qty}] } } } (arrays are summed).
+function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
+  const needOf = (v) => Array.isArray(v) ? v.reduce((s, x) => s + (x.qty || 1), 0) : (v || 0);
+  const items = (kitItems || []).map(ki => {
+    const byCat = needBySlot[ki.slot] || {};
+    const rows = [];
+    ['YM', 'WM', 'AM'].forEach(cat => {
+      const bySz = byCat[cat] || {};
+      const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id)
+        : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
+      [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]).forEach(sz => {
+        const need = needOf(bySz[sz]);
+        if (need > 0) rows.push({ cat, size: sz, need, productId });
+      });
+    });
+    return { ki, rows, units: rows.reduce((s, r) => s + r.need, 0) };
+  }).filter(x => x.rows.length);
+  if (!items.length) return null;
+
+  const statusFor = (row) => {
+    if (!row.productId) return { label: 'no SKU', color: '#94a3b8', bg: '#f8fafc', border: '#e2e8f0' };
+    const { avail, incoming } = getStock(row.productId, row.size);
+    if (avail >= row.need) return { label: '✓ In stock', color: '#15803d', bg: '#f0fdf4', border: '#bbf7d0', avail, incoming };
+    if (avail + incoming >= row.need) return { label: `Short ${row.need - avail}`, color: '#b45309', bg: '#fffbeb', border: '#fde68a', avail, incoming };
+    return { label: avail > 0 ? `Short ${row.need - avail}` : 'Out of stock', color: '#dc2626', bg: '#fef2f2', border: '#fecaca', avail, incoming };
+  };
+
+  return (
+    <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+      <div style={{ background: '#0b1220', color: '#fff', padding: '10px 14px', fontWeight: 800, fontSize: 12.5 }}>
+        📊 {title}
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+              <th style={{ padding: '7px 14px', textAlign: 'left', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4 }}>Size</th>
+              <th style={{ padding: '7px 10px', textAlign: 'right', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, width: 70 }}>Need</th>
+              <th style={{ padding: '7px 10px', textAlign: 'right', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, width: 80 }}>In stock</th>
+              <th style={{ padding: '7px 14px', textAlign: 'left', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, width: 130 }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(({ ki, rows, units }) => (
+              <React.Fragment key={ki.slot}>
+                <tr style={{ background: '#f1f5f9', borderTop: '1px solid #e2e8f0' }}>
+                  <td colSpan={4} style={{ padding: '7px 14px' }}>
+                    <span style={{ fontWeight: 800, fontSize: 12.5, color: '#0b1220' }}>{ki.label}{ki.color ? ` — ${ki.color}` : ''}</span>
+                    {(ki.sku || ki.sku_youth) && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 10.5, color: '#64748b' }}>{[ki.sku_youth, ki.sku].filter(Boolean).join(' / ')}</span>}
+                    <span style={{ float: 'right', fontWeight: 700, fontSize: 12, color: '#475569' }}>{units} unit{units !== 1 ? 's' : ''}</span>
+                  </td>
+                </tr>
+                {rows.map(row => {
+                  const st = statusFor(row);
+                  return (
+                    <tr key={row.cat + row.size} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '6px 14px', fontWeight: 700, color: '#0b1220' }}>{ki.no_size ? 'One size' : row.size}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#0b1220' }}>{row.need}</td>
+                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600, color: st.avail == null ? '#94a3b8' : st.avail >= row.need ? '#15803d' : st.avail > 0 ? '#b45309' : '#dc2626' }}>
+                        {st.avail == null ? '—' : st.avail}
+                        {st.incoming > 0 && <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 400 }}> +{st.incoming} inc.</span>}
+                      </td>
+                      <td style={{ padding: '6px 14px' }}>
+                        <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 700, color: st.color, background: st.bg, border: `1px solid ${st.border}`, borderRadius: 999, padding: '2px 10px', whiteSpace: 'nowrap' }}>
+                          {st.label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Session rollup — every team's sizes summed, shown on the main page ───────
+// "Middles 2026" is the order; each team rolls up into this one table so the
+// coach sees the whole order's needs vs. stock without opening each team.
+function SessionSizeRollup({ session, teams, kitItems }) {
+  const [needBySlot, setNeedBySlot] = useState(null);
+  const { getStock } = useKitInventory(kitItems);
+  const teamKey = (teams || []).map(t => t.id).join(',');
+
+  useEffect(() => {
+    if (!teamKey) { setNeedBySlot(null); return; }
+    let cancelled = false;
+    (async () => {
+      const teamIds = teamKey.split(',');
+      const { data: ps } = await supabase.from('roster_players').select('*').in('team_id', teamIds);
+      const playerList = ps || [];
+      if (!playerList.length) { if (!cancelled) setNeedBySlot(null); return; }
+      const { data: sz } = await supabase.from('roster_player_sizes').select('player_id,kit_slot,size,qty').in('player_id', playerList.map(p => p.id));
+      if (cancelled) return;
+      const smap = {};
+      (sz || []).forEach(r => { (smap[r.player_id] = smap[r.player_id] || {})[r.kit_slot] = { size: r.size, qty: r.qty }; });
+      const result = {};
+      (kitItems || []).forEach(ki => {
+        const byCat = {};
+        const groups = linkedGroups(ki);
+        playerList.forEach(p => {
+          if (ki.gk_only && !p.is_gk) return;
+          const cell = (smap[p.id] || {})[ki.slot];
+          const s = cell?.size;
+          if (!s || s === '-') return;
+          const cat = resolveSizeGroup(s, p, groups);
+          if (!byCat[cat]) byCat[cat] = {};
+          byCat[cat][s] = (byCat[cat][s] || 0) + (cell.qty ?? (ki.qty || 1));
+        });
+        result[ki.slot] = byCat;
+      });
+      setNeedBySlot(result);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, teamKey]);
+
+  if (!needBySlot) return null;
+  return <KitTotalsTable title={`${session?.name || 'Order'} — totals across all teams`} kitItems={kitItems} needBySlot={needBySlot} getStock={getStock} />;
+}
+
 // ─── Inventory hook (product_inventory + inventory_unified) ───────────────────
 function useKitInventory(items) {
   const [inv, setInv] = useState({});
@@ -1024,41 +1151,9 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
       </div>
 
       {/* Quick totals — every size entered so far on this team, summed live as
-          the grid above is filled in. The full cross-team buy-sheet with
-          availability/incoming/ETA lives in the session's separate Totals view. */}
-      {players.length > 0 && kitItems.some(ki => Object.values(teamTotals[ki.slot] || {}).some(bySz => Object.keys(bySz).length)) && (
-        <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-          <div style={{ background: '#f8fafc', padding: '10px 14px', fontWeight: 800, fontSize: 12.5, color: '#0b1220', borderBottom: '1px solid #e2e8f0' }}>
-            📊 {team.name}'s totals so far
-          </div>
-          <div style={{ padding: 14 }}>
-            {kitItems.map(ki => {
-              const byCat = teamTotals[ki.slot] || {};
-              const cats = ['YM', 'WM', 'AM'].filter(cat => Object.keys(byCat[cat] || {}).length);
-              if (!cats.length) return null;
-              return (
-                <div key={ki.slot} style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 700, fontSize: 12.5, color: '#0b1220', minWidth: 120 }}>
-                    {ki.label}{ki.color ? ` (${ki.color})` : ''}
-                  </span>
-                  {cats.flatMap(cat => Object.entries(byCat[cat]).map(([sz, pqs]) => {
-                    const need = pqs.reduce((s, pq) => s + pq.qty, 0);
-                    const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id)
-                      : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
-                    const stock = productId ? getStock(productId, sz) : null;
-                    const label = ki.no_size ? 'Incl.' : sz;
-                    return (
-                      <span key={cat + sz} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: '#f1f5f9', borderRadius: 999, padding: '4px 11px', fontSize: 12 }}>
-                        {stock && <span style={{ width: 7, height: 7, borderRadius: '50%', background: _dotColor(stock.avail, stock.incoming) }} />}
-                        <b>{label}</b> × {need}
-                      </span>
-                    );
-                  }))}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+          the grid above is filled in, compared against in-stock inventory. */}
+      {players.length > 0 && (
+        <KitTotalsTable title={`${team.name} — totals so far`} kitItems={kitItems} needBySlot={teamTotals} getStock={getStock} />
       )}
     </div>
   );
@@ -2410,6 +2505,9 @@ export function RosterOrdersCoach({ customer }) {
                   {(newTeam[session.id] || {}).saving ? '…' : '+ Team'}
                 </button>
               </div>
+
+              {/* Whole-order rollup: every team's sizes summed vs. stock */}
+              <SessionSizeRollup session={session} teams={sessTeams} kitItems={effectiveKit(session, catalog)} />
             </div>
           </div>
         );
