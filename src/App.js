@@ -5493,6 +5493,7 @@ export default function App(){
     // art_status leaving waiting_approval (see the todo builder) — so it needs no click-through snooze.
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const[dashActionOpen,setDashActionOpen]=useState(null);// which dash2 action card is expanded below the grid ('art'|'todos'|'msgs') — Batch-POs-style accordion
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
@@ -8581,10 +8582,18 @@ export default function App(){
         sales (calcOrderMargin.rev on non-cancelled SOs) definitions. Keep the two in step. ── */}
     {(()=>{
       const _nowD=new Date();
+      const _mo=(off)=>new Date(_nowD.getFullYear(),_nowD.getMonth()+off,1);
       const _pd=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=+m[3];if(y<100)y+=2000;return new Date(y,+m[1]-1,+m[2])}const iso=String(d).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(iso)return new Date(+iso[1],+iso[2]-1,+iso[3]);const dt=new Date(d);return isNaN(dt)?null:dt};
       const _histIds2=new Set((histInvs||[]).map(h=>h.id));
       const _eachBill=(cb)=>{invs.forEach(inv=>{if(inv.status==='void'||inv.deleted_at||_histIds2.has(inv.id))return;const dt=_pd(inv.date);if(dt)cb(dt,Number(inv.total)||0)});(histInvs||[]).forEach(hi=>{if(hi.status==='void')return;const dt=_pd(hi.date);if(dt)cb(dt,Number(hi.total)||0)})};
+      const _sumBill=(s,e)=>{let t=0;_eachBill((dt,amt)=>{if(dt>=s&&dt<e)t+=amt});return t};
+      const _sales=(s,e)=>{let rev=0,n=0;sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const dt=_pd(so.created_at);if(!dt||dt<s||dt>=e)return;rev+=calcOrderMargin(so,sos).rev;n++});return{rev,n}};
+      const m0=_mo(0),m1=_mo(1),mm1=_mo(-1);
+      const billNow=_sumBill(m0,m1),billPrev=_sumBill(mm1,m0);
+      const sNow=_sales(m0,m1),sPrev=_sales(mm1,m0);
       const _$2=(n)=>'$'+Math.round(n).toLocaleString();
+      const _delta=(cur,prev,pct)=>{if(!prev&&!cur)return<span className="dash2-delta flat">— No change</span>;if(!prev)return<span className="dash2-delta up">▲ New</span>;const d=pct?Math.round((cur-prev)/prev*100):cur-prev;if(d===0)return<span className="dash2-delta flat">— No change</span>;return d>0?<span className="dash2-delta up">▲ +{pct?d+'%':d.toLocaleString()}</span>:<span className="dash2-delta down">▼ {pct?d+'%':d.toLocaleString()}</span>};
+      const _kpi=(icon,label,val,cur,prev,pct,vs)=>(<div className="dash2-kpi"><div className="dash2-kpi-top"><span className="dash2-icon">{icon}</span>{label}</div><div className="dash2-kpi-val">{val}</div><div className="dash2-kpi-foot">{_delta(cur,prev,pct)}<span className="dash2-vs">vs {vs}</span></div></div>);
       // Action-card counts — the same live set the To-Do card shows (undismissed, unsnoozed)
       const _live=adminTodos.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
       const _art=_live.filter(t=>['art','coach_followup','art_rejected'].includes(t.type));
@@ -8603,9 +8612,39 @@ export default function App(){
       const _fd=(d)=>(d.getMonth()+1)+'/'+d.getDate();
       return<>
       <div className="dash2-grid dash2-actions">
-        <div className="dash2-action-card"><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#fdf1e3'}}>🎨</span>Art awaiting approval</div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(_art.length)}</span><span className="dash2-unit">job{_art.length!==1?'s':''}</span><div className="dash2-sub">🕐 {_artWaiting} waiting on a coach</div></div><button className="dash2-btn" onClick={()=>openActivityCenter('todos')}>Open queue</button></div></div>
-        <div className="dash2-action-card"><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#e5f4f0'}}>📥</span>To-dos waiting on you</div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(_live.length)}</span><span className="dash2-unit">item{_live.length!==1?'s':''}</span><div className="dash2-sub">⚠️ {_due} due within 3 days</div></div><button className="dash2-btn" onClick={()=>openActivityCenter('todos')}>Review list</button></div></div>
-        <div className="dash2-action-card"><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#e9edfb'}}>💬</span>Unread messages</div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(unreadMsgs.length)}</span><span className="dash2-unit">message{unreadMsgs.length!==1?'s':''}</span><div className="dash2-sub">{unreadMentions.length>0?'@ '+unreadMentions.length+' mention'+(unreadMentions.length!==1?'s':'')+' need a reply':'No mentions waiting'}</div></div><button className="dash2-btn dark" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>Open inbox</button></div></div>
+        <div className={`dash2-action-card ${dashActionOpen==='art'?'is-open':''}`} role="button" tabIndex={0} onClick={()=>setDashActionOpen(p=>p==='art'?null:'art')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setDashActionOpen(p=>p==='art'?null:'art')}}}><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#fdf1e3'}}>🎨</span>Art awaiting approval<span className="dash2-caret">{dashActionOpen==='art'?'▾':'▸'}</span></div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(_art.length)}</span><span className="dash2-unit">job{_art.length!==1?'s':''}</span><div className="dash2-sub">🕐 {_artWaiting} waiting on a coach</div></div><button className="dash2-btn" onClick={e=>{e.stopPropagation();openActivityCenter('todos')}}>Open queue</button></div></div>
+        <div className={`dash2-action-card ${dashActionOpen==='todos'?'is-open':''}`} role="button" tabIndex={0} onClick={()=>setDashActionOpen(p=>p==='todos'?null:'todos')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setDashActionOpen(p=>p==='todos'?null:'todos')}}}><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#e5f4f0'}}>📥</span>To-dos waiting on you<span className="dash2-caret">{dashActionOpen==='todos'?'▾':'▸'}</span></div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(_live.length)}</span><span className="dash2-unit">item{_live.length!==1?'s':''}</span><div className="dash2-sub">⚠️ {_due} due within 3 days</div></div><button className="dash2-btn" onClick={e=>{e.stopPropagation();openActivityCenter('todos')}}>Review list</button></div></div>
+        <div className={`dash2-action-card ${dashActionOpen==='msgs'?'is-open':''}`} role="button" tabIndex={0} onClick={()=>setDashActionOpen(p=>p==='msgs'?null:'msgs')} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setDashActionOpen(p=>p==='msgs'?null:'msgs')}}}><div className="dash2-action-top"><span className="dash2-icon" style={{background:'#e9edfb'}}>💬</span>Unread messages<span className="dash2-caret">{dashActionOpen==='msgs'?'▾':'▸'}</span></div><div className="dash2-action-bottom"><div><span className="dash2-bignum">{_n2(unreadMsgs.length)}</span><span className="dash2-unit">message{unreadMsgs.length!==1?'s':''}</span><div className="dash2-sub">{unreadMentions.length>0?'@ '+unreadMentions.length+' mention'+(unreadMentions.length!==1?'s':'')+' need a reply':'No mentions waiting'}</div></div><button className="dash2-btn dark" onClick={e=>{e.stopPropagation();setMF('unread');setMEntityF('all');setPg('messages')}}>Open inbox</button></div></div>
+      </div>
+      {/* Expanded card detail — opens below the tile grid so the tiles stay on top (mirrors Batch POs) */}
+      {dashActionOpen&&(()=>{
+        const _isMsgs=dashActionOpen==='msgs';
+        const _rows=dashActionOpen==='art'?_art:dashActionOpen==='todos'?_live:unreadMsgs;
+        const _title=dashActionOpen==='art'?'Art awaiting approval':dashActionOpen==='todos'?'To-dos waiting on you':'Unread messages';
+        return<div className="card dash2-expand" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2 style={{fontSize:15}}>{_title} <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>({_rows.length})</span></h2>
+            <button style={{background:'none',border:'1px solid #e7e9ef',borderRadius:8,cursor:'pointer',padding:'3px 10px',fontSize:12,color:'#64748b',fontWeight:600}} onClick={()=>setDashActionOpen(null)}>Collapse ▴</button>
+          </div>
+          <div className="card-body" style={{padding:'6px 10px',maxHeight:420,overflow:'auto'}}>
+            {_rows.length===0&&<div style={{padding:'18px 10px',fontSize:13,color:'#64748b'}}>✓ Nothing here — you're caught up.</div>}
+            {!_isMsgs&&_rows.map((t,i)=><div className="dash-action-row" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openDashPriority(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openDashPriority(t)}}}>
+              <span className="dash-action-row__copy"><strong>{t.msg}</strong><small>{t.detail}</small></span>
+              {t.action&&<span className="dash-action-row__priority">{t.action}</span>}
+            </div>)}
+            {_isMsgs&&_rows.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(x=>x.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);return<div className={`dash-action-row dash-action-row--message ${isTagged?'is-mentioned':''}`} key={m.id} role="button" tabIndex={0} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(x=>x.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}else{setMF('unread');setMEntityF('all');setPg('messages')}}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.currentTarget.click()}}}>
+              <span className="dash-action-row__avatar">{(m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'C'):author?.name||'T').charAt(0)}</span>
+              <span className="dash-action-row__copy"><strong>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name||'Team'} {isTagged&&<b>@you</b>}</strong><small>{m.text}</small></span>
+              <span className="dash-action-row__time">{m.ts}</span>
+            </div>})}
+          </div>
+        </div>})()}
+      <div className="dash2-sec">Performance<span className="dash2-link" onClick={()=>setPg('reports')}>View full report →</span></div>
+      <div className="dash2-grid dash2-kpis">
+        {_kpi('💵','Billed this month',_$2(billNow),billNow,billPrev,true,_$2(billPrev))}
+        {_kpi('📈','Sales written',_$2(sNow.rev),sNow.rev,sPrev.rev,true,_$2(sPrev.rev))}
+        {_kpi('🧾','Orders',sNow.n+'',sNow.n,sPrev.n,false,sPrev.n+'')}
+        {_kpi('🛒','Avg order',sNow.n?_$2(sNow.rev/sNow.n):'—',sNow.n?sNow.rev/sNow.n:0,sPrev.n?sPrev.rev/sPrev.n:0,true,sPrev.n?_$2(sPrev.rev/sPrev.n):'—')}
       </div>
       <div className="card" style={{marginBottom:16}}>
         <div className="card-body" style={{padding:'16px 18px 10px'}}>
@@ -8623,6 +8662,8 @@ export default function App(){
         </div>
       </div>
       </>})()}
+    {/* Reminders & notes — kept high on the page: monthly sales, to-dos, KPIs and reminders are the priority views */}
+    {_renderWorkspace()}
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       {/* Bills Inbox — the morning glance for supplier-bill intake: S&S + Sports Inc docs the
@@ -8746,7 +8787,6 @@ export default function App(){
         {visNotifs.length>recentNotifs.length&&<button className="dash-action-card__footer" onClick={()=>openActivityCenter('notifs')}>{visNotifs.length-recentNotifs.length} more notifications <span aria-hidden="true">→</span></button>}
       </article>
     </section>
-    {_renderWorkspace()}
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
