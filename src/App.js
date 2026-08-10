@@ -5493,6 +5493,8 @@ export default function App(){
     // art_status leaving waiting_approval (see the todo builder) — so it needs no click-through snooze.
   };
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const[uiMode,setUiMode]=useState(()=>{try{return localStorage.getItem('nsa_ui_mode')||'classic'}catch{return'classic'}});// defaults to the classic portal until the team opts into the redesign// 'new' | 'classic' — portal-wide redesign switch. Every redesigned surface keys off this and falls back to its legacy UI in classic mode.
+  const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
   const[dashActionOpen,setDashActionOpen]=useState(null);// which dash2 action card is expanded below the grid ('art'|'todos'|'msgs') — Batch-POs-style accordion
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
@@ -8458,7 +8460,7 @@ export default function App(){
       }
     };
 
-    return(<div className="dash2">
+    return(<div className={uiMode==='new'?'dash2':''}>
     {/* ═══ ACTIVITY CENTER POPUP — expanded, sortable notifications + to-dos with built-in messaging ═══ */}
     {acOpen&&(()=>{
       const _src=isAdmin?adminTodos:myTodos;
@@ -8567,11 +8569,11 @@ export default function App(){
     })()}
     <div className="connect-dashboard">
     {/* Role Selector — only show tabs relevant to the user's role */}
-    {visibleTabs.length>1&&<div className="connect-dashboard__roles" aria-label="Dashboard view">
+    {uiMode==='new'&&visibleTabs.length>1&&<div className="connect-dashboard__roles" aria-label="Dashboard view">
       {visibleTabs.map(r=><button key={r.id} type="button" className={`connect-dashboard__role ${dashView===r.id?'is-active':''}`}
         onClick={()=>setDashView(r.id)}><Icon name={r.icon} size={14}/>{r.label}</button>)}
     </div>}
-    <DashboardOverview
+    {uiMode==='new'&&<DashboardOverview
       view={dashView}
       user={cu}
       customers={cust}
@@ -8587,16 +8589,16 @@ export default function App(){
       calcMargin={calcOrderMargin}
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
-    />
-    {dashView!=='admin'&&_renderWorkspace()}
+    />}
+    {uiMode==='new'&&dashView!=='admin'&&_renderWorkspace()}
 
     {/* ═══ ADMIN VIEW ═══ */}
-    {dashView==='admin'&&<>
+    {(dashView==='admin'||uiMode==='classic')&&<>
     {/* ── Overview v2: action cards + month-over-month KPIs + billings dot chart. Visual layer only —
         counts reuse adminTodos with the To-Do card's dismissal rules, and the dollar math mirrors
         _renderSalesBox's billed (portal invoices + NetSuite history, deduped, void excluded) and
         sales (calcOrderMargin.rev on non-cancelled SOs) definitions. Keep the two in step. ── */}
-    {(()=>{
+    {uiMode==='new'&&(()=>{
       const _nowD=new Date();
       const _mo=(off)=>new Date(_nowD.getFullYear(),_nowD.getMonth()+off,1);
       const _pd=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=+m[3];if(y<100)y+=2000;return new Date(y,+m[1]-1,+m[2])}const iso=String(d).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(iso)return new Date(+iso[1],+iso[2]-1,+iso[3]);const dt=new Date(d);return isNaN(dt)?null:dt};
@@ -8694,14 +8696,15 @@ export default function App(){
       </div>
       </>})()}
     {/* Reminders & notes — kept high on the page: monthly sales, to-dos, KPIs and reminders are the priority views */}
-    {_renderWorkspace()}
+    {uiMode==='new'&&_renderWorkspace()}
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       {/* Bills Inbox — the morning glance for supplier-bill intake: S&S + Sports Inc docs the
           daily syncs flagged new, plus locally-parked bills. Click → Import & Review. */}
       {isA&&(()=>{const _parked=savedBills.filter(b=>b.reviewLater).length;const n=ssNewCount+siNewCount+_parked;return n>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#0891b2'}} title={'S&S new: '+ssNewCount+' · Sports Inc new: '+siNewCount+' · parked for later: '+_parked} onClick={()=>{setBillView('import');setPg('import')}}><div className="stat-label">📥 Bills Inbox</div><div className="stat-value" style={{color:'#0e7490'}}>{n}</div></div>})()}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const recentNotifs=visNotifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a)).slice(0,6);const orderedAssigned=myAssignedTodos.slice().sort((a,b)=>(a.priority??2)-(b.priority??2)||(new Date(a.due_date||a.created_at||0)-new Date(b.due_date||b.created_at||0)));const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));const _hubTitle=s=>(s||'').replace(/^[^\w@]+/,'');const _openNotif=t=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const recentNotifs=visNotifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a)).slice(0,6);const orderedAssigned=myAssignedTodos.slice().sort((a,b)=>(a.priority??2)-(b.priority??2)||(new Date(a.due_date||a.created_at||0)-new Date(b.due_date||b.created_at||0)));const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));const _hubTitle=s=>(s||'').replace(/^[^\w@]+/,'');const _openNotif=t=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};return<><div style={{display:'grid',gridTemplateColumns:uiMode==='classic'?'1fr 1fr':'1fr',gap:16,marginBottom:16}}>
+      {uiMode==='classic'&&<>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -8729,10 +8732,11 @@ export default function App(){
               (t.type==='rep_delivery'?<button title="Record this delivery and clear it from your list" style={{fontSize:10,padding:'3px 10px',borderRadius:8,background:'#166534',color:'white',border:'none',fontWeight:700,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();_repDeliver(t)}}>🚚 {t.action}</button>:<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>)}
             </div>)}
           </div>)})()}
-        </div></div>
+        </div></div></>}
+
       {_renderSalesBox(null)}
     </div>
-    <section className="dash-action-hub" aria-label="Action inbox">
+    {uiMode==='new'&&<section className="dash-action-hub" aria-label="Action inbox">
       <article className="dash-action-card dash-action-card--tasks">
         <header className="dash-action-card__header">
           <div>
@@ -8771,28 +8775,6 @@ export default function App(){
         </div>
       </article>
 
-      <article className="dash-action-card dash-action-card--messages">
-        <header className="dash-action-card__header">
-          <div>
-            <span className="dash-action-card__kicker">Conversations</span>
-            <h2>Messages <span>{myUnread.length}</span></h2>
-          </div>
-          <button className="dash-action-card__link" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>Open inbox <span aria-hidden="true">→</span></button>
-        </header>
-        <div className="dash-action-card__summary">
-          <span><strong>{myUnread.length}</strong> unread</span>
-          <button onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><strong>{unreadMentions.length}</strong> @mentions</button>
-        </div>
-        <div className="dash-action-card__list">
-          {myUnread.length===0?<div className="dash-action-card__empty"><Icon name="mail" size={20}/><strong>Inbox is clear</strong><span>No unread conversations need a reply.</span><button onClick={()=>setPg('messages')}>Browse messages</button></div>:
-          myUnread.slice(0,5).map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);return<div className={`dash-action-row dash-action-row--message ${isTagged?'is-mentioned':''}`} key={m.id} role="button" tabIndex={0} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.currentTarget.click()}}}>
-            <span className="dash-action-row__avatar">{(m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'C'):author?.name||'T').charAt(0)}</span>
-            <span className="dash-action-row__copy"><strong>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name||'Team'} {isTagged&&<b>@you</b>}</strong><small>{m.text}</small></span>
-            <span className="dash-action-row__time">{m.ts}</span>
-          </div>})}
-        </div>
-        {myUnread.length>5&&<button className="dash-action-card__footer" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>{myUnread.length-5} more unread messages <span aria-hidden="true">→</span></button>}
-      </article>
 
       <article className="dash-action-card dash-action-card--notifications">
         <header className="dash-action-card__header">
@@ -8817,7 +8799,7 @@ export default function App(){
         </div>
         {visNotifs.length>recentNotifs.length&&<button className="dash-action-card__footer" onClick={()=>openActivityCenter('notifs')}>{visNotifs.length-recentNotifs.length} more notifications <span aria-hidden="true">→</span></button>}
       </article>
-    </section>
+    </section>}
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
@@ -8831,7 +8813,7 @@ export default function App(){
     </>}
 
     {/* ═══ SALES REP VIEW ═══ */}
-    {dashView==='sales'&&<>
+    {uiMode==='new'&&dashView==='sales'&&<>
     <div className="stats-row">
       <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
       <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
@@ -8943,7 +8925,7 @@ export default function App(){
     </>}
 
     {/* ═══ WAREHOUSE VIEW ═══ */}
-    {dashView==='warehouse'&&<>
+    {uiMode==='new'&&dashView==='warehouse'&&<>
     <div className="stats-row">
       <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Open IFs</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Ship Today</div><div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div></div>
@@ -9024,7 +9006,7 @@ export default function App(){
     </>}
 
     {/* ═══ DECORATOR VIEW ═══ */}
-    {dashView==='decorator'&&<>
+    {uiMode==='new'&&dashView==='decorator'&&<>
     {(()=>{
       const inProcess=activeJobs.filter(j=>j.prod_status==='in_process');
       const inLine=activeJobs.filter(j=>j.prod_status==='staging');
@@ -9084,7 +9066,7 @@ export default function App(){
     </>}
 
     {/* ═══ PRODUCTION VIEW ═══ */}
-    {dashView==='production'&&<>
+    {uiMode==='new'&&dashView==='production'&&<>
     {(()=>{
       const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
       activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
@@ -9235,7 +9217,7 @@ export default function App(){
     </>}
 
     {/* ═══ CSR VIEW ═══ */}
-    {dashView==='csr'&&<>
+    {uiMode==='new'&&dashView==='csr'&&<>
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
       <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&myReps.includes(c?.primary_rep_id||s.created_by)}).length})()}</div></div>
@@ -34968,7 +34950,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center',position:'relative'}}>
-          <button className="btn btn-sm" onClick={()=>setRecentOpen(o=>!o)} style={{fontSize:11,background:'none',border:'1px solid #e2e8f0',color:'#64748b',padding:'4px 8px'}} title="Recently viewed"><Icon name="clock" size={14}/></button>
+          <button className="btn btn-sm" onClick={toggleUiMode} style={{fontSize:11,background:uiMode==='new'?'none':'#fef3c7',border:'1px solid '+(uiMode==='new'?'#e2e8f0':'#fde68a'),color:uiMode==='new'?'#64748b':'#92400e',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:600}} title={uiMode==='new'?'Switch back to the classic portal interface':'You are on the classic interface — switch to the new redesign'}>{uiMode==='new'?'↩ Classic UI':'✨ New UI'}</button>          <button className="btn btn-sm" onClick={()=>setRecentOpen(o=>!o)} style={{fontSize:11,background:'none',border:'1px solid #e2e8f0',color:'#64748b',padding:'4px 8px'}} title="Recently viewed"><Icon name="clock" size={14}/></button>
           {recentOpen&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:69}} onClick={()=>setRecentOpen(false)}/>
           <div style={{position:'absolute',top:'100%',right:0,marginTop:4,width:340,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:70,overflow:'hidden'}}>
             <div style={{padding:'8px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
