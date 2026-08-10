@@ -61,80 +61,87 @@ const parsePastedRoster = (text) => {
   return rows;
 };
 
-// ─── Shared size-totals table ─────────────────────────────────────────────────
-// One readable table for "what does this group need vs. what's in stock" —
-// used under each team's grid and for the session-level rollup. needBySlot:
-// { [slot]: { [cat]: { [size]: need | [{qty}] } } } (arrays are summed).
+// ─── Shared size-totals matrix ────────────────────────────────────────────────
+// One tight grid: items down the side, sizes across the top, each cell showing
+// need/in-stock colored by coverage. Used under each team's grid and for the
+// session-level rollup. needBySlot: { [slot]: { [cat]: { [size]: need|[{qty}] } } }.
+const _SZ_ABBREV = { 'Youth Sleeves': 'YSlv', 'Small': 'Sm', 'Medium': 'Med', 'Large': 'Lg', 'OSFA': 'OS' };
 function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
   const needOf = (v) => Array.isArray(v) ? v.reduce((s, x) => s + (x.qty || 1), 0) : (v || 0);
+
+  // Per item: merge categories into one entry per size — need summed, stock
+  // summed across the distinct products that size resolves to (YM/WM/AM cells
+  // sharing a product are only counted once).
   const items = (kitItems || []).map(ki => {
     const byCat = needBySlot[ki.slot] || {};
-    const rows = [];
+    const bySize = {}; // size -> { need, pids:Set }
     ['YM', 'WM', 'AM'].forEach(cat => {
-      const bySz = byCat[cat] || {};
       const productId = cat === 'YM' ? (ki.product_youth_id || ki.product_id)
         : cat === 'WM' ? (ki.product_womens_id || ki.product_id) : ki.product_id;
-      [...SZ_STANDARD, ...SZ_SOCKS].filter(s => bySz[s]).forEach(sz => {
-        const need = needOf(bySz[sz]);
-        if (need > 0) rows.push({ cat, size: sz, need, productId });
+      Object.entries(byCat[cat] || {}).forEach(([sz, v]) => {
+        const need = needOf(v);
+        if (!need) return;
+        const e = bySize[sz] || (bySize[sz] = { need: 0, pids: new Set() });
+        e.need += need;
+        if (productId) e.pids.add(productId);
       });
     });
-    return { ki, rows, units: rows.reduce((s, r) => s + r.need, 0) };
-  }).filter(x => x.rows.length);
+    const units = Object.values(bySize).reduce((s, e) => s + e.need, 0);
+    return { ki, bySize, units };
+  }).filter(x => x.units > 0);
   if (!items.length) return null;
 
-  const statusFor = (row) => {
-    if (!row.productId) return { label: 'no SKU', color: '#94a3b8', bg: '#f8fafc', border: '#e2e8f0' };
-    const { avail, incoming } = getStock(row.productId, row.size);
-    if (avail >= row.need) return { label: '✓ In stock', color: '#15803d', bg: '#f0fdf4', border: '#bbf7d0', avail, incoming };
-    if (avail + incoming >= row.need) return { label: `Short ${row.need - avail}`, color: '#b45309', bg: '#fffbeb', border: '#fde68a', avail, incoming };
-    return { label: avail > 0 ? `Short ${row.need - avail}` : 'Out of stock', color: '#dc2626', bg: '#fef2f2', border: '#fecaca', avail, incoming };
+  // Column order: youth scale, adult scale, then sock sizes — only those in use.
+  const masterOrder = [...SZ_YOUTH, ...SZ_ADULT, ...SZ_SOCKS.filter(s => !SZ_ADULT.includes(s))];
+  const cols = masterOrder.filter(sz => items.some(x => x.bySize[sz]));
+
+  const cellFor = (entry) => {
+    if (!entry) return null;
+    if (!entry.pids.size) return { need: entry.need, avail: null, color: '#475569', bg: '#f8fafc' };
+    let avail = 0, incoming = 0;
+    entry.pids.forEach(pid => { const s = getStock(pid, entry.size); avail += s.avail; incoming += s.incoming; });
+    if (avail >= entry.need) return { need: entry.need, avail, incoming, color: '#15803d', bg: '#f0fdf4' };
+    if (avail + incoming >= entry.need) return { need: entry.need, avail, incoming, color: '#b45309', bg: '#fffbeb' };
+    return { need: entry.need, avail, incoming, color: '#dc2626', bg: '#fef2f2' };
   };
 
+  const th = { padding: '6px 6px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'center', whiteSpace: 'nowrap' };
   return (
     <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-      <div style={{ background: '#0b1220', color: '#fff', padding: '10px 14px', fontWeight: 800, fontSize: 12.5 }}>
-        📊 {title}
+      <div style={{ background: '#0b1220', color: '#fff', padding: '10px 14px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center' }}>
+        <span>📊 {title}</span>
+        <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: 10.5, opacity: 0.75 }}>need <span style={{ opacity: 0.6 }}>/ in stock</span> · green = covered · red = short</span>
       </div>
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12.5, width: '100%' }}>
           <thead>
             <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-              <th style={{ padding: '7px 14px', textAlign: 'left', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4 }}>Size</th>
-              <th style={{ padding: '7px 10px', textAlign: 'right', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, width: 70 }}>Need</th>
-              <th style={{ padding: '7px 10px', textAlign: 'right', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, width: 80 }}>In stock</th>
-              <th style={{ padding: '7px 14px', textAlign: 'left', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, width: 130 }}>Status</th>
+              <th style={{ ...th, textAlign: 'left', padding: '6px 12px', minWidth: 150 }}>Item</th>
+              {cols.map(sz => <th key={sz} style={th} title={sz}>{_SZ_ABBREV[sz] || sz}</th>)}
+              <th style={{ ...th, borderLeft: '1px solid #e2e8f0' }}>Total</th>
             </tr>
           </thead>
           <tbody>
-            {items.map(({ ki, rows, units }) => (
-              <React.Fragment key={ki.slot}>
-                <tr style={{ background: '#f1f5f9', borderTop: '1px solid #e2e8f0' }}>
-                  <td colSpan={4} style={{ padding: '7px 14px' }}>
-                    <span style={{ fontWeight: 800, fontSize: 12.5, color: '#0b1220' }}>{ki.label}{ki.color ? ` — ${ki.color}` : ''}</span>
-                    {(ki.sku || ki.sku_youth) && <span style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: 10.5, color: '#64748b' }}>{[ki.sku_youth, ki.sku].filter(Boolean).join(' / ')}</span>}
-                    <span style={{ float: 'right', fontWeight: 700, fontSize: 12, color: '#475569' }}>{units} unit{units !== 1 ? 's' : ''}</span>
-                  </td>
-                </tr>
-                {rows.map(row => {
-                  const st = statusFor(row);
+            {items.map(({ ki, bySize, units }, ri) => (
+              <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9', background: ri % 2 ? '#fafafa' : '#fff' }}>
+                <td style={{ padding: '6px 12px', whiteSpace: 'nowrap' }}
+                  title={[ki.sku_youth, ki.sku].filter(Boolean).join(' / ') || undefined}>
+                  <span style={{ fontWeight: 700, color: '#0b1220' }}>{ki.label}</span>
+                  {ki.color && <span style={{ color: '#94a3b8', fontSize: 11 }}> {ki.color}</span>}
+                </td>
+                {cols.map(sz => {
+                  const c = cellFor(bySize[sz] ? { ...bySize[sz], size: sz } : null);
+                  if (!c) return <td key={sz} style={{ padding: '5px 4px', textAlign: 'center', color: '#e2e8f0' }}>·</td>;
                   return (
-                    <tr key={row.cat + row.size} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={{ padding: '6px 14px', fontWeight: 700, color: '#0b1220' }}>{ki.no_size ? 'One size' : row.size}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#0b1220' }}>{row.need}</td>
-                      <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 600, color: st.avail == null ? '#94a3b8' : st.avail >= row.need ? '#15803d' : st.avail > 0 ? '#b45309' : '#dc2626' }}>
-                        {st.avail == null ? '—' : st.avail}
-                        {st.incoming > 0 && <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 400 }}> +{st.incoming} inc.</span>}
-                      </td>
-                      <td style={{ padding: '6px 14px' }}>
-                        <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 700, color: st.color, background: st.bg, border: `1px solid ${st.border}`, borderRadius: 999, padding: '2px 10px', whiteSpace: 'nowrap' }}>
-                          {st.label}
-                        </span>
-                      </td>
-                    </tr>
+                    <td key={sz} style={{ padding: '5px 4px', textAlign: 'center', background: c.bg }}
+                      title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.incoming ? ` + ${c.incoming} incoming` : ''}`}`}>
+                      <span style={{ fontWeight: 800, color: c.color }}>{c.need}</span>
+                      <span style={{ fontSize: 10, color: c.avail == null ? '#94a3b8' : c.color, opacity: 0.75 }}>/{c.avail == null ? '—' : c.avail}</span>
+                    </td>
                   );
                 })}
-              </React.Fragment>
+                <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 800, color: '#0b1220', borderLeft: '1px solid #e2e8f0' }}>{units}</td>
+              </tr>
             ))}
           </tbody>
         </table>
