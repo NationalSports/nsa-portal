@@ -111,46 +111,148 @@ function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
     return { need: entry.need, avail, incoming, deliveries, color: '#dc2626', bg: '#fef2f2' };
   };
 
-  const th = { padding: '6px 6px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'center', whiteSpace: 'nowrap' };
+  // Visual grouping: a hairline between the youth scale, adult scale, and sock
+  // sizes, so the eye doesn't read one undifferentiated row of columns.
+  const scaleOf = (sz) => SZ_YOUTH.includes(sz) ? 'Y' : SZ_ADULT.includes(sz) ? 'A' : 'S';
+  const groupEdge = (i) => i > 0 && scaleOf(cols[i]) !== scaleOf(cols[i - 1]);
+
+  const th = { padding: '8px 6px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'center', whiteSpace: 'nowrap', letterSpacing: 0.3 };
   return (
-    <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-      <div style={{ background: '#0b1220', color: '#fff', padding: '10px 14px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center' }}>
+    <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,.05)' }}>
+      <style>{`.ktt-row:hover td{background:#f0f6ff}`}</style>
+      <div style={{ background: '#0b1220', color: '#fff', padding: '11px 16px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <span>📊 {title}</span>
-        <span style={{ marginLeft: 'auto', fontWeight: 400, fontSize: 10.5, opacity: 0.75 }}>need <span style={{ opacity: 0.6 }}>/ in stock</span> · green = covered · red = short</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 10, fontWeight: 600, fontSize: 10 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#4ade80' }} />covered</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#fbbf24' }} />covered by incoming</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#f87171' }} />short</span>
+          <span style={{ opacity: 0.65 }}>need / in stock</span>
+        </span>
       </div>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ borderCollapse: 'collapse', fontSize: 12.5, width: '100%' }}>
           <thead>
             <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-              <th style={{ ...th, textAlign: 'left', padding: '6px 12px', minWidth: 150 }}>Item</th>
-              {cols.map(sz => <th key={sz} style={th} title={sz}>{_SZ_ABBREV[sz] || sz}</th>)}
-              <th style={{ ...th, borderLeft: '1px solid #e2e8f0' }}>Total</th>
+              <th style={{ ...th, textAlign: 'left', padding: '8px 14px', minWidth: 150, position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2 }}>Item</th>
+              {cols.map((sz, i) => <th key={sz} style={{ ...th, borderLeft: groupEdge(i) ? '1px solid #e2e8f0' : 'none' }} title={sz}>{_SZ_ABBREV[sz] || sz}</th>)}
+              <th style={{ ...th, borderLeft: '2px solid #e2e8f0' }}>Total</th>
             </tr>
           </thead>
           <tbody>
-            {items.map(({ ki, bySize, units }, ri) => (
-              <tr key={ki.slot} style={{ borderTop: '1px solid #f1f5f9', background: ri % 2 ? '#fafafa' : '#fff' }}>
-                <td style={{ padding: '6px 12px', whiteSpace: 'nowrap' }}
-                  title={[ki.sku_youth, ki.sku].filter(Boolean).join(' / ') || undefined}>
-                  <span style={{ fontWeight: 700, color: '#0b1220' }}>{ki.label}</span>
-                  {ki.color && <span style={{ color: '#94a3b8', fontSize: 11 }}> {ki.color}</span>}
-                </td>
-                {cols.map(sz => {
-                  const c = cellFor(bySize[sz] ? { ...bySize[sz], size: sz } : null);
-                  if (!c) return <td key={sz} style={{ padding: '5px 4px', textAlign: 'center', color: '#e2e8f0' }}>·</td>;
-                  return (
-                    <td key={sz} style={{ padding: '5px 4px', textAlign: 'center', background: c.bg }}
-                      title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.deliveries.length ? ` · arriving: ${_fmtDeliveries(c.deliveries)}` : ''}`}`}>
-                      <span style={{ fontWeight: 800, color: c.color }}>{c.need}</span>
-                      <span style={{ fontSize: 10, color: c.avail == null ? '#94a3b8' : c.color, opacity: 0.75 }}>/{c.avail == null ? '—' : c.avail}</span>
-                    </td>
-                  );
-                })}
-                <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 800, color: '#0b1220', borderLeft: '1px solid #e2e8f0' }}>{units}</td>
-              </tr>
-            ))}
+            {items.map(({ ki, bySize, units }, ri) => {
+              const rowBg = ri % 2 ? '#fafbfc' : '#fff';
+              return (
+                <tr key={ki.slot} className="ktt-row" style={{ borderTop: '1px solid #f1f5f9', background: rowBg }}>
+                  <td style={{ padding: '7px 14px', whiteSpace: 'nowrap', position: 'sticky', left: 0, background: rowBg, zIndex: 1 }}
+                    title={[ki.sku_youth, ki.sku].filter(Boolean).join(' / ') || undefined}>
+                    <span style={{ fontWeight: 700, color: '#0b1220' }}>{ki.label}</span>
+                    {ki.color && <span style={{ color: '#94a3b8', fontSize: 11 }}> {ki.color}</span>}
+                  </td>
+                  {cols.map((sz, i) => {
+                    const c = cellFor(bySize[sz] ? { ...bySize[sz], size: sz } : null);
+                    const edge = groupEdge(i) ? '1px solid #eef2f7' : 'none';
+                    if (!c) return <td key={sz} style={{ padding: '4px 3px', textAlign: 'center', color: '#e2e8f0', borderLeft: edge }}>·</td>;
+                    // Short cells wear their next arrival inline, so the answer to
+                    // "when can we fill this?" doesn't require a hover.
+                    const nextDv = c.avail != null && c.avail < c.need && c.deliveries.length ? c.deliveries[0] : null;
+                    return (
+                      <td key={sz} style={{ padding: '4px 3px', textAlign: 'center', borderLeft: edge }}
+                        title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.deliveries.length ? ` · arriving: ${_fmtDeliveries(c.deliveries)}` : ''}`}`}>
+                        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', minWidth: 42, borderRadius: 7, padding: '3px 5px', background: c.bg, lineHeight: 1.25 }}>
+                          <span style={{ whiteSpace: 'nowrap' }}>
+                            <span style={{ fontWeight: 800, color: c.color }}>{c.need}</span>
+                            <span style={{ fontSize: 10, color: c.avail == null ? '#94a3b8' : c.color, opacity: 0.75 }}>/{c.avail == null ? '—' : c.avail}</span>
+                          </span>
+                          {nextDv && <span style={{ fontSize: 9, fontWeight: 700, color: c.color, opacity: 0.85, whiteSpace: 'nowrap' }}>+{nextDv.qty} {_fmtDate(nextDv.date)}</span>}
+                        </span>
+                      </td>
+                    );
+                  })}
+                  <td style={{ padding: '4px 10px', textAlign: 'center', fontWeight: 800, color: '#0b1220', borderLeft: '2px solid #e2e8f0' }}>{units}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Incoming deliveries — everything on order, grouped by arrival date ───────
+// Reads product_incoming for every product linked in the kit and lays it out as
+// a date timeline: what lands when, for which items/sizes, with the PO note.
+function IncomingDeliveriesCard({ kitItems }) {
+  const [rows, setRows] = useState(null);
+  const pidKey = (kitItems || []).flatMap(ki => [ki.product_id, ki.product_youth_id, ki.product_womens_id]).filter(Boolean).join(',');
+
+  // A product can back several kit items (both jersey colors share a SKU) —
+  // label deliveries with every item they serve.
+  const labelsByPid = useMemo(() => {
+    const m = {};
+    (kitItems || []).forEach(ki => {
+      [ki.product_id, ki.product_youth_id, ki.product_womens_id].filter(Boolean).forEach(pid => {
+        (m[pid] = m[pid] || new Set()).add(ki.label);
+      });
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pidKey]);
+
+  useEffect(() => {
+    const pids = pidKey ? pidKey.split(',') : [];
+    if (!pids.length) { setRows([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('product_incoming')
+        .select('product_id,size,qty,expected_date,note')
+        .in('product_id', [...new Set(pids)]).gt('qty', 0)
+        .order('expected_date');
+      if (!cancelled) setRows(data || []);
+    })();
+    return () => { cancelled = true; };
+  }, [pidKey]);
+
+  if (!rows || !rows.length) return null;
+
+  const byDate = {};
+  rows.forEach(r => { (byDate[r.expected_date || 'TBD'] = byDate[r.expected_date || 'TBD'] || []).push(r); });
+  const dates = Object.keys(byDate).sort();
+  const prettyDate = (d) => {
+    if (d === 'TBD') return 'Date TBD';
+    const dt = new Date(d + 'T00:00:00');
+    return isNaN(dt.getTime()) ? d : dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  };
+
+  return (
+    <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,.05)' }}>
+      <div style={{ background: '#0b1220', color: '#fff', padding: '11px 16px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center' }}>
+        <span>🚚 Incoming deliveries</span>
+        <span style={{ marginLeft: 'auto', fontWeight: 600, fontSize: 10.5, opacity: 0.75 }}>
+          {rows.reduce((s, r) => s + r.qty, 0).toLocaleString()} units on order
+        </span>
+      </div>
+      <div style={{ padding: '4px 0' }}>
+        {dates.map((d, di) => (
+          <div key={d} style={{ display: 'flex', gap: 14, padding: '12px 16px', borderTop: di > 0 ? '1px solid #f1f5f9' : 'none' }}>
+            <div style={{ width: 96, flexShrink: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: '#0b1220' }}>{prettyDate(d)}</div>
+              <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>
+                {byDate[d].reduce((s, r) => s + r.qty, 0)} unit{byDate[d].reduce((s, r) => s + r.qty, 0) !== 1 ? 's' : ''}
+              </div>
+            </div>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {byDate[d].map((r, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12.5 }}>
+                  <span style={{ fontWeight: 700, color: '#15803d', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 999, padding: '1px 9px', fontSize: 11.5, whiteSpace: 'nowrap' }}>+{r.qty}</span>
+                  <span style={{ fontWeight: 700, color: '#0b1220' }}>{[...(labelsByPid[r.product_id] || ['Item'])].join(' / ')}</span>
+                  <span style={{ color: '#64748b' }}>{r.size}</span>
+                  {r.note && <span style={{ fontSize: 10.5, color: '#94a3b8', fontFamily: 'monospace' }}>{r.note}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -2544,6 +2646,12 @@ export function RosterOrdersCoach({ customer }) {
           </div>
         );
       })}
+
+      {/* Everything on order for this kit, laid out by arrival date */}
+      {sessions.length > 0 && (
+        <IncomingDeliveriesCard
+          kitItems={[...new Map(sessions.flatMap(s => effectiveKit(s, catalog)).map(ki => [ki.slot, ki])).values()]} />
+      )}
     </div>
   );
 }
