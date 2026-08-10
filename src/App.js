@@ -8424,6 +8424,21 @@ export default function App(){
         _priorityKind:'assigned',
         _assignedTask:t,
       })),
+      // Workspace reminders surface here the day they come due — overdue ones jump to Urgent.
+      ...workspaceItems.filter(x=>x.status==='open'&&x.item_kind==='reminder'&&x.remind_on&&String(x.remind_on).slice(0,10)<=_todayStr).map(x=>{
+        const _wCust=x.customer_id?cust.find(c=>c.id===x.customer_id):null;
+        const _overdue=String(x.remind_on).slice(0,10)<_todayStr;
+        return{
+          id:'ws-'+x.id,
+          msg:'⏰ Reminder: '+x.title,
+          detail:[_wCust?.name,x.so_id,x.po_id,_fmtDueDate(x.remind_on)].filter(Boolean).join(' · ')||_workspaceLabelName(x.label),
+          action:'Open reminder',
+          priority:_overdue?0:1,
+          date:x.remind_on,
+          _priorityKind:'workspace',
+          _workspaceItem:x,
+        };
+      }),
     ].sort((a,b)=>{
       const pA=a.priority??2,pB=b.priority??2;
       if(pA!==pB)return pA-pB;
@@ -8431,6 +8446,7 @@ export default function App(){
       return dA-dB;
     });
     const _openDashPriority=(t)=>{
+      if(t._priorityKind==='workspace'){_openWorkspaceModal(t._workspaceItem.item_kind,t._workspaceItem);return}
       if(t._priorityKind==='assigned'){setTodoDetailId(t._assignedTask?.id||t.id);return}
       _todoClickedThrough(t);
       if(t.type==='issue'){setPg('issues');if(t.issue?.id)setIssueFocus(t.issue.id);return}
@@ -8626,17 +8642,32 @@ export default function App(){
             <h2 style={{fontSize:15}}>{_title} <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>({_rows.length})</span></h2>
             <button style={{background:'none',border:'1px solid #e7e9ef',borderRadius:8,cursor:'pointer',padding:'3px 10px',fontSize:12,color:'#64748b',fontWeight:600}} onClick={()=>setDashActionOpen(null)}>Collapse ▴</button>
           </div>
-          <div className="card-body" style={{padding:'6px 10px',maxHeight:420,overflow:'auto'}}>
-            {_rows.length===0&&<div style={{padding:'18px 10px',fontSize:13,color:'#64748b'}}>✓ Nothing here — you're caught up.</div>}
-            {!_isMsgs&&_rows.map((t,i)=><div className="dash-action-row" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openDashPriority(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openDashPriority(t)}}}>
-              <span className="dash-action-row__copy"><strong>{t.msg}</strong><small>{t.detail}</small></span>
-              {t.action&&<span className="dash-action-row__priority">{t.action}</span>}
-            </div>)}
-            {_isMsgs&&_rows.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(x=>x.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);return<div className={`dash-action-row dash-action-row--message ${isTagged?'is-mentioned':''}`} key={m.id} role="button" tabIndex={0} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(x=>x.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}else{setMF('unread');setMEntityF('all');setPg('messages')}}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.currentTarget.click()}}}>
-              <span className="dash-action-row__avatar">{(m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'C'):author?.name||'T').charAt(0)}</span>
-              <span className="dash-action-row__copy"><strong>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name||'Team'} {isTagged&&<b>@you</b>}</strong><small>{m.text}</small></span>
-              <span className="dash-action-row__time">{m.ts}</span>
-            </div>})}
+          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:480,overflow:'auto'}}>
+            {_rows.length===0&&<div style={{padding:'20px 12px',fontSize:14,color:'#64748b'}}>✓ Nothing here — you're caught up.</div>}
+            {_rows.length>0&&<div className="dash2x-head"><span>{_isMsgs?'Message':'Item'}</span><span>Account</span><span>SO / Job #</span><span style={{textAlign:'right'}}>Action</span></div>}
+            {!_isMsgs&&_rows.map((t,i)=>{
+              const _acct=cust.find(c=>c.id===(t.so?.customer_id||t.est?.customer_id||t.inv?.customer_id||t.customer_id))?.name||'';
+              const _ref=t.so?.id||t.est?.id||t.inv?.id||(t.jobId?'Job '+t.jobId:'');
+              const _sub=[_acct?null:t.detail,t.date&&_fmtDueDate?_fmtDueDate(t.date):null].filter(Boolean).join(' · ')||t.detail;
+              return<div className="dash2x-row" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openDashPriority(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openDashPriority(t)}}}>
+                <span className="dash2x-main"><strong>{t.msg}</strong><small>{_sub}</small></span>
+                <span className="dash2x-acct">{_acct||'—'}</span>
+                <span className="dash2x-ref">{_ref||'—'}</span>
+                <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button></span>
+              </div>})}
+            {_isMsgs&&_rows.map(m=>{
+              const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;
+              const so=sos.find(x=>x.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
+              const isTagged=(m.tagged_members||[]).includes(cu?.id);
+              const _acct=c2?.name||wctx?.storeName||'';
+              const _ref=so?.id||(m.entity_type==='webstore_order'&&m.entity_id?'#'+m.entity_id:'');
+              const _open=()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(x=>x.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}else{setMF('unread');setMEntityF('all');setPg('messages')}};
+              return<div className="dash2x-row" key={m.id} role="button" tabIndex={0} onClick={_open} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_open()}}}>
+                <span className="dash2x-main"><strong>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name||'Team'} {isTagged&&<b style={{color:'#962C32'}}>@you</b>}</strong><small>{m.text}</small></span>
+                <span className="dash2x-acct">{_acct||'—'}</span>
+                <span className="dash2x-ref">{_ref||'—'}</span>
+                <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_open()}}>Open</button></span>
+              </div>})}
           </div>
         </div>})()}
       <div className="dash2-sec">Performance<span className="dash2-link" onClick={()=>setPg('reports')}>View full report →</span></div>
