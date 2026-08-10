@@ -224,6 +224,7 @@ function IncomingDeliveriesCard({ kitItems }) {
     return isNaN(dt.getTime()) ? d : dt.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   };
 
+  const th = { padding: '8px 14px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'left', whiteSpace: 'nowrap', letterSpacing: 0.3, textTransform: 'uppercase' };
   return (
     <div style={{ marginTop: 16, border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,.05)' }}>
       <div style={{ background: '#0b1220', color: '#fff', padding: '11px 16px', fontWeight: 800, fontSize: 12.5, display: 'flex', alignItems: 'center' }}>
@@ -232,27 +233,39 @@ function IncomingDeliveriesCard({ kitItems }) {
           {rows.reduce((s, r) => s + r.qty, 0).toLocaleString()} units on order
         </span>
       </div>
-      <div style={{ padding: '4px 0' }}>
-        {dates.map((d, di) => (
-          <div key={d} style={{ display: 'flex', gap: 14, padding: '12px 16px', borderTop: di > 0 ? '1px solid #f1f5f9' : 'none' }}>
-            <div style={{ width: 96, flexShrink: 0 }}>
-              <div style={{ fontWeight: 800, fontSize: 13, color: '#0b1220' }}>{prettyDate(d)}</div>
-              <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>
-                {byDate[d].reduce((s, r) => s + r.qty, 0)} unit{byDate[d].reduce((s, r) => s + r.qty, 0) !== 1 ? 's' : ''}
-              </div>
-            </div>
-            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {byDate[d].map((r, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 12.5 }}>
-                  <span style={{ fontWeight: 700, color: '#15803d', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 999, padding: '1px 9px', fontSize: 11.5, whiteSpace: 'nowrap' }}>+{r.qty}</span>
-                  <span style={{ fontWeight: 700, color: '#0b1220' }}>{[...(labelsByPid[r.product_id] || ['Item'])].join(' / ')}</span>
-                  <span style={{ color: '#64748b' }}>{r.size}</span>
-                  {r.note && <span style={{ fontSize: 10.5, color: '#94a3b8', fontFamily: 'monospace' }}>{r.note}</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12.5, width: '100%' }}>
+          <thead>
+            <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+              <th style={{ ...th, minWidth: 110 }}>Arrives</th>
+              <th style={{ ...th, textAlign: 'right', width: 60 }}>Qty</th>
+              <th style={th}>Item</th>
+              <th style={{ ...th, width: 70 }}>Size</th>
+              <th style={{ ...th, width: 90 }}>PO</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((d, di) => {
+              const group = byDate[d];
+              const groupUnits = group.reduce((s, r) => s + r.qty, 0);
+              const rowBg = di % 2 ? '#fafbfc' : '#fff';
+              return group.map((r, i) => (
+                <tr key={d + i} style={{ background: rowBg, borderTop: i === 0 ? '1px solid #e2e8f0' : '1px solid #f1f5f9' }}>
+                  {i === 0 && (
+                    <td rowSpan={group.length} style={{ padding: '7px 14px', verticalAlign: 'top', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontWeight: 800, color: '#0b1220' }}>{prettyDate(d)}</span>
+                      <div style={{ fontSize: 10.5, color: '#94a3b8', marginTop: 2 }}>{groupUnits} unit{groupUnits !== 1 ? 's' : ''}</div>
+                    </td>
+                  )}
+                  <td style={{ padding: '7px 14px', textAlign: 'right', fontWeight: 800, color: '#15803d', whiteSpace: 'nowrap' }}>+{r.qty}</td>
+                  <td style={{ padding: '7px 14px', fontWeight: 700, color: '#0b1220' }}>{[...(labelsByPid[r.product_id] || ['Item'])].join(' / ')}</td>
+                  <td style={{ padding: '7px 14px', fontWeight: 700, color: '#475569', whiteSpace: 'nowrap' }}>{r.size}</td>
+                  <td style={{ padding: '7px 14px', fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>{r.note || '—'}</td>
+                </tr>
+              ));
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
