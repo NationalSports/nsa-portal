@@ -436,7 +436,30 @@ async function fetchOverrideSkuStock(lines) {
 // nobody mistakes it for a confirmed count.
 // Deliberately NOT applied to the public storefront's sold-out math — inferring
 // stock there would oversell to customers; here it only softens an internal warning.
-const todayIso = () => new Date().toISOString().slice(0, 10);
+// Local calendar date, NOT toISOString() (UTC): after ~5pm Pacific the UTC date has
+// already rolled over, which credited tomorrow's deliveries as "arrived" a day early.
+const todayIso = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+
+// Fetch EVERY webstore_order_items row for a set of order ids. Chunking the id list
+// for `.in()` is not enough: PostgREST caps each RESPONSE at 1000 rows regardless of
+// how few ids are in the filter, so a 300-order chunk of multi-item team orders still
+// silently truncated — the same "orders show 0/fewer items" bug the chunking was added
+// to fix. Each chunk is therefore also paged with .range() (ordered by id so pages are
+// stable) until a short page signals the end. Exported for tests.
+export const fetchOrderItemRows = async (db, orderIds, pageSize = 1000) => {
+  const rows = [];
+  const ids = [...new Set(orderIds)].filter(Boolean);
+  for (let ii = 0; ii < ids.length; ii += 300) {
+    const slice = ids.slice(ii, ii + 300);
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await db.from('webstore_order_items').select('*').in('order_id', slice).order('id').range(from, from + pageSize - 1);
+      if (error) return { rows, error };
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+    }
+  }
+  return { rows, error: null };
+};
 export function arrivedVendorQty(sizeEta, sizeIncoming, size, today = todayIso()) {
   const eta = String((sizeEta || {})[size] || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(eta) || eta > today) return 0;
@@ -1341,16 +1364,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
-    // Order items are fetched SCOPED to this store's orders, chunked by order_id.
-    // A blanket `select('*')` across webstore_order_items silently truncates at the
-    // PostgREST 1000-row cap once the table grows, dropping newer stores' lines and
-    // showing every order as "0 items" (matches the chunked pattern used elsewhere).
-    const _oidArr = [...new Set((ordRes.data || []).map((o) => o.id))];
-    const _itemRows = [];
-    for (let ii = 0; ii < _oidArr.length; ii += 300) {
-      const { data: chunk } = await supabase.from('webstore_order_items').select('*').in('order_id', _oidArr.slice(ii, ii + 300));
-      if (chunk) _itemRows.push(...chunk);
-    }
+    // Order items are fetched SCOPED to this store's orders, chunked AND paged
+    // (see fetchOrderItemRows) — a blanket `select('*')` truncated at the PostgREST
+    // 1000-row cap, and so did any single 300-order chunk of multi-item orders.
+    const { rows: _itemRows } = await fetchOrderItemRows(supabase, (ordRes.data || []).map((o) => o.id));
     const itemRes = { data: _itemRows };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
@@ -3093,12 +3110,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const open = (freshOrders || []).filter(isLiveWebstoreOrder);
     if (!open.length) { flash('No unbatched orders to send'); return; }
     const openIds = new Set(open.map((o) => o.id));
-    const openItems = [];
-    for (let ii = 0, oidArr = [...openIds]; ii < oidArr.length; ii += 300) {
-      const { data: chunk, error: fiErr } = await supabase.from('webstore_order_items').select('*').in('order_id', oidArr.slice(ii, ii + 300));
-      if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
-      openItems.push(...(chunk || []));
-    }
+    const { rows: openItems, error: fiErr } = await fetchOrderItemRows(supabase, [...openIds]);
+    if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
     const lines = annotateEffSkus(openItems.filter((i) => !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
@@ -12572,13 +12585,8 @@ function StoreBackordersView({ store, onOpenSO }) {
         ]);
         if (ordsRes.error) throw ordsRes.error;
         const live = (ordsRes.data || []).filter(isLiveWebstoreOrder);
-        const oIds = live.map((o) => o.id);
-        const chunks = [];
-        for (let i = 0; i < oIds.length; i += 300) chunks.push(oIds.slice(i, i + 300));
-        const itemRes = await Promise.all(chunks.map((c) => supabase.from('webstore_order_items').select('*').in('order_id', c)));
-        const failed = itemRes.find((r) => r.error);
-        if (failed) throw failed.error;
-        const items = itemRes.flatMap((r) => r.data || []);
+        const { rows: items, error: fiErr } = await fetchOrderItemRows(supabase, live.map((o) => o.id));
+        if (fiErr) throw fiErr;
         if (!dead) setData({ stores, sos, orders: live, items });
       } catch (e) { if (!dead) { setErr(e.message || 'Load failed'); setData({ stores: [], sos: [], orders: [], items: [] }); } }
     })();

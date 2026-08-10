@@ -98,17 +98,31 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
   // and snap a cleared field back to "0".
   React.useEffect(()=>{if(!focused&&parseFloat(raw)!==value)setRaw(String(value))},[value,focused]);return<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>$</span><input value={raw} onFocus={()=>setFocused(true)} onChange={e=>{const v=e.target.value;if(!/^-?\d*\.?\d*$/.test(v))return;setRaw(v);if(v===''||v==='.'||v==='-')return;const n=parseFloat(v);if(!isNaN(n))onChange(n)}} onBlur={()=>{setFocused(false);const n=parseFloat(raw)||0;setRaw(String(n));onChange(n)}} style={{width:w,border:'none',outline:'none',fontSize:15,fontWeight:800,color:'#166534',textAlign:'center',background:'transparent'}}/></span>}
 
-// Buffered text input — keystrokes stay in local `raw` state and only commit to
-// the parent onBlur / Enter, so typing a long note or ink color no longer fires a
+// Buffered text input — keystrokes stay in local `raw` state and commit to the
+// parent onBlur / Enter, so typing a long note or ink color no longer fires a
 // setO() (and full OrderEditor re-render) on every character. Mirrors $In's
 // focus-guarded sync: the box is only re-seeded from `value` while NOT being edited.
+// Buffered text must ALSO commit on a short typing pause (bounded at TXT_MAX_MS even
+// while typing continuously) and on unmount: the 30s autosave / beforeunload path
+// reads order state, not this input's local state, so text that only committed on
+// blur was invisible to autosave AND to the unsaved-changes tab-close warning while
+// the field was still focused — closing the tab mid-note silently lost the note.
+const TXT_IDLE_MS=400,TXT_MAX_MS=1500;
 function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFocus}){
   const cur=value==null?'':String(value);
   const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
+  const rawRef=React.useRef(raw);rawRef.current=raw;
+  const curRef=React.useRef(cur);curRef.current=cur;
+  const onChangeRef=React.useRef(onChange);onChangeRef.current=onChange;
+  const timerRef=React.useRef(null);const firstEditRef=React.useRef(0);
   React.useEffect(()=>{if(!focused&&raw!==cur)setRaw(cur)},[cur,focused]);// eslint-disable-line react-hooks/exhaustive-deps
-  const commit=()=>{setFocused(false);if(raw!==cur)onChange(raw)};
+  const flush=React.useCallback(()=>{if(timerRef.current){clearTimeout(timerRef.current);timerRef.current=null}firstEditRef.current=0;if(rawRef.current!==curRef.current)onChangeRef.current(rawRef.current)},[]);
+  React.useEffect(()=>flush,[flush]);// flush pending text on unmount
+  const commit=()=>{setFocused(false);flush()};
   return<input className={className} style={style} placeholder={placeholder} title={title} autoFocus={autoFocus} value={raw}
-    onFocus={()=>setFocused(true)} onChange={e=>setRaw(e.target.value)} onBlur={commit}
+    onFocus={()=>setFocused(true)}
+    onChange={e=>{const v=e.target.value;setRaw(v);rawRef.current=v;if(!firstEditRef.current)firstEditRef.current=Date.now();if(timerRef.current)clearTimeout(timerRef.current);if(Date.now()-firstEditRef.current>=TXT_MAX_MS)flush();else timerRef.current=setTimeout(flush,TXT_IDLE_MS)}}
+    onBlur={commit}
     onKeyDown={e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}}/>;
 }
 
