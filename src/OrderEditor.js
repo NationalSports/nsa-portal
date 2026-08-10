@@ -2799,7 +2799,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setO(e=>({...e,items:safeItems(e).map((it,ii)=>{
       const r=sel.find(s=>s.ii===ii);if(!r)return it;
       const decos=safeDecos(it);
-      const empty=decos.findIndex(d=>d.kind==='art'&&!d.art_file_id);
+      // A '__tbd' placeholder counts as an empty slot: the picker must RESOLVE the
+      // TBD decoration (like the line-item dropdown does) rather than append a second
+      // art deco beside it — the leftover placeholder keeps reading "Needs Art".
+      const empty=decos.findIndex(d=>d.kind==='art'&&(!d.art_file_id||d.art_file_id==='__tbd'));
       // Same NSA underbase rule as changeArtFileId: screen print on a dark garment
       // auto-checks the underbase (set-only; the rep can untick on the Line Items tab).
       const artObj=(e.art_files||[]).find(f=>f.id===m.artId);
