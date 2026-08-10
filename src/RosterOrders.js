@@ -97,12 +97,18 @@ function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
 
   const cellFor = (entry) => {
     if (!entry) return null;
-    if (!entry.pids.size) return { need: entry.need, avail: null, color: '#475569', bg: '#f8fafc' };
+    if (!entry.pids.size) return { need: entry.need, avail: null, color: '#475569', bg: '#f8fafc', deliveries: [] };
     let avail = 0, incoming = 0;
-    entry.pids.forEach(pid => { const s = getStock(pid, entry.size); avail += s.avail; incoming += s.incoming; });
-    if (avail >= entry.need) return { need: entry.need, avail, incoming, color: '#15803d', bg: '#f0fdf4' };
-    if (avail + incoming >= entry.need) return { need: entry.need, avail, incoming, color: '#b45309', bg: '#fffbeb' };
-    return { need: entry.need, avail, incoming, color: '#dc2626', bg: '#fef2f2' };
+    const deliveries = [];
+    entry.pids.forEach(pid => {
+      const s = getStock(pid, entry.size);
+      avail += s.avail; incoming += s.incoming;
+      (s.deliveries || []).forEach(dv => deliveries.push(dv));
+    });
+    deliveries.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')));
+    if (avail >= entry.need) return { need: entry.need, avail, incoming, deliveries, color: '#15803d', bg: '#f0fdf4' };
+    if (avail + incoming >= entry.need) return { need: entry.need, avail, incoming, deliveries, color: '#b45309', bg: '#fffbeb' };
+    return { need: entry.need, avail, incoming, deliveries, color: '#dc2626', bg: '#fef2f2' };
   };
 
   const th = { padding: '6px 6px', fontSize: 10.5, fontWeight: 800, color: '#64748b', textAlign: 'center', whiteSpace: 'nowrap' };
@@ -134,7 +140,7 @@ function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
                   if (!c) return <td key={sz} style={{ padding: '5px 4px', textAlign: 'center', color: '#e2e8f0' }}>·</td>;
                   return (
                     <td key={sz} style={{ padding: '5px 4px', textAlign: 'center', background: c.bg }}
-                      title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.incoming ? ` + ${c.incoming} incoming` : ''}`}`}>
+                      title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.deliveries.length ? ` · arriving: ${_fmtDeliveries(c.deliveries)}` : ''}`}`}>
                       <span style={{ fontWeight: 800, color: c.color }}>{c.need}</span>
                       <span style={{ fontSize: 10, color: c.avail == null ? '#94a3b8' : c.color, opacity: 0.75 }}>/{c.avail == null ? '—' : c.avail}</span>
                     </td>
@@ -206,9 +212,12 @@ function useKitInventory(items) {
     let cancelled = false;
     (async () => {
       try {
-        const [{ data: prods }, { data: inHouse }] = await Promise.all([
+        const [{ data: prods }, { data: inHouse }, { data: onOrder }] = await Promise.all([
           supabase.from('products').select('id,sku').in('id', productIds),
           supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', productIds),
+          // NSA's own on-order record — expected deliveries entered at purchase
+          // time (qty + landing date), distinct from the vendor snapshot below.
+          supabase.from('product_incoming').select('product_id,size,qty,expected_date').in('product_id', productIds).order('expected_date'),
         ]);
         const skuByPid = {};
         (prods || []).forEach(p => { if (p.sku) skuByPid[p.id] = p.sku; });
@@ -223,25 +232,30 @@ function useKitInventory(items) {
         }
         if (cancelled) return;
         const map = {};
-        (inHouse || []).forEach(r => {
-          if (!map[r.product_id]) map[r.product_id] = {};
-          const s = map[r.product_id][r.size] || { ih: 0, vendor: 0, incoming: 0, eta: null };
-          s.ih += (r.quantity || 0);
-          map[r.product_id][r.size] = s;
-        });
+        const cell = (pid, size) => {
+          if (!map[pid]) map[pid] = {};
+          return map[pid][size] || (map[pid][size] = { ih: 0, vendor: 0, incoming: 0, eta: null, deliveries: [] });
+        };
+        (inHouse || []).forEach(r => { cell(r.product_id, r.size).ih += (r.quantity || 0); });
         const pidBySku = {};
         Object.entries(skuByPid).forEach(([pid, sku]) => { pidBySku[sku] = pid; });
         vendorRows.forEach(r => {
           const pid = pidBySku[r.sku];
           if (!pid) return;
-          if (!map[pid]) map[pid] = {};
-          const s = map[pid][r.size] || { ih: 0, vendor: 0, incoming: 0, eta: null };
+          const s = cell(pid, r.size);
           s.vendor += (r.stock_qty || 0);
           if ((r.future_delivery_qty || 0) > 0) {
             s.incoming += r.future_delivery_qty;
             if (!s.eta) s.eta = r.future_delivery_date;
+            s.deliveries.push({ qty: r.future_delivery_qty, date: r.future_delivery_date });
           }
-          map[pid][r.size] = s;
+        });
+        (onOrder || []).forEach(r => {
+          if ((r.qty || 0) <= 0) return;
+          const s = cell(r.product_id, r.size);
+          s.incoming += r.qty;
+          if (!s.eta || (r.expected_date && r.expected_date < s.eta)) s.eta = r.expected_date;
+          s.deliveries.push({ qty: r.qty, date: r.expected_date });
         });
         setInv(map);
       } catch (e) { console.error('[RosterOrders] inv:', e); }
@@ -251,8 +265,8 @@ function useKitInventory(items) {
 
   const getStock = useCallback((productId, size) => {
     const s = inv[productId]?.[size];
-    if (!s) return { avail: 0, incoming: 0, eta: null };
-    return { avail: (s.ih || 0) + (s.vendor || 0), incoming: s.incoming || 0, eta: s.eta };
+    if (!s) return { avail: 0, incoming: 0, eta: null, deliveries: [] };
+    return { avail: (s.ih || 0) + (s.vendor || 0), incoming: s.incoming || 0, eta: s.eta, deliveries: s.deliveries || [] };
   }, [inv]);
 
   return { inv, getStock };
@@ -261,6 +275,15 @@ function useKitInventory(items) {
 // Availability dot color
 const _dotColor = (avail, incoming) =>
   avail > 0 ? '#15803d' : incoming > 0 ? '#b45309' : '#dc2626';
+
+// Short M/D date + "+12 on 8/18, +6 on 9/5" delivery summaries for hovers.
+const _fmtDate = (d) => {
+  if (!d) return '';
+  const dt = new Date(String(d).length === 10 ? d + 'T00:00:00' : d);
+  return isNaN(dt.getTime()) ? String(d) : `${dt.getMonth() + 1}/${dt.getDate()}`;
+};
+const _fmtDeliveries = (deliveries) => (deliveries || [])
+  .map(dv => `+${dv.qty}${dv.date ? ' on ' + _fmtDate(dv.date) : ''}`).join(', ');
 
 // ─── Dismissible step-by-step instructions ─────────────────────────────────────
 // A small "how this works" card a coach can dismiss for good (per browser, via
@@ -975,7 +998,7 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
             )}
             {stock && val !== '-' && productId && (
               <span style={{ width: 8, height: 8, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
-                background: _dotColor(stock.avail, stock.incoming) }} title={`${stock.avail} avail${stock.incoming ? ` + ${stock.incoming} incoming` : ''}`} />
+                background: _dotColor(stock.avail, stock.incoming) }} title={`${stock.avail} avail${stock.deliveries?.length ? ` · arriving: ${_fmtDeliveries(stock.deliveries)}` : ''}`} />
             )}
           </div>
         ) : (
@@ -1476,7 +1499,9 @@ function RosterTotals({ session, teams, kitTemplate }) {
                                 {productId ? avail.toLocaleString() : '—'}
                               </td>
                               <td style={{ padding: '7px 14px', textAlign: 'right', fontSize: 12, color: incoming > 0 ? '#1e40af' : '#94a3b8' }}>
-                                {productId ? (incoming > 0 ? `${incoming.toLocaleString()}${eta ? ` · ${eta}` : ''}` : '—') : '—'}
+                                <span title={stock.deliveries?.length ? `Arriving: ${_fmtDeliveries(stock.deliveries)}` : undefined}>
+                                  {productId ? (incoming > 0 ? `${incoming.toLocaleString()}${eta ? ` · ${_fmtDate(eta)}` : ''}` : '—') : '—'}
+                                </span>
                               </td>
                               <td style={{ padding: '7px 14px', textAlign: 'center', fontSize: 11, fontWeight: 700, color: statusColor, whiteSpace: 'nowrap' }}>
                                 {statusLabel}
