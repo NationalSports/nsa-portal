@@ -13780,7 +13780,7 @@ export default function App(){
       {vendorGroups.length===0&&submittedBatches.length===0&&<div className="card"><div className="empty" style={{padding:40}}>
         <div style={{fontSize:32,marginBottom:8}}>📦</div>
         <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>No batch POs queued</div>
-        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
+        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Champro, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
       </div></div>}
       {vendorGroups.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 2px 10px'}}><span style={{fontSize:13,fontWeight:800,color:'#0f172a',textTransform:'uppercase',letterSpacing:0.5}}>Ready to Order</span><span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:999}}>{vendorGroups.length} vendor{vendorGroups.length!==1?'s':''}</span></div>}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12,alignItems:'start',marginBottom:16}}>
