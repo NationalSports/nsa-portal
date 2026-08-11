@@ -8285,6 +8285,17 @@ async function buildStyleRows(matched) {
 const rowItemIn = (r, existingPids) => [...r.picked].some((id) => !existingPids.has(id));
 const rowItemAvail = (r, existingPids) => r.colors.some((c) => !existingPids.has(c.id));
 const rowsTotalPicked = (rows, existingPids) => rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+// The colors an item comes back with when it's (re)checked: its saved/palette defaults (or
+// every color when it has none), minus anything already in the store. When ALL of those
+// defaults are already in the store that set comes back empty — and since a row counts as
+// "included" only while it has an addable color picked, the checkbox would snap straight
+// back off and the item could never be brought in again. Fall back to whatever colorways
+// are still addable so checking an item always does something.
+const rowDefaultPick = (r, existingPids) => {
+  const addable = r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id);
+  const base = [...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id));
+  return new Set(base.length ? base : addable);
+};
 // Build the apply plan applyTemplateColors expects (colors already in store are re-filtered there).
 const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
 
@@ -8294,15 +8305,19 @@ const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colo
 function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtra }) {
   const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
   const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
-  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() } : r));
   return (
     <>
       {rows.map((r, ri) => { const included = rowItemIn(r, existingPids); const avail = rowItemAvail(r, existingPids); return (
         <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0, flexWrap: 'wrap' }}>
             <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
-            {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            {/* Deselecting an item hides its swatches, leaving only the small checkbox to click.
+                The image + name toggle it too, so a greyed-out row is easy to bring back. */}
+            <div onClick={() => avail && toggleItem(ri, !included)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: avail ? 'pointer' : 'default' }}>
+              {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            </div>
             {included && renderRowExtra && renderRowExtra(r, ri, included)}
             {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
             {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
@@ -8357,7 +8372,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), teamHexes = [], on
     })();
     return () => { cancelled = true; };
   }, [tpl, teamKey]);
-  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() })));
   const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
   const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
   const totalPicked = rowsTotalPicked(rows, existingPids);
@@ -9426,7 +9441,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
   const setMeta = (ri, patch) => setRows((rs) => rs.map((r, i) => (i === ri ? { ...r, meta: { ...r.meta, ...patch } } : r)));
   const totalPicked = rowsTotalPicked(rows, existingPids);
   const stylesIn = rows.filter((r) => rowItemIn(r, existingPids)).length;
-  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() })));
 
   const doImport = async () => {
     if (!totalPicked || !onApplyColors) return;
@@ -10816,7 +10831,7 @@ async function _vectorizeFile(file) {
   } finally { revoke(); }
 }
 function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
-  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '' });
+  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '', cwId: null });
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
   const [name, setName] = useState('');
@@ -10844,6 +10859,35 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
     setProds((p) => [...p, ...fs.filter((f) => !_isWebArtFile(f)).map(mk)]);
   };
   const drop = (fn) => (arr, i) => fn(arr.filter((_, j) => j !== i));
+  // A web logo IS a color way, so naming one builds its card below instead of making the rep
+  // enter the same list twice. The row remembers the card it made (cwId) — re-typing renames
+  // that card rather than piling up duplicates, a card already named the same is adopted, and
+  // clearing the name drops the card only while it holds no ink colors worth keeping.
+  const _hasInk = (cw) => (cw.inks || []).some((x) => x && x.trim());
+  const _sameName = (cw, t) => (cw.garment_color || '').trim().toLowerCase() === t.toLowerCase();
+  const setWebLabel = (i, label) => {
+    const t = label.trim();
+    const owned = colorWays.find((c) => c.id === webs[i].cwId) || null;
+    // A card two logos share isn't this row's to rename — unlink and let the rules below re-home it.
+    const mine = owned && webs.some((w, j) => j !== i && w.cwId === owned.id) ? null : owned;
+    const twin = t ? colorWays.find((c) => c !== mine && _sameName(c, t)) : null;
+    let cwId = mine ? mine.id : null, next = colorWays;
+    if (twin) { cwId = twin.id; if (mine && !_hasInk(mine)) next = colorWays.filter((c) => c !== mine); }
+    else if (mine) {
+      if (!t && !_hasInk(mine)) { cwId = null; next = colorWays.filter((c) => c !== mine); }
+      else next = colorWays.map((c) => (c === mine ? { ...c, garment_color: label } : c));
+    } else if (t) {
+      cwId = 'cw' + Date.now() + '-' + i;
+      next = [...colorWays, { id: cwId, garment_color: label, inks: [''] }];
+    }
+    if (next !== colorWays) setColorWays(next);
+    setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label, cwId } : x)));
+  };
+  // Backstop for a logo left on its filename suggestion — it still lands with a color way.
+  const withCwsFor = (cws, labels) => labels.reduce((acc, l) => {
+    const t = String(l || '').trim();
+    return !t || acc.some((c) => _sameName(c, t)) ? acc : [...acc, { id: 'cw' + Date.now() + '-x' + acc.length, garment_color: t, inks: [''] }];
+  }, cws);
   // Swap a web row's file in place (after knock-out-white / vectorize), revoking the stale
   // preview so the new cutout is what gets uploaded on Create.
   const replaceWeb = (i, newFile) => setWebs((arr) => arr.map((x, j) => {
@@ -10870,11 +10914,12 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
   const browseLink = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, padding: 0, textDecoration: 'underline' };
   const create = () => {
     if (busy || (!webs.length && !prods.length)) return;
+    const finalWebs = webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') }));
     onCreate({
       name: name.trim() || suggested,
       decoType,
-      colorWays,
-      webs: webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') })),
+      colorWays: withCwsFor(colorWays, finalWebs.map((w) => w.label)),
+      webs: finalWebs,
       prods: prods.map((p) => ({ file: p.file })),
     });
   };
@@ -10915,7 +10960,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
                       <div title="Transparent areas show as a checker" style={{ width: 34, height: 34, borderRadius: 6, background: w.preview ? 'repeating-conic-gradient(#cbd5e1 0 25%, #f8fafc 0 50%) 50% / 10px 10px' : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
                       <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{w.file.name}</span>
                       {i === 0 && <span style={{ fontSize: 10.5, fontWeight: 800, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }} title="Also used as the default cutout for all garments">Default</span>}
-                      <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way (e.g. White garments)" />
+                      <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebLabel(i, e.target.value)} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way — its card appears below, ready for ink colors" />
                       <button onClick={() => !busy && drop(setWebs)(webs, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
                     </div>
                     {_isWebArtFile(w.file) && <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 42, flexWrap: 'wrap' }}>
