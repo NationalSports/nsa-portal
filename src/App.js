@@ -14401,8 +14401,15 @@ export default function App(){
     // Attribute invoice history by the customer's current primary rep (reliable) —
     // the NetSuite rep_name snapshot is blank on most recent invoices, which
     // otherwise zeroes out a rep's recent billed totals in the scorecard/chart.
-    const _custRepMap={};(cust||[]).forEach(c=>{if(c&&c.id)_custRepMap[c.id]=c.primary_rep_id||null});
-    const _matchRep=(hi)=>rptRep==='all'?true:(_custRepMap[hi.customer_id]===rptRep);
+    // A portal invoice belongs to its linked SO's customer's rep, falling back to the SO's creator on
+    // accounts with no assigned rep — commissionRepId, the same rule the Reps tab's Billings-by-Month
+    // audit uses. Matching on the invoice customer's primary_rep_id alone dropped invoices booked on
+    // rep-less accounts out of the scorecard while the audit still credited them to the rep who wrote
+    // the order, so the two tabs disagreed (Jered, Aug 2026: INV-63398, $526.05).
+    const _custById={};(cust||[]).forEach(c=>{if(c&&c.id)_custById[c.id]=c});
+    const _soByIdRpt={};(sos||[]).forEach(s=>{if(s&&s.id)_soByIdRpt[s.id]=s});
+    const _billRepId=(row)=>{const so=row&&row.so_id?_soByIdRpt[row.so_id]:null;return so?commissionRepId(_custById[so.customer_id],so):(((_custById[row.customer_id]||{}).primary_rep_id)||null)};
+    const _matchRep=(hi)=>rptRep==='all'?true:(_billRepId(hi)===rptRep);
     const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
     let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0;
     const _pmo=_cmo===0?11:_cmo-1,_pmoYear=_cmo===0?_ly:_cy;
@@ -14411,10 +14418,12 @@ export default function App(){
     // May 2026, so the NetSuite import alone undercounts reps who bill here (portal invoices
     // never flow back into customer_invoices). Dedupe on document number — a hist row that
     // mirrors a portal invoice wins, so a future NetSuite round-trip can't double-count.
+    // This-year months are gated on isYtd (dated on or before today), so an invoice dated ahead of
+    // today can't push the current month's bar above the month-to-date figure in the hero above it.
     const _histDocIds=new Set((histInvs||[]).map(hi=>hi.id));
     const _billedRows=[...(histInvs||[]).filter(hi=>hi&&hi.status!=='void'),
       ...(invs||[]).filter(iv=>iv&&iv.status!=='void'&&!iv.deleted_at&&!_histDocIds.has(iv.id))];
-    _billedRows.forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const s=String(hi.date);let y,mo,d;let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m){y=+m[1];mo=+m[2]-1;d=+m[3]}else{m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return;y=+m[3];if(y<100)y+=2000;mo=+m[1]-1;d=+m[2]}const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t});
+    _billedRows.forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const s=String(hi.date);let y,mo,d;let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m){y=+m[1];mo=+m[2]-1;d=+m[3]}else{m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return;y=+m[3];if(y<100)y+=2000;mo=+m[1]-1;d=+m[2]}const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){if(isYtd){_mThis[mo]+=t;_ytdThis+=t}if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t});
     const _pctChg=(c,p)=>p>0?Math.round((c-p)/p*100):(c>0?100:0);
     const _ytdDelta=_pctChg(_ytdThis,_ytdLast);
     const _daysInMonth=new Date(_cy,_cmo+1,0).getDate();
@@ -15142,16 +15151,22 @@ export default function App(){
           const _cById=(id)=>cust.find(x=>x.id===id);
           const _repNm=(id)=>id==null?'Unassigned':((REPS.find(r=>r.id===id)||{}).name||'—');
           // Dashboard-consistent attribution: portal invoices + NetSuite history, deduped on document id,
-          // void/deleted excluded. Portal rep = linked SO's customer primary rep (else SO creator), else the
-          // invoice customer's primary rep; NetSuite rep = customer's primary rep. Ties out to the dashboard Billings figure.
+          // void/deleted excluded. Rep = commissionRepId of the linked SO's customer (else the SO's creator);
+          // with no linked SO (all NetSuite history) it's the invoice customer's primary rep. Ties out to the
+          // dashboard Billings figure and to the Overview scorecard, which resolves the rep the same way.
+          // Invoices dated after today are held OUT of the month total (and counted separately) so a month's
+          // headline matches the Overview's month-to-date figure — a $16k gap between the two tabs came from
+          // this widget crediting four Aug 2026 invoices dated Aug 14–31 to a month still in progress.
+          const _tdy=new Date();const _tY=_tdy.getFullYear(),_tM=_tdy.getMonth(),_tD=_tdy.getDate();
+          const _isFut=(p)=>p.y>_tY||(p.y===_tY&&(p.mo>_tM||(p.mo===_tM&&p.d>_tD)));
           const _hSet=new Set((histInvs||[]).map(h=>h.id));
           const _bills=[];
-          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?((_cById(so.customer_id)||{}).primary_rep_id||so.created_by):((_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
-          (histInvs||[]).forEach(hi=>{if(!hi||hi.status==='void')return;const p=_pYMD(hi.date);if(!p)return;const c=_cById(hi.customer_id);_bills.push({rep:(c&&c.primary_rep_id)||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,customer:(c&&c.name)||hi.raw_customer_name||hi.customer_id||'Unknown',total:safeNum(hi.total),paid:safeNum(hi.paid),status:hi.status||'paid',src:'NetSuite',id:hi.id})});
+          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?commissionRepId(_cById(so.customer_id),so):((_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
+          (histInvs||[]).forEach(hi=>{if(!hi||hi.status==='void')return;const p=_pYMD(hi.date);if(!p)return;const c=_cById(hi.customer_id);_bills.push({rep:(c&&c.primary_rep_id)||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&c.name)||hi.raw_customer_name||hi.customer_id||'Unknown',total:safeNum(hi.total),paid:safeNum(hi.paid),status:hi.status||'paid',src:'NetSuite',id:hi.id})});
           const _allReps=rptRep==='all';
           const _scoped=_allReps?_bills:_bills.filter(b=>b.rep===rptRep);
           const _mm=new Map();
-          _scoped.forEach(b=>{const g=_mm.get(b.ym)||{ym:b.ym,y:b.y,mo:b.mo,total:0,count:0,items:[]};g.total+=b.total;g.count++;g.items.push(b);_mm.set(b.ym,g)});
+          _scoped.forEach(b=>{const g=_mm.get(b.ym)||{ym:b.ym,y:b.y,mo:b.mo,total:0,count:0,fut:0,futN:0,items:[]};if(b.future){g.fut+=b.total;g.futN++}else{g.total+=b.total;g.count++}g.items.push(b);_mm.set(b.ym,g)});
           const _months=[..._mm.values()].sort((a,b)=>b.ym-a.ym);
           const _cellHdr=(right)=>({textAlign:right?'right':'left',fontSize:10,fontWeight:700,color:'#8892A6',textTransform:'uppercase',letterSpacing:.4,padding:'6px 8px',borderBottom:'1px solid #EEF1F6',whiteSpace:'nowrap'});
           const _tdS={padding:'6px 8px',fontSize:12,color:'#3A4256',borderBottom:'1px solid #F4F6FA',verticalAlign:'top'};
@@ -15161,7 +15176,7 @@ export default function App(){
             </tr></thead><tbody>
               {rows.map((r,i)=><tr key={i}>
                 <td style={{..._tdS,fontWeight:700,color:'var(--navy)',whiteSpace:'nowrap'}}>{r.id}</td>
-                <td style={{..._tdS,whiteSpace:'nowrap'}}>{_mon[r.mo]} {r.day}, {r.y}</td>
+                <td style={{..._tdS,whiteSpace:'nowrap'}}>{_mon[r.mo]} {r.day}, {r.y}{r.future&&<span title="Dated after today — not counted in the month total yet" style={{marginLeft:6,fontSize:9.5,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#FBEEDB',color:'#B26B12'}}>AHEAD</span>}</td>
                 <td style={_tdS}>{r.customer}</td>
                 <td style={{..._tdS,whiteSpace:'nowrap'}}><span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:4,background:r.src==='Portal'?'#EAF0FB':'#F0EAF7',color:r.src==='Portal'?'#274B90':'#5B21B6'}}>{r.src}</span></td>
                 <td style={{..._tdS,whiteSpace:'nowrap',textTransform:'capitalize',color:r.status==='paid'?'#166534':r.status==='open'?'#B45309':'#3A4256'}}>{r.status}</td>
@@ -15172,26 +15187,28 @@ export default function App(){
             </tbody></table></div>;};
           if(_months.length===0)return<div className="card-body" style={{padding:'20px',fontSize:13,color:'#96A0B4'}}>No billings found{_allReps?'':' for '+_repNm(rptRep)}.</div>;
           return<div className="card-body" style={{padding:'8px 12px 14px'}}>
-            <div style={{fontSize:11.5,color:'#7A8299',padding:'4px 6px 10px'}}>{_allReps?'Team billings by month — expand a month, then a rep, to see the invoices behind the total.':_repNm(rptRep)+"'s billings by month — expand a month to see the invoices behind the total."} Portal invoices + NetSuite history, deduped; ties out to the dashboard Billings figure.</div>
+            <div style={{fontSize:11.5,color:'#7A8299',padding:'4px 6px 10px'}}>{_allReps?'Team billings by month — expand a month, then a rep, to see the invoices behind the total.':_repNm(rptRep)+"'s billings by month — expand a month to see the invoices behind the total."} Portal invoices + NetSuite history, deduped; ties out to the dashboard Billings figure and the Overview scorecard. Invoices dated after today are listed but held out of the month total until their date arrives.</div>
             {_months.map(m=>{const mk='M'+m.ym;const open=!!rptAuditOpen[mk];
               return<div key={mk} style={{border:'1px solid #EEF1F6',borderRadius:8,marginBottom:8,overflow:'hidden'}}>
                 <div className="nsa-rpt-hit" onClick={()=>_tgl(mk)} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:open?'#F7F9FC':'#fff',cursor:'pointer'}}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8892A6" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" style={{transform:open?'rotate(90deg)':'none',transition:'transform .15s',flex:'none'}}><polyline points="9 18 15 12 9 6"/></svg>
                   <span style={{fontFamily:FD,fontWeight:800,fontSize:15,color:'var(--navy)',letterSpacing:.3,minWidth:100}}>{_mon[m.mo]} {m.y}</span>
                   <span style={{flex:1}}/>
+                  {m.futN>0&&<span title={m.futN+' invoice'+(m.futN===1?'':'s')+' dated after today — '+_f$(m.fut)+' not counted until the date arrives'} style={{fontSize:10.5,fontWeight:700,padding:'2px 7px',borderRadius:4,background:'#FBEEDB',color:'#B26B12',whiteSpace:'nowrap'}}>+{_f$(m.fut)} dated ahead</span>}
                   <span style={{fontSize:11.5,color:'#8892A6'}}>{m.count} invoice{m.count===1?'':'s'}</span>
                   <span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'var(--navy)',minWidth:96,textAlign:'right'}}>{_f$(m.total)}</span>
                 </div>
                 {open&&<div style={{padding:'4px 12px 12px',background:'#FCFDFE'}}>
                   {_allReps?(()=>{
-                    const rm=new Map();m.items.forEach(b=>{const g=rm.get(b.rep)||{rep:b.rep,total:0,count:0,items:[]};g.total+=b.total;g.count++;g.items.push(b);rm.set(b.rep,g)});
-                    const reps=[...rm.values()].sort((a,b)=>b.total-a.total);
+                    const rm=new Map();m.items.forEach(b=>{const g=rm.get(b.rep)||{rep:b.rep,total:0,count:0,fut:0,futN:0,items:[]};if(b.future){g.fut+=b.total;g.futN++}else{g.total+=b.total;g.count++}g.items.push(b);rm.set(b.rep,g)});
+                    const reps=[...rm.values()].sort((a,b)=>(b.total+b.fut)-(a.total+a.fut));
                     return reps.map(rp=>{const rk='R'+m.ym+':'+(rp.rep||'none');const ropen=!!rptAuditOpen[rk];
                       return<div key={rk} style={{borderBottom:'1px solid #F1F4F9'}}>
                         <div className="nsa-rpt-hit" onClick={()=>_tgl(rk)} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 6px',cursor:'pointer'}}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#A7AFC0" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" style={{transform:ropen?'rotate(90deg)':'none',transition:'transform .15s',flex:'none'}}><polyline points="9 18 15 12 9 6"/></svg>
                           <span style={{fontWeight:700,fontSize:13,color:rp.rep==null?'#B45309':'var(--navy)'}}>{_repNm(rp.rep)}</span>
                           <span style={{flex:1}}/>
+                          {rp.futN>0&&<span title={rp.futN+' invoice'+(rp.futN===1?'':'s')+' dated after today — '+_f$(rp.fut)+' not counted until the date arrives'} style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:4,background:'#FBEEDB',color:'#B26B12',whiteSpace:'nowrap'}}>+{_f$(rp.fut)} ahead</span>}
                           <span style={{fontSize:11,color:'#A7AFC0'}}>{rp.count}</span>
                           <span style={{fontFamily:FD,fontWeight:700,fontSize:14,color:'var(--navy)',minWidth:88,textAlign:'right'}}>{_f$(rp.total)}</span>
                         </div>
