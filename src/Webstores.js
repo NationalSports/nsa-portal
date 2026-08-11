@@ -10827,7 +10827,7 @@ async function _vectorizeFile(file) {
   } finally { revoke(); }
 }
 function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
-  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '' });
+  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '', cwId: null });
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
   const [name, setName] = useState('');
@@ -10855,6 +10855,35 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
     setProds((p) => [...p, ...fs.filter((f) => !_isWebArtFile(f)).map(mk)]);
   };
   const drop = (fn) => (arr, i) => fn(arr.filter((_, j) => j !== i));
+  // A web logo IS a color way, so naming one builds its card below instead of making the rep
+  // enter the same list twice. The row remembers the card it made (cwId) — re-typing renames
+  // that card rather than piling up duplicates, a card already named the same is adopted, and
+  // clearing the name drops the card only while it holds no ink colors worth keeping.
+  const _hasInk = (cw) => (cw.inks || []).some((x) => x && x.trim());
+  const _sameName = (cw, t) => (cw.garment_color || '').trim().toLowerCase() === t.toLowerCase();
+  const setWebLabel = (i, label) => {
+    const t = label.trim();
+    const owned = colorWays.find((c) => c.id === webs[i].cwId) || null;
+    // A card two logos share isn't this row's to rename — unlink and let the rules below re-home it.
+    const mine = owned && webs.some((w, j) => j !== i && w.cwId === owned.id) ? null : owned;
+    const twin = t ? colorWays.find((c) => c !== mine && _sameName(c, t)) : null;
+    let cwId = mine ? mine.id : null, next = colorWays;
+    if (twin) { cwId = twin.id; if (mine && !_hasInk(mine)) next = colorWays.filter((c) => c !== mine); }
+    else if (mine) {
+      if (!t && !_hasInk(mine)) { cwId = null; next = colorWays.filter((c) => c !== mine); }
+      else next = colorWays.map((c) => (c === mine ? { ...c, garment_color: label } : c));
+    } else if (t) {
+      cwId = 'cw' + Date.now() + '-' + i;
+      next = [...colorWays, { id: cwId, garment_color: label, inks: [''] }];
+    }
+    if (next !== colorWays) setColorWays(next);
+    setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label, cwId } : x)));
+  };
+  // Backstop for a logo left on its filename suggestion — it still lands with a color way.
+  const withCwsFor = (cws, labels) => labels.reduce((acc, l) => {
+    const t = String(l || '').trim();
+    return !t || acc.some((c) => _sameName(c, t)) ? acc : [...acc, { id: 'cw' + Date.now() + '-x' + acc.length, garment_color: t, inks: [''] }];
+  }, cws);
   // Swap a web row's file in place (after knock-out-white / vectorize), revoking the stale
   // preview so the new cutout is what gets uploaded on Create.
   const replaceWeb = (i, newFile) => setWebs((arr) => arr.map((x, j) => {
@@ -10881,11 +10910,12 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
   const browseLink = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, padding: 0, textDecoration: 'underline' };
   const create = () => {
     if (busy || (!webs.length && !prods.length)) return;
+    const finalWebs = webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') }));
     onCreate({
       name: name.trim() || suggested,
       decoType,
-      colorWays,
-      webs: webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') })),
+      colorWays: withCwsFor(colorWays, finalWebs.map((w) => w.label)),
+      webs: finalWebs,
       prods: prods.map((p) => ({ file: p.file })),
     });
   };
@@ -10926,7 +10956,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
                       <div title="Transparent areas show as a checker" style={{ width: 34, height: 34, borderRadius: 6, background: w.preview ? 'repeating-conic-gradient(#cbd5e1 0 25%, #f8fafc 0 50%) 50% / 10px 10px' : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
                       <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{w.file.name}</span>
                       {i === 0 && <span style={{ fontSize: 10.5, fontWeight: 800, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }} title="Also used as the default cutout for all garments">Default</span>}
-                      <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way (e.g. White garments)" />
+                      <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebLabel(i, e.target.value)} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way — its card appears below, ready for ink colors" />
                       <button onClick={() => !busy && drop(setWebs)(webs, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
                     </div>
                     {_isWebArtFile(w.file) && <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 42, flexWrap: 'wrap' }}>
