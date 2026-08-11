@@ -1269,6 +1269,61 @@ function isCommissionRep(r) {
   return !!r && (r.role === 'rep' || r.role === 'admin' || r.commission_eligible === true);
 }
 
+// ── Garment (blank) cost for one SO item — the single PO-aware cost walk ──
+// Replaces the hand-synced copies in OrderEditor `totals`, Reports soCalc (App.js), and
+// calcGP (CommissionsPage.js), which priced every PO line at ordered qty × unit_cost
+// (catalog fallback) and never read the supplier bill — so once a vendor bill landed at a
+// different price or quantity than ordered (SO-1271: hats billed at $5.63 against an $8.71
+// catalog cost), the header margin, Reports pipeline, and commission GP all kept the stale
+// expected number while the Costs tab showed the real one. Rules:
+//  • Billed PO line (_bill_cost > 0): the bill is the cost of record for the billed units;
+//    a still-open ordered remainder stays at expected (unit_cost, catalog fallback). A bill
+//    with no billed size breakdown is treated as covering the whole line (matches the Costs
+//    tab's Actual column) so it can't double-count.
+//  • Un-billed PO line: ordered qty × unit_cost (catalog fallback) — unchanged.
+//  • Ordered qty short of the item's sold qty: remainder at catalog (_sizeCosts-aware).
+// PO-line size keys are found by the same meta-key blocklist the per-PO modal uses.
+const _PO_LINE_META = new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
+const _catalogUnitAvg = (it, sq) => {
+  if (it._sizeCosts && sq > 0) {
+    const tot = Object.entries(safeSizes(it)).reduce((a, [sz, v]) => { const n = safeNum(v); return n > 0 ? a + n * (it._sizeCosts[sz] || safeNum(it.nsa_cost)) : a; }, 0);
+    return sq > 0 ? tot / sq : safeNum(it.nsa_cost);
+  }
+  return safeNum(it.nsa_cost);
+};
+function garmentCost(it) {
+  const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+  const q = sq > 0 ? sq : safeNum(it.est_qty);
+  if (!q) return { cost: 0, poQty: 0, q: 0 };
+  let poQty = 0, poCost = 0;
+  safePOs(it).forEach(pl => {
+    if (!pl) return;
+    const u = pl.unit_cost != null ? safeNum(pl.unit_cost) : safeNum(it.nsa_cost);
+    let lineQty = 0;
+    Object.entries(pl).forEach(([k, v]) => { if (k.startsWith('_') || _PO_LINE_META.has(k)) return; if (typeof v !== 'number' || v <= 0) return; lineQty += v; });
+    const bc = safeNum(pl._bill_cost);
+    if (bc > 0) {
+      const billedQty = Object.values(pl.billed || {}).reduce((a, v) => a + (typeof v === 'number' && v > 0 ? v : 0), 0);
+      const openQty = billedQty > 0 ? Math.max(0, lineQty - billedQty) : 0;
+      poCost += bc + openQty * u;
+    } else {
+      poCost += lineQty * u;
+    }
+    poQty += lineQty;
+  });
+  let cost;
+  if (poQty > 0) {
+    cost = poCost;
+    const uncov = Math.max(0, q - poQty);
+    if (uncov > 0) cost += uncov * _catalogUnitAvg(it, sq);
+  } else if (it._sizeCosts && sq > 0) {
+    cost = Object.entries(safeSizes(it)).reduce((a, [sz, v]) => { const n = safeNum(v); return n > 0 ? a + n * (it._sizeCosts[sz] || safeNum(it.nsa_cost)) : a; }, 0);
+  } else {
+    cost = q * safeNum(it.nsa_cost);
+  }
+  return { cost, poQty, q };
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
@@ -1278,7 +1333,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
