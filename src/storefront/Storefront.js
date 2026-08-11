@@ -4,7 +4,7 @@ import { Elements, PaymentElement, AddressElement, useStripe, useElements } from
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { DecoOverlay } from '../lib/decoOverlay';
-import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
+import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
 
 // Route SanMar garment photos through a Cloudinary transform that trims to the
@@ -198,6 +198,9 @@ const effSizeQty = (p, sz) => foldedQty(sz, (s) => _rawSizeQty(p, s));
 const sizeSoon = (p, sz) => foldedSoon(sz, (s) => _rawSizeSoon(p, s));
 const sizeSellable = (p, sz) => effSizeQty(p, sz) > 0 || sizeSoon(p, sz);
 const isIncoming = (p) => (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
+// The size scale to sell from. Falls back to the sizes implied by stock when the
+// catalog row's available_sizes is empty — see scaleOf in lib/storeInventory.
+const scaleOf = (p) => _scaleOf(p.available_sizes, p.size_stock, p.vendor_size_stock, p.vendor_size_eta);
 const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] || null;
 // An item is inventory-tracked (the stock guard applies) only when it's stock-backed AND
 // hasn't opted out. Custom / made-to-order products (no inventory_source, or 'manual') are
@@ -1176,15 +1179,18 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const _offeredKey = (o) => String(regularSize(normSzName(o))).toUpperCase();
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(_offeredKey) : null;
-    const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
+    const scale = scaleOf(c).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
     if (!isTracked(c) || !hasStockData(c)) {
       // Sizes the rep explicitly offered that aren't part of the catalog product's own
       // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
       // made-to-order item (or a drop-ship style whose stock hasn't synced yet) these
       // always sell — checkout's stock guard skips them too.
-      const prodScale = foldScale(c.available_sizes).map((s) => String(s).toUpperCase());
+      const prodScale = scaleOf(c).map((s) => String(s).toUpperCase());
       const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.includes(_offeredKey(o)));
-      return [...scale, ...extras]; // not inventory-tracked → every offered size sells
+      // Sorted: with a derived scale, `scale` and `extras` each hold part of the run
+      // (stocked sizes vs. the rest), so concatenating them alone would print e.g.
+      // S, M, 2XL, L, XL. Rank-sorting puts the run back in size order.
+      return [...scale, ...extras].sort((a, b) => sizeRank(a) - sizeRank(b)); // not tracked → every offered size sells
     }
     const avail = scale.filter((s) => sizeSellable(c, s));
     return avail.length ? avail : (isIncoming(c) ? scale : avail);
@@ -1213,7 +1219,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // not restocking. Its size list is empty, so needSize is false — without this guard
   // the button would enable and add it with size=null (unfulfillable). Block it; the
   // server rejects the same case (checkSizesRequired) as defense in depth.
-  const inherentlySized = !isFitGroup && (foldScale(p.available_sizes).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
+  const inherentlySized = !isFitGroup && (scaleOf(p).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
   const soldOutNoSize = inherentlySized && sizesArr.length === 0;
   const needNumber = !!p.takes_number;
   const isPersonalized = needNumber || !!p.takes_name;

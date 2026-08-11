@@ -284,3 +284,65 @@ describe('_dbPersistNewPoLine — durable PO line write at creation (fix 5)', ()
     expect(__mockState.calls.length).toBe(0);
   });
 });
+
+// ── Fix 6: _dbSaveProductInner must never erase a product's size scale ─────────────────────
+// `available_sizes:p.available_sizes||[]` in a FULL-ROW upsert meant any caller passing a
+// product object without the field wrote `[]` over the stored scale. The "Update Catalog →
+// $cost" button on the bill-reconcile tab is exactly such a caller (it builds {id,sku,name,
+// vendor_id,brand,color,image_url,nsa_cost}), and when the product isn't in local state
+// there is nothing to merge over. That is how ~1,100 catalog rows reached available_sizes =
+// [] and rendered on the webstores with no size buttons at all. The column must now be
+// omitted unless we hold a real scale, so the stored value survives.
+describe('_dbSaveProductInner — a partial product save must not wipe available_sizes (fix 6)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const productUpsert = (state) => state.calls.find((c) => c.table === 'products' && c.method === 'upsert');
+
+  test('a cost-only update (no sizes on the object) omits the column entirely', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = { products: [{ error: null }] };
+
+    const { _dbSaveProduct } = require('../lib/dbEngine');
+    // Exactly the shape the "Update Catalog → $cost" button builds.
+    await _dbSaveProduct({ id: 'p-1779148800000-406', sku: 'HI0704', name: 'Adidas W. Team Issue Pants', vendor_id: 'v1', brand: 'Adidas', color: 'Black', image_url: null, nsa_cost: 22.5 });
+
+    const row = productUpsert(__mockState).args[0];
+    expect(row).not.toHaveProperty('available_sizes');
+    expect(row.nsa_cost).toBe(22.5); // the edit itself still saves
+  });
+
+  test('an explicitly empty scale is also treated as "nothing to write"', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = { products: [{ error: null }] };
+
+    const { _dbSaveProduct } = require('../lib/dbEngine');
+    await _dbSaveProduct({ id: 'p2', sku: 'GL9698', name: 'Adidas W. 3 Stripe Short', available_sizes: [] });
+
+    expect(productUpsert(__mockState).args[0]).not.toHaveProperty('available_sizes');
+  });
+
+  test('a real scale is still written through unchanged', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = { products: [{ error: null }] };
+
+    const { _dbSaveProduct } = require('../lib/dbEngine');
+    await _dbSaveProduct({ id: 'p3', sku: 'HS1301', name: 'Adidas Classic Polo', available_sizes: ['S', 'M', 'L', 'XL', '2XL', '3XL'] });
+
+    expect(productUpsert(__mockState).args[0].available_sizes).toEqual(['S', 'M', 'L', 'XL', '2XL', '3XL']);
+  });
+
+  test('a non-array value is not written (never persists junk over a good scale)', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = { products: [{ error: null }] };
+
+    const { _dbSaveProduct } = require('../lib/dbEngine');
+    await _dbSaveProduct({ id: 'p4', sku: 'X1', name: 'X', available_sizes: 'S,M,L' });
+
+    expect(productUpsert(__mockState).args[0]).not.toHaveProperty('available_sizes');
+  });
+});

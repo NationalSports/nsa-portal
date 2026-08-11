@@ -2780,9 +2780,20 @@ const _dbSaveProductInner = async (p) => {
   try{
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
-      is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+      is_active:p.is_active!==false,is_archived:p.is_archived||false,_colors:p._colors||null,
       is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,bin:p.bin||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
+    // available_sizes is written ONLY when we actually have a scale to write. This used to be
+    // `available_sizes:p.available_sizes||[]` in the row literal — and because this is a FULL-ROW
+    // upsert, any caller handing us a product object without the field silently erased the
+    // catalog's size scale (the column defaults to '[]'). The "Update Catalog → $cost" button on
+    // the bill-reconcile tab is one such caller: it builds {id,sku,name,vendor_id,brand,color,
+    // image_url,nsa_cost} with no sizes, and when the product isn't in local state there's nothing
+    // to merge over. That is how ~1,100 catalog rows ended up with available_sizes = [] — which
+    // then showed on the webstores as products with NO size buttons at all.
+    // Omitting the key leaves the stored value untouched on conflict; a brand-new row still gets
+    // the column default. An empty scale is never a meaningful edit, so nothing legitimate is lost.
+    if(Array.isArray(p.available_sizes)&&p.available_sizes.length)row.available_sizes=p.available_sizes;
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
       // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
