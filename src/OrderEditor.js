@@ -17,7 +17,7 @@ import QuickMockBuilder from './QuickMockBuilder';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, greetLine, withGreeting, emailMoney } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
@@ -770,6 +770,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         nf('🧵 '+dp.po_id+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
       } else nf('Email to Topstar failed: '+r.error,'error');
       return r.ok;
+    };
+    // Create the job on the Silver Screen account portal for a Silver Screen deco PO
+    // (netlify/functions/silverscreen-job). Sends the covered items from the LIVE editor
+    // state (not the DB — the editor may hold unsaved edits the rep is looking at), then
+    // stamps the returned job # + URL on the PO and flips waiting/planned → ordered.
+    // The PO number goes over VERBATIM — the bill parser matches their invoice by it.
+    // baseOrder: when chained right after Create Deco PO, the closure's `o` doesn't hold
+    // the new PO yet — the caller must pass the order object it just built, or the stamp
+    // update here would map over the stale deco_pos and drop the brand-new entry on save.
+    const _isSilverScreenDp=dp=>!!dp&&(dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||''));
+    const[sspSending,setSspSending]=useState(false);
+    const sendSilverScreenJob=async(dp,baseOrder)=>{
+      if(sspSending)return;
+      const cur=baseOrder||o;
+      const soItems=safeItems(cur);
+      const rows=(dp.item_idxs||[]).map(ii=>{const it=soItems[ii];if(!it)return null;
+        const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
+        const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
+        if(qty===0)return null;
+        return{sku:it.sku||'',name:it.name||it.custom_desc||'',color:it.color||'',sizes:Object.fromEntries(sizes),qty}}).filter(Boolean);
+      if(rows.length===0){nf('No covered items with quantities — nothing to send to Silver Screen','error');return}
+      const totalPcs=rows.reduce((a,r)=>a+r.qty,0);
+      const deco_instructions=(dp.item_idxs||[]).flatMap(ii=>{const it=soItems[ii];if(!it)return[];
+        return safeDecos(it).filter(d=>d&&(d.kind==='outside_deco'||d.fulfillment==='outside'||d.deco_po_id===dp.po_id)).map(d=>({sku:it.sku||'',position:d.position||'',type:d.type||d.deco_type||'',notes:d.notes||''}))});
+      if(!window.confirm('Create this job on the Silver Screen portal?\n\n'+(dp.po_id||'(no PO number)')+' — '+rows.length+' item line'+(rows.length!==1?'s':'')+', '+totalPcs+' pcs\nP.O. number sent (verbatim): '+dp.po_id))return;
+      setSspSending(true);
+      try{
+        const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',
+            po:{po_id:dp.po_id,deco_type:dp.deco_type,qty:dp.qty,unit_cost:dp.unit_cost,expected_date:dp.expected_date,notes:dp.notes,drop_ship:!!dp.drop_ship},
+            items:rows,deco_instructions})});
+        const j=await r.json().catch(()=>({}));
+        if(!r.ok||!j.ok){nf('Silver Screen job failed: '+(j.error||('HTTP '+r.status)),'error');return}
+        const updatedDp={...dp,
+          status:(!dp.status||dp.status==='planned'||dp.status==='waiting')?'ordered':dp.status,
+          _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString()};
+        const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+        setO(updated);onSave(updated);
+        setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
+        nf('🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''));
+      }catch(e){nf('Silver Screen job failed: '+(e?.message||'network error'),'error')}
+      finally{setSspSending(false)}
     };
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
@@ -8582,6 +8624,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               nf(_dpoMode==='dtf'
                 ?'🖨️ '+effectivePoId+' '+(preexistingPO?'applied':'created')+' — DTF purchase from '+decoVendor+(artIds.length?' — '+artIds.length+' art folder'+(artIds.length!==1?'s':'')+' marked DTF Purchased':'')+' ($'+expectedCost.toFixed(2)+')'
                 :'🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
+              // Silver Screen: offer to create the job on their portal right away (skip
+              // preexisting POs — already in their system — and DTF purchases, which have
+              // no items to send). Deferred so the modal closes before the confirm dialog.
+              if(!preexistingPO&&_dpoMode!=='dtf'&&_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
             }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>}
             {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
               if(_poCreatingRef.current)return;
@@ -8636,6 +8682,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               } else {
                 nf('🎨 '+effectiveDpoId+' for '+decoVendor+' + 📦 '+blanksPOId+' blanks PO created');
               }
+              // Silver Screen: create their portal job for the new deco PO too. The API
+              // ordering modal may be open on top — the confirm dialog still works over it.
+              if(_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
             }}>🎨📦 Create Deco PO + Order Blanks</button>}
           </div>
         </div></div>;
@@ -13655,6 +13704,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
+              {(()=>{// Silver Screen: create the job on their account portal with one click.
+                if(!_isSilverScreenDp(dp)||editingPo)return null;
+                if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>;
+                if(dp.status==='received'||dp.status==='billed')return null;
+                return <button className="btn btn-sm btn-primary" disabled={sspSending} style={{fontSize:11,background:'#475569',borderColor:'#475569'}} onClick={()=>sendSilverScreenJob(dp)} title="Create this job on the Silver Screen account portal — sends the PO number and all covered items with size breakdowns">{sspSending?'Sending…':'🖨 Send to Silver Screen'}</button>;
+              })()}
               <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
                 try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
