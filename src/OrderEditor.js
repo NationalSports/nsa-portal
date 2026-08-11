@@ -3417,7 +3417,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Match rebuilt jobs to existing ones by key, then by art_file_id ONLY when that art id
     // is unique to one non-split job. Shared logos (hoodie + pants) must not inherit each
     // other's rejections / coach_rejected / art_status — SO-1159 class bleed.
-    const _jobLookups=buildExistingJobLookups(safeJobs(o));
+    // Frozen jobs preserved this pass (released/merged) are excluded from the lookups: a rebuilt
+    // job matching one steals its id, and the dedupe-by-id at the return then drops the preserved
+    // snapshot — its frozen claims, coach send and approval history die with it (SO-1664).
+    const _preservedJobIds=new Set([...releasedJobs,...mergedJobs].map(j=>j.id).filter(Boolean));
+    const _jobLookups=buildExistingJobLookups(safeJobs(o),_preservedJobIds);
     const {existingJobMap,existingByArtId}=_jobLookups;
     const _claimedExistingIds=new Set();
     const soNum=o.id?.replace('SO-','')||'0';
