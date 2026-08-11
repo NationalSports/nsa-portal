@@ -1558,7 +1558,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[allOrders,o,products]);
   // Stock actually available to a NEW IF: on-hand minus units already reserved by open IFs.
   const availInv=(p,sz)=>p?Math.max(0,(p._inv?.[sz]||0)-(reservedInvMap[p.id+'|'+sz]||0)):0;
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
   const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
   // ─── Live S&S Product Search ───
@@ -4033,7 +4033,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {o.email_opened_at&&<div style={{fontSize:11,color:'#1e40af',marginTop:4,fontWeight:600}}>👁️ Opened: {o.email_opened_at}</div>}
             {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
           </div>}
-          {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
+          {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/>
+            <button className="btn btn-sm btn-secondary" style={{marginTop:6,fontSize:11}} onClick={()=>setShowCustNew(true)}>+ New Customer</button></div>
           :<div style={{display:'flex',alignItems:'center',gap:'2px 12px',flexWrap:'wrap',fontSize:12,color:'#5A6075'}}>
             <span>Tier {cust.adidas_ua_tier} · {o.default_markup||1.65}x · Tax {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:11,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button>
@@ -14468,6 +14469,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
 
       {/* Change Color Modal — for vendor-live items where the SKU stays the same but color varies */}
     <CustModal isOpen={showCustEdit} onClose={()=>setShowCustEdit(false)} onSave={(updated)=>{if(onSaveCustomer)onSaveCustomer(updated);setCust(updated);setShowCustEdit(false)}} customer={cust} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS}/>
+    {/* Create a customer inline from the order/estimate, then select it — selC can't be used because the new record isn't in allCustomers yet. */}
+    <CustModal isOpen={showCustNew} onClose={()=>setShowCustNew(false)} onSave={(nc)=>{if(onSaveCustomer)onSaveCustomer(nc);setCust(nc);sv('customer_id',nc.id);sv('default_markup',nc.catalog_markup||1.65);setShowCustNew(false)}} customer={null} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS} supabase={supabase} allCustomers={allCustomers}/>
   </div>);
 }
 
