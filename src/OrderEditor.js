@@ -43,6 +43,14 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
+// Rep cost for a catalog product landing on an order line. Clearance items carry the
+// reduced clearance_cost as the line cost (nsa_cost stays full value on the product row
+// for accounting — see the Inventory → Clearance tab). Mirrors the clearance handling in
+// App.js's paste-import / AI-build add paths, which this editor previously lacked.
+// Vendor-PO costing is untouched: clearance items are house stock and are picked, not
+// re-ordered, so no PO ever prices off this.
+const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.clearance_cost):safeNum(p?.nsa_cost);
+
 // Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
 // Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
 // (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
@@ -2081,14 +2089,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // pricingGroup ('lockerroom') selects a reduced tier schedule.
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
-  const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+  const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));
     // Footwear: vendor catalogs often list whole sizes only (e.g. 5–17), which makes a
     // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
     // grid is usable out of the box; trust the catalog only when it already carries half
     // sizes (a curated run). Staff can +Size for outliers either way.
     const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
     const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
   // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
   // the items' new positions in the same update — otherwise a reorder leaves them pointing at the
@@ -2175,8 +2183,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const canRecost=!cur.is_custom&&!committed;
     const isLive=isSSItem(next)||isSanMarItem(next)||isMomentecItem(next)||isRichardsonItem(next);
     if(canRecost){
-      const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&safeNum(p.nsa_cost)>0);
-      if(cp&&Math.abs(safeNum(cp.nsa_cost)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=safeNum(cp.nsa_cost);
+      const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&catalogRepCost(p)>0);
+      if(cp&&Math.abs(catalogRepCost(cp)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=catalogRepCost(cp);
     }
     setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?next:it),updated_at:new Date().toLocaleString()}));setDirty(true);
     if(cur.sku){delete vendorInvCache.current[cur.sku];delete vendorInvFetching.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
@@ -2184,16 +2192,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
-  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
+  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
     const _srcQty=Object.keys(safeSizes(it)).filter(sz=>safeNum(safeSizes(it)[sz])>0);
     clone.available_sizes=orderLineSizes((Array.isArray(p.available_sizes)&&p.available_sizes.length)?p.available_sizes:srcSizes,_srcQty);
-    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));
     // The clone carried the OLD SKU's per-size maps — rebuild them from the new product (or clear
     // them) so cost/sell don't stay pinned to the swapped-out item's sizes.
-    if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
+    if(!au&&!_clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
     // Style swaps clone to a NEW sku, so the source garment's mock can't be re-keyed (the
     // source line may stay). Link the new garment to the source's mock instead — same-color
     // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
@@ -2281,7 +2289,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // onto the Gildan 5000 and double-committed against its batch PO). Same hydration gate as Create PO.
     if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's existing IFs/POs haven't finished loading. Reload the page before changing the SKU so an unseen pick or PO can't ride onto the new garment.",'error');return}
     const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';
-    const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));
     setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
@@ -2290,7 +2298,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       _restampMt(next);
       next.product_id=p.id;next.sku=p.sku;next.name=nameWithBrand(p.name,p.brand);next.brand=p.brand;
       next.vendor_id=p.vendor_id||null;next.pricing_group=p.pricing_group||null;next.color=p.color;
-      next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
+      next.nsa_cost=catalogRepCost(p);next.retail_price=p.retail_price;next.unit_sell=sell;next._is_clearance=p.is_clearance||false;
       next.available_sizes=(p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes,Object.keys(safeSizes(x)).filter(sz=>safeNum(safeSizes(x)[sz])>0)):['S','M','L','XL','2XL'];
       // Drop quantities for sizes the new SKU doesn't carry, so an orphaned size from the old
       // SKU (e.g. OSFA) can't linger hidden in the grid and inflate the line total.
@@ -5508,7 +5516,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {allFp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
-          <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}
+          {p.is_clearance&&p.clearance_cost!=null&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}
+          <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${catalogRepCost(p).toFixed(2)}</span></div>)}
           {/* S&S Live Search Results */}
           {pS.length>=2&&(ssSearching||ssResults.length>0)&&<>
             <div style={{padding:'6px 12px',background:'#f5f3ff',borderTop:'2px solid #ddd6fe',borderBottom:'1px solid #ede9fe',display:'flex',alignItems:'center',gap:6}}>
@@ -5951,7 +5960,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
-              const cost=catMatch?.nsa_cost||p.vendor_price||0;
+              const cost=(catMatch?catalogRepCost(catMatch):0)||p.vendor_price||0;
               const retail=catMatch?.retail_price||p.vendor_retail||0;
               const isFw=(catMatch?.category||'').toLowerCase()==='footwear';
               const sell=au
@@ -5973,6 +5982,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 sizes:p.sizes||{},
                 decorations:[],
                 is_custom:!catMatch&&!p.vendor_source,
+                _is_clearance:catMatch?.is_clearance||false,
                 vendor_source:p.vendor_source||null,
                 pick_lines:[],
                 po_lines:[],
