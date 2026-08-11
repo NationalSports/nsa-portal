@@ -137,6 +137,51 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(existing).toBeNull();
   });
 
+  test('SO-1664: a preserved frozen job is never matchable — by art id or key', () => {
+    // Released+merged job carrying the whole order's approval history; it is preserved
+    // verbatim by syncJobs. A qty edit added a new line sharing its Louisville logo, and
+    // the one-line rebuild used to steal this job via the unique-art-id fallback — the
+    // dedupe-by-id then dropped the preserved snapshot (claims + coach send + approvals).
+    const frozen = {
+      id: 'JOB-1664-01',
+      key: 'released_screen_print_JOB-1664-01',
+      _merged: true,
+      art_file_id: 'af-kansas',
+      _art_ids: ['af-kansas', 'af-louisville', 'af-football'],
+      art_status: 'art_complete',
+      sent_to_coach_at: '2026-07-29T15:56:35.047Z',
+    };
+    const lookups = buildExistingJobLookups([frozen], new Set(['JOB-1664-01']));
+    expect(lookups.existingByArtId['af-louisville']).toBeUndefined();
+    expect(lookups.existingJobMap['released_screen_print_JOB-1664-01']).toBeUndefined();
+
+    const { existing, matchedBy } = matchExistingJob(
+      { key: 'screen_print::art_af-louisville', art_file_id: 'af-louisville' },
+      lookups,
+      new Set(),
+    );
+    expect(matchedBy).toBeNull();
+    expect(existing).toBeNull();
+  });
+
+  test('a released job that RETIRED this pass (not preserved) still hands over workflow state', () => {
+    const retired = {
+      id: 'JOB-3000-01',
+      key: 'screen_print::Old',
+      art_file_id: 'af-x',
+      sent_to_coach_at: '2026-07-01T00:00:00.000Z',
+    };
+    // Not in preservedIds — its claims died, so the rebuilt successor may inherit.
+    const lookups = buildExistingJobLookups([retired], new Set());
+    const { existing, matchedBy } = matchExistingJob(
+      { key: 'screen_print::New', art_file_id: 'af-x' },
+      lookups,
+      new Set(),
+    );
+    expect(matchedBy).toBe('art_file_id');
+    expect(existing.id).toBe('JOB-3000-01');
+  });
+
   test('pants rejection stays on pants when both keys match', () => {
     const lookups = buildExistingJobLookups([pants, hoodie]);
     const claimed = new Set();
