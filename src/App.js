@@ -77,6 +77,13 @@ const _searchPOStatus=(so,poId)=>{
   if(anyDS)return bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting';
   return open<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting';
 };
+// Charge / fee codes that ride along on an order but were never a thing anyone ordered
+// (shipping, setup, art, embroidery, per-vendor "Misc" buckets). Mirrors txn_item_is_service()
+// in migration 20260811162913 — the archive half of the item search is filtered server-side by
+// that function, this filters the portal half in memory. Anchored on a whole leading word so a
+// real SKU that merely starts with the same letters (SETUP123, COVERT, BELTE) is kept.
+const _SERVICE_ITEM_RE=/^[^a-z0-9]*(shipping|freight|misc|deco|decals|digi|numbers|names|patch|twill|vector|ghost|screen|credit|promo|ob|opening|rush|sample|setup|set|rerun|art|color|colour|emb|embroidery|heat|transfer|size|inv|tbd|no use|not|discount|tax|labor|service)([ ._/-]|$)/;
+const _isServiceItemCode=(code)=>_SERVICE_ITEM_RE.test(String(code||'').trim().toLowerCase());
 // Job identifiers folded into an SO's global-search haystack so searching a job number or art name
 // also surfaces the parent order — not just the job row (the job row already links to the SO, but the
 // SO itself never matched a job query). Deco type is deliberately excluded so a generic "embroidery"
@@ -398,6 +405,8 @@ import {
   scheduleEmailSend,
   API_CATALOG_VENDOR_IDS,
   _searchProductsServer,
+  _searchTxnItemsServer,
+  _fetchTxnItemHistory,
   _searchCustomersServer,
   _sbSignIn,
   _sbSignUp,
@@ -4430,10 +4439,22 @@ export default function App(){
   React.useEffect(()=>{const cur=JSON.stringify(invAdjLog);if(_invAdjLogApplied.current!==cur)_setAppStateDirtyUntil('inv_adj_log',Date.now()+12000);_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
   const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
+  // An item found on past transactions but absent from the products catalog. Rendered by the
+  // Products page as a read-only ProductDetail. Deliberately NOT folded into selP: selP drives
+  // the ?prod= deep-link, the resume-on-boot record and the prod[] re-sync effect, all of which
+  // resolve by catalog id and would drop a synthetic item on the floor.
+  const[selTxnItem,setSelTxnItem]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
   React.useEffect(()=>{if(selV){const u=vend.find(v=>v.id===selV.id);if(u&&u!==selV)setSelV(u);else if(!u)setSelV(null)}},[vend]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
+  // Opening a real catalog product closes any transaction-item view behind it (both render on
+  // the Products page, and selP is the one with edit ability).
+  React.useEffect(()=>{if(selP&&selTxnItem)setSelTxnItem(null)},[selP]); // eslint-disable-line
+  // Leaving the Products page closes it too. The shared history-table rows navigate away with
+  // setSelP(null), which a synthetic item has no equivalent for — without this it would still
+  // be open on the next visit to Products instead of the product list.
+  React.useEffect(()=>{if(pg!=='products'&&selTxnItem)setSelTxnItem(null)},[pg]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOScrollJobRef,setESOScrollJobRef]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // One-shot token for the dashboard follow-up "Send" buttons: {kind:'doc'} auto-opens the
   // estimate/SO SendModal, {kind:'coach',jobId} auto-opens Send-to-Coach. OrderEditor consumes it.
@@ -4555,6 +4576,104 @@ export default function App(){
     },250);
     return()=>{if(_gProdTimer.current)clearTimeout(_gProdTimer.current)};
   },[gQ]);// eslint-disable-line
+  // ─── Ordered items (things we've sold that the products catalog doesn't carry) ───
+  // Two sources, because neither covers the other:
+  //  • The imported NetSuite archive (customer_invoice_lines, back to 2021) — server-side via
+  //    the search_txn_items RPC, since 222k lines can't sit in memory. It collapses NetSuite's
+  //    per-size matrix rows to the parent SKU and drops charge codes. Rows already in the
+  //    catalog are dropped here too: the Products section returns those, and their
+  //    ProductDetail shows the same archive history now.
+  //  • Portal-native SO lines that never linked to a catalog product (custom lines, quick-adds).
+  //    Those exist only in memory — the archive predates them — so they're indexed client-side
+  //    off the arrays we already hold.
+  // Both feed one "Ordered Items" section that opens a read-only ProductDetail. Everything
+  // listed has been on a real order: no estimate-only lines, no shipping/setup/misc charges.
+  const _portalTxnItems=useMemo(()=>{
+    const m=new Map();
+    const add=(it,kind)=>{
+      const sku=(it&&it.sku||'').trim();
+      if(!sku||_isServiceItemCode(sku))return;
+      const k=sku.toUpperCase();
+      let e=m.get(k);
+      if(!e){e={sku,name:'',brand:'',color:'',counts:{so:0,est:0,invpo:0},linked:false};m.set(k,e)}
+      if(!e.name&&it.name)e.name=it.name;
+      if(!e.brand&&it.brand)e.brand=it.brand;
+      if(!e.color&&it.color)e.color=it.color;
+      // A line that carries product_id is a catalog item — the Products section already covers it.
+      if(it.product_id)e.linked=true;
+      e.counts[kind]++;
+    };
+    (sos||[]).forEach(s=>safeItems(s).forEach(it=>add(it,'so')));
+    (ests||[]).forEach(e=>safeItems(e).forEach(it=>add(it,'est')));
+    (invPOs||[]).forEach(p=>safeArr(p&&p.items).forEach(it=>add(it,'invpo')));
+    // Must have been on an actual order — an estimate-only or PO-only line hasn't been sold.
+    // Same rule the search_txn_items RPC applies to the archive half.
+    return[...m.values()].filter(e=>!e.linked&&e.counts.so>0);
+  },[sos,ests,invPOs]);
+  const _portalTxnMatch=useCallback((query,limit)=>{
+    const s=(query||'').trim().toLowerCase();
+    if(s.length<2)return[];
+    const scored=[];
+    for(const e of _portalTxnItems){
+      const sku=e.sku.toLowerCase();
+      const hay=sku+' '+(e.name||'').toLowerCase()+' '+(e.brand||'').toLowerCase()+' '+(e.color||'').toLowerCase();
+      if(!hay.includes(s))continue;
+      scored.push({...e,_rank:sku===s?0:sku.startsWith(s)?1:2,_txns:e.counts.so+e.counts.est+e.counts.invpo});
+    }
+    scored.sort((a,b)=>a._rank-b._rank||b._txns-a._txns||a.sku.localeCompare(b.sku));
+    return limit?scored.slice(0,limit):scored;
+  },[_portalTxnItems]);
+  const[gTxnItems,setGTxnItems]=useState([]);const _gTxnTimer=useRef(null);
+  useEffect(()=>{
+    if(_gTxnTimer.current)clearTimeout(_gTxnTimer.current);
+    if(!gQ||gQ.length<2){setGTxnItems([]);return}
+    _gTxnTimer.current=setTimeout(async()=>{
+      const rows=await _searchTxnItemsServer(gQ,8);
+      setGTxnItems(rows?rows.filter(r=>!r.in_catalog):[]);
+    },250);
+    return()=>{if(_gTxnTimer.current)clearTimeout(_gTxnTimer.current)};
+  },[gQ]);
+  const[txnSearchResults,setTxnSearchResults]=useState([]);const _txnSearchTimer=useRef(null);
+  useEffect(()=>{
+    if(_txnSearchTimer.current)clearTimeout(_txnSearchTimer.current);
+    if(pg!=='search'||!gSearchQ||gSearchQ.trim().length<2){setTxnSearchResults([]);return}
+    _txnSearchTimer.current=setTimeout(async()=>{
+      const rows=await _searchTxnItemsServer(gSearchQ.trim(),40);
+      setTxnSearchResults(rows?rows.filter(r=>!r.in_catalog):[]);
+    },250);
+    return()=>{if(_txnSearchTimer.current)clearTimeout(_txnSearchTimer.current)};
+  },[gSearchQ,pg]);
+  // Merge the two sources into one list, keyed on SKU. A SKU present in both keeps the archive
+  // totals and gains the portal counts, so the row reads as one item's whole life.
+  const _mergeTxnItems=useCallback((archiveRows,query,limit)=>{
+    const out=[];const seen=new Map();
+    (archiveRows||[]).forEach(r=>{
+      const k=(r.item||'').trim().toUpperCase();if(!k||seen.has(k))return;
+      const e={sku:r.item,name:'',brand:'',color:'',archive:r,portal:null,txns:r.txn_count||0};
+      seen.set(k,e);out.push(e);
+    });
+    _portalTxnMatch(query,null).forEach(p=>{
+      const k=p.sku.toUpperCase();const ex=seen.get(k);
+      if(ex){ex.portal=p;ex.name=ex.name||p.name;ex.brand=ex.brand||p.brand;ex.color=ex.color||p.color;ex.txns+=p.counts.so+p.counts.est+p.counts.invpo;return}
+      const e={sku:p.sku,name:p.name,brand:p.brand,color:p.color,archive:null,portal:p,txns:p.counts.so+p.counts.est+p.counts.invpo};
+      seen.set(k,e);out.push(e);
+    });
+    return limit?out.slice(0,limit):out;
+  },[_portalTxnMatch]);
+  // The synthetic product handed to ProductDetail in read-only mode. The id is namespaced so it
+  // can never collide with a real product id (or match an item line whose product_id is unset).
+  const openTxnItem=useCallback((row)=>{
+    setSelTxnItem({
+      id:'txn:'+(row.sku||'').toUpperCase(),
+      sku:row.sku||'',
+      name:row.name||(row.portal&&row.portal.name)||'',
+      brand:(row.portal&&row.portal.brand)||'',
+      color:(row.portal&&row.portal.color)||'',
+      available_sizes:[],_inv:{},_txnOnly:true,
+      _archiveStats:row.archive||null,
+    });
+    setSelP(null);setPg('products');setGQ('');setGOpen(false);
+  },[]);
   const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[mThreadAtt,setMThreadAtt]=useState([]);const[mThreadAttBusy,setMThreadAttBusy]=useState(false);const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all',arc:'hide'});
   // ─── Server-side product search state (paginated) ───
   const[prodPage,setProdPage]=useState(0);const PROD_PAGE_SIZE=50;
@@ -10554,10 +10673,43 @@ export default function App(){
   // Use useRef to create a stable component reference — defining components inside a parent
   // causes React to remount them on every parent re-render (losing state like editing mode)
   const _pdRef=React.useRef(null);
-  if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
+  // readOnly renders the same screen for an item that has transaction history but no catalog
+  // row (see selTxnItem): every editing affordance and every catalog-only panel is dropped, the
+  // read-only history tabs are identical.
+  if(!_pdRef.current){_pdRef.current=({product,onBack,ctx,readOnly})=>{
     const{vend,cust,ests,sos,invPOs,invs,setProd,setSOs,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES,isA}=ctx.current;
-    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
+    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState(readOnly?'nshist':'history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());const[salesView,setSalesView]=useState('month');
     const[autoSaved,setAutoSaved]=useState(false);
+    // ─── Imported NetSuite history for this SKU ───
+    // Lazy: one RPC per SKU, fired on mount, capped server-side. Catalog products get it too —
+    // their Order History only ever showed portal transactions, so anything we sold before the
+    // portal (or through NetSuite alongside it) was invisible on this screen.
+    const[nsRows,setNsRows]=useState(null);// null = still loading, [] = loaded and empty
+    const NS_LIMIT=1500;
+    React.useEffect(()=>{
+      let cancelled=false;
+      const sku=(product.sku||'').trim();
+      if(!sku){setNsRows([]);return}
+      setNsRows(null);
+      _fetchTxnItemHistory(sku,NS_LIMIT).then(rows=>{if(!cancelled)setNsRows(rows||[])});
+      return()=>{cancelled=true};
+    },[product.sku]);
+    // Group the raw archive lines into one row per NetSuite document.
+    const nsTxns=React.useMemo(()=>{
+      if(!nsRows||!nsRows.length)return[];
+      const by=new Map();
+      nsRows.forEach(r=>{
+        const k=r.netsuite_internal_id||(r.document_number+'|'+r.transaction_date);
+        let t=by.get(k);
+        if(!t){t={key:k,type:r.transaction_type,doc:r.document_number,date:r.transaction_date,status:r.status,customer:r.raw_customer_name,customer_id:r.customer_id,memo:r.header_memo,qty:0,amount:0,lines:[]};by.set(k,t)}
+        t.qty+=Number(r.quantity)||0;
+        t.amount+=Number(r.amount)||0;
+        t.lines.push(r);
+      });
+      return[...by.values()].sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    },[nsRows]);
+    const nsTruncated=!!(nsRows&&nsRows.length>=NS_LIMIT);
+    const nsTotals=React.useMemo(()=>nsTxns.reduce((a,t)=>({qty:a.qty+t.qty,amount:a.amount+t.amount}),{qty:0,amount:0}),[nsTxns]);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
     React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv,(product.available_sizes||[]).join(',')]);
     const epRef=React.useRef(ep);const editingRef=React.useRef(editing);
@@ -10625,6 +10777,15 @@ export default function App(){
     const sizeData=_szDisplay.map(s=>({size:s,units:sizeTotals[s].units,revenue:sizeTotals[s].revenue,months:sizeByMonth[s]||Array(12).fill(0)}));
     const maxSizeUnits=Math.max(...sizeData.map(s=>s.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);_vPropRef.current(ep);setEditing(false);nf('Product updated')};
+    // A transaction item opens on Past Sales, which is where its history normally lives. If the
+    // archive turns out to be empty (a portal-only custom line) fall back to Order History so
+    // the screen doesn't open on "nothing found" while the real rows sit one tab over.
+    const _tabRef=React.useRef(tab);React.useEffect(()=>{_tabRef.current=tab},[tab]);
+    React.useEffect(()=>{
+      if(!readOnly||nsRows===null||nsRows.length)return;
+      if(_tabRef.current!=='nshist')return;
+      if(pSOs.length||pEsts.length||pInvPOs.length)setTab('history');
+    },[nsRows]);// eslint-disable-line
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     const _coreSz=['XS','S','M','L','XL','2XL','3XL','4XL'];
     const _av=ep.available_sizes||[];
@@ -10645,7 +10806,7 @@ export default function App(){
     // footwear/ball sizes with stock outside the declared run) so inventory is never hidden.
     Object.keys(ep._inv||{}).forEach(sz=>{if((ep._inv?.[sz]||0)>0&&!_displaySz.includes(sz))_displaySz.push(sz)});
     return(<div>
-      <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
+      <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> {readOnly?'Back':'Products'}</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
           <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center',minWidth:180}}>
@@ -10676,17 +10837,27 @@ export default function App(){
                 <span style={{fontFamily:'monospace',fontWeight:800,fontSize:18,background:'#dbeafe',padding:'2px 10px',borderRadius:4,color:'#1e40af'}}>{ep.sku}</span>
                 <span style={{fontSize:18,fontWeight:700}}>{ep.name}</span>
                 {ep.is_archived&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>ARCHIVED</span>}
+                {readOnly?<span style={{marginLeft:'auto',fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f1f5f9',color:'#475569',fontWeight:700}} title="This item has transaction history but no row in the products catalog">NOT IN CATALOG</span>:<>
                 <button className="btn btn-sm btn-secondary" onClick={()=>setEditing(true)} style={{marginLeft:'auto'}}><Icon name="edit" size={12}/> Edit</button>
                 <button className="btn btn-sm" style={{background:ep.is_archived?'#fef3c7':'#f1f5f9',color:ep.is_archived?'#92400e':'#64748b',border:'1px solid '+(ep.is_archived?'#fde68a':'#e2e8f0'),fontWeight:700}} onClick={()=>{const updated={...ep,is_archived:!ep.is_archived};setEp(updated);setProd(p=>p.map(x=>x.id===updated.id?{...x,is_archived:updated.is_archived}:x));_dbSaveProduct(updated);nf(updated.is_archived?'Product archived':'Product unarchived')}}>{ep.is_archived?'Unarchive':'Archive'}</button>
                 <button className="btn btn-sm" style={{background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700}} onClick={()=>setAM({open:true,p:ep})}><Icon name="plus" size={12}/> Adjust Inventory</button>
+                </>}
               </div>
               <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13,color:'#64748b',marginBottom:8}}>
-                <span><span className="badge badge-blue">{ep.brand}</span></span>
+                {ep.brand&&<span><span className="badge badge-blue">{ep.brand}</span></span>}
                 <span>{ep.color}{ep.color_category&&<> (<strong>{ep.color_category}</strong>)</>}</span>
-                <span>Category: <strong>{ep.category}</strong></span>
+                {ep.category&&<span>Category: <strong>{ep.category}</strong></span>}
                 {v&&<span>Vendor: <strong>{v.name}</strong></span>}
                 {ep.bin&&<span style={{padding:'1px 8px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700}}>📍 Bin {ep.bin}</span>}
               </div>
+              {/* Catalog-only panels: a transaction item has no cost/retail, no stock and no
+                  vendor stock feed — showing empty ones would read as "we have zero", not
+                  "we never tracked it here". */}
+              {readOnly?(()=>{const a=ep._archiveStats;return<div style={{display:'flex',gap:16,fontSize:13,marginBottom:8,flexWrap:'wrap',color:'#475569'}}>
+                {a&&a.first_date&&<span>Sold: <strong>{a.first_date}</strong> → <strong>{a.last_date}</strong></span>}
+                {a&&a.total_qty!=null&&<span>Archive units: <strong>{Math.round(Number(a.total_qty)||0).toLocaleString()}</strong></span>}
+                {a&&a.total_amount!=null&&<span>Archive revenue: <strong>${Math.round(Number(a.total_amount)||0).toLocaleString()}</strong></span>}
+              </div>})():<>
               <div style={{display:'flex',gap:16,fontSize:13,marginBottom:8,flexWrap:'wrap'}}>
                 <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
                 <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
@@ -10701,6 +10872,7 @@ export default function App(){
                 <div className="size-cell total" style={{width:44}}><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
               </div>
               <AdidasB2BRow sku={ep.sku} brand={ep.brand} displaySizes={_displaySz} inv={ep._inv}/>
+              </>}
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
@@ -10778,13 +10950,14 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">POs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pPOs.length}</div></div>
         <div className="stat-card"><div className="stat-label">Jobs</div><div className="stat-value" style={{color:'#0891b2'}}>{pJobs.length}</div></div>
         <div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value" style={{color:'#059669'}}>{pInvs.length}</div></div>
-        <div className="stat-card" style={{borderColor:'#10b981'}}><div className="stat-label">Units Sold ({salesYr})</div><div className="stat-value" style={{color:'#059669'}}>{totalUnits}</div></div>
+        {!readOnly&&<div className="stat-card" style={{borderColor:'#10b981'}}><div className="stat-label">Units Sold ({salesYr})</div><div className="stat-value" style={{color:'#059669'}}>{totalUnits}</div></div>}
+        <div className="stat-card" style={{borderColor:'#94a3b8'}}><div className="stat-label">Past (NetSuite)</div><div className="stat-value" style={{color:'#475569'}}>{nsRows===null?'…':nsTxns.length}</div></div>
       </div>
 
       {/* Tabs */}
       <div style={{display:'flex',gap:4,marginBottom:12}}>
-        {[['history','Order History'],['sales','Sales Volume'],['estimates','Estimates'],['pos','POs'],['invpos','Inv POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
-          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label} {k==='invpos'&&pInvPOs.length>0?'('+pInvPOs.length+')':''}</button>)}
+        {[['history','Order History'],['sales','Sales Volume'],['estimates','Estimates'],['pos','POs'],['invpos','Inv POs'],['jobs','Jobs'],['invoices','Invoices'],['nshist','Past Sales']].map(([k,label])=>
+          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label} {k==='invpos'&&pInvPOs.length>0?'('+pInvPOs.length+')':''}{k==='nshist'&&nsTxns.length>0?'('+nsTxns.length+')':''}</button>)}
       </div>
 
       {/* ORDER HISTORY (ALL) */}
@@ -10965,12 +11138,38 @@ export default function App(){
             <td><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='open'?'badge-amber':'badge-gray'}`}>{inv.status}</span></td></tr>})}
         {pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No invoices</td></tr>}
         </tbody></table></div></div>}
+
+      {/* PAST SALES (imported NetSuite archive) */}
+      {tab==='nshist'&&<div className="card"><div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+        <h3>Past Sales — NetSuite ({nsTxns.length})</h3>
+        {nsTxns.length>0&&<div style={{fontSize:12,color:'#64748b'}}>
+          <strong>{Math.round(nsTotals.qty).toLocaleString()}</strong> units · <strong>${Math.round(nsTotals.amount).toLocaleString()}</strong>
+        </div>}
+      </div><div className="card-body" style={{padding:0}}>
+        {nsTruncated&&<div style={{padding:'8px 14px',fontSize:11,color:'#92400e',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+          Showing the {NS_LIMIT.toLocaleString()} most recent lines for this item — older transactions are not listed. Use Sales History for the full archive.
+        </div>}
+        <table><thead><tr><th>Type</th><th>Document</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead><tbody>
+        {nsRows===null&&<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>Loading past sales…</td></tr>}
+        {nsRows!==null&&nsTxns.length===0&&<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No imported NetSuite transactions for {ep.sku||'this item'}</td></tr>}
+        {nsTxns.map(t=><tr key={t.key}>
+          <td><span className={`badge ${t.type==='invoice'?'badge-green':'badge-blue'}`}>{t.type==='sales_order'?'SO':t.type==='invoice'?'Invoice':t.type||'—'}</span></td>
+          <td style={{fontWeight:700,color:'#1e40af'}}>{t.doc||'—'}</td>
+          <td>{cust.find(c=>c.id===t.customer_id)?.name||t.customer||'—'}</td>
+          <td style={{fontSize:12}}>{t.memo||''}</td>
+          <td>{Math.round(t.qty).toLocaleString()}</td>
+          <td style={{fontWeight:700}}>${Math.round(t.amount).toLocaleString()}</td>
+          <td><span className="badge badge-gray">{t.status||'—'}</span></td>
+          <td style={{fontSize:11,color:'#64748b'}}>{t.date||'—'}</td>
+        </tr>)}
+        </tbody></table></div></div>}
     </div>);
   }}
   const ProductDetail=_pdRef.current;
 
   // PRODUCTS
   function rProd(){
+    if(selTxnItem)return<ProductDetail product={selTxnItem} readOnly onBack={()=>setSelTxnItem(null)} ctx={_pdCtx}/>;
     if(selP){const freshP=prod.find(x=>x.id===selP.id)||selP;return<ProductDetail product={freshP} onBack={()=>setSelP(null)} ctx={_pdCtx}/>}
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
     <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
@@ -35337,6 +35536,9 @@ export default function App(){
     const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);const h=(e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))});
     const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)+' '+_soJobsSearchHay(so);return _toks.every(t=>h.includes(t))});
     const rp=prod.filter(p=>((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s));
+    // Items with transaction history but no catalog row. txnSearchResults is the archive half
+    // (fetched by the debounced effect above); the portal half is merged in from memory.
+    const rti=_mergeTxnItems(txnSearchResults,q,null);
     const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
     const rpk=allPicks;
     const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{const _poh=((po.po_id||'')+' '+(po.vendor||'')+' '+so.id).toLowerCase()+' '+_custHay(c2);if(_toks.every(t=>_poh.includes(t))){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:_searchPOStatus(so,po.po_id),so_id:so.id,so,customer:c2?.alpha_tag||''})}})});
@@ -35353,7 +35555,7 @@ export default function App(){
     // apply the same all-tokens-must-match narrowing so "PO 3522 CMSF" matches "PO3522CMSF" etc.
     const _siHay=(d)=>((d.po_number||'')+' '+(d.supplier||'')+' '+(d.supplier_doc_number||'')+' '+(d.matched_po_id||'')+' '+(d.matched_so_id||'')+' '+(d.si_doc_number||'')).toLowerCase();
     const rsi=(siSearchResults||[]).filter(d=>_toks.every(t=>_siHay(d).includes(t)));
-    const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length;
+    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length;
     const row=(children,onClick,key)=><div key={key} style={{padding:'10px 14px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',borderTop:'1px solid #f1f5f9'}} onClick={onClick}>{children}</div>;
     const section=(label,items,render)=>items.length>0&&<div className="card" style={{marginBottom:12}}>
       <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -35378,6 +35580,10 @@ export default function App(){
         {section('Sales Orders',rs,so=>{const cc=cust.find(x=>x.id===so.customer_id);return row(<><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setESO(so);setESOC(cc);setPg('orders')},so.id)})}
         {section('Estimates',re,e=>{const cc=cust.find(x=>x.id===e.customer_id);return row(<><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span>{e.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setEEst(e);setEEstC(cc);setPg('estimates')},e.id)})}
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
+        {section('Ordered Items (sold before, not in catalog)',rti,ti=>row(<><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569'}}>{ti.sku}</span>{ti.name&&<span>{ti.name}</span>}
+          {ti.archive&&<span style={{fontSize:11,color:'#64748b'}}>{ti.archive.txn_count} NetSuite txn{ti.archive.txn_count===1?'':'s'} · {String(ti.archive.first_date||'').slice(0,4)}–{String(ti.archive.last_date||'').slice(0,4)} · ${Math.round(Number(ti.archive.total_amount)||0).toLocaleString()}</span>}
+          {ti.portal&&<span className="badge badge-blue">{ti.portal.counts.so+ti.portal.counts.est+ti.portal.counts.invpo} portal line{ti.portal.counts.so+ti.portal.counts.est+ti.portal.counts.invpo===1?'':'s'}</span>}
+        </>,()=>openTxnItem(ti),'ti-'+ti.sku))}
         {section('Item Fulfillments',rpk,pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></>,()=>{setESO(pk.so);setESOC(cc);setPg('orders')},pk.pick_id)})}
         {section('Purchase Orders',rpo,po=>row(<><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'||po.status==='shipped'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='shipped'?'Shipped':po.status==='partial'?'Partially Received':po.status==='waiting'?'Waiting':po.status}</span></>,()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')}},po.po_id))}
         {section('Supplier Invoices',rsi,d=>row(<><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{d.po_number||'(no PO)'}</span><span style={{fontWeight:600}}>{d.supplier||''}</span><span style={{color:'#64748b',fontSize:11}}>Inv {d.supplier_doc_number||d.si_doc_number}</span><span style={{fontWeight:700}}>${(Number(d.doc_total)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><span className={`badge ${d.status==='approved'||d.status==='manual_done'?'badge-green':d.matched_po_id?'badge-blue':'badge-amber'}`}>{d.status==='approved'?'Captured':d.status==='manual_done'?'Grabbed':d.status==='outside_portal'?'Outside':d.matched_po_id?'Matched':'Unmatched'}</span></>,()=>{setSiExpand(d.si_doc_number);setImpTab('bills');setBillView('upload');setPg('import')},'si-'+d.si_doc_number))}
@@ -35567,6 +35773,8 @@ export default function App(){
             const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);const h=(e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))}).slice(0,4);
             const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)+' '+_soJobsSearchHay(so);return _toks.every(t=>h.includes(t))}).slice(0,4);
             const rp=gProdResults.slice(0,6);
+            // Items we've sold that the catalog doesn't carry (archive + portal-only lines)
+            const rti=_mergeTxnItems(gTxnItems,gQ,5);
             // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
@@ -35584,7 +35792,7 @@ export default function App(){
             const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s)).slice(0,4);
             // Vendors
             const rv=vend.filter(v=>(v.name+' '+(v.rep_name||'')).toLowerCase().includes(s)).slice(0,4);
-            const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
+            const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
                 {rc.map(cc=><a key={cc.id} href={_newTabHref({cust:cc.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></a>)}</>}
@@ -35594,6 +35802,8 @@ export default function App(){
                 {re.map(est=>{const cc=cust.find(x=>x.id===est.customer_id);return<a key={est.id} href={_newTabHref({est:est.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setEEst(est);setEEstC(cc);setPg('estimates');setGQ('');setGOpen(false)}}><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{est.id}</span><span>{est.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
               {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>
                 {rp.map(p=><a key={p.id} href={_newTabHref({prod:p.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelP(p);setPg('products');setQ('');setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</a>)}</>}
+              {rti.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Ordered Items <span style={{fontWeight:400,textTransform:'none'}}>· sold before, not in catalog</span></div>
+                {rti.map(ti=><div key={'ti-'+ti.sku} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>openTxnItem(ti)}><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569'}}>{ti.sku}</span>{ti.name&&<span>{ti.name}</span>}<span style={{color:'#64748b',fontSize:11,marginLeft:'auto',whiteSpace:'nowrap'}}>{ti.txns} txn{ti.txns===1?'':'s'}{ti.archive&&ti.archive.last_date?' · thru '+String(ti.archive.last_date).slice(0,7):''}</span></div>)}</>}
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<a key={pk.pick_id} href={_newTabHref({so:pk.so_id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></a>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
