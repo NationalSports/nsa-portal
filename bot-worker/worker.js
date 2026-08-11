@@ -454,7 +454,16 @@ async function processOne() {
     .eq('id', task.id);
 
   // If reset to queued (e.g. Claude binary not found), skip the comment — it'll retry silently.
-  if (status === 'queued') { log('task', task.id, 'reset to queued for retry:', result.summary); await heartbeat('idle', null); return true; }
+  // EXCEPT timeouts: those restarts were invisible in the portal (a watcher saw one
+  // continuous run "start over"), and the next pass must know to resume, not rebuild.
+  if (status === 'queued') {
+    log('task', task.id, 'reset to queued for retry:', result.summary);
+    if (/timed out/i.test(result.summary || '')) {
+      await comment(task.id, '⏳ **Bot pass timed out — will resume**\n\nThis pass hit the run-time cap before finishing. The task is re-queued; the next pass picks up the cart where this one left off (it audits the existing rows instead of re-adding).');
+    }
+    await heartbeat('idle', null);
+    return true;
+  }
 
   // Structured report — sections separated by blank lines, bullets per line item.
   // The portal renders **bold**, "- " bullets, and URLs, so this reads as a tidy
