@@ -6262,11 +6262,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
             {artApply.rows.map(r=>{const it=items[r.ii];if(!it)return null;
               const qty=it.total_qty||Object.values(it.sizes||{}).reduce((s,b)=>s+(+b||0),0)||it.est_qty||0;
-              const label=(it.color?it.color+' ':'')+(it.sku||it.name||('Item '+(r.ii+1)));
+              const desc=safeStr(it.name).trim();
+              const label=(it.color?it.color+' ':'')+(it.sku||desc||('Item '+(r.ii+1)));
               return<div key={r.ii} style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',padding:'8px 10px',borderRadius:6,border:'1px solid '+(r.already?'#bbf7d0':r.checked?'#c7d2fe':'#e2e8f0'),background:r.already?'#f0fdf4':r.checked?'#f5f3ff':'white',opacity:r.already?0.8:1}}>
                 <label style={{display:'flex',alignItems:'center',gap:8,flex:1,minWidth:180,cursor:r.already?'default':'pointer'}}>
                   <input type="checkbox" checked={r.already||r.checked} disabled={r.already} onChange={e=>upRow(r.ii,{checked:e.target.checked})}/>
-                  <span style={{fontSize:12.5,fontWeight:600}}>{label}<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}> · {qty} pc{qty===1?'':'s'}</span></span>
+                  <span style={{display:'flex',flexDirection:'column',gap:1,minWidth:0}}>
+                    <span style={{fontSize:12.5,fontWeight:600}}>{label}<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}> · {qty} pc{qty===1?'':'s'}</span></span>
+                    {/* Style number alone doesn't tell you what the garment is — show the description too */}
+                    {desc&&it.sku&&<span style={{fontSize:10.5,color:'#64748b',fontWeight:400,lineHeight:1.3}}>{desc}</span>}
+                  </span>
                 </label>
                 {r.already?<span style={{fontSize:10.5,fontWeight:700,color:'#166534'}}>✓ already applied</span>:<>
                   <div style={{display:'flex',flexDirection:'column',gap:1}}>
