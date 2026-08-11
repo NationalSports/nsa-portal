@@ -10,7 +10,7 @@
  * never orphan) and the reversible slot enforcement in the approval gate.
  */
 
-const { mockSlotKeys, skusMissingMockups } = require('../safeHelpers');
+const { mockSlotKeys, skusMissingMockups, skusMissingRevColorWays } = require('../safeHelpers');
 
 const BASE = 'JSY|Navy/White';
 
@@ -151,5 +151,61 @@ describe('skusMissingMockups — reversible garments require every side mocked',
     const job = { _art_ids: ['af1'], art_file_id: 'af1', items: [{ item_idx: 0, sku: 'P1', color: 'Red' }] };
     // numbers slot exists but is NOT reversible → not enforced (would block older in-flight jobs)
     expect(skusMissingMockups(job, so)).toEqual([]);
+  });
+});
+
+// ─── Approval gate: reversible art decos must have BOTH color ways picked ───
+
+describe('skusMissingRevColorWays — reversible decos require Side A + Side B color ways', () => {
+  test('both sides picked and resolving → nothing missing', () => {
+    const { job, so } = revCase({});
+    expect(skusMissingRevColorWays(job, so)).toEqual([]);
+  });
+
+  test('no color ways defined on the art file → reported as needing 2 color ways (SO-1469)', () => {
+    const { job, so } = revCase({});
+    so.art_files[0].color_ways = [];
+    so.art_files[0].name = 'Reversible Chest Logo';
+    so.items[0].decorations[0].color_way_id = null;
+    so.items[0].decorations[0].color_way_id_b = null;
+    expect(skusMissingRevColorWays(job, so)).toEqual(['JSY ("Reversible Chest Logo" needs 2 color ways)']);
+  });
+
+  test('color ways defined but sides unpicked → Side A / Side B reported', () => {
+    const { job, so } = revCase({});
+    so.items[0].decorations[0].color_way_id = null;
+    so.items[0].decorations[0].color_way_id_b = null;
+    expect(skusMissingRevColorWays(job, so)).toEqual(['JSY (Side A CW, Side B CW)']);
+  });
+
+  test('a dangling color-way id (CW deleted from the art file) counts as unpicked', () => {
+    const { job, so } = revCase({});
+    so.items[0].decorations[0].color_way_id_b = 'cwGone';
+    expect(skusMissingRevColorWays(job, so)).toEqual(['JSY (Side B CW)']);
+  });
+
+  test('non-reversible decos and reversible numbers are not gated', () => {
+    const { job, so } = revCase({});
+    so.items[0].decorations[0].reversible = false;
+    so.items[0].decorations[0].color_way_id = null;
+    so.items[0].decorations[0].color_way_id_b = null;
+    expect(skusMissingRevColorWays(job, so)).toEqual([]);
+  });
+
+  test('DTF art is exempt — full-color print needs no color ways', () => {
+    const { job, so } = revCase({});
+    so.art_files[0].deco_type = 'dtf';
+    so.art_files[0].color_ways = [];
+    so.items[0].decorations[0].color_way_id = null;
+    so.items[0].decorations[0].color_way_id_b = null;
+    expect(skusMissingRevColorWays(job, so)).toEqual([]);
+  });
+
+  test('scoped to the decos THIS job owns (deco_idxs)', () => {
+    // Job owns only the numbers deco (idx 1) — the art deco's missing CWs must not block it.
+    const { job, so } = revCase({}, { decoIdxs: [1] });
+    so.items[0].decorations[0].color_way_id = null;
+    so.items[0].decorations[0].color_way_id_b = null;
+    expect(skusMissingRevColorWays(job, so)).toEqual([]);
   });
 });

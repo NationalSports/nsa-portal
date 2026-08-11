@@ -9,7 +9,7 @@ import { supabase, _dbSaveInvoice } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo } from './components';
-import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled } from './utils';
+import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms } from './App';
 
 // Fires its `run` callback exactly once, when it mounts. Used to auto-trigger the
@@ -24,6 +24,13 @@ function AutoRunOnce({run}){
 
 export default function InvoicesPage(){
   const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+
+    // Invoices usually go to a coach plus a billing/AP contact, so the greeting names whoever
+    // is checked ("Hi Cam and Hillary,"). Only the greeting line is swapped — edits below it stay.
+    const _siToKey=React.useMemo(()=>{const si=invSendModalDirect;if(!si)return'';
+      return[...Object.entries(si.checked||{}).filter(([,v])=>v).map(([k])=>k),...(si.customEmails||[])].join('|')},[invSendModalDirect]);
+    React.useEffect(()=>{if(!_siToKey)return;
+      setInvSendModalDirect(s=>s?{...s,msg:withGreeting(s.msg,greetLine(_siToKey.split('|'),s.sendContacts))}:s)},[_siToKey,setInvSendModalDirect]);
 
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
@@ -276,8 +283,6 @@ export default function InvoicesPage(){
               onClick={()=>{
                 const contact=contacts[0];
                 const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
-                const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
-                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
                 // Build recipient list: customer's own contacts + inherited billing contacts from parent accounts
                 const ownContacts=(ic?.contacts||[]).filter(ct=>ct.email);
                 const inheritedBilling=getBillingContacts(ic,cust).filter(a=>a._inherited_from&&a.email&&!ownContacts.find(o=>o.email===a.email));
@@ -285,6 +290,11 @@ export default function InvoicesPage(){
                 const billingEmails=new Set(getBillingContacts(ic,cust).map(b=>b.email));
                 const checked={};sendContacts.forEach(ct=>{checked[ct.email]=billingEmails.has(ct.email)});
                 if(Object.values(checked).every(v=>!v)&&sendContacts.length>0)checked[sendContacts[0].email]=true;
+                // Greet everyone pre-checked; the greeting re-writes as boxes are ticked in the modal.
+                // Job name comes off the SO — the invoice memo carries a "Final Invoice — " prefix.
+                const _job=((so?.memo||inv.memo)||'').trim();
+                const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
+                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
                 setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
@@ -933,7 +943,7 @@ export default function InvoicesPage(){
               </div>}
               {/* Automated follow-ups (server sweep) — falls back to the manual todo reminder below when off */}
               <div style={{marginBottom:12}}>
-                <FollowUpAutoPanel value={si.followUp} onChange={val=>setInvSendModalDirect(s=>({...s,followUp:val}))} defaultMessage={'Hi '+((si.sendContacts||[])[0]?.name||'Coach')+',\n\nJust a friendly reminder that invoice '+si.inv.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
+                <FollowUpAutoPanel value={si.followUp} onChange={val=>setInvSendModalDirect(s=>({...s,followUp:val}))} defaultMessage={greetLine(siRecipients,si.sendContacts)+'\n\nJust a friendly reminder that invoice '+si.inv.id+' is still open. When you have a moment, please review and submit payment — let us know if you have any questions!\n\nThank you,\nNSA Team'}/>
               </div>
               {!si.followUp?.auto&&<div style={{marginBottom:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
                 <label style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>

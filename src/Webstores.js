@@ -7,7 +7,7 @@ import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, 
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
@@ -436,7 +436,30 @@ async function fetchOverrideSkuStock(lines) {
 // nobody mistakes it for a confirmed count.
 // Deliberately NOT applied to the public storefront's sold-out math — inferring
 // stock there would oversell to customers; here it only softens an internal warning.
-const todayIso = () => new Date().toISOString().slice(0, 10);
+// Local calendar date, NOT toISOString() (UTC): after ~5pm Pacific the UTC date has
+// already rolled over, which credited tomorrow's deliveries as "arrived" a day early.
+const todayIso = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+
+// Fetch EVERY webstore_order_items row for a set of order ids. Chunking the id list
+// for `.in()` is not enough: PostgREST caps each RESPONSE at 1000 rows regardless of
+// how few ids are in the filter, so a 300-order chunk of multi-item team orders still
+// silently truncated — the same "orders show 0/fewer items" bug the chunking was added
+// to fix. Each chunk is therefore also paged with .range() (ordered by id so pages are
+// stable) until a short page signals the end. Exported for tests.
+export const fetchOrderItemRows = async (db, orderIds, pageSize = 1000) => {
+  const rows = [];
+  const ids = [...new Set(orderIds)].filter(Boolean);
+  for (let ii = 0; ii < ids.length; ii += 300) {
+    const slice = ids.slice(ii, ii + 300);
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await db.from('webstore_order_items').select('*').in('order_id', slice).order('id').range(from, from + pageSize - 1);
+      if (error) return { rows, error };
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+    }
+  }
+  return { rows, error: null };
+};
 export function arrivedVendorQty(sizeEta, sizeIncoming, size, today = todayIso()) {
   const eta = String((sizeEta || {})[size] || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(eta) || eta > today) return 0;
@@ -1119,7 +1142,7 @@ async function generateFlyerPdfBase64(store, items = []) {
     const qrResp = await fetch(_qrImg(url, 200));
     const qrBlob = await qrResp.blob();
     const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
-    doc.addImage(qrB64,'PNG',W/2-70,y,140,140);
+    doc.addImage(qrB64,'PNG',W/2-70,y,140,140,'','FAST');
   } catch(_){ /* skip if network fails */ }
   y += 150;
   doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
@@ -1131,6 +1154,25 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(160,160,160);
   doc.text("California's Largest Independent Team Dealer  ·  Since 2009", W/2, H-13, {align:'center'});
   return doc.output('datauristring').split(',')[1];
+}
+
+// Send the "store is live" email to one recipient, flyer PDF attached when it fits.
+// Netlify's function payload cap (~6MB) rejects an oversized flyer BEFORE the request
+// ever reaches Brevo, so: skip the attachment when the base64 is too big, and if a
+// with-attachment send still fails, retry once without it so the email always goes out.
+const _FLYER_ATTACH_MAX_B64 = 4_500_000; // chars ≈ 3.4MB binary, safe under the cap
+async function _sendLaunchEmail(store, to, coachUrl) {
+  const items = await loadFlyerItems(store);
+  let attachment;
+  try {
+    const b64 = await generateFlyerPdfBase64(store, items);
+    if (b64 && b64.length <= _FLYER_ATTACH_MAX_B64) attachment = [{ content: b64, name: `${store.slug || 'team-store'}-flyer.pdf` }];
+  } catch (_) {}
+  const base = { to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachUrl), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' };
+  let r = await sendBrevoEmail(attachment ? { ...base, attachment } : base);
+  let attached = !!attachment;
+  if (r && r.error && attachment) { r = await sendBrevoEmail(base); attached = false; }
+  return { ...(r || {}), attached };
 }
 
 // Load a store's catalog shaped for the flyer/PDF: resolves each item's display
@@ -1244,12 +1286,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (emailOverride || store.director_email || store.coach_contact_email || '').trim();
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     flash('Generating flyer PDF…');
-    const items = await loadFlyerItems(store);
-    let attachment;
-    try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
-    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
+    const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
     if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Store link emailed to ' + to + (attachment ? ' with PDF flyer' : ''));
+    else flash('Store link emailed to ' + to + (r.attached ? ' with PDF flyer' : ' (flyer sent as link — PDF was too large to attach)'));
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
@@ -1341,16 +1380,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       supabase.from('webstore_transfers').select('*').eq('store_id', sid).order('kind').order('code'),
       supabase.from('webstore_coupons').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
     ]);
-    // Order items are fetched SCOPED to this store's orders, chunked by order_id.
-    // A blanket `select('*')` across webstore_order_items silently truncates at the
-    // PostgREST 1000-row cap once the table grows, dropping newer stores' lines and
-    // showing every order as "0 items" (matches the chunked pattern used elsewhere).
-    const _oidArr = [...new Set((ordRes.data || []).map((o) => o.id))];
-    const _itemRows = [];
-    for (let ii = 0; ii < _oidArr.length; ii += 300) {
-      const { data: chunk } = await supabase.from('webstore_order_items').select('*').in('order_id', _oidArr.slice(ii, ii + 300));
-      if (chunk) _itemRows.push(...chunk);
-    }
+    // Order items are fetched SCOPED to this store's orders, chunked AND paged
+    // (see fetchOrderItemRows) — a blanket `select('*')` truncated at the PostgREST
+    // 1000-row cap, and so did any single 300-order chunk of multi-item orders.
+    const { rows: _itemRows } = await fetchOrderItemRows(supabase, (ordRes.data || []).map((o) => o.id));
     const itemRes = { data: _itemRows };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
@@ -1535,11 +1568,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      const items = await loadFlyerItems(store);
-      let attachment;
-      try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
-      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
-      flash('Launched — family flyer emailed' + (attachment ? ' with PDF attachment' : '') + '.');
+      const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
+      // Surface a failed send — this used to ignore the result and claim the email
+      // went out even when it never reached Brevo.
+      if (r && r.error) flash('Launched — but the coach email FAILED: ' + r.error);
+      else flash('Launched — family flyer emailed' + (r.attached ? ' with PDF attachment' : '') + '.');
     } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
   }, [coachPortalUrl, flash]);
 
@@ -1908,6 +1941,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
+
+  // Change close date from the list row dropdown, without opening the full store editor.
+  // Extending an already-closed store into the future reopens it (and clears the sweep's
+  // idempotency stamp so the next close still notifies the rep/CSR).
+  const changeCloseDate = useCallback(async (store, newDate) => {
+    const patch = { close_at: newDate || null, updated_at: new Date().toISOString() };
+    if (store.status === 'closed' && (!newDate || new Date(newDate + 'T23:59:59') > new Date())) {
+      if (!window.confirm(`"${store.name}" is closed. ${newDate ? 'Setting a future close date' : 'Removing the close date'} will reopen it and start taking orders again. Continue?`)) return;
+      patch.status = 'open';
+      patch.closed_notified_at = null;
+    }
+    const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
+    if (error) { flash('Could not update close date: ' + error.message); return; }
+    setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
+    if (sel?.id === store.id) setSel(data);
+    flash(newDate ? 'Close date updated' : 'Close date cleared — store stays open');
+  }, [sel, flash]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
@@ -3076,12 +3126,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const open = (freshOrders || []).filter(isLiveWebstoreOrder);
     if (!open.length) { flash('No unbatched orders to send'); return; }
     const openIds = new Set(open.map((o) => o.id));
-    const openItems = [];
-    for (let ii = 0, oidArr = [...openIds]; ii < oidArr.length; ii += 300) {
-      const { data: chunk, error: fiErr } = await supabase.from('webstore_order_items').select('*').in('order_id', oidArr.slice(ii, ii + 300));
-      if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
-      openItems.push(...(chunk || []));
-    }
+    const { rows: openItems, error: fiErr } = await fetchOrderItemRows(supabase, [...openIds]);
+    if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
     const lines = annotateEffSkus(openItems.filter((i) => !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
@@ -3594,7 +3640,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -4051,7 +4097,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -4060,6 +4106,9 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
   const [copiedId, setCopiedId] = useState(null);
+  // Inline close-date editor in the expanded row (id of the store being edited + draft value).
+  const [editCloseId, setEditCloseId] = useState(null);
+  const [closeDraft, setCloseDraft] = useState('');
   // Live-inventory panel (Reporting view): per-store stock for every item.
   const [invStoreId, setInvStoreId] = useState('');
   const [invItems, setInvItems] = useState([]);
@@ -4426,7 +4475,17 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
+                                  {onChangeCloseDate && editCloseId !== s.id && (
+                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); }}>Change Close Date</button>
+                                  )}
                                 </div>
+                                {onChangeCloseDate && editCloseId === s.id && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                                    <input className="form-input" type="date" value={closeDraft} onChange={(e) => setCloseDraft(e.target.value)} style={{ width: 160, padding: '6px 8px', fontSize: 13 }} autoFocus />
+                                    <button className="btn btn-sm btn-primary" onClick={() => { onChangeCloseDate(s, closeDraft); setEditCloseId(null); }}>Save</button>
+                                    <button className="btn btn-sm btn-secondary" onClick={() => setEditCloseId(null)}>Cancel</button>
+                                  </div>
+                                )}
                               </div>
                               {/* Col 3: Store Setup */}
                               <div>
@@ -4777,8 +4836,15 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
+// New stores default to closing on the third Sunday from today (midnight): orders are
+// processed Monday mornings, so a store built today runs ~3 weekends and lands on that cycle.
+const defaultCloseDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + (((7 - d.getDay()) % 7) || 7) + 14); // next Sunday (strictly ahead), then +2 weeks
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
@@ -7155,7 +7221,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _stk = stockByWp[item.id] || {};
   const _rawQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
   const _rawSoon = (sz) => sizeEtaSoon(_stk.vendor_size_eta, sz);
-  const _scaleSizes = foldScale(availableSizes);
+  // Falls back to the sizes implied by stock when the catalog row's available_sizes is
+  // empty (see scaleOf) — otherwise the Sizes tab opened with NO chips for the ~1,100
+  // empty-scale styles, and reps hand-typed sizes to fill the gap (which is where the
+  // stray "OSFA"/"XS" sizes_offered values on live stores came from).
+  const _scaleSizes = scaleOf(availableSizes, _stk.size_stock, _stk.vendor_size_stock, _stk.vendor_size_eta);
   const _sizeQty = (sz) => foldedQty(sz, _rawQty);
   const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || foldedSoon(sz, _rawSoon));
   const allSizes = _sellableSizes.length ? _sellableSizes : _scaleSizes;
@@ -12535,13 +12605,8 @@ function StoreBackordersView({ store, onOpenSO }) {
         ]);
         if (ordsRes.error) throw ordsRes.error;
         const live = (ordsRes.data || []).filter(isLiveWebstoreOrder);
-        const oIds = live.map((o) => o.id);
-        const chunks = [];
-        for (let i = 0; i < oIds.length; i += 300) chunks.push(oIds.slice(i, i + 300));
-        const itemRes = await Promise.all(chunks.map((c) => supabase.from('webstore_order_items').select('*').in('order_id', c)));
-        const failed = itemRes.find((r) => r.error);
-        if (failed) throw failed.error;
-        const items = itemRes.flatMap((r) => r.data || []);
+        const { rows: items, error: fiErr } = await fetchOrderItemRows(supabase, live.map((o) => o.id));
+        if (fiErr) throw fiErr;
         if (!dead) setData({ stores, sos, orders: live, items });
       } catch (e) { if (!dead) { setErr(e.message || 'Load failed'); setData({ stores: [], sos: [], orders: [], items: [] }); } }
     })();

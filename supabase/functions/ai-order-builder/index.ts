@@ -380,7 +380,7 @@ serve(async (req: Request) => {
     };
     const anthropicBody = JSON.stringify({
       model: MODEL,
-      max_tokens: 4096,
+      max_tokens: 16384,
       system: systemBlocks,
       messages: [{ role: "user", content: userContent }],
     });
@@ -434,6 +434,16 @@ serve(async (req: Request) => {
 
     const claudeJson = await anthropicRes.json();
     const usage = claudeJson?.usage || {};
+    if (claudeJson?.stop_reason === "max_tokens") {
+      if (admin && auditId) {
+        await admin.from("ai_order_builds").update({
+          raw_response: claudeJson,
+          error: "Output truncated at max_tokens",
+          duration_ms: Date.now() - t0,
+        }).eq("id", auditId);
+      }
+      return new Response(JSON.stringify({ ok: false, error: "This order is too large to parse in one pass — try splitting it into two smaller pastes." }), { status: 200, headers: CORS });
+    }
     const textOut: string = (claudeJson?.content || [])
       .filter((b: any) => b.type === "text")
       .map((b: any) => b.text)

@@ -38,7 +38,11 @@ COLUMN_ALIASES = {
                          "customer:internal id"],
     "customer_name":    ["customer", "customer name", "name"],
     "item":             ["item", "item name", "item: name"],
-    "description":      ["description", "memo (main)", "item description"],
+    # No "memo (main)" here: that column IS the header memo, and listing it as a
+    # description alias let description claim it on the exact-match pass —
+    # leaving header_memo unmapped. NetSuite's "Item : Description" is caught by
+    # the plain "description" alias on the word-boundary pass.
+    "description":      ["description", "item description"],
     "quantity":         ["quantity", "qty"],
     "rate":             ["item rate", "unit price", "rate", "price"],
     "amount":           ["amount", "line amount", "total"],

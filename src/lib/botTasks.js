@@ -113,6 +113,64 @@ export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, item
   };
 }
 
+// Where a queued batch actually ships, in the shape the vendor order modals take
+// ({companyName, attentionTo, address1, address2, city, region, postalCode}).
+//
+// Same precedence as the bot-cart flow above, so the API path and the bot path can
+// never disagree about a destination: a line's write-in address wins, then the
+// decorator the batch is bound to, then the drop-ship program address, else null
+// (the modal's own NSA-warehouse default).
+//
+// `mixed` flags a batch whose lines belong at DIFFERENT addresses — an API order
+// carries one ship-to, so everything would land at whichever address is returned.
+// `unresolved` flags a batch that IS bound elsewhere but has no address on file, so
+// it would quietly fall back to the NSA dock. Callers must surface both; neither is
+// safe to resolve silently.
+export function resolveBatchDestination({ batches, decoId = null, allOrders = [], customers = [], decoVendors = [], vendors = [] }) {
+  const lines = batchesToLines(batches);
+  const keyOf = (l) => {
+    if (l.ship_to && (l.ship_to.line1 || l.ship_to.city)) return 'writein:' + JSON.stringify(l.ship_to);
+    if (l.ship_to_deco_id) return 'deco:' + l.ship_to_deco_id;
+    if (l.drop_ship) return 'so:' + (l.so_id || '');
+    return 'nsa';
+  };
+  const keys = [...new Set(lines.map(keyOf))];
+  // Prefer a real destination over the warehouse default when the batch has one.
+  const lead = lines.find(l => keyOf(l) !== 'nsa') || null;
+  const result = { shipTo: null, mixed: keys.length > 1, destinationCount: keys.length, unresolved: false };
+  if (!lead) return result;
+
+  // {name, attention, line1, line2, city, state, zip} → vendor modal shape.
+  const toModalShape = (a) => (a && (a.line1 || a.city) ? {
+    companyName: a.name || '',
+    attentionTo: a.attention || '',
+    address1: a.line1 || '',
+    address2: a.line2 || '',
+    city: a.city || '',
+    region: a.state || '',
+    postalCode: a.zip || '',
+    country: 'US',
+  } : null);
+
+  const writeIn = lead.ship_to && (lead.ship_to.line1 || lead.ship_to.city) ? lead.ship_to : null;
+  if (writeIn) {
+    result.shipTo = toModalShape({ ...writeIn, attention: lead.attention || writeIn.attention || '' });
+    return result;
+  }
+  const dId = lead.ship_to_deco_id || decoId;
+  if (dId) {
+    const so = (allOrders || []).find(s => s.id === lead.so_id) || null;
+    const itemIdxs = lines.map(l => l.item_idx).filter(ix => ix != null);
+    result.shipTo = toModalShape(resolveDecoShipToClient({ decoId: dId, so, decoVendors, vendors, itemIdxs }));
+    result.unresolved = !result.shipTo;
+    return result;
+  }
+  result.shipTo = toModalShape(resolveShipToClient(lead.so_id, allOrders, customers));
+  if (result.shipTo && lead.attention) result.shipTo.attentionTo = lead.attention;
+  result.unresolved = !result.shipTo;
+  return result;
+}
+
 // Build the title/description/bot_payload for an "add all items to the vendor
 // cart" task from a ready batch. The caller hands the result to onAssignTodo,
 // which opens the standard Assign Task modal pre-filled for the Claude bot.

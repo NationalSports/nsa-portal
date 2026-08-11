@@ -182,17 +182,21 @@ export const shippedSizesByLine = (shipments) => {
 // share a size, jobs earlier in the list claim shipped units first (mirroring
 // allocateJobFulfillment / the released-heal's sibBefore apportioning). Whole-line items
 // keep the full-line count, matching the pre-split behavior.
-export const jobShippedUnits = (job, allJobs, shippedSizes) => {
+// Resolved per size and per job-item (keyed by the job's items[] index) so the warehouse's
+// per-job Ready-to-Ship rows can subtract exactly what shipped for THAT job's garments.
+// jobShippedUnits is the sum of this map — one apportioning rule, no second copy to sync.
+export const jobShippedSizes = (job, allJobs, shippedSizes) => {
   const jobs = safeArr(allJobs);
   const jobIdx = jobs.findIndex(j2 => j2 && job && j2.id === job.id);
   const before = jobIdx > 0 ? jobs.slice(0, jobIdx) : [];
-  let total = 0;
-  safeArr(job?.items).forEach(gi => {
+  const out = {};
+  safeArr(job?.items).forEach((gi, gidx) => {
     if (!gi) return;
     const shipped = (shippedSizes || {})[(gi.sku || '') + '|' + (gi.color || '')];
     if (!shipped) return;
+    const row = out[gidx] || (out[gidx] = {});
     const share = gi.split_group && gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : null;
-    if (!share) { total += Object.values(shipped).reduce((a, v) => a + safeNum(v), 0); return; }
+    if (!share) { Object.entries(shipped).forEach(([sz, v]) => { row[sz] = (row[sz] || 0) + safeNum(v); }); return; }
     Object.entries(share).forEach(([sz, want]) => {
       const w = safeNum(want);
       if (w <= 0) return;
@@ -200,11 +204,14 @@ export const jobShippedUnits = (job, allJobs, shippedSizes) => {
       before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
         if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
       }));
-      total += Math.max(0, Math.min(w, avail));
+      row[sz] = (row[sz] || 0) + Math.max(0, Math.min(w, avail));
     });
   });
-  return total;
+  return out;
 };
+export const jobShippedUnits = (job, allJobs, shippedSizes) =>
+  Object.values(jobShippedSizes(job, allJobs, shippedSizes))
+    .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
 
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
@@ -473,6 +480,11 @@ export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.t
 export const missingMockupsMsg = (action, missing) =>
   'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. A sew-out proof isn\'t enough: reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
 
+// Companion message for the reversible color-way gate (skusMissingRevColorWays) — enforced
+// at the same rep surfaces as the mock gate (Approve Artwork / Send to Coach / openCoachSend).
+export const missingRevColorWaysMsg = (action, missing) =>
+  'Cannot ' + action + ' — reversible color ways not set for: ' + missing.join(', ') + '. Define both color ways on the art file, then pick Side A and Side B on the decoration — the decorator needs the reverse side\'s inks (not just the mockup).';
+
 // ── Colorway image bridging (Momentec & other big-catalog API vendors) ──
 // The Momentec catalog (vendor v8) is excluded from the capped in-memory `prod`, and its
 // order lines are usually saved at STYLE level — sku '705A', product_id null, color as
@@ -724,6 +736,43 @@ export const skusMissingMockups = (job, so) => {
     // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
     // so approval screens still show what exists — it just can't pass the gate.
     if (mSku) missing.push(mSku);
+  });
+  return missing;
+};
+
+// Reversible art decorations must have BOTH ink color ways picked (Side A + Side B)
+// before a proof is approved or sent. Mockups alone don't tell the decorator the
+// reverse side's inks — on SO-1469 the white-side colors existed only inside the
+// mockup JPGs and the decorator had to email asking for them. Same job/deco scoping
+// as skusMissingMockups; returns ['506CR (Side A CW, Side B CW)'] style entries.
+// DTF art is exempt (full-color print — ColorWaysEditor doesn't require CWs there).
+export const skusMissingRevColorWays = (job, so) => {
+  const items = safeArr(job?.items);
+  if (items.length === 0) return [];
+  const allArt = safeArt(so);
+  const soItems = safeItems(so);
+  const jobArtIds = jobArtFileIds(job, soItems);
+  const missing = [];
+  items.forEach(gi => {
+    const it = soItems[gi?.item_idx];
+    if (!it) return;
+    const dis = jobItemDecoIdxs(gi);
+    const mSku = it?.sku || gi?.sku || '';
+    if (!mSku) return;
+    const probs = [];
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
+      if (!d || d.kind !== 'art' || !d.reversible) return;
+      if (!d.art_file_id || d.art_file_id === '__tbd' || !jobArtIds.has(d.art_file_id)) return;
+      const af = allArt.find(a => a?.id === d.art_file_id);
+      if ((af?.deco_type || d.type) === 'dtf') return;
+      const cws = safeArr(af?.color_ways);
+      if (cws.length < 2) { probs.push((af?.name ? '"' + af.name + '"' : 'art file') + ' needs 2 color ways'); return; }
+      // A picked id must resolve to a live color way — a deleted CW leaves a dangling id.
+      if (!(d.color_way_id && cws.some(c => c?.id === d.color_way_id))) probs.push('Side A CW');
+      if (!(d.color_way_id_b && cws.some(c => c?.id === d.color_way_id_b))) probs.push('Side B CW');
+    });
+    if (probs.length > 0) missing.push(mSku + ' (' + [...new Set(probs)].join(', ') + ')');
   });
   return missing;
 };

@@ -60,6 +60,28 @@ COLUMN_ALIASES = {
     "memo":                 ["memo", "notes"],
 }
 
+# customer_invoices column -> the canonical field it is sourced from. Used to
+# decide which columns an ON CONFLICT re-import is allowed to overwrite: a
+# column whose source field never matched a header in this export carries NULL,
+# and writing that NULL over existing data loses it.
+COLUMN_SOURCE = {
+    "id":                   "netsuite_internal_id",
+    "customer_id":          "customer_nsid",
+    "raw_customer_nsid":    "customer_nsid",
+    "raw_customer_name":    "customer_name",
+    "netsuite_internal_id": "netsuite_internal_id",
+    "document_number":      "document_number",
+    "invoice_date":         "date",
+    "type":                 "type",
+    "status":               "status",
+    "subsidiary":           "subsidiary",
+    "rep_name":             "rep_name",
+    "subtotal":             "subtotal",
+    "tax":                  "tax",
+    "total":                "total",
+    "memo":                 "memo",
+}
+
 
 def _row_cells(row):
     out, idx = {}, 0
@@ -72,20 +94,27 @@ def _row_cells(row):
 
 
 def _dedupe_headers(raw_headers):
-    """Resolve duplicate column names. NetSuite exports ship TWO columns both
-    named 'Internal ID' — the first is the transaction's, the second is the
-    customer's. We rename the second one so downstream mapping can tell them
-    apart without guessing."""
+    """Resolve duplicate column names. NetSuite exports ship MULTIPLE columns
+    named 'Internal ID': the transaction's id (sometimes repeated verbatim) and
+    the customer's. The customer one is always last — rename only that one to
+    'Customer Internal ID' and disambiguate the rest, so a repeated transaction
+    id column can't collide with the customer id and win the lookup."""
+    cleaned = [h.strip() for h in raw_headers]
+    n_iid = sum(1 for h in cleaned if h.lower() == "internal id")
+    last_iid = max(
+        (i for i, h in enumerate(cleaned) if h.lower() == "internal id"),
+        default=-1,
+    )
     seen = {}
     out = []
-    for h in raw_headers:
-        key = h.strip()
+    for i, h in enumerate(cleaned):
+        key = h
+        if i == last_iid and n_iid > 1:
+            out.append("Customer Internal ID")
+            continue
         if key in seen:
             seen[key] += 1
-            if key.lower() == "internal id":
-                out.append("Customer Internal ID")
-            else:
-                out.append(f"{key} ({seen[key]})")
+            out.append(f"{key} ({seen[key]})")
         else:
             seen[key] = 1
             out.append(key)
@@ -124,28 +153,32 @@ def load_csv(path: Path):
 def auto_map(headers):
     """Pick the best header for each canonical field.
 
-    Two-pass: first claim headers with the most specific alias matches (longer
-    alias string = more specific), then fall back to generic ones. A header
-    can only be claimed by one field."""
+    Three passes — exact match wins over word-boundary which wins over
+    substring. Without this, 'Order Type' would steal the 'type' alias from
+    the real 'Type' column (and, being blank in NetSuite invoice exports,
+    would silently type every credit memo as an invoice)."""
     lowered = [(h, h.lower().strip()) for h in headers]
     claimed: set[str] = set()
     mapping: dict[str, str] = {}
-    # Build (field, alias, specificity) candidates, sorted by specificity desc.
-    candidates = []
-    for field, aliases in COLUMN_ALIASES.items():
-        for a in aliases:
-            candidates.append((field, a, len(a)))
-    candidates.sort(key=lambda x: -x[2])
-    for field, alias, _ in candidates:
-        if field in mapping:
-            continue
-        for orig, low in lowered:
-            if orig in claimed:
+
+    def try_match(predicate):
+        for field, aliases in COLUMN_ALIASES.items():
+            if field in mapping:
                 continue
-            if alias in low:
-                mapping[field] = orig
-                claimed.add(orig)
-                break
+            for alias in aliases:
+                for orig, low in lowered:
+                    if orig in claimed:
+                        continue
+                    if predicate(alias, low):
+                        mapping[field] = orig
+                        claimed.add(orig)
+                        break
+                if field in mapping:
+                    break
+
+    try_match(lambda a, h: h == a)
+    try_match(lambda a, h: f" {a} " in f" {h} " or h.startswith(a + " ") or h.endswith(" " + a))
+    try_match(lambda a, h: a in h)
     return mapping
 
 
@@ -291,7 +324,21 @@ def main():
         value_rows.append("(" + ", ".join(vals) + ")")
     lines.append(",\n".join(value_rows))
     lines.append("ON CONFLICT (netsuite_internal_id) DO UPDATE SET")
-    update_cols = [c for c in cols if c not in ("id", "netsuite_internal_id")]
+    # Only overwrite columns this export actually supplies. A saved search that
+    # omits, say, "Sales Rep" must not blank out rep_name on 8k existing rows —
+    # EXCLUDED holds NULL for every unmapped column, so listing them here is a
+    # silent data-wipe on re-import. customer_id is never updated either: it is
+    # always NULL at insert time and is populated by the post-load join below,
+    # which would otherwise drop any manual customer link.
+    never_update = {"id", "netsuite_internal_id", "customer_id"}
+    update_cols = [
+        c for c in cols
+        if c not in never_update and COLUMN_SOURCE[c] in mapping
+    ]
+    dropped = [
+        c for c in cols
+        if c not in never_update and COLUMN_SOURCE[c] not in mapping
+    ]
     lines.append(
         ",\n  ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
     )
@@ -321,6 +368,9 @@ WHERE ci.customer_id IS NULL
         if n:
             print(f"  - {reason}: {n}")
     print(f"wrote:    {args.out_sql}")
+    if dropped:
+        print(f"note:     export has no column for {', '.join(dropped)} — "
+              f"re-import leaves those columns untouched on existing rows")
     print(f"mapping:  {json.dumps(mapping, indent=2)}")
 
 

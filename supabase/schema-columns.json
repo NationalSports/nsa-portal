@@ -406,6 +406,7 @@
    "webstore_id"
   ],
   "messages": [
+   "attachments",
    "author",
    "author_id",
    "created_at",

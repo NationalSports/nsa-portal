@@ -34,12 +34,26 @@ export function countJobsByArtId(existingJobs) {
 /**
  * Build lookup maps for syncJobs.
  * `existingByArtId` only indexes art ids owned by exactly one non-split job.
+ *
+ * `preservedIds` — ids of jobs the caller is preserving verbatim this pass
+ * (released/merged snapshots). Those jobs are excluded from BOTH lookups: a
+ * rebuilt job necessarily covers decorations the frozen job does NOT claim, so
+ * matching one would hand the frozen job's id to the rebuilt job and the final
+ * dedupe-by-id would silently drop the preserved snapshot — approval history,
+ * coach send, and the frozen garment claims with it (SO-1664: a qty edit added
+ * a line sharing a merged job's logo; the one-line rebuild stole JOB-1664-01
+ * via the art-id fallback and every garment got shot back to Waiting Approval).
+ * A released job that RETIRED this pass (dead claims / all outsourced) is not
+ * in `preservedIds`, so its rebuilt successor still inherits workflow state.
  */
-export function buildExistingJobLookups(existingJobs) {
+export function buildExistingJobLookups(existingJobs, preservedIds) {
+  const pool = (existingJobs || []).filter(
+    (j) => j && !(preservedIds && j.id && preservedIds.has(j.id)),
+  );
   const existingJobMap = {};
   const existingByArtId = {};
-  const artIdCounts = countJobsByArtId(existingJobs);
-  (existingJobs || []).forEach((j) => {
+  const artIdCounts = countJobsByArtId(pool);
+  pool.forEach((j) => {
     if (!j || j.split_from) return;
     existingJobMap[j.key || j.id] = j;
     const ids = j._art_ids || [j.art_file_id].filter(Boolean);
