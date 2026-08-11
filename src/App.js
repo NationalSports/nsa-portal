@@ -35277,7 +35277,7 @@ export default function App(){
   // (unit_sell = cost/(1-margin)) or the default markup, or retail when no cost is on file.
   // Shared by add-to-open-estimate and start-estimate-from-words so the pricing stays identical.
   function _assistantLine(p,margin_pct,markup){
-    const nsa=Number(p.nsa_cost)||0;
+    const nsa=p.is_clearance&&p.clearance_cost!=null?(Number(p.clearance_cost)||0):(Number(p.nsa_cost)||0);// clearance rep cost, same as the editor's add paths
     const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
     let unit_sell,applied=false;
     if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
@@ -35285,7 +35285,7 @@ export default function App(){
     else{unit_sell=Number(p.retail_price)||0;}
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
-    return {line:{product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true},applied,noCost:(m!=null&&nsa<=0)};
+    return {line:{product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false},applied,noCost:(m!=null&&nsa<=0)};
   }
   // Start a NEW draft estimate for a customer, optionally pre-filled with resolved items. Builds
   // the whole draft at once (no window-event timing) and opens it unsaved for review — mirrors
@@ -35323,7 +35323,7 @@ export default function App(){
     try{const res=await _searchProductsServer(desc,{},0,5);products=(res&&res.products)||[];}catch(e){products=[];}
     if(!products.length)return {error:'not_found',description:desc};
     const p=products[0];
-    const nsa=Number(p.nsa_cost)||0;
+    const nsa=p.is_clearance&&p.clearance_cost!=null?(Number(p.clearance_cost)||0):(Number(p.nsa_cost)||0);// clearance rep cost, same as the editor's add paths
     const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
     let unit_sell,applied=false;
     if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
@@ -35331,7 +35331,7 @@ export default function App(){
     else{unit_sell=Number(p.retail_price)||0;}
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
-    const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true};
+    const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false};
     window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
     return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
   }
