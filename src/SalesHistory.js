@@ -196,7 +196,9 @@ export default function SalesHistory() {
             <select className="form-select" value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="all">All</option>
               <option value="open">Open</option>
-              <option value="paid">Paid</option>
+              {/* NetSuite stores this as "Paid In Full", so the filter needs
+                  the wildcard the other exact-match statuses don't. */}
+              <option value="paid%">Paid</option>
               <option value="closed">Closed</option>
               <option value="billed">Billed</option>
               <option value="pending%">Pending</option>
