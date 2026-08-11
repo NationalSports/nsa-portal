@@ -60,6 +60,28 @@ COLUMN_ALIASES = {
     "memo":                 ["memo", "notes"],
 }
 
+# customer_invoices column -> the canonical field it is sourced from. Used to
+# decide which columns an ON CONFLICT re-import is allowed to overwrite: a
+# column whose source field never matched a header in this export carries NULL,
+# and writing that NULL over existing data loses it.
+COLUMN_SOURCE = {
+    "id":                   "netsuite_internal_id",
+    "customer_id":          "customer_nsid",
+    "raw_customer_nsid":    "customer_nsid",
+    "raw_customer_name":    "customer_name",
+    "netsuite_internal_id": "netsuite_internal_id",
+    "document_number":      "document_number",
+    "invoice_date":         "date",
+    "type":                 "type",
+    "status":               "status",
+    "subsidiary":           "subsidiary",
+    "rep_name":             "rep_name",
+    "subtotal":             "subtotal",
+    "tax":                  "tax",
+    "total":                "total",
+    "memo":                 "memo",
+}
+
 
 def _row_cells(row):
     out, idx = {}, 0
@@ -302,7 +324,21 @@ def main():
         value_rows.append("(" + ", ".join(vals) + ")")
     lines.append(",\n".join(value_rows))
     lines.append("ON CONFLICT (netsuite_internal_id) DO UPDATE SET")
-    update_cols = [c for c in cols if c not in ("id", "netsuite_internal_id")]
+    # Only overwrite columns this export actually supplies. A saved search that
+    # omits, say, "Sales Rep" must not blank out rep_name on 8k existing rows —
+    # EXCLUDED holds NULL for every unmapped column, so listing them here is a
+    # silent data-wipe on re-import. customer_id is never updated either: it is
+    # always NULL at insert time and is populated by the post-load join below,
+    # which would otherwise drop any manual customer link.
+    never_update = {"id", "netsuite_internal_id", "customer_id"}
+    update_cols = [
+        c for c in cols
+        if c not in never_update and COLUMN_SOURCE[c] in mapping
+    ]
+    dropped = [
+        c for c in cols
+        if c not in never_update and COLUMN_SOURCE[c] not in mapping
+    ]
     lines.append(
         ",\n  ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
     )
@@ -332,6 +368,9 @@ WHERE ci.customer_id IS NULL
         if n:
             print(f"  - {reason}: {n}")
     print(f"wrote:    {args.out_sql}")
+    if dropped:
+        print(f"note:     export has no column for {', '.join(dropped)} — "
+              f"re-import leaves those columns untouched on existing rows")
     print(f"mapping:  {json.dumps(mapping, indent=2)}")
 
 
