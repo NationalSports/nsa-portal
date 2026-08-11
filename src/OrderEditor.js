@@ -27,6 +27,7 @@ import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
@@ -184,18 +185,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       nf('This job still has Art TBD — assign real artwork before approving it','error');return;
     }
     if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
-    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,coach_rejected:false,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
-    const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
-    const updated={...curO,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
+    const updated=approveArtOnSO({...curO,jobs:safeJobs(curO),art_files:safeArt(curO)},{match:jj=>jj.id===jobId,artIds,targetStatus,stampProd,updatedAt:new Date().toLocaleString()});
     setArtRevisionNote('');
     await saveSONow(updated,'Art approval','✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
   };
-  // Every path that pulls art back for rework (Recall or an Update request) must clear the same
-  // approval residue — one shared list so the call sites can't drift apart. Stale coach flags
-  // produce phantom todos/"Sent to Customer" badges; a stale follow_up_at keeps nagging the coach.
-  // _coach_cleared marks the nulls as DELIBERATE for dbEngine's coach-decision guard (audit A9) —
-  // without it a save nulling a non-null coach column is treated as stale and the DB value is kept.
-  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false,_coach_cleared:true};
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
   // redrawn — put them on hold along with the job being acted on. Any decorator clock on a
@@ -255,13 +248,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // share ONE implementation instead of two hand-synced copies.
   const _sendArtBackToArtist=(ji,reason)=>{
     const j=safeJobs(o)[ji];if(!j)return;
-    const _revAt=new Date().toISOString();
-    const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
     const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
     const _revFamIdx=new Set(_artFamilyIdxs(ji));
-    const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
-    const updArt2=safeArt(o).map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
-    saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
+    const updated=sendArtBackOnSO({...o,jobs:safeJobs(o),art_files:safeArt(o)},{match:(jj,i2)=>_revFamIdx.has(i2),artIds:_revArtIds,reason,by:cu.name,updatedAt:new Date().toLocaleString()});
+    saveSONow(updated,'Revision request','Art sent back to artist for revision');
   };
   // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
   // convention where gi.sizes carries only that job's subset of the SO item's sizes.

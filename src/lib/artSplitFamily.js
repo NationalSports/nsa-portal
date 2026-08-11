@@ -99,3 +99,22 @@ export function artFamilyIds(job) {
   const ids = (job && Array.isArray(job._famIds) && job._famIds.length) ? job._famIds : [job && job.id];
   return ids.filter(Boolean);
 }
+
+/**
+ * Same answer for a caller holding a RAW job list — one that never went through
+ * consolidateArtFamilies, so no `_famIds` marker exists to read. The dashboard's inline art
+ * actions work straight off buildJobs(so) for one order; passing that list here gets the split
+ * family without making the caller consolidate a board it isn't rendering.
+ *
+ * Falls back to `[jobId]` when the job isn't in the list — a write that touches only the job it
+ * was aimed at is always safe; guessing wider is not.
+ */
+export function artFamilyIdsIn(jobs, jobId) {
+  const list = (jobs || []).filter(Boolean);
+  const self = list.find((j) => j.id === jobId);
+  if (!self) return jobId ? [jobId] : [];
+  const byId = new Map();
+  list.forEach((j) => { if (j.id) byId.set(_key(j.soId, j.id), j); });
+  const k = artFamilyKey(self, byId);
+  return list.filter((j) => artFamilyKey(j, byId) === k).map((j) => j.id).filter(Boolean);
+}

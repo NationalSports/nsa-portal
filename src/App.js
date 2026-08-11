@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -34,7 +34,8 @@ import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedA
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
-import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
+import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
+import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
@@ -5552,6 +5553,64 @@ export default function App(){
     window.addEventListener('keydown',onKey);
     return()=>window.removeEventListener('keydown',onKey);
   },[dashArtLb]);
+  // ─── Inline art decisions from the dashboard's "Art awaiting approval" panel ───
+  // Approve / Request changes without opening the order. Both write through the SAME shared
+  // transitions the order page uses (lib/artReview) — the dashboard contributes no new state
+  // rules, only the gates and the confirmation UI in front of them. {key,mode,note}: which row
+  // is mid-decision, 'confirm' (approve, awaiting the second click) or 'reject' (writing a reason).
+  const[dashArtAct,setDashArtAct]=useState(null);
+  const _dashArtReset=()=>setDashArtAct(null);
+  // Both handlers re-read the SO from `sos` rather than trusting the to-do's captured snapshot,
+  // and rebuild its jobs with buildJobs — the same read the art workboard does before writing.
+  // A to-do can sit on screen for a long time; writing back a stale snapshot is how edits made
+  // elsewhere in the meantime get clobbered.
+  const _dashArtJob=(t)=>{
+    const so=sos.find(s=>s.id===(t?.so?.id));
+    if(!so){nf('That order isn\'t loaded anymore — reload the page and try again','error');return null}
+    const jobs=buildJobs(so);const j=jobs.find(x=>x.id===t.jobId);
+    if(!j){nf('That job is no longer on '+so.id+' — reload the dashboard','error');return null}
+    // The bar is only ever drawn for a job parked at waiting_approval, but the row it sits on can
+    // go stale on screen — someone else approves it, or sends it back to the artist, while the
+    // panel is open. Deciding from that stale row would silently overrule them (a send-back would
+    // jump straight back to approved). Refuse instead; the list refreshes on its own.
+    if(j.art_status!=='waiting_approval'){nf('This artwork moved on since the dashboard loaded (now: '+(ART_LABELS[j.art_status]||j.art_status)+') — open the order to see where it stands','error');return null}
+    return{so,jobs,j};
+  };
+  const _dashArtApprove=(t)=>{
+    const ctx=_dashArtJob(t);if(!ctx)return;const{so,jobs,j}=ctx;
+    // Same gates as the order page's ✅ Approve Artwork, in the same order.
+    // Per-garment mockups first: a garment whose mock was orphaned (e.g. a stock-swap SKU
+    // change) ships unmocked if this passes (SO-1480). The bar is hidden on rows that fail it,
+    // so this is the belt-and-braces check for a row that went stale on screen.
+    const _mm=skusMissingMockups(j,so);
+    if(_mm.length>0){nf(missingMockupsMsg('approve',_mm),'error');_dashArtReset();return}
+    if(jobHasUnresolvedArt(j,so,{archivedIsUnresolved:true})){nf('This job still has Art TBD — assign real artwork before approving it','error');_dashArtReset();return}
+    if(j.coach_rejected){const _lr=(j.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return}
+    const artIds=jobLiveArtIds(j,so);
+    const afs=artIds.map(id=>safeArt(so).find(a=>a.id===id));
+    const{allConfirmed,targetStatus}=artApproveTarget(afs,afs.find(Boolean)?.deco_type||j.deco_type);
+    // Split slices share one artwork by construction — approve the whole family or a sibling
+    // stays stranded in an earlier column and the artist redoes work that's already done.
+    // (buildJobs output has no _famIds marker, so this resolves the family from the list.)
+    const _fam=artFamilyIdsIn(jobs,j.id);
+    savSO(approveArtOnSO({...so,jobs},{match:jj=>_fam.includes(jj.id),artIds,targetStatus,stampProd:allConfirmed}));
+    _dashArtReset();
+    nf(targetStatus==='art_complete'?'✅ Art approved — '+(j.art_name||j.id)+' is ready for production'
+      :targetStatus==='upload_emb_files'?'✅ Art approved — now upload the embroidery files (DST + PDF)'
+      :targetStatus==='order_dtf_transfers'?'✅ Art approved — now order the DTF transfer films'
+      :'✅ Art approved — the artist still owes production separations');
+  };
+  const _dashArtSendBack=(t,reason)=>{
+    const _r=(reason||'').trim();if(!_r)return;
+    const ctx=_dashArtJob(t);if(!ctx)return;const{so,jobs,j}=ctx;
+    // Every location of the design goes back, not just the primary art_file_id — a second
+    // location left at 'approved' drags the job's derived status around (SO-1625).
+    const artIds=jobLiveArtIds(j,so);
+    const _fam=artFamilyIdsIn(jobs,j.id);
+    savSO(sendArtBackOnSO({...so,jobs},{match:jj=>_fam.includes(jj.id),artIds,reason:_r,by:cu?.name||'Rep'}));
+    _dashArtReset();
+    nf('🔄 Sent back to the artist — '+(j.art_name||j.id));
+  };
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
@@ -8749,15 +8808,26 @@ export default function App(){
               const _sub=[_acct?null:t.detail,t.date&&_fmtDueDate?_fmtDueDate(t.date):null].filter(Boolean).join(' · ')||t.detail;
               const _key=t.dismissKey||('row-'+i);
               // Inline art preview — the mocks render right here so the rep can eyeball a proof
-              // without leaving the dashboard. Scoped to the art to-dos (the set the 🎨 tile
-              // counts) because resolving mocks means walking the SO's jobs. Read-only: every
-              // state change (Approve / Send to Coach / Request changes) still lives behind the
-              // action button, in the order editor where its gates are.
+              // without leaving the dashboard, and decide on it right there. Scoped to the art
+              // to-dos (the set the 🎨 tile counts) because resolving mocks means walking the
+              // SO's jobs. Approve / Request changes write through lib/artReview — the same
+              // transitions the order page uses — behind the same gates (_dashArtApprove).
+              // Send to Coach is NOT here: it needs the contact picker and the email/SMS
+              // composer, so it stays on the order page behind the row's action button.
               const _job=_ART_TYPES.includes(t.type)&&t.so&&t.jobId?_jobOf(t):null;
               const _pv=_job?dashArtShots(_job,t.so):null;
               const _canPv=!!(_pv&&_pv.shots.length>0);
               const _pvOpen=_canPv&&dashArtRow===_key;
-              const _togglePv=()=>setDashArtRow(k=>k===_key?null:_key);
+              const _togglePv=()=>{_dashArtReset();setDashArtRow(k=>k===_key?null:_key)};
+              // Approve / Request-changes bar — shown only where the order page would also offer
+              // it: the job is parked at waiting_approval and every decorated SKU has a real
+              // garment mockup. The "set up the mockup" rows deliberately get no decision bar
+              // (SO-1727 — there is no proof to approve yet), and neither does a row falling back
+              // to raw design art (_pv.hasMock false), which must never read as sign-off (SO-1661).
+              const _canDecide=!!(_job&&_job.art_status==='waiting_approval'&&_canPv&&_pv.hasMock&&skusMissingMockups(_job,t.so).length===0);
+              const _decArt=_canDecide?jobLiveArtIds(_job,t.so).map(id=>safeArt(t.so).find(a=>a.id===id)):null;
+              const _apTgt=_canDecide?artApproveTarget(_decArt,_decArt.find(Boolean)?.deco_type||_job.deco_type):null;
+              const _decAct=_canDecide&&dashArtAct&&dashArtAct.key===_key?dashArtAct:null;
               // A previewable row opens its art on click; the action button still opens the order.
               const _rowAct=()=>_canPv?_togglePv():_openDashPriority(t);
               const _deco=String(_job?.deco_type||_pv?.artFiles[0]?.deco_type||'').replace(/_/g,' ');
@@ -8791,6 +8861,31 @@ export default function App(){
                     {_pv.garments.slice(0,6).map((g,gi)=><span className="dash2x-chip soft" key={gi}>{[g.sku,g.color].filter(Boolean).join(' · ')}{g.qty?' ×'+g.qty:''}</span>)}
                     {_pv.garments.length>6&&<span className="dash2x-chip soft">+{_pv.garments.length-6} more</span>}
                   </div>
+                  {_canDecide&&<div className="dash2x-decide" onClick={e=>e.stopPropagation()}>
+                    {_job.sent_to_coach_at&&<div className="dash2x-decide-note">📤 With the coach since {new Date(_job.sent_to_coach_at).toLocaleDateString()} — approving here records the decision without waiting for their portal reply.</div>}
+                    {!_decAct&&<div className="dash2x-decide-row">
+                      <button className="dash2x-ok" onClick={()=>setDashArtAct({key:_key,mode:'confirm',note:''})}>✅ Approve art</button>
+                      <button className="dash2x-no" onClick={()=>setDashArtAct({key:_key,mode:'reject',note:''})}>🔄 Request changes</button>
+                      <span className="dash2x-decide-hint">{_apTgt.allConfirmed?'Approving marks it ready for production.'
+                        :_apTgt.targetStatus==='upload_emb_files'?'Approving moves it to the embroidery files step (DST + PDF).'
+                        :_apTgt.targetStatus==='order_dtf_transfers'?'Approving moves it to the DTF films step.'
+                        :'Approving moves it to production separations — the artist still owes those.'}</span>
+                    </div>}
+                    {_decAct&&_decAct.mode==='confirm'&&<div className="dash2x-decide-row">
+                      <strong className="dash2x-decide-ask">Approve this artwork{_job.sent_to_coach_at?' on the coach’s behalf':''}?</strong>
+                      <button className="dash2x-ok" onClick={()=>_dashArtApprove(t)}>Yes, approve</button>
+                      <button className="dash2x-cancel" onClick={_dashArtReset}>Cancel</button>
+                    </div>}
+                    {_decAct&&_decAct.mode==='reject'&&<div className="dash2x-decide-col">
+                      <textarea className="dash2x-note" rows={2} autoFocus placeholder="What needs to change? Colors, sizing, placement…" value={_decAct.note}
+                        onChange={e=>{const v=e.target.value;setDashArtAct(a=>(a&&a.key===_key)?{...a,note:v}:a)}}/>
+                      <div className="dash2x-decide-row">
+                        <button className="dash2x-no" disabled={!_decAct.note.trim()} onClick={()=>_dashArtSendBack(t,_decAct.note)}>Send back to artist</button>
+                        <button className="dash2x-cancel" onClick={_dashArtReset}>Cancel</button>
+                        <span className="dash2x-decide-hint">The artist sees this note, and it's logged on the job.</span>
+                      </div>
+                    </div>}
+                  </div>}
                   <div className="dash2x-drawer-foot">
                     <span>{t.detail}</span>
                     <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'} →</button>
