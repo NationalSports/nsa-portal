@@ -572,6 +572,19 @@ tbody tr { cursor: pointer; }
 .dash2-expand .dash2x-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .dash2-expand .dash2x-chip { font-size: 11.5px; font-weight: 600; color: #23262f; background: #fff; border: 1px solid #e2e5ee; border-radius: 999px; padding: 3px 10px; }
 .dash2-expand .dash2x-chip.soft { color: #64748b; background: #f6f7fa; border-color: #eceef4; }
+/* Row action menu (⋯) — Assign / Snooze / Dismiss */
+.dash2-expand .dash2x-actrow { display: flex; align-items: center; gap: 6px; }
+.dash2-expand .dash2x-more { width: 34px; padding: 8px 0; font-size: 14px; line-height: 1; font-weight: 700; border-radius: 9px; border: 1px solid #dfe3ec; background: #fff; color: #4b5162; cursor: pointer; flex-shrink: 0; }
+.dash2-expand .dash2x-more:hover, .dash2-expand .dash2x-more.is-on { background: #192853; color: #fff; border-color: #192853; }
+.dash2menu-scrim { position: fixed; inset: 0; z-index: 9998; }
+.dash2menu { position: fixed; z-index: 9999; min-width: 210px; padding: 6px; background: #fff; border: 1px solid #e2e5ee; border-radius: 11px; box-shadow: 0 12px 32px rgba(20, 22, 29, 0.18); }
+.dash2menu button { display: block; width: 100%; text-align: left; padding: 8px 11px; font: inherit; font-size: 13px; font-weight: 600; color: #23262f; background: none; border: none; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+.dash2menu button:hover { background: #f1f4fa; }
+.dash2menu button.danger { color: #962c32; }
+.dash2menu button.danger:hover { background: #fdf2f2; }
+.dash2menu-sep { margin: 5px 0; padding: 0 11px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #8b90a0; border-top: 1px solid #eef0f4; padding-top: 7px; }
+.dash2menu-sep:empty { padding: 0; margin: 5px 0 4px; }
+@media (max-width: 900px) { .dash2-expand .dash2x-actrow { justify-content: flex-start; } }
 /* Approve / Request-changes bar — only rendered on rows the order page would also let you decide */
 .dash2-expand .dash2x-decide { margin-top: 12px; padding: 11px 12px; border: 1px solid #e2e5ee; border-radius: 11px; background: #fbfcfe; }
 .dash2-expand .dash2x-decide-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }

@@ -5560,6 +5560,26 @@ export default function App(){
   // is mid-decision, 'confirm' (approve, awaiting the second click) or 'reject' (writing a reason).
   const[dashArtAct,setDashArtAct]=useState(null);
   const _dashArtReset=()=>setDashArtAct(null);
+  // Row action menu (⋯) on the expanded panel — Assign / Snooze / Dismiss, the same three the
+  // Activity Center offers, in one place instead of three buttons crowding the row. Positioned
+  // fixed from the button's rect: the panel body scrolls with overflow:auto, and an absolutely
+  // positioned menu on the last row would be clipped by it. {key,t,x,y,up} — `up` flips it above
+  // the button near the bottom of the window. Any scroll closes it rather than letting it detach.
+  const[dashRowMenu,setDashRowMenu]=useState(null);
+  const _openDashRowMenu=(e,key,t)=>{
+    const r=e.currentTarget.getBoundingClientRect();
+    const up=r.bottom+240>window.innerHeight;
+    setDashRowMenu(m=>m&&m.key===key?null:{key,t,x:r.right,y:up?r.top-6:r.bottom+6,up});
+  };
+  useEffect(()=>{
+    if(!dashRowMenu)return;
+    const close=()=>setDashRowMenu(null);
+    const onKey=e=>{if(e.key==='Escape')close()};
+    window.addEventListener('keydown',onKey);
+    window.addEventListener('scroll',close,true);
+    window.addEventListener('resize',close);
+    return()=>{window.removeEventListener('keydown',onKey);window.removeEventListener('scroll',close,true);window.removeEventListener('resize',close)};
+  },[dashRowMenu]);
   // Both handlers re-read the SO from `sos` rather than trusting the to-do's captured snapshot,
   // and rebuild its jobs with buildJobs — the same read the art workboard does before writing.
   // A to-do can sit on screen for a long time; writing back a stale snapshot is how edits made
@@ -8842,7 +8862,11 @@ export default function App(){
                   <span className="dash2x-ref">{_ref||'—'}</span>
                   <span className="dash2x-act">
                     {_canPv&&<button className="dash2x-pv" onClick={e=>{e.stopPropagation();_togglePv()}}>{_pvOpen?'Hide art ▴':(_pv.hasMock?'View mock ▾':'View art ▾')}</button>}
-                    <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button>
+                    <span className="dash2x-actrow">
+                      <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button>
+                      {t.dismissKey&&<button className={`dash2x-more ${dashRowMenu&&dashRowMenu.key===_key?'is-on':''}`} aria-label="More actions" aria-haspopup="menu" aria-expanded={!!(dashRowMenu&&dashRowMenu.key===_key)}
+                        onClick={e=>{e.stopPropagation();_openDashRowMenu(e,_key,t)}}>⋯</button>}
+                    </span>
                   </span>
                 </div>
                 {_pvOpen&&<div className="dash2x-drawer">
@@ -8907,6 +8931,25 @@ export default function App(){
               </div>})}
           </div>
         </div>})()}
+      {/* Row action menu — same three actions the Activity Center row offers, and the same
+          guards: rep_delivery to-dos are worked from their own button (never snoozed or handed
+          off), and Assign is rep/manager-only. Rendered once, outside the scrolling panel body. */}
+      {dashRowMenu&&(()=>{
+        const t=dashRowMenu.t;const _canAssign=t.type!=='rep_delivery'&&(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep');
+        const _canSnooze=t.type!=='rep_delivery';
+        const _close=()=>setDashRowMenu(null);
+        return<>
+          <div className="dash2menu-scrim" onClick={_close}/>
+          <div className="dash2menu" role="menu" style={{left:dashRowMenu.x,top:dashRowMenu.y,transform:'translateX(-100%)'+(dashRowMenu.up?' translateY(-100%)':'')}} onClick={e=>e.stopPropagation()}>
+            {_canAssign&&<button role="menuitem" onClick={()=>{_close();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>👤 Assign to a CSR…</button>}
+            {_canSnooze&&<><div className="dash2menu-sep">💤 Snooze for</div>
+              {[[1,'1 day'],[3,'3 days'],[5,'5 days'],[7,'1 week']].map(([d,lbl])=><button key={d} role="menuitem" onClick={()=>{_close();doSnooze(t,d)}}>{lbl}</button>)}</>}
+            <div className="dash2menu-sep"/>
+            {/* Dismissal is permanent for this user (persisted to dismissed_todos), unlike a
+                snooze — so it says so rather than reading like a "hide for now". */}
+            <button role="menuitem" className="danger" onClick={()=>{_close();dismissTodo(t.dismissKey);nf('Dismissed for good — snooze instead if you just want it back later')}}>✕ Dismiss for good</button>
+          </div>
+        </>})()}
       {/* Full-size mock viewer for the inline art preview — display only (no upload/delete here;
           those stay in the order editor's art panel). Esc / ← / → are bound in the state effect. */}
       {dashArtLb&&dashArtLb.shots.length>0&&(()=>{
