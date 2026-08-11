@@ -122,6 +122,16 @@ const billOverageQty = (ordered, billed, received, need) => {
   if (safeNum(billed) <= ord) return ord;
   return Math.min(safeNum(billed), Math.max(ord, safeNum(received), safeNum(need)));
 };
+// The `need` fed to billOverageQty for ONE po_line: the SO item's qty for that size minus what
+// the item's OTHER lines already commit (ordered − cancelled). With the item's full size qty as
+// the ceiling, an item split across several PO lines let a duplicate bill raise each line as far
+// as the WHOLE need — one line's justification reused per line. Other lines are read at their
+// pre-apply values, so within a single multi-line apply the ceiling can lag one raise behind;
+// it converges on the next apply and never exceeds the item's total need overall.
+const billLineNeed = (it, line, sz) => {
+  const others = safePOs(it).filter(p => p && p !== line);
+  return Math.max(0, safeNum(safeSizes(it)[sz]) - poCommitted(others, sz));
+};
 
 // ── Booking Order Helpers ──
 function isBookingOrder(ord) {
@@ -1333,7 +1343,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
