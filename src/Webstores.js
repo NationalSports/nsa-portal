@@ -7,7 +7,7 @@ import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, 
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
@@ -7221,7 +7221,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _stk = stockByWp[item.id] || {};
   const _rawQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
   const _rawSoon = (sz) => sizeEtaSoon(_stk.vendor_size_eta, sz);
-  const _scaleSizes = foldScale(availableSizes);
+  // Falls back to the sizes implied by stock when the catalog row's available_sizes is
+  // empty (see scaleOf) — otherwise the Sizes tab opened with NO chips for the ~1,100
+  // empty-scale styles, and reps hand-typed sizes to fill the gap (which is where the
+  // stray "OSFA"/"XS" sizes_offered values on live stores came from).
+  const _scaleSizes = scaleOf(availableSizes, _stk.size_stock, _stk.vendor_size_stock, _stk.vendor_size_eta);
   const _sizeQty = (sz) => foldedQty(sz, _rawQty);
   const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || foldedSoon(sz, _rawSoon));
   const allSizes = _sellableSizes.length ? _sellableSizes : _scaleSizes;
