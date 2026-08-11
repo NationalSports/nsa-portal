@@ -1291,6 +1291,9 @@ const _catalogUnitAvg = (it, sq) => {
   }
   return safeNum(it.nsa_cost);
 };
+// Ordered units on a PO line: every positive-number key that isn't a meta field.
+const _poLineQty = (pl) => Object.entries(pl || {}).reduce((a, [k, v]) => (k.startsWith('_') || _PO_LINE_META.has(k) || typeof v !== 'number' || v <= 0) ? a : a + v, 0);
+const _sumQty = (o) => Object.values(o || {}).reduce((a, v) => a + (typeof v === 'number' && v > 0 ? v : 0), 0);
 function garmentCost(it) {
   const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
   const q = sq > 0 ? sq : safeNum(it.est_qty);
@@ -1299,11 +1302,10 @@ function garmentCost(it) {
   safePOs(it).forEach(pl => {
     if (!pl) return;
     const u = pl.unit_cost != null ? safeNum(pl.unit_cost) : safeNum(it.nsa_cost);
-    let lineQty = 0;
-    Object.entries(pl).forEach(([k, v]) => { if (k.startsWith('_') || _PO_LINE_META.has(k)) return; if (typeof v !== 'number' || v <= 0) return; lineQty += v; });
+    const lineQty = _poLineQty(pl);
     const bc = safeNum(pl._bill_cost);
     if (bc > 0) {
-      const billedQty = Object.values(pl.billed || {}).reduce((a, v) => a + (typeof v === 'number' && v > 0 ? v : 0), 0);
+      const billedQty = _sumQty(pl.billed);
       const openQty = billedQty > 0 ? Math.max(0, lineQty - billedQty) : 0;
       poCost += bc + openQty * u;
     } else {
@@ -1324,6 +1326,45 @@ function garmentCost(it) {
   return { cost, poQty, q };
 }
 
+// ── Over-billed blank line detection ──
+// A supplier bill can legitimately cover more units than the order it is attached to: a case
+// /bulk buy keyed onto one job, or a vendor document mapped to the wrong SO. garmentCost()
+// takes _bill_cost at face value — correctly, it is real money owed — so that ENTIRE cost
+// lands on this order's margin even when most of the goods never belonged to it, and nothing
+// on the page said so. An order could read deeply unprofitable with no visible cause.
+// (SO-1271: Richardson invoices 4665290 + 4678804 billed 324 hats at case pricing — 25.5 and
+// 1.5 dozen at $67.60/dz, both reconciling to the penny, so genuine documents, not duplicates
+// — against 66 hats sold. ~$1,451 of that bill belongs to stock or another job, and it read
+// as a $1,000 loss on this order.)
+//
+// Justified units = the most the goods themselves can support for THIS order: its own sold
+// qty, or units physically received if that is higher (a line can legitimately over-receive).
+// Anything billed beyond that is surfaced WITH its prorated share of the bill so a human can
+// re-allocate the document. This deliberately does NOT change the cost: code cannot tell a
+// mis-mapped invoice from a real stock purchase, and silently trimming the cost would hide a
+// discrepancy that only a human can resolve. Mirrors the billOverageQty doctrine above
+// (bills claiming more than the goods justify are suspect) applied to cost instead of qty.
+// Returns null when the item's bills are within justification — callers render nothing.
+function billOverage(it) {
+  const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+  const need = sq > 0 ? sq : safeNum(it.est_qty);
+  let billedQty = 0, billCost = 0, receivedQty = 0;
+  safePOs(it).forEach(pl => {
+    if (!pl || pl.po_type === 'outside_deco') return;
+    receivedQty += _sumQty(pl.received);
+    const bc = safeNum(pl._bill_cost);
+    if (bc <= 0) return;
+    // A bill with no size breakdown covers the whole line — same convention as garmentCost.
+    billedQty += _sumQty(pl.billed) || _poLineQty(pl);
+    billCost += bc;
+  });
+  if (!(billedQty > 0) || !(billCost > 0)) return null;
+  const justified = Math.max(need, receivedQty);
+  if (billedQty <= justified) return null;
+  const overUnits = billedQty - justified;
+  return { billedQty, justifiedQty: justified, overUnits, billCost, overCost: billCost * overUnits / billedQty };
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
@@ -1333,7 +1374,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, billOverage, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

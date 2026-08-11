@@ -21,7 +21,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, billOverage, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions } from './lib/syncJobsMatch';
@@ -6863,6 +6863,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received'),
             _catProduct:catProduct,_productId:it.product_id,_vendorId:it.vendor_id,_brand:it.brand,_color:it.color,_imageUrl:it.image_url,
+            // Bill covering more units than this order can justify — its full cost is in Actual
+            // (and in the margin), so flag the unjustified share for re-allocation (SO-1271).
+            overBill:billOverage(it),
             billedUnitCost,catalogCost});
           // In-house deco only — outside deco is aggregated below at SO level (one row per
           // outside-deco PO / vendor), since a decorator's bill covers multiple items as a
@@ -7001,7 +7004,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}{l._combQty>0&&<span title={"Priced once across manually-linked jobs that share this screen — combined run of "+l._combQty+" units. Customer sale price is unaffected."} style={{marginLeft:6,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534',whiteSpace:'nowrap'}}>🔗 combined · {l._combQty} u run</span>}
                   {l._decoItems&&l._decoItems.length>0&&<span className="nsa-tip" style={{marginLeft:8,fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',border:'1px solid #ede9fe',borderRadius:10,padding:'1px 8px'}}>{l._decoItems.length} item{l._decoItems.length!==1?'s':''} ⓘ
                     <span className="nsa-tip-body"><strong style={{display:'block',marginBottom:4,color:'#c4b5fd'}}>Items on this PO</strong>{l._decoItems.map((di,k)=><span key={k} style={{display:'block',marginBottom:2}}><strong style={{color:'#fff'}}>{di.sku}</strong> {di.name}{di.color?' · '+di.color:''} <span style={{color:'#a5b4fc'}}>({di.sizes||di.qty})</span></span>)}</span>
-                  </span>}</td>
+                  </span>}
+                  {/* Supplier bill covers more units than this order justifies — its full cost is in
+                      Actual and in the margin, so name the unjustified share instead of leaving the
+                      order silently underwater with no visible cause (SO-1271). */}
+                  {l.overBill&&<div className="nsa-tip" style={{marginTop:3,fontSize:10,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'2px 8px',display:'inline-block'}}>
+                    ⚠ Bill covers {l.overBill.billedQty} units vs {l.overBill.justifiedQty} on this order — ${l.overBill.overCost.toFixed(2)} may belong elsewhere ⓘ
+                    <span className="nsa-tip-body"><strong style={{display:'block',marginBottom:4,color:'#fcd34d'}}>Over-billed line</strong>
+                      Billed <strong style={{color:'#fff'}}>{l.overBill.billedQty}</strong> units (${l.overBill.billCost.toFixed(2)}) against <strong style={{color:'#fff'}}>{l.overBill.justifiedQty}</strong> this order can justify — {l.overBill.overUnits} extra unit{l.overBill.overUnits!==1?'s':''}.
+                      <span style={{display:'block',marginTop:4}}>The full bill is counted in Actual and in the order's margin. If those units were a stock buy or belong to another job, re-allocate the vendor document — the margin here is understated until then.</span></span>
+                  </div>}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
