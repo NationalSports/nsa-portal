@@ -30743,7 +30743,7 @@ export default function App(){
                   </div>
                   {!clean&&<div style={{marginTop:10,display:'flex',flexDirection:'column',gap:6}}>{reasons.map((r,ri)=><div key={ri} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 13px',background:REDBG,borderRadius:5}}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'0 0 auto'}}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg><span style={{fontSize:13,color:'#7a2429',fontWeight:600}}>{r}</span></div>)}</div>}
                   {!expanded&&(()=>{
-                    const nextStep={ready:'Push to Portal — or Resolve if you handled it in QuickBooks',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
+                    const nextStep={ready:'Push to Portal — or Resolve if you billed it in NetSuite or handled it in QuickBooks',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
                     return nextStep?<div style={{fontFamily:FD,fontSize:12,fontWeight:700,letterSpacing:.4,color:NAVY,marginTop:8,textTransform:'uppercase'}}>👉 Next: <span style={{textTransform:'none',letterSpacing:0,fontFamily:'inherit',color:TXTL,fontWeight:600}}>{nextStep}</span></div>:null;
                   })()}
                   </div>
@@ -30847,7 +30847,7 @@ export default function App(){
                     <button title="Delete this bill from history entirely" onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});_deleteBillHold(sb.id)}}} style={{marginLeft:'auto',background:'none',border:'none',color:TXTL,cursor:'pointer',fontSize:16}}>🗑</button>
                     {billResolveId===sb.id&&<div style={{width:'100%',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',paddingTop:10,borderTop:'1px dashed '+LGRAY,marginTop:6}}>
                       <span style={{fontFamily:FD,fontSize:12,color:TXTL,fontWeight:700,letterSpacing:.5,textTransform:'uppercase'}}>Resolved because:</span>
-                      {[['duplicate','♻️ Duplicate'],['corrected order','✏️ Corrected order'],['handled in QuickBooks','📒 Handled in QB'],['written off','🚮 Written off']].map(([k,l])=>
+                      {[['duplicate','♻️ Duplicate'],['corrected order','✏️ Corrected order'],['billed in NetSuite','📗 Billed in NetSuite'],['handled in QuickBooks','📒 Handled in QB'],['written off','🚮 Written off']].map(([k,l])=>
                         <button key={k} className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>_resolveBillWithDisposition(sb.id,k,'')}>{l}</button>)}
                       <button className="btn btn-sm btn-secondary" style={{fontSize:11}}
                         onClick={()=>{const note=window.prompt('Note — why is this bill handled?');if(note!=null&&note.trim())_resolveBillWithDisposition(sb.id,'other',note.trim())}}>✍️ Other…</button>
