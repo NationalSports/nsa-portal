@@ -72,20 +72,27 @@ def _row_cells(row):
 
 
 def _dedupe_headers(raw_headers):
-    """Resolve duplicate column names. NetSuite exports ship TWO columns both
-    named 'Internal ID' — the first is the transaction's, the second is the
-    customer's. We rename the second one so downstream mapping can tell them
-    apart without guessing."""
+    """Resolve duplicate column names. NetSuite exports ship MULTIPLE columns
+    named 'Internal ID': the transaction's id (sometimes repeated verbatim) and
+    the customer's. The customer one is always last — rename only that one to
+    'Customer Internal ID' and disambiguate the rest, so a repeated transaction
+    id column can't collide with the customer id and win the lookup."""
+    cleaned = [h.strip() for h in raw_headers]
+    n_iid = sum(1 for h in cleaned if h.lower() == "internal id")
+    last_iid = max(
+        (i for i, h in enumerate(cleaned) if h.lower() == "internal id"),
+        default=-1,
+    )
     seen = {}
     out = []
-    for h in raw_headers:
-        key = h.strip()
+    for i, h in enumerate(cleaned):
+        key = h
+        if i == last_iid and n_iid > 1:
+            out.append("Customer Internal ID")
+            continue
         if key in seen:
             seen[key] += 1
-            if key.lower() == "internal id":
-                out.append("Customer Internal ID")
-            else:
-                out.append(f"{key} ({seen[key]})")
+            out.append(f"{key} ({seen[key]})")
         else:
             seen[key] = 1
             out.append(key)
@@ -124,28 +131,32 @@ def load_csv(path: Path):
 def auto_map(headers):
     """Pick the best header for each canonical field.
 
-    Two-pass: first claim headers with the most specific alias matches (longer
-    alias string = more specific), then fall back to generic ones. A header
-    can only be claimed by one field."""
+    Three passes — exact match wins over word-boundary which wins over
+    substring. Without this, 'Order Type' would steal the 'type' alias from
+    the real 'Type' column (and, being blank in NetSuite invoice exports,
+    would silently type every credit memo as an invoice)."""
     lowered = [(h, h.lower().strip()) for h in headers]
     claimed: set[str] = set()
     mapping: dict[str, str] = {}
-    # Build (field, alias, specificity) candidates, sorted by specificity desc.
-    candidates = []
-    for field, aliases in COLUMN_ALIASES.items():
-        for a in aliases:
-            candidates.append((field, a, len(a)))
-    candidates.sort(key=lambda x: -x[2])
-    for field, alias, _ in candidates:
-        if field in mapping:
-            continue
-        for orig, low in lowered:
-            if orig in claimed:
+
+    def try_match(predicate):
+        for field, aliases in COLUMN_ALIASES.items():
+            if field in mapping:
                 continue
-            if alias in low:
-                mapping[field] = orig
-                claimed.add(orig)
-                break
+            for alias in aliases:
+                for orig, low in lowered:
+                    if orig in claimed:
+                        continue
+                    if predicate(alias, low):
+                        mapping[field] = orig
+                        claimed.add(orig)
+                        break
+                if field in mapping:
+                    break
+
+    try_match(lambda a, h: h == a)
+    try_match(lambda a, h: f" {a} " in f" {h} " or h.startswith(a + " ") or h.endswith(" " + a))
+    try_match(lambda a, h: a in h)
     return mapping
 
 
