@@ -7877,7 +7877,11 @@ export default function App(){
     todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
     const myTodos=todos.filter(t=>{
-      if(t.role==='all')return true;
+      // role:'all' means "every ROLE cares about this" (deadlines matter to sales, production and
+      // the office alike) — it does NOT mean every person. An item that carries a rep still belongs
+      // to that rep's book, so it falls through to the rep/CSR scoping below; only ownerless items
+      // go to everyone. Same rule the adminTodos filter already applies (`role==='all'&&!repId`).
+      if(t.role==='all'&&!t.repId)return true;
       if(t.role==='gm'&&(cu.role==='gm'||cu.role==='admin'||cu.role==='super_admin'))return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(t.repId)}
@@ -12053,10 +12057,12 @@ export default function App(){
     // Sort by date (newest first)
     todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     const filtered=todos.filter(t=>{
-      if(t.role==='all')return true;
+      // Same rule as the desktop dashboard's myTodos: role:'all' is a role scope, not a person
+      // scope — a deadline that belongs to a rep stays inside that rep's book.
+      if(t.role==='all'&&!t.repId)return true;
       if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(t.repId)}
-      return t.role==='production';
+      return t.role==='production'||t.role==='all';// warehouse/production keep company-wide deadlines
     });
     return filtered;
   },[cu,sos,ests,invs,cust,portalSettings,repCsrAssignments]);
