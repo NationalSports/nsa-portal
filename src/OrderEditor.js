@@ -733,6 +733,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[dpoDropShip,setDpoDropShip]=useState(true);// standalone deco PO form — deco POs are always drop ship
     const[dpoMode,setDpoMode]=useState(null);// Deco PO kind: 'send' (we ship garments to the decorator) | 'dtf' (buying transfers/material) | null = auto from the order
     const[linkDpoId,setLinkDpoId]=useState(null);// Deco PO modal: id of an EXISTING deco PO to add the checked items to, instead of creating a new one
+    const[dpoShowInHouse,setDpoShowInHouse]=useState(false);// Deco PO forms: reveal the in-house-deco items that are hidden from the coverage list
     const _poCreatingRef=React.useRef(false);// in-flight latch: blocks rapid double-fire of Create PO / Add to Batch within a single render cycle
     const[topstarService,setTopstarService]=useState('dst');const[topstarImgs,setTopstarImgs]=useState([]);const[topstarNotes,setTopstarNotes]=useState('');const[topstarSending,setTopstarSending]=useState(false);
     // Topstar digitizing/vector service catalog — shared by the PO modal and the send-to-vendor action.
@@ -2815,6 +2816,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
   // decorator, so it must never be inferred as the vendor blanks drop-ship to.
   const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service)?.vendor||''};
+  // Item deco routing (by SO line index). Outside = any art deco flagged "Outside", or the item
+  // already sits on a garment deco PO (Topstar digitizing is an art service, not a decorator).
+  const _itemOutsideDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
+    if(safeDecos(it).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside'))return true;
+    return (o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(ii))};
+  // In-house deco = the item carries decoration work and none of it is routed outside (names /
+  // numbers / twill are always in-house — routing only applies to art). These blanks are pressed
+  // at Emerson, so they must never ride an outside deco PO or a drop-ship PO: the warehouse would
+  // never receive them and the in-house job would have nothing to decorate.
+  const _itemInHouseDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
+    return safeDecos(it).length>0&&!_itemOutsideDeco(ii)};
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
@@ -8296,7 +8308,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Drop Ship and point Ship To at the decorator (when an existing deco PO gives us its
             // address). The rep can still flip it; a normal (in-house) PO is unchanged.
             const _idxs=items.map(it=>safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name)).filter(i=>i>=0);
-            const _hasOutside=_idxs.some(i=>safeDecos(safeItems(o)[i]).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside'))||(o.deco_pos||[]).some(dp=>dp&&dp.drop_ship&&(dp.item_idxs||[]).some(i=>_idxs.includes(i)));
+            const _outIdxs=_idxs.filter(i=>safeDecos(safeItems(o)[i]).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside')||(o.deco_pos||[]).some(dp=>dp&&dp.drop_ship&&(dp.item_idxs||[]).includes(i)));
+            // Only default to Drop Ship when every decorated item in this vendor group goes outside.
+            // A mixed group must land at the warehouse — drop-shipping it would send the in-house
+            // items' blanks to the decorator, so they'd never reach our own press.
+            const _hasOutside=_outIdxs.length>0&&!_idxs.some(i=>_itemInHouseDeco(i));
             const _decoShip=_hasOutside?decoShipForItems(_idxs):null;
             // Drop ship never goes to the NSA warehouse: decorator address if we resolved one,
             // else the customer's shipping address (matches the Drop Ship toggle below).
@@ -8366,13 +8382,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // OUTSIDE DECORATION PO FORM
       if(typeof showPO==='string'&&showPO.startsWith('deco:')){
         const decoVendor=showPO.replace('deco:','');
-        const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
+        const _allSizedItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
           const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
         const autoPoId='DPO '+poCounter+(cust?.alpha_tag?' '+cust.alpha_tag:'');
         const poId=preexistingPO?preexistingPOId:autoPoId;
         const dv=decoVendors.find(v=>v.name===decoVendor);
         // If items were flagged Outside on the line, default the PO to exactly those (else all items).
         const _dpoFlaggedOut=new Set(safeItems(o).map((_,i)=>i).filter(i=>safeDecos(safeItems(o)[i]).some(d=>d.kind==='art'&&d.fulfillment==='outside')));
+        // Once the rep has routed anything Outside, the items still set to In-house are decorated
+        // here — keep them off this decorator's PO entirely (hidden behind a "show" toggle rather
+        // than merely unchecked, so nobody Select-Alls an in-house item onto an outside DPO).
+        // With nothing flagged there's no routing to honor yet, so every item stays listed.
+        const _dpoInHouse=_dpoFlaggedOut.size>0?_allSizedItems.filter(it=>_itemInHouseDeco(it._idx)):[];
+        const _dpoHiddenIdx=new Set(dpoShowInHouse?[]:_dpoInHouse.map(it=>it._idx));
+        const allItems=_allSizedItems.filter(it=>!_dpoHiddenIdx.has(it._idx));
         const _initialSel=allItems.filter(it=>_dpoFlaggedOut.size>0?_dpoFlaggedOut.has(it._idx):true);
         // Default the PO's deco type to the work actually on the covered items — the most common
         // resolved deco type — instead of a blanket 'embroidery'. A mistyped DPO is not cosmetic:
@@ -8459,7 +8482,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const linkDpo=linkDpoId?_linkableDpos.find(dp=>dp.id===linkDpoId)||null:null;
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
-          <div className="modal-body" key={_dpoMode}>
+          {/* Keyed on the in-house toggle too: the coverage checkboxes are uncontrolled and keyed by
+              list position, so revealing/hiding rows must remount them back to their defaults. */}
+          <div className="modal-body" key={_dpoMode+'|'+(dpoShowInHouse?'all':'out')}>
             {/* Join an existing deco PO instead of opening a second one. Items added to an SO after
                 its deco PO was written would otherwise each spawn their own DPO for the same
                 decorator; here they can be folded into the one that's already out. */}
@@ -8531,14 +8556,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=true});_recalcDpo()}}>Select All</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>{allItems.forEach((_,vi)=>{const el=document.getElementById('dpo-sel-'+vi);if(el)el.checked=false});_recalcDpo()}}>Deselect All</button>
             </div>}
-            {allItems.map((it,vi)=>{const soQ=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-              return<div key={vi} style={{padding:'8px 12px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:6,background:'#faf5ff',display:'flex',alignItems:'center',gap:8}}>
+            {allItems.map((it,vi)=>{const soQ=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const _ih=_itemInHouseDeco(it._idx);
+              return<div key={vi} style={{padding:'8px 12px',border:'1px solid '+(_ih?'#e2e8f0':'#ede9fe'),borderRadius:6,marginBottom:6,background:_ih?'#f8fafc':'#faf5ff',display:'flex',alignItems:'center',gap:8}}>
                 <input type="checkbox" id={'dpo-sel-'+vi} defaultChecked={_dpoFlaggedOut.size>0?_dpoFlaggedOut.has(it._idx):true} style={{width:16,height:16}} onChange={_recalcDpo}/>
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:_ih?'#64748b':'#7c3aed'}}>{it.sku}</span>
                 <strong style={{flex:1}}>{it.name}</strong>
+                {_ih&&<span title="Routed In-house — decorated at Emerson, so it doesn't belong on an outside decorator's PO" style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
                 <span style={{color:'#64748b',fontSize:12}}>{it.color}</span>
                 <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
               </div>})}
+            {_dpoInHouse.length>0&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 10px'}} onClick={()=>setDpoShowInHouse(v=>!v)}>{dpoShowInHouse?'Hide':'Show'} {_dpoInHouse.length} in-house item{_dpoInHouse.length!==1?'s':''}</button>}
             </>}
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
               <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup) {_initialDpoQty===0&&<span style={{color:'#7c3aed',fontWeight:600}}>(no items checked — enter manually)</span>}</label><input className="form-input" id="dpo-total-qty" type="number" defaultValue={_initialDpoQty} data-auto={_initialDpoQty>0?'1':'0'} style={{fontWeight:700,color:'#1e40af'}} onChange={e=>{e.target.dataset.auto='0';_recalcDpo()}}/></div>
@@ -8858,7 +8885,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // in-progress PO form (qtys/prices live in uncontrolled inputs and die if we swap modals).
       // Items offered mirror the standalone deco form (every SO item with sized qty); all start
       // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
-      const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      const _podSizedItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
       const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -8869,6 +8896,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // the rep doesn't re-pick. Falls back to mirroring the product PO when nothing is flagged.
       // podOverrides still wins either way, so others can be added / flagged ones dropped.
       const _flaggedOutsideIdx=new Set(safeItems(o).map((_,i)=>i).filter(i=>safeDecos(safeItems(o)[i]).some(d=>d.kind==='art'&&d.fulfillment==='outside')));
+      // Items still routed In-house are decorated at Emerson — they don't belong on this decorator's
+      // PO at all, so hide them (behind a "show" toggle) instead of listing them unchecked where a
+      // Select All would sweep them in. Only applies once something IS flagged Outside; with no
+      // routing set yet the list still mirrors the product PO as before.
+      const _podInHouse=_flaggedOutsideIdx.size>0?_podSizedItems.filter(it=>_itemInHouseDeco(it._idx)):[];
+      const _podHiddenIdx=new Set(dpoShowInHouse?[]:_podInHouse.map(it=>it._idx));
+      const podItems=_podSizedItems.filter(it=>!_podHiddenIdx.has(it._idx));
       const podDefault=idx=>_flaggedOutsideIdx.size>0?_flaggedOutsideIdx.has(idx):podPoSel.has(idx);
       const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podDefault(idx);
       const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
@@ -8911,6 +8945,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // task later knows to deliver to the decorator — a drop_ship flag alone loses that.
       const _poShipDecoId=poShipTo==='deco'?(_decoForPo?.id||null):(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')?poShipTo.slice(5):null);
       const _poShipDecoInfo=(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')&&_poShipDecoId)?resolveDecoShipToClient({decoId:_poShipDecoId,so:o,decoVendors,vendors:vendorList,itemIdxs:_poSelIdxs}):null;
+      // Checked PO lines whose decoration happens in-house — flagged when the rep picks Drop Ship,
+      // since those blanks must be received at Emerson before we can decorate them.
+      const _poDsInHouse=poItems.map((it,vi)=>({it,vi})).filter(({it,vi})=>!poExcluded[vi]&&(it.members||[it]).some(m=>_itemInHouseDeco(m._idx)));
+      const _poDsInHouseConfirm=()=>'⚠️ '+_poDsInHouse.length+' item'+(_poDsInHouse.length!==1?'s':'')+' on this drop-ship PO '+(_poDsInHouse.length!==1?'are':'is')+' decorated IN-HOUSE:\n\n'+_poDsInHouse.map(x=>'  • '+x.it.sku+' — '+x.it.name).join('\n')+'\n\nDrop ship skips the warehouse, so these blanks will never reach Emerson to be decorated.\n\nCreate the PO anyway?';
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}>x</button></div>
         <div className="modal-body">
@@ -8942,7 +8980,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
                 <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
-                <span style={{color:'#94a3b8'}}>{_flaggedOutsideIdx.size>0?'pre-selected from the items you marked Outside — toggle any to override':'mirrors the items selected on this '+vn+' PO — toggle any item to override'}</span>
+                <span style={{color:'#94a3b8'}}>{_flaggedOutsideIdx.size>0?('pre-selected from the items you marked Outside — toggle any to override'+(_podInHouse.length>0?'; '+_podInHouse.length+' in-house item'+(_podInHouse.length!==1?'s':'')+' hidden':'')):'mirrors the items selected on this '+vn+' PO — toggle any item to override'}</span>
                 <span style={{flex:1}}/>
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=true});setPodOverrides(ov)}}>Select All</button>
                 <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov)}}>Deselect All</button>
@@ -8953,10 +8991,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <input type="checkbox" checked={podChecked(it._idx)} style={{width:14,height:14}} onChange={()=>setPodOverrides(ov=>({...ov,[it._idx]:!podChecked(it._idx)}))}/>
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
                     <strong style={{flex:1}}>{it.name}</strong>
+                    {_itemInHouseDeco(it._idx)&&<span title="Routed In-house — decorated at Emerson, so it doesn't belong on an outside decorator's PO" style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
                     {onPo&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>on PO</span>}
                     <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
                     <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
                   </div>})}
+                {_podInHouse.length>0&&<button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setDpoShowInHouse(v=>!v)}>{dpoShowInHouse?'Hide':'Show'} {_podInHouse.length} in-house item{_podInHouse.length!==1?'s':''}</button>}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <div><label className="form-label" style={{fontSize:10}}>Total Qty (price-list lookup)</label><input className="form-input" readOnly value={podQty} style={{fontWeight:700,color:'#1e40af'}}/></div>
@@ -9020,6 +9060,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(_decoForPo?'deco':(addrs[0]?.id||'warehouse')):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
             dsSub='Ships direct to school/decorator — warehouse will NOT receive or count this in'/>
+          {/* Drop ship bypasses the warehouse, so blanks for items decorated IN-HOUSE can never ride
+              one — they'd never arrive at Emerson for our own press. Flag the checked in-house lines
+              and offer to drop them so they can go on their own warehouse PO. */}
+          {poDropShip===true&&_poDsInHouse.length>0&&<div style={{marginTop:-4,marginBottom:12,padding:'9px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#991b1b'}}>⚠️ {_poDsInHouse.length} item{_poDsInHouse.length!==1?'s':''} on this PO {_poDsInHouse.length!==1?'are':'is'} decorated in-house</div>
+            <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>{_poDsInHouse.map(x=>x.it.sku).join(', ')} — drop ship skips the warehouse, so these blanks would never reach Emerson to be decorated. Uncheck them here and create a separate 🏭 In-House PO for them.</div>
+            <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:6}} onClick={()=>setPOExcluded(x=>{const n={...x};_poDsInHouse.forEach(({vi})=>{n[vi]=true});return n})}>Uncheck the in-house item{_poDsInHouse.length!==1?'s':''}</button>
+          </div>}
           {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);
             // The cost the rep set on the line ("Cost: $X/ea", stored as nsa_cost) is this order's cost
             // of record — default the PO to it so a cost edit on the estimate/SO carries through, instead
@@ -9070,6 +9118,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
             if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
+            if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){nf(podRes.error,'error');return}
             _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
@@ -9142,6 +9191,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
           if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
+          if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){nf(podRes.error,'error');return}
           _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
@@ -13871,6 +13921,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     <input type="checkbox" checked={!!decoEditItems.sel[it._idx]} style={{width:14,height:14}} onChange={()=>setDecoEditItems(d=>({...d,sel:{...d.sel,[it._idx]:!d.sel[it._idx]}}))}/>
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
                     <strong style={{flex:1}}>{it.name}</strong>
+                    {/* Routed In-house — decorated at Emerson, so adding it here would hand our own work to the decorator */}
+                    {_itemInHouseDeco(it._idx)&&<span title="Routed In-house — decorated at Emerson. Adding it to this deco PO outsources it and cancels the in-house job." style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
                     <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
                     <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {editQty(it)}</span>
                   </div>)}
