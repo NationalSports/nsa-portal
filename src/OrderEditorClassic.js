@@ -8583,14 +8583,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 notes,drop_ship:true,expected_date:returnDate,
                 status:'waiting',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
-              // Create blanks PO lines on the items (ships to decorator)
+              // Create blanks PO lines on the items (ships to decorator). Order only the units still
+              // OPEN — SO qty minus IF picks and existing PO coverage, the same basis the New PO modal
+              // uses. Ordering full SO sizes here double-bought blanks whose PO was already written
+              // (JW6602 on SO-1751 landed on both PO 56050 and NSA 56451 for the full 23 pcs).
               const blanksPOId='NSA '+(poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
-              const blanksPayloadItems=[];let blanksVendorName='';
+              const blanksPayloadItems=[];let blanksVendorName='';const _blanksCovered=[];
               const updatedItems=safeItems(o).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
               selectedItems.forEach(selIt=>{
                 const it=updatedItems[selIt._idx];if(!it)return;
-                const sizes={};Object.entries(safeSizes(selIt)).forEach(([sz,v])=>{if(safeNum(v)>0)sizes[sz]=v});
-                if(!Object.keys(sizes).length)return;
+                const sizes={};openSizesFor(selIt).forEach(([sz,v])=>{if(safeNum(v)>0)sizes[sz]=v});
+                // Already fully covered by an IF or an existing PO — the deco PO still covers its
+                // decoration, but there are no blanks left to buy.
+                if(!Object.keys(sizes).length){_blanksCovered.push(selIt);return}
                 const vn=vendorList.find(v=>v.id===selIt.vendor_id)?.name||'';
                 if(!blanksVendorName&&vn)blanksVendorName=vn;
                 const uc=safeNum(selIt.nsa_cost);
@@ -8600,21 +8605,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 blanksPayloadItems.push({sku:selIt.sku,name:selIt.name,color:selIt.color,sizes,unit_cost:uc,
                   ...(selIt._mt_skus?{_mt_style:selIt._mt_style,_mt_color:selIt._mt_color,_mt_sku:selIt._mt_sku,_mt_skus:selIt._mt_skus}:{})});
               });
-              // Save both POs together
+              // Save both POs together. With nothing open there IS no blanks PO — only the deco PO
+              // was written, so blanksPOId was never used and the counter advances by one.
+              const _madeBlanks=blanksPayloadItems.length>0;
               const updated={...o,items:updatedItems,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              setPOCounter(c=>c+2);
+              setPOCounter(c=>c+(_madeBlanks?2:1));
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
+              const _coveredNote=_blanksCovered.length>0?' — no blanks ordered for '+_blanksCovered.map(x=>x.sku).join(', ')+' (already covered by an IF or PO)':'';
               // Open API ordering modal for the blanks vendor
               const vk=_apiVendorKey(blanksVendorName);
-              if(vk&&blanksPayloadItems.length>0){
-                nf('🎨 '+effectiveDpoId+' + 📦 '+blanksPOId+' created — opening API order...');
+              if(vk&&_madeBlanks){
+                nf('🎨 '+effectiveDpoId+' + 📦 '+blanksPOId+' created — opening API order...'+_coveredNote);
                 setApiOrder({vendorKey:vk,poNumber:blanksPOId,vendorName:blanksVendorName,
                   batchPOs:[{so_id:o.id,items:blanksPayloadItems}],
                   shipToDecoId:dv.id,
                   initialDpoNumber:effectiveDpoId.replace(/^DPO\s*/i,'')});
+              } else if(_madeBlanks){
+                nf('🎨 '+effectiveDpoId+' for '+decoVendor+' + 📦 '+blanksPOId+' blanks PO created'+_coveredNote);
               } else {
-                nf('🎨 '+effectiveDpoId+' for '+decoVendor+' + 📦 '+blanksPOId+' blanks PO created');
+                nf('🎨 '+effectiveDpoId+' for '+decoVendor+' created — every covered item\'s blanks are already on an IF or PO, so no blanks PO was needed'+(_blanksCovered.length>0?' ('+_blanksCovered.map(x=>x.sku).join(', ')+')':''),'success');
               }
             }}>🎨📦 Create Deco PO + Order Blanks</button>}
           </div>
