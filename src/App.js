@@ -27,7 +27,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside } from './businessLogic';
+import { buildJobs, billOverageQty, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -26988,6 +26988,7 @@ export default function App(){
       const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
       if(!maps.length)return false;
       const _dupSkips=[];// shipments already billed to a line — skipped, not double-counted
+      const _qtyCaps=[];// overage qty-fixes the goods didn't justify — capped, not silently applied
       // FULL landed cost reaches the order: the SI upcharge line rides in the freight
       // allocation (it was already in the QB total but never hit SO costing/commissions).
       const billFreight=safeNum(bill.freight||0)+safeNum(bill.si_upcharge||0);
@@ -27048,11 +27049,21 @@ export default function App(){
               // line's ordered qty to the billed total (only sizes THIS bill touched, only
               // when the human accepted the flagged overage). Audit in _qty_corrections; the
               // extra units then count in order costing and commissions like any others.
+              //
+              // ...but only as far as the goods justify — see billOverageQty. A bill claiming
+              // units that never arrived AND the order never asked for is a mis-mapped or
+              // duplicate vendor doc, and raising ordered to match it mints open units that can
+              // never be received. Capped raises are reported, never silent.
               let qtyFix={};
               if(bill._overage_ok){
                 const fixes=[];
-                Object.keys(sizesAdded).forEach(sz=>{const ord=safeNum(po[sz]);
-                  if(newBilled[sz]>ord){fixes.push({size:sz,from:ord,to:newBilled[sz]});qtyFix[sz]=newBilled[sz]}});
+                Object.keys(sizesAdded).forEach(sz=>{
+                  const ord=safeNum(po[sz]);if(newBilled[sz]<=ord)return;
+                  const rcvd=safeNum((po.received||{})[sz]);
+                  const to=billOverageQty(ord,newBilled[sz],rcvd,safeSizes(it)[sz]);
+                  if(to>ord){fixes.push({size:sz,from:ord,to});qtyFix[sz]=to}
+                  if(to<newBilled[sz])_qtyCaps.push((it.sku||'?')+' '+(po.po_id||'')+' '+sz+': bill claims '+newBilled[sz]+', ordered held at '+to+' ('+rcvd+' received)');
+                });
                 if(fixes.length)qtyFix={...qtyFix,_qty_corrections:[...(po._qty_corrections||[]),
                   ...fixes.map(f=>({doc:bill.doc_number||'',date:new Date().toISOString().slice(0,10),size:f.size,from:f.from,to:f.to,by:(cu?.name||cu?.email||'')}))]};
               }
@@ -27093,6 +27104,7 @@ export default function App(){
           return updatedSO;
         }));
         if(_dupSkips.length)setTimeout(()=>nf('Skipped '+_dupSkips.length+' already-billed shipment(s): '+_dupSkips.join('; '),'error'),0);
+        if(_qtyCaps.length)setTimeout(()=>nf('Bill over-claims '+_qtyCaps.length+' size(s) beyond what arrived or was ordered — ordered qty left alone (check for a duplicate/mis-mapped vendor doc): '+_qtyCaps.join('; '),'error'),0);
         return true;
       }
 
