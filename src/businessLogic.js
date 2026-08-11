@@ -101,6 +101,28 @@ function dP(d, q, artFiles, cq) {
 // produce a negative committed count — negative quantities are invalid, not credits.
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
 
+// ── Accepted-overage ordered-qty ceiling ──
+// When a human accepts a flagged over-billing, the bill wizard raises the po_line's ORDERED
+// qty to the billed total so the extra units are accounted for. That is right only when the
+// extra units are real. A bill claiming units that never arrived AND the order never asked
+// for is a mis-mapped or duplicate vendor document — raising ordered to match it mints open
+// units that can never be received, so the line reads partial forever while the job board,
+// which counts goods actually in hand, correctly reads fully received. (SO-1348: two adidas
+// invoices each billed JX4452 L 10 onto one 10-unit line → ordered 20, "10/20 Rcvd" stuck
+// against a true 12/12 job. Uncapped, this left ~3.2k phantom units across 69 orders.)
+//
+// Ceiling = the largest quantity the goods themselves justify:
+//   received — units physically checked in above the ordered qty ARE a genuine overage
+//   need     — the SO line's own quantity for that size (the order legitimately grew)
+//   ordered  — never ratchet a line DOWN; this only ever caps a raise
+// Returns the qty `ordered` should become: unchanged when the bill isn't over-claiming, the
+// billed total for a justified overage, else the ceiling.
+const billOverageQty = (ordered, billed, received, need) => {
+  const ord = safeNum(ordered);
+  if (safeNum(billed) <= ord) return ord;
+  return Math.min(safeNum(billed), Math.max(ord, safeNum(received), safeNum(need)));
+};
+
 // ── Booking Order Helpers ──
 function isBookingOrder(ord) {
   return ord?.order_type === 'booking';
@@ -718,7 +740,13 @@ const deriveJobItemStatus = (j, o) => {
       coveredSz += Math.min(need, picked + poOrd);
     });
   });
-  if (totalSz > 0 && coveredSz >= totalSz) return 'waiting_receive';
+  // Nothing to source: the job carries no garment units at all (no job items, or every item
+  // it points at is gone / has zero quantity — e.g. SO-1684's three 0-unit art jobs). Such a
+  // job can never be "ordered", so falling through to 'need_to_order' parked it under the Jobs
+  // board's "Need to Order" chip forever on orders where every garment IS on a PO. Return null
+  // (no product state) so it matches no product chip and doesn't inflate "Needs Product".
+  if (totalSz === 0) return null;
+  if (coveredSz >= totalSz) return 'waiting_receive';
   if (coveredSz > 0) return 'on_order';
   return 'need_to_order';
 };
@@ -1305,7 +1333,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

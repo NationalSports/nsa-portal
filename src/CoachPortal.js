@@ -2247,6 +2247,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
               // Estimates live inside the Orders section now (the "Estimates to Approve"
               // dropdown), so there's no separate Estimates tile here.
+              ...(hasRoster?[{k:'roster',t:'Roster',sub:'Fill player sizes & submit',icon:'📋',accent:false}]:[]),
               ...(hasStore?[{k:'store',t:'Team Store',sub:openStoreCount>0?('Open now'+(_storeClose?' · closes '+_storeClose:'')):'View store',icon:'🛒',accent:true,sa:openStoreCount>0}]:[]),
               {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
               {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},

@@ -221,6 +221,36 @@ const _searchProductsServer=async(query,filters={},page=0,pageSize=50)=>{
   }catch(e){console.warn('[DB] search_products RPC error:',e.message);return null}
 };
 
+// ─── Server-side transaction-item search (imported NetSuite archive) ───
+// The products catalog only covers what we currently stock. Items that exist only on past
+// transactions — pre-portal NetSuite lines, dropped styles, one-off charge codes — live in
+// customer_invoice_lines and are invisible to _searchProductsServer. search_txn_items groups
+// that archive by item code so global search can offer them; in_catalog flags the ones the
+// Products section already returns so the caller can drop the duplicate.
+const _searchTxnItemsServer=async(query,limit=20)=>{
+  if(!supabase)return null;
+  const q=(query||'').trim();
+  if(!q)return[];
+  try{
+    const{data,error}=await supabase.rpc('search_txn_items',{p_query:q,p_limit:limit});
+    if(error){console.warn('[DB] search_txn_items RPC failed:',error.message);return null}
+    return data||[];
+  }catch(e){console.warn('[DB] search_txn_items RPC error:',e.message);return null}
+};
+
+// ─── One item code's full archive history (raw lines; caller groups them into documents) ───
+// Capped server-side at 5000 rows — the busiest charge codes carry 17k+ lines.
+const _fetchTxnItemHistory=async(item,limit=1500)=>{
+  if(!supabase)return null;
+  const it=(item||'').trim();
+  if(!it)return[];
+  try{
+    const{data,error}=await supabase.rpc('txn_item_history',{p_item:it,p_limit:limit});
+    if(error){console.warn('[DB] txn_item_history RPC failed:',error.message);return null}
+    return data||[];
+  }catch(e){console.warn('[DB] txn_item_history RPC error:',e.message);return null}
+};
+
 // ─── Server-side customer search (paginated, leverages DB trigram indexes) ───
 const _searchCustomersServer=async(query,repId,page=0,pageSize=50)=>{
   if(!supabase)return null;
@@ -2780,9 +2810,20 @@ const _dbSaveProductInner = async (p) => {
   try{
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
-      is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+      is_active:p.is_active!==false,is_archived:p.is_archived||false,_colors:p._colors||null,
       is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,bin:p.bin||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
+    // available_sizes is written ONLY when we actually have a scale to write. This used to be
+    // `available_sizes:p.available_sizes||[]` in the row literal — and because this is a FULL-ROW
+    // upsert, any caller handing us a product object without the field silently erased the
+    // catalog's size scale (the column defaults to '[]'). The "Update Catalog → $cost" button on
+    // the bill-reconcile tab is one such caller: it builds {id,sku,name,vendor_id,brand,color,
+    // image_url,nsa_cost} with no sizes, and when the product isn't in local state there's nothing
+    // to merge over. That is how ~1,100 catalog rows ended up with available_sizes = [] — which
+    // then showed on the webstores as products with NO size buttons at all.
+    // Omitting the key leaves the stored value untouched on conflict; a brand-new row still gets
+    // the column default. An empty scale is never a meaningful edit, so nothing legitimate is lost.
+    if(Array.isArray(p.available_sizes)&&p.available_sizes.length)row.available_sizes=p.available_sizes;
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
       // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
@@ -3248,6 +3289,8 @@ export {
   scheduleEmailSend,
   API_CATALOG_VENDOR_IDS,
   _searchProductsServer,
+  _searchTxnItemsServer,
+  _fetchTxnItemHistory,
   _searchCustomersServer,
   _sbSignIn,
   _sbSignUp,

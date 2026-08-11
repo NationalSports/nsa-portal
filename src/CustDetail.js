@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
-import { pickCwAsset, normalizeWebLogos } from './businessLogic';
+import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
@@ -339,7 +339,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const soShip=so.shipping_type==='pct'?soRev*(so.shipping_value||0)/100:(so.shipping_value||0);const soTax=soRev*(subC?.tax_exempt?0:(subC?.tax_rate||0));const soGrand=soRev+soShip+soTax;
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
-        const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
+        // Product status per job. Use the coverage-aware DERIVED status (same as the Jobs board),
+        // not the stored item_status — that one is receipt-only, so a job whose garments are fully
+        // on a PO but not yet checked in read "Need Order" here while the Jobs board correctly said
+        // "On Order". A job with nothing to source derives null and gets no chip.
+        const jobItemLabels={need_to_order:'Need Order',on_order:'On Order',waiting_receive:'Ordered',partially_received:'Partial',items_received:'Received'};
         const hasJobChildren=jobs.length>0||true;// show toggle even for "no decorations" rows
         const isExp=expSOs.has(so.id);
         return<React.Fragment key={so.id}>
@@ -367,7 +371,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td style={{fontSize:11}}>{j.art_name} <span style={{color:'#94a3b8'}}>({j.deco_type?.replace(/_/g,' ')})</span></td>
             {isP&&<td/>}{isP&&<td/>}
             <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-              <span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{jobItemLabels[j.item_status]||j.item_status}</span>
+              {(()=>{const _ist=deriveJobItemStatus(j,so);return _ist?<span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[_ist]?.bg,color:SC[_ist]?.c}}>{jobItemLabels[_ist]||_ist}</span>:null})()}
               <span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{jobArtLabels[j.art_status]||j.art_status}</span>
             </div></td>
             <td style={{fontSize:11}}>{(j.items||[]).map(gi=>gi.sku).join(', ')||'—'}</td>

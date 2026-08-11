@@ -45,6 +45,39 @@ export const foldScale = (sizes) => {
   return out;
 };
 
+// ── A product's size scale ───────────────────────────────────────────
+// Normally the catalog's available_sizes. But ~1,100 catalog rows (mostly the
+// bulk-imported adidas CLICK styles) carry an EMPTY scale while holding real
+// per-size stock, and available_sizes was the storefront's ONLY source of size
+// buttons — so those items rendered with no sizes at all, and reps patched them
+// store-by-store with sizes_offered. Worse, an empty scale also made the
+// storefront's `needSize` false, so the item could be added to the cart with
+// size=null and the resulting order line was unfulfillable.
+//
+// When the catalog scale is empty, derive it from the stock already on the row:
+// warehouse sizes + vendor sizes + sizes with a dated restock. That is the very
+// data the size buttons are graded against, so a derived scale can only contain
+// sizes we can actually speak to. `maps` are the storefront view's size→qty /
+// size→date objects (size_stock, vendor_size_stock, vendor_size_eta).
+// Placeholder "sizes" the vendor feeds use for an unsized style — inventory_unified
+// spells it `_na`. They must never become a size button. (The storefront view already
+// filters vendor rows against the catalog scale, so today these can't reach an
+// empty-scale product; this keeps that from depending on the view's filter.)
+const _PLACEHOLDER_SIZE = /^(_?na|n\/a|null|none|-+)$/i;
+export const stockScale = (...maps) => {
+  const keys = new Set();
+  for (const m of maps) {
+    if (!m || typeof m !== 'object') continue;
+    for (const k of Object.keys(m)) if (String(k).trim() && !_PLACEHOLDER_SIZE.test(String(k).trim())) keys.add(k);
+  }
+  return foldScale([...keys].sort((a, b) => sizeRank(a) - sizeRank(b)));
+};
+// The scale to sell from: the catalog's own, else the one implied by stock.
+export const scaleOf = (available, ...maps) => {
+  const cat = foldScale(available);
+  return cat.length ? cat : stockScale(...maps);
+};
+
 // Stock for a regular size = the size itself + its tall twin(s). stockOf(rawLabel) supplies
 // the per-raw-size quantity (warehouse + vendor) from the caller's stock maps.
 export const foldedQty = (regSize, stockOf) => {
