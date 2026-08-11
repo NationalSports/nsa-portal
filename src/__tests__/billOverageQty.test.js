@@ -72,3 +72,54 @@ describe('billOverageQty — never ratchets a line down', () => {
     expect(billOverageQty(20, 25, 5, 5)).toBe(20);
   });
 });
+
+// billLineNeed — the per-line `need` fed to billOverageQty. The item's full size qty was a
+// shared ceiling: split an item across N po_lines and a duplicate bill could raise EACH line
+// as far as the whole need. Need for one line = SO qty minus the other lines' commitment.
+const { billLineNeed } = require('../businessLogic');
+
+describe('billLineNeed — per-line share of the SO need', () => {
+  const line = (sz, qty, extra) => ({ [sz]: qty, po_id: 'PO X', unit_cost: 5, ...extra });
+
+  test('single line gets the full SO need (unchanged behavior)', () => {
+    const a = line('L', 10);
+    const it = { sizes: { L: 12 }, po_lines: [a] };
+    expect(billLineNeed(it, a, 'L')).toBe(12);
+  });
+
+  test('two lines splitting an item: each ceiling is only the uncovered remainder', () => {
+    // SO needs L 20; line A ordered 12, line B ordered 8. A duplicate bill on B must not be
+    // able to raise B to 20 — B's need is 20 − 12 = 8.
+    const a = line('L', 12), b = line('L', 8);
+    const it = { sizes: { L: 20 }, po_lines: [a, b] };
+    expect(billLineNeed(it, b, 'L')).toBe(8);
+    expect(billLineNeed(it, a, 'L')).toBe(12);
+  });
+
+  test('other lines already over-cover the need → zero headroom', () => {
+    const a = line('L', 25), b = line('L', 5);
+    const it = { sizes: { L: 20 }, po_lines: [a, b] };
+    expect(billLineNeed(it, b, 'L')).toBe(0);
+  });
+
+  test('cancelled units on the other line hand the need back', () => {
+    const a = line('L', 12, { cancelled: { L: 12 } }), b = line('L', 8);
+    const it = { sizes: { L: 20 }, po_lines: [a, b] };
+    expect(billLineNeed(it, b, 'L')).toBe(20);
+  });
+
+  test('size absent from the SO item → zero need regardless of siblings', () => {
+    const a = line('M', 6);
+    const it = { sizes: { L: 10 }, po_lines: [a] };
+    expect(billLineNeed(it, a, 'M')).toBe(0);
+  });
+
+  test('end-to-end with billOverageQty: duplicate bill on the split line stays capped', () => {
+    // The SO-1348 shape, split in two: item needs L 10 across two 5-unit lines, both fully
+    // received. A doc double-applied to line B claims 10. Old ceiling (full need 10) allowed
+    // ordered 5 → 10; per-line need is 10 − 5 = 5, so ordered holds at 5.
+    const a = { L: 5, received: { L: 5 } }, b = { L: 5, received: { L: 5 } };
+    const it = { sizes: { L: 10 }, po_lines: [a, b] };
+    expect(billOverageQty(5, 10, 5, billLineNeed(it, b, 'L'))).toBe(5);
+  });
+});
