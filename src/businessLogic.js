@@ -740,7 +740,13 @@ const deriveJobItemStatus = (j, o) => {
       coveredSz += Math.min(need, picked + poOrd);
     });
   });
-  if (totalSz > 0 && coveredSz >= totalSz) return 'waiting_receive';
+  // Nothing to source: the job carries no garment units at all (no job items, or every item
+  // it points at is gone / has zero quantity — e.g. SO-1684's three 0-unit art jobs). Such a
+  // job can never be "ordered", so falling through to 'need_to_order' parked it under the Jobs
+  // board's "Need to Order" chip forever on orders where every garment IS on a PO. Return null
+  // (no product state) so it matches no product chip and doesn't inflate "Needs Product".
+  if (totalSz === 0) return null;
+  if (coveredSz >= totalSz) return 'waiting_receive';
   if (coveredSz > 0) return 'on_order';
   return 'need_to_order';
 };

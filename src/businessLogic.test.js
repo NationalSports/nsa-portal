@@ -1722,6 +1722,20 @@ describe('Derived job product status (deriveJobItemStatus)', () => {
     so.items = [makeSOItem({ sizes: {}, qty_only: true, est_qty: 50, po_lines: [{ po_id: 'PO-1', QTY: 50 }] })];
     expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
   });
+
+  test('job with no garments at all → null, never need_to_order', () => {
+    // SO-1684: three art jobs with items:[] sat under the Jobs board's "Need to Order" chip on an
+    // order whose every garment is on a PO. A job with nothing to source has no product state.
+    const so = makeSO({ jobs: [job({ total_units: 0, items: [] })] });
+    so.items = [makeSOItem({ sizes: { S: 5 }, po_lines: [{ po_id: 'PO-1', S: 5 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe(null);
+  });
+
+  test('job pointing only at items that no longer exist → null, never need_to_order', () => {
+    const so = makeSO({ jobs: [job({ total_units: 0, items: [{ item_idx: 7 }] })] });
+    so.items = [makeSOItem({ sizes: { S: 5 }, po_lines: [{ po_id: 'PO-1', S: 5 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe(null);
+  });
 });
 
 describe('Ready-for-decoration transition (jobsNowReadyForDeco)', () => {
