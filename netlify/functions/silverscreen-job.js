@@ -51,9 +51,19 @@ async function ssFetch(jar, path, opts = {}) {
   return res;
 }
 
+// The attribute must start at a tag/whitespace boundary: an unanchored match reads
+// data-action="turbo:submit-start->…" as the form's action (observed live — the notes post
+// then went to that string as a URL and threw).
 function attr(tag, name) {
-  const m = tag.match(new RegExp(name + '\\s*=\\s*"([^"]*)"', 'i')) || tag.match(new RegExp(name + "\\s*=\\s*'([^']*)'", 'i'));
+  const m = tag.match(new RegExp('(?:^|[\\s<])' + name + '\\s*=\\s*"([^"]*)"', 'i'))
+    || tag.match(new RegExp('(?:^|[\\s<])' + name + "\\s*=\\s*'([^']*)'", 'i'));
   return m ? m[1] : null;
+}
+
+// Rails/Turbo error text out of a re-rendered form (used for both create and update failures).
+function railsErrors(html) {
+  return [...html.matchAll(/<(?:div|li|p)[^>]*class="[^"]*(?:alert|error|invalid-feedback)[^"]*"[^>]*>([\s\S]*?)<\/(?:div|li|p)>/gi)]
+    .map((m) => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 6);
 }
 
 // Parse one whole <form>…</form> string into { action, fields:[{tag,type,name,value,options?}] }.
@@ -317,7 +327,10 @@ async function postShipTo(jar, orderPath, shipTo, diag) {
           headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
           body: params.toString() });
         if (resp.status < 400) return true;
-        diag.shipTo = 'POST ' + form.action + ' → ' + resp.status;
+        // Carry their validation text — a bare 422 hid "duplicate PO" (their update re-validates
+        // the PO number, which collides with any other draft still holding it).
+        const errs = railsErrors(await resp.text().catch(() => ''));
+        diag.shipTo = 'POST ' + form.action + ' → ' + resp.status + (errs.length ? ': ' + errs.join(' | ') : '');
       } catch { diag.shipTo = 'POST ' + form.action + ' threw'; }
     }
   }
@@ -329,20 +342,35 @@ async function postShipTo(jar, orderPath, shipTo, diag) {
 // modal). Posts to a form discovered on the page — never a guessed endpoint. Returns the count
 // added so a partial result is reportable rather than silently wrong.
 async function postProducts(jar, orderPath, items, diag) {
-  const paths = [orderPath + '/order_products/new', orderPath + '/products/new', orderPath + '/edit', orderPath];
+  // The "Add Additional Product" modal is JS-driven, so its form isn't in the order page HTML.
+  // Start from the paths their Rails app would use, then add any product-ish URL the page
+  // itself advertises (href / data-*-url / data-*-src / turbo-frame src), which is how the
+  // modal's real endpoint gets found without guessing.
+  const paths = [orderPath + '/order_products/new', orderPath + '/products/new',
+    orderPath + '/order_items/new', orderPath + '/line_items/new', orderPath + '/items/new'];
+  try {
+    const res = await ssFetch(jar, orderPath, { headers: { Accept: 'text/html, application/xhtml+xml' } });
+    const html = await res.text();
+    for (const m of html.matchAll(/(?:href|src|data-[a-z-]*(?:url|src|path))\s*=\s*"([^"]*)"/gi)) {
+      const u = m[1];
+      if (/product|item|garment/i.test(u) && /^[/.]/.test(u) && !paths.includes(u)) paths.push(u);
+    }
+  } catch { /* fall through to the standard paths */ }
   let form = null;
-  for (const p of paths) {
+  const seen = [];
+  for (const p of paths.slice(0, 14)) {
     let html;
     try { const res = await ssFetch(jar, p, { headers: { Accept: 'text/html, application/xhtml+xml' } }); html = await res.text(); }
     catch { continue; }
     for (const f of allForms(html)) {
       const names = f.fields.map((x) => x.name).join(' ');
+      seen.push(p + ' → ' + f.action + ' [' + names.slice(0, 120) + ']');
       // Their modal's signature: a style field plus per-size quantity columns.
       if (/style/i.test(names) && /(size|xs\b|qty|quantity)/i.test(names)) { form = f; break; }
     }
     if (form) break;
   }
-  if (!form) { diag.products = 'no product form found'; return 0; }
+  if (!form) { diag.products = 'no product form found; tried ' + paths.slice(0, 8).join(', ') + (seen.length ? '; saw ' + seen.slice(0, 4).join(' · ') : ''); return 0; }
   let added = 0;
   for (const it of items) {
     const claimed = new Set();
@@ -501,8 +529,17 @@ exports.handler = async (event) => {
 
     // 200/422 — rails re-rendered the form with validation errors. Surface them.
     const back = await resp.text();
-    const errs = [...back.matchAll(/<(?:div|li)[^>]*class="[^"]*(?:alert|error|invalid-feedback)[^"]*"[^>]*>([\s\S]*?)<\/(?:div|li)>/gi)]
-      .map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 8);
+    const errs = railsErrors(back);
+    // Their portal rejects a second order carrying a PO number it already has. That's a real
+    // guard (it stops the same job being run twice), so say what it means and what to do rather
+    // than echoing "duplicate PO | PO #".
+    if (errs.some((e) => /duplicate/i.test(e))) {
+      return {
+        statusCode: 422, headers,
+        body: JSON.stringify({ ok: false, duplicate_po: true,
+          error: 'Silver Screen already has an order with PO ' + body.po.po_id + '. Open their portal, delete (or reuse) that draft, then send again — or give this deco PO a different number if both jobs are real.' })
+      };
+    }
     return {
       statusCode: 422, headers,
       body: JSON.stringify({ ok: false, error: 'Silver Screen rejected the order (HTTP ' + resp.status + ')' + (errs.length ? ': ' + errs.join(' | ') : ' — run action:"discover" to inspect the form.'), unmapped: filled.unmapped })

@@ -897,6 +897,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const updatedDp={...dp,
           status:(!dp.status||dp.status==='planned'||dp.status==='waiting')?'ordered':dp.status,
           _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString()};
+        // Whatever the send couldn't finish on their portal is a real to-do — keep it ON the PO
+        // instead of only in a toast that fades in 3.5s (the checklist is too long to read).
+        if(j.warning)updatedDp._silverscreen_todo=j.warning;else delete updatedDp._silverscreen_todo;
         const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);
         setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
@@ -14235,6 +14238,30 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             {(dp.art_file_ids||[]).length>0&&<div style={{padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,fontSize:12,color:'#92400e'}}>
               <b>Art purchased on this PO:</b> {(dp.art_file_ids||[]).map(aid=>(o.art_files||[]).find(a=>a.id===aid)?.name||aid).join(', ')}
             </div>}
+            {/* What the Silver Screen send couldn't finish on their portal. Persisted on the PO so
+                it survives the toast (and a reload) until the rep actually does it and marks done.
+                The bracketed form/field detail stays tucked away — it's for fixing the field map,
+                not for the rep. */}
+            {dp._silverscreen_todo&&(()=>{const _t=String(dp._silverscreen_todo);const _bi=_t.indexOf(' [');
+              const _msg=_bi>0?_t.slice(0,_bi):_t;const _detail=_bi>0?_t.slice(_bi+1):'';
+              return<div style={{padding:'10px 12px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:8,marginBottom:12}}>
+                <div style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+                  <span style={{fontSize:14}}>⚠️</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:800,color:'#92400e',marginBottom:2}}>Finish this job on the Silver Screen portal</div>
+                    <div style={{fontSize:12,color:'#92400e'}}>{_msg}</div>
+                    {_detail&&<details style={{marginTop:4}}><summary style={{fontSize:10,color:'#b45309',cursor:'pointer'}}>Technical detail (for fixing the integration)</summary>
+                      <div style={{fontSize:10,color:'#b45309',fontFamily:'monospace',wordBreak:'break-all',marginTop:2}}>{_detail}</div></details>}
+                  </div>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11,whiteSpace:'nowrap'}} title="I've completed these steps on the Silver Screen portal" onClick={()=>{
+                    const stripped={...dp};delete stripped._silverscreen_todo;
+                    const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?stripped:x),updated_at:new Date().toLocaleString()};
+                    setO(updated);onSave(updated);setDirty(true);
+                    setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);
+                    nf('Marked done — '+(dp.po_id||'this PO')+' no longer flags unfinished Silver Screen steps');
+                  }}>✓ Done</button>
+                </div>
+              </div>})()}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
