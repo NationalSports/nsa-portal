@@ -822,6 +822,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
     const[podDropShip,setPodDropShip]=useState(true);// inline deco PO — deco POs are always drop ship
+    const[podLinkId,setPodLinkId]=useState(null);// inline deco PO: id of an EXISTING deco PO for this decorator to fold the items into, instead of opening another one
     const[decoEditItems,setDecoEditItems]=useState(null);// {decoPoId,sel:{soItemIdx:bool}} — edit item coverage on an existing deco PO
     const[decoEditPo,setDecoEditPo]=useState(null);// {decoPoId,po_id,vendor,customVendor,deco_type,status,expected_date,unit_cost,drop_ship,notes} — edit PO details on the deco PO full page
     const[decoTrackAdd,setDecoTrackAdd]=useState('');// input for adding a tracking number on the deco PO full page
@@ -8317,7 +8318,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Drop ship never goes to the NSA warehouse: decorator address if we resolved one,
             // else the customer's shipping address (matches the Drop Ship toggle below).
             const _dsShipTo=_decoShip?'deco':(addrs[0]?.id||'warehouse');
-            setShowPO(vk);setPOExcluded({});setPoDropShip(_hasOutside?true:null);setPoShipTo(_hasOutside?_dsShipTo:'warehouse');setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoAlphaSuffix(cust?.alpha_tag||'')}}>
+            setShowPO(vk);setPOExcluded({});setPoDropShip(_hasOutside?true:null);setPoShipTo(_hasOutside?_dsShipTo:'warehouse');setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoAlphaSuffix(cust?.alpha_tag||'')}}>
             <span style={{width:16,height:16,borderRadius:'50%',border:'5px solid #192853',background:'#fff',flexShrink:0}}/>
             <div style={{flex:1}}><div style={{fontWeight:700,color:'#192853',fontSize:15}}>{vn}</div><div className="oe-num" style={{fontSize:12,color:'#5A6075',marginTop:1}}>{openItems.length} item{openItems.length!==1?'s':''} · <span style={{color:'#962C32',fontWeight:700}}>{openCount} units not yet on a PO</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)',color:'#192853'}}/></div>})}
@@ -8506,7 +8507,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const vks=[...new Set(openIdxs.map(ix=>items[ix]&&resolveVendor(items[ix])).filter(Boolean))];
           if(vks.length===0)return false;
           setPreexistingPO(false);setPreexistingPOId('');setLinkDpoId(null);
-          setPOExcluded({});setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});
+          setPOExcluded({});setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});
           setPoAlphaSuffix(cust?.alpha_tag||'');
           if(vks.length===1){
             // Straight into that vendor's form, pointed at the decorator we just wrote the DPO for.
@@ -8954,17 +8955,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty,colors:_podColors,stitches:_podStitches,underbase:_podUnderbase}):null;
       const podUnitCost=podCost!==null?(parseFloat(podCost)||0):(podAutoCost!==null?podAutoCost:0);
       const podExpectedCost=Math.round(podQty*podUnitCost*100)/100;
-      // Reads the inline deco panel → {po} or {error}. Record shape mirrors the standalone deco form.
+      // Deco POs this decorator already has on the order, which these items can join instead of
+      // opening another one. Scoped to the decorator picked in this panel — folding items into a
+      // DIFFERENT decorator's PO would silently send them to the wrong shop. Its deco type is shown
+      // on the chip: a second PO is right when the work differs (embroidery vs screen print), so the
+      // rep needs to see which is which to choose. DTF-purchase POs buy art, not decoration.
+      const _podLinkable=(o.deco_pos||[]).filter(dp=>dp&&dp.po_mode!=='dtf_purchase'&&!dp.topstar_service
+        &&(poDecoInline?(dp.vendor===poDecoInline.vendor||(podDv?.id&&dp.deco_vendor_id===podDv.id)):false));
+      const podLink=podLinkId?_podLinkable.find(dp=>dp.id===podLinkId)||null:null;
+      // Reads the inline deco panel → {decoPos,po,isMerge} or {error}. decoPos is the order's whole
+      // deco_pos array to write, so joining an existing PO and opening a new one look the same to
+      // the submit paths. Record shape mirrors the standalone deco form.
       const buildInlineDecoPO=()=>{
         if(podSelIdxs.length===0)return{error:'Pick at least one item for the deco PO (or remove the deco section)'};
-        return{po:{id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
+        const _existing=o.deco_pos||[];
+        if(podLink){
+          // Join: union the coverage, recompute qty from the SO and keep the PO's existing rate —
+          // same basis as the standalone form's "Add to <DPO>".
+          const merged=[...new Set([...(podLink.item_idxs||[]),...podSelIdxs])];
+          const fresh=merged.filter(ix=>!(podLink.item_idxs||[]).includes(ix));
+          if(fresh.length===0)return{error:'Every checked item is already on '+podLink.po_id+' — check an item it doesn\'t cover yet, or switch to a new deco PO'};
+          const items=safeItems(o);
+          const qty=merged.reduce((a,ix)=>a+Object.values(safeSizes(items[ix]||{})).reduce((b,v)=>b+safeNum(v),0),0);
+          const rate=safeNum(podLink.unit_cost);
+          const mergedPo={...podLink,item_idxs:merged,qty,expected_cost:Math.round(qty*rate*100)/100};
+          return{decoPos:_existing.map(dp=>dp.id===podLink.id?mergedPo:dp),po:mergedPo,isMerge:true,added:fresh.length};
+        }
+        const newPo={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
           po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
           item_idxs:podSelIdxs,qty:podQty,unit_cost:podUnitCost,expected_cost:podExpectedCost,
           notes:document.getElementById('pod-notes')?.value||'',
           drop_ship:podDropShip||undefined,
           expected_date:document.getElementById('pod-date')?.value||'',
           status:'waiting',created_at:new Date().toLocaleDateString(),
-          _bill_cost:0,_bill_details:[],tracking_numbers:[]}};
+          _bill_cost:0,_bill_details:[],tracking_numbers:[]};
+        return{decoPos:[..._existing,newPo],po:newPo,isMerge:false};
       };
       // Decorator drop-ship default: when this PO's blanks are headed to an outside decorator —
       // either an inline deco PO is being created in this same modal, or an existing drop-ship deco
@@ -8986,8 +9011,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // since those blanks must be received at Emerson before we can decorate them.
       const _poDsInHouse=poItems.map((it,vi)=>({it,vi})).filter(({it,vi})=>!poExcluded[vi]&&(it.members||[it]).some(m=>_itemInHouseDeco(m._idx)));
       const _poDsInHouseConfirm=()=>'⚠️ '+_poDsInHouse.length+' item'+(_poDsInHouse.length!==1?'s':'')+' on this drop-ship PO '+(_poDsInHouse.length!==1?'are':'is')+' decorated IN-HOUSE:\n\n'+_poDsInHouse.map(x=>'  • '+x.it.sku+' — '+x.it.name).join('\n')+'\n\nDrop ship skips the warehouse, so these blanks will never reach Emerson to be decorated.\n\nCreate the PO anyway?';
-      return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
-        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}>x</button></div>
+      return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>x</button></div>
         <div className="modal-body">
           {/* Inline Outside Decoration PO — expands INSIDE this modal so the in-progress product PO
               (uncontrolled qty/price inputs) survives, and both POs are created in one submit.
@@ -8999,19 +9024,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true);const _dv=decoVendors.find(v=>v.name===sel);if(poDropShip===true&&_dv?.id&&resolveDecoShipToClient({decoId:_dv.id,so:o,decoVendors,vendors:vendorList}))setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true);setPodLinkId(null);const _dv=decoVendors.find(v=>v.name===sel);if(poDropShip===true&&_dv?.id&&resolveDecoShipToClient({decoId:_dv.id,so:o,decoVendors,vendors:vendorList}))setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
               <span style={{fontSize:13}}>🎨</span>
               <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>Deco PO — {poDecoInline.vendor}</span>
-              <span style={{fontSize:11,color:'#6d28d9',flex:1}}>created together with this {vn} PO</span>
-              <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'2px 8px'}} onClick={()=>setPoDecoInline(null)}>✕ Remove</button>
+              <span style={{fontSize:11,color:'#6d28d9',flex:1}}>{podLink?'items join '+podLink.po_id:'created together with this '+vn+' PO'}</span>
+              <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'2px 8px'}} onClick={()=>{setPoDecoInline(null);setPodLinkId(null)}}>✕ Remove</button>
             </div>
             <div style={{padding:10}}>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}}>
-                <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
-                <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" value={podType} onChange={e=>{setPodType(e.target.value);setPodCost(null)}}>
+              {/* Join one of this decorator's existing POs instead of opening another. Without this the
+                  inline panel could only ever open a new DPO, so a rep adding items to an order already
+                  covered by one had no way to fold them in — they got a second PO to the same shop. */}
+              {_podLinkable.length>0&&<div style={{marginBottom:10,padding:'8px 10px',background:podLink?'#f0fdf4':'white',border:'1px solid '+(podLink?'#bbf7d0':'#ede9fe'),borderRadius:8}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}}>New deco PO, or add to one {poDecoInline.vendor} already has?</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  <button type="button" onClick={()=>setPodLinkId(null)} style={{padding:'4px 9px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer',border:'1px solid '+(!podLink?'#7c3aed':'#e2e8f0'),background:!podLink?'#faf5ff':'white',color:!podLink?'#6d28d9':'#64748b'}}>✨ New PO ({podPoId})</button>
+                  {_podLinkable.map(dp=>{const sel=podLink&&podLink.id===dp.id;const n=(dp.item_idxs||[]).length;
+                    return<button key={dp.id} type="button" onClick={()=>setPodLinkId(dp.id)} title={'Fold the checked items into '+dp.po_id+' at its existing rate — its qty and expected cost are recalculated'} style={{padding:'4px 9px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer',border:'1px solid '+(sel?'#16a34a':'#e2e8f0'),background:sel?'#dcfce7':'white',color:sel?'#166534':'#334155'}}>
+                      ▣ {dp.po_id} <span style={{fontWeight:500}}>· {String(dp.deco_type||'').replace(/_/g,' ')||'—'} ({n} item{n!==1?'s':''}{dp.unit_cost?' · $'+safeNum(dp.unit_cost).toFixed(2)+'/pc':''})</span>
+                    </button>})}
+                </div>
+                {podLink&&<div style={{marginTop:6,fontSize:11,color:'#166534'}}>Checked items join <strong>{podLink.po_id}</strong> ({String(podLink.deco_type||'').replace(/_/g,' ')}) at its existing rate{podLink.unit_cost?<> (<strong>${safeNum(podLink.unit_cost).toFixed(2)}/pc</strong>)</>:null} — the PO number, deco type and cost below are ignored. Open a new PO instead when the work differs (e.g. screen print vs embroidery).</div>}
+              </div>}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10,opacity:podLink?0.5:1}}>
+                <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podLink?podLink.po_id:podPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" value={podLink?(podLink.deco_type||podType):podType} disabled={!!podLink} onChange={e=>{setPodType(e.target.value);setPodCost(null)}}>
                   <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
                 <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
               </div>
@@ -9029,6 +9068,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
                     <strong style={{flex:1}}>{it.name}</strong>
                     {_itemInHouseDeco(it._idx)&&<span title="Routed In-house — decorated at Emerson, so it doesn't belong on an outside decorator's PO" style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
+                    {/* Deco POs already covering this item, so the rep can tell "needs a second PO for
+                        different work" (embroidery + screen print on one garment) from "already handled". */}
+                    {(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx)).map(dp=>{const _isLink=podLink&&podLink.id===dp.id;
+                      return<span key={dp.id||dp.po_id} title={_isLink?'Already on '+dp.po_id+' — the PO you\'re adding to; checking it here changes nothing':'Already covered by '+dp.po_id+' ('+String(dp.deco_type||'').replace(/_/g,' ')+') — only add it again for DIFFERENT work'} style={{fontSize:9,fontWeight:700,color:_isLink?'#166534':'#6d28d9',background:_isLink?'#dcfce7':'#ede9fe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>▣ {dp.po_id}</span>})}
                     {onPo&&<span style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>on PO</span>}
                     <span style={{color:'#64748b',fontSize:11}}>{it.color}</span>
                     <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>SO Qty: {soQ}</span>
@@ -9149,7 +9192,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <strong style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${poOrderTotal.toFixed(2)}</strong></div>}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>Cancel</button>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
             if(_poCreatingRef.current)return;
@@ -9211,10 +9254,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Queue the batch entry BEFORE saving the SO so its app_state write is in flight
             // before the SO save's post-guard poll runs; avoids a poll clobbering the queue.
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
-            // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race)
-            const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);setPOCounter(c=>c+(podRes?2:1));
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' for '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+            // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race).
+            // podRes.decoPos is the whole array — a new deco PO appended, or the joined one merged in
+            // place. Joining consumes no PO number, so only a NEW deco PO bumps the counter twice.
+            const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);setPOCounter(c=>c+((podRes&&!podRes.isMerge)?2:1));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -9296,7 +9341,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
           });
           // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
-          const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
+          // podRes.decoPos is the whole array — a new deco PO appended, or the joined one merged in place.
+          const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
           setO(updated);onSave(updated);
           // Durably persist each just-created PO line immediately, so it survives a two-tab overwrite even
           // if the async SO save above is lost before it flushes (SO-1663 "PO dropped from portal"). This is
@@ -9305,10 +9351,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // already-persisted lines rather than creating a first-flush-vulnerable new one.
           if(!preexistingPO)newPoLines.forEach(({lineIdx,poIdx})=>{const _pl=updatedItems[lineIdx]&&updatedItems[lineIdx].po_lines&&updatedItems[lineIdx].po_lines[poIdx];if(_pl&&_pl.po_id)_dbPersistNewPoLine(o.id,lineIdx,_pl);});
           // Product PO consumes a counter number unless preexisting; the inline deco PO always consumes one.
-          const counterBump=(preexistingPO?0:1)+(podRes?1:0);
+          // Joining an existing deco PO consumes no PO number, so it doesn't bump the counter.
+          const counterBump=(preexistingPO?0:1)+((podRes&&!podRes.isMerge)?1:0);
           if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' for '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           if(newPoLines.length>0&&!preexistingPO){
             // Marry-up with the deco flow: blanks drop-shipping to a decorator — via the inline
             // deco PO created in this same submit, or an existing drop-ship deco PO that already
