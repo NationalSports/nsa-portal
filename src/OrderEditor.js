@@ -841,6 +841,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _isSilverScreenDp=dp=>!!dp&&(dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||''));
     const[sspSending,setSspSending]=useState(false);
     const[sspConfirm,setSspConfirm]=useState(null);// {dp,baseOrder,rows,totalPcs,deco_instructions,_resolve} — in-app confirm for the Silver Screen job (window.confirm looked broken/out of place)
+    const[sspUnlinkKey,setSspUnlinkKey]=useState(null);// deco PO key awaiting inline "unlink job?" confirmation
     // Opens the in-app confirm. Returns a promise that resolves when the rep answers — after the
     // send completes on OK, immediately on cancel — so callers chaining .finally(_afterPo) still
     // open their follow-on modal at the same point the blocking window.confirm used to give them.
@@ -867,6 +868,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(cust?.shipping_address_line1||cust?.shipping_city)return{name:cust.name||'',line1:cust.shipping_address_line1||'',line2:cust.shipping_address_line2||'',city:cust.shipping_city||'',state:cust.shipping_state||'',zip:cust.shipping_zip||''};
       if(cust?.billing_address_line1||cust?.billing_city)return{name:cust.name||'',line1:cust.billing_address_line1||'',line2:cust.billing_address_line2||'',city:cust.billing_city||'',state:cust.billing_state||'',zip:cust.billing_zip||''};
       return null;
+    };
+    // Unlink a Silver Screen job from this deco PO: forget the job #/URL and put the status back
+    // to waiting if the send is what advanced it. Local only — the draft on their portal is
+    // untouched, so it still has to be deleted there (the confirm says so).
+    const _ssUnlinkJob=dp=>{
+      const stripped={...dp,status:dp.status==='ordered'?'waiting':dp.status};
+      delete stripped._silverscreen_job_id;delete stripped._silverscreen_job_url;delete stripped._silverscreen_sent_at;
+      const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?stripped:x),updated_at:new Date().toLocaleString()};
+      setO(updated);onSave(updated);setDirty(true);
+      setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);
+      setSspUnlinkKey(null);
+      nf('Unlinked job '+(dp._silverscreen_job_id||'')+' from '+(dp.po_id||'this PO')+' — delete that draft on the Silver Screen portal, then send again.');
     };
     const _sspSendNow=async({dp,baseOrder,rows,deco_instructions})=>{
       const cur=baseOrder;
@@ -14234,6 +14247,15 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <span style={{display:'inline-flex',gap:6,alignItems:'center'}}>
                   <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>
                   <button className="btn btn-sm btn-secondary" disabled={sspSending} style={{fontSize:11}} onClick={()=>sendSilverScreenJob(dp)} title="Send this PO to Silver Screen again — creates a NEW draft job on their portal and points this PO at it (delete the old draft on their side)">{sspSending?'Sending…':'↻ Re-send'}</button>
+                  {/* Unlink: forget this job # so the PO is back to a clean, un-sent state. Two-click
+                      so it can't happen by accident — the job # isn't recoverable from here after. */}
+                  {sspUnlinkKey===dpKey
+                    ?<span style={{display:'inline-flex',gap:6,alignItems:'center',padding:'2px 8px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
+                      Unlink job {dp._silverscreen_job_id||''}? The draft stays on their portal — delete it there.
+                      <button className="btn btn-sm" style={{fontSize:11,background:'#b91c1c',color:'white',border:'none'}} onClick={()=>_ssUnlinkJob(dp)}>Unlink</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setSspUnlinkKey(null)}>Cancel</button>
+                    </span>
+                    :<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#b91c1c'}} onClick={()=>setSspUnlinkKey(dpKey)} title="Forget this job number so the PO reads as un-sent (status back to waiting) — use it when the draft on their portal was deleted or is being replaced">✕ Unlink job</button>}
                 </span>;
                 if(dp.status==='received'||dp.status==='billed')return null;
                 return <button className="btn btn-sm btn-primary" disabled={sspSending} style={{fontSize:11,background:'#475569',borderColor:'#475569'}} onClick={()=>sendSilverScreenJob(dp)} title="Create this job on the Silver Screen account portal — sends the PO number and all covered items with size breakdowns">{sspSending?'Sending…':'🖨 Send to Silver Screen'}</button>;
