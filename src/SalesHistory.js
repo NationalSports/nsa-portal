@@ -257,7 +257,9 @@ export default function SalesHistory() {
 
   return (
     <div>
-      <div className="card" style={{ marginBottom: 12 }}>
+      {/* .card clips with overflow:hidden, which cut the customer dropdown off at
+          the card's bottom edge. Let it escape, and stack it over the cards below. */}
+      <div className="card" style={{ marginBottom: 12, overflow: 'visible', position: 'relative', zIndex: 30 }}>
         <div className="card-body" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
           <div style={{ flex: '1 1 260px', minWidth: 220, position: 'relative' }}>
             <label style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>Customer</label>
