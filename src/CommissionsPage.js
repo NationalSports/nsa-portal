@@ -123,9 +123,13 @@ export default function CommissionsPage(){
     // never change a GP number. Detail rows are SO-level (unscaled); the returned
     // `scale` says what fraction of the SO this invoice covers.
     const calcGP=(inv,dtl)=>{
-      // Commission revenue excludes CC surcharges: recordPayment folds card fees into inv.total
-      // (tracked in inv.cc_fee), and reps must not earn GP on a processing-fee pass-through.
-      const invRev=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0));
+      // Commission revenue excludes CC surcharges AND sales tax: recordPayment folds card fees
+      // into inv.total (tracked in inv.cc_fee), and inv.total also includes collected sales tax
+      // (inv.tax) — both are pass-throughs NSA remits, not margin, so reps must not earn GP on
+      // them. Dropping tax also fixes `scale` below: invRev previously carried tax while soTotal
+      // (product+deco+ship) never did, so every taxable invoice scaled cost AND GP up by the tax
+      // rate (~7-10%) and the commission statement never matched the SO's margin tile.
+      const invRev=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0)-safeNum(inv.tax||0));
       const so=sos.find(s=>s.id===inv.so_id);
       if(!so)return{rev:invRev,cost:0,gp:invRev,shipRev:0,shipCost:0,inboundFreight:0,scale:1};
       const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
@@ -492,7 +496,9 @@ export default function CommissionsPage(){
                 </div>
               </td>}
             </tr>)}
-            {monthLines.length>0&&(()=>{const earnedRev=monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0);const earnedGpPct=earnedRev>0?Math.round(monthGP/earnedRev*100):0;return<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+            {/* Sum the rows' own gp.rev (commissionable revenue: net of CC fees and sales tax) so the
+                EARNED row equals the column above it — inv.total would re-add the tax the lines exclude. */}
+            {monthLines.length>0&&(()=>{const earnedRev=monthLines.reduce((a,l)=>a+l.gp.rev,0);const earnedGpPct=earnedRev>0?Math.round(monthGP/earnedRev*100):0;return<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
               <td colSpan={isAdmin?3:2}>EARNED</td>
               <td style={{textAlign:'right'}}>${earnedRev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthLines.reduce((a,l)=>a+l.gp.cost,0).toLocaleString()}</td>
@@ -522,13 +528,15 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right'}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.balance>0&&l.gp.gp/l.balance>=0.3?'#dcfce7':'#fef3c7',color:l.balance>0&&l.gp.gp/l.balance>=0.3?'#166534':'#92400e'}}>{l.balance>0?Math.round(l.gp.gp/l.balance*100):0}%</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>)}
-            {monthPipeline.length>0&&(()=>{const pipeRev=monthPipeline.reduce((a,l)=>a+l.balance,0);const pipeGP=monthPipeline.reduce((a,l)=>a+l.gp.gp,0);const pipeGpPct=pipeRev>0?Math.round(pipeGP/pipeRev*100):0;return<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+            {/* Revenue column stays the tax-inclusive balance (what's actually awaiting payment);
+                GP% is computed on commissionable revenue (gp.rev) to match the per-row badges. */}
+            {monthPipeline.length>0&&(()=>{const pipeRev=monthPipeline.reduce((a,l)=>a+l.balance,0);const pipeGP=monthPipeline.reduce((a,l)=>a+l.gp.gp,0);const pipeCommRev=monthPipeline.reduce((a,l)=>a+l.gp.rev,0);const pipeGpPct=pipeCommRev>0?Math.round(pipeGP/pipeCommRev*100):0;return<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
               <td colSpan={isAdmin?3:2}>PIPELINE</td>
               <td style={{textAlign:'right'}}>${pipeRev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
@@ -561,7 +569,7 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.balance>0&&l.gp.gp/l.balance>=0.3?'#dcfce7':'#fef3c7',color:l.balance>0&&l.gp.gp/l.balance>=0.3?'#166534':'#92400e'}}>{l.balance>0?Math.round(l.gp.gp/l.balance*100):0}%</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}>{l.daysOpen!=null?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span>:'\u2014'}</td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>

@@ -1314,8 +1314,16 @@ function garmentCost(it) {
     const bc = safeNum(pl._bill_cost);
     if (bc > 0) {
       const billedQty = Object.values(pl.billed || {}).reduce((a, v) => a + (typeof v === 'number' && v > 0 ? v : 0), 0);
-      const openQty = billedQty > 0 ? Math.max(0, lineQty - billedQty) : 0;
-      poCost += bc + openQty * u;
+      if (billedQty > lineQty && lineQty > 0) {
+        // The bill covers more units than this line holds — a doc-level supplier bill whose
+        // billed sizes were reconciled to the FULL document, spanning other orders' garments
+        // (SO-1396: 50 shirts carrying a $1,815 bill for 250). Charge this line only its own
+        // share at the billed unit price; the rest of the doc belongs to other lines/orders.
+        poCost += bc * lineQty / billedQty;
+      } else {
+        const openQty = billedQty > 0 ? Math.max(0, lineQty - billedQty) : 0;
+        poCost += bc + openQty * u;
+      }
     } else {
       poCost += lineQty * u;
     }
