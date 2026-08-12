@@ -204,3 +204,172 @@ describe('frozenJobNonArtLabels', () => {
     expect(frozenJobNonArtLabels(patchJob(), jerseyDecos)).not.toContain('Numbers — heat transfer');
   });
 });
+
+// ── Live-order regressions ────────────────────────────────────────────────────────────────────
+// Real rows from the orders Dylan reported, driven through the SAME resolver the editors use
+// (liveItemDecoDescriptors) so the art-completion gate is exercised, not a stand-in for it.
+import { liveItemDecoDescriptors } from '../lib/syncJobsMatch';
+import { artStatusForFile } from '../constants';
+
+const resolverFor = (order) => (ii) => {
+  const it = order.items[ii];
+  if (!it) return null;
+  return liveItemDecoDescriptors(it.decos, {
+    findArt: (id) => order.art_files.find((a) => a.id === id),
+    artStatusOf: (artF, dt) => artStatusForFile(artF, dt),
+    isOutsourced: (d) => d.fulfillment === 'outside' || !!d.deco_po_id,
+  });
+};
+
+describe('liveItemDecoDescriptors — the art-completion gate', () => {
+  const approvedWithFiles = { id: 'af1', name: 'PATCH', deco_type: 'heat_press', status: 'approved', prod_files_attached: true };
+  const approvedNoFiles = { id: 'af1', name: 'PATCH', deco_type: 'dtf', status: 'approved', prod_files_attached: false };
+  const proofing = { id: 'af1', name: 'PATCH', deco_type: 'heat_press', status: 'uploaded', mockup_files: [{ url: 'm' }] };
+  const build = (art) => liveItemDecoDescriptors(
+    [{ kind: 'art', art_file_id: 'af1', position: 'Left Chest' }, { kind: 'numbers', num_method: 'heat_transfer', position: 'Back' }],
+    { findArt: () => art, artStatusOf: (a, dt) => artStatusForFile(a, dt), isOutsourced: () => false },
+  );
+
+  test('finished artwork consolidates', () => {
+    expect(build(approvedWithFiles)[0]).toMatchObject({ kind: 'art', method: 'heat_press', consolidatable: true });
+  });
+  test('approved but awaiting production files does NOT', () => {
+    expect(build(approvedNoFiles)[0].consolidatable).toBe(false);
+  });
+  test('artwork still being proofed does NOT', () => {
+    expect(build(proofing)[0].consolidatable).toBe(false);
+  });
+  test('numbers always consolidate — no art workflow to strand', () => {
+    expect(build(proofing)[1]).toMatchObject({ kind: 'numbers', label: 'Numbers — heat transfer', consolidatable: true });
+  });
+  test('Art TBD never consolidates', () => {
+    const r = liveItemDecoDescriptors([{ kind: 'art', art_file_id: null, position: 'Front' }],
+      { findArt: () => null, artStatusOf: (a, dt) => artStatusForFile(a, dt), isOutsourced: () => false });
+    expect(r[0].consolidatable).toBe(false);
+  });
+  test('declared art that is not hydrated aborts the whole line', () => {
+    const r = liveItemDecoDescriptors([{ kind: 'art', art_file_id: 'af-missing' }],
+      { findArt: () => undefined, artStatusOf: () => 'art_complete', isOutsourced: () => false });
+    expect(r).toBeNull();
+  });
+  test('outsourced decorations are not in-house work', () => {
+    const r = liveItemDecoDescriptors([{ kind: 'art', art_file_id: 'af1', deco_po_id: 'DPO-1' }],
+      { findArt: () => approvedWithFiles, artStatusOf: () => 'art_complete', isOutsourced: (d) => !!d.deco_po_id });
+    expect(r).toEqual([]);
+  });
+  test('a split-art share keeps its own job even when the art is finished', () => {
+    const r = liveItemDecoDescriptors([{ kind: 'art', art_file_id: 'af1', split_group: 'g1', split_sizes: { M: 4 } }],
+      { findArt: () => approvedWithFiles, artStatusOf: () => 'art_complete', isOutsourced: () => false });
+    expect(r[0].consolidatable).toBe(false);
+  });
+});
+
+describe('SO-1605 (live rows) — 5 sheets become 3', () => {
+  // items 0-5: jersey, art patch (deco 0) + back numbers (deco 1). item 6: backpack, patch + names.
+  // items 7-8: shorts, patch only.
+  const AF = [
+    { id: 'af1784573480759', name: 'CORONADO FC - CHEST LEFT - PATCH', deco_type: 'heat_press', status: 'approved', prod_files_attached: true },
+    { id: 'af1784736631116', name: 'CORONADO FC - BACKPACK - PATCH', deco_type: 'heat_press', status: 'approved', prod_files_attached: true },
+    { id: 'af1784574267140', name: 'CORONADO FC - SHORT - PATCH', deco_type: 'heat_press', status: 'approved', prod_files_attached: true },
+  ];
+  const jersey = (sku) => ({ sku, decos: [
+    { kind: 'art', art_file_id: 'af1784573480759', position: 'Left Chest' },
+    { kind: 'numbers', num_method: 'heat_transfer', position: 'Back' }] });
+  const order = { art_files: AF, items: [
+    jersey('JJ0055'), jersey('JI9989'), jersey('JJ0058'), jersey('JI9992'), jersey('H44535'), jersey('H44532'),
+    { sku: '5159512', decos: [
+      { kind: 'art', art_file_id: 'af1784736631116', position: 'Other' },
+      { kind: 'names', name_method: 'embroidery', position: 'Other' }] },
+    { sku: 'JJ2420', decos: [{ kind: 'art', art_file_id: 'af1784574267140', position: 'Right Leg' }] },
+    { sku: 'JH3411', decos: [{ kind: 'art', art_file_id: 'af1784574267140', position: 'Right Leg' }] },
+  ] };
+  const JROWS = ['JJ0055', 'JI9989', 'JJ0058', 'JI9992', 'H44535', 'H44532'];
+  const frozen = [
+    { id: 'JOB-1605-02', key: 'released_heat_press_JOB-1605-02', _released: true, deco_type: 'heat_press',
+      art_status: 'art_complete', prod_status: 'ready', total_units: 18, art_file_id: 'af1784573480759',
+      _art_ids: ['af1784573480759'], items: JROWS.map((sku, i) => ({ item_idx: i, sku, units: 3, deco_idxs: [0] })) },
+    { id: 'JOB-1605-03', key: 'released_heat_transfer_JOB-1605-03', _released: true, deco_type: 'heat_transfer',
+      art_status: 'art_complete', prod_status: 'ready', total_units: 18, _art_ids: [],
+      items: JROWS.map((sku, i) => ({ item_idx: i, sku, units: 3, deco_idxs: [1] })) },
+    { id: 'JOB-1605-04', key: 'released_embroidery_JOB-1605-04', _released: true, deco_type: 'embroidery',
+      art_status: 'art_complete', prod_status: 'hold', total_units: 1, _art_ids: [],
+      items: [{ item_idx: 6, sku: '5159512', units: 1, deco_idxs: [1] }] },
+    { id: 'JOB-1605-05', key: 'released_heat_press_JOB-1605-05', _released: true, deco_type: 'heat_press',
+      art_status: 'art_complete', prod_status: 'ready', total_units: 1, art_file_id: 'af1784736631116',
+      _art_ids: ['af1784736631116'], items: [{ item_idx: 6, sku: '5159512', units: 1, deco_idxs: [0] }] },
+  ];
+
+  test('the two jersey jobs and the two backpack jobs each collapse to one', () => {
+    const r = consolidateFrozenJobDecos(frozen, resolverFor(order));
+    expect(r.jobs.map((j) => j.id)).toEqual(['JOB-1605-02', 'JOB-1605-04']);
+    expect(r.absorbedIds.sort()).toEqual(['JOB-1605-03', 'JOB-1605-05']);
+  });
+
+  test('each garment is claimed once, so the board stops double-counting it', () => {
+    const r = consolidateFrozenJobDecos(frozen, resolverFor(order));
+    const claims = r.jobs.flatMap((j) => j.items.map((gi) => gi.item_idx + '::' + gi.deco_idxs.join(',')));
+    expect(claims).toEqual([...JROWS.map((_, i) => i + '::0,1'), '6::0,1']);
+    // The shorts (items 7-8) are untouched — they stay with the auto-builder.
+    expect(r.jobs.flatMap((j) => j.items.map((gi) => gi.item_idx))).not.toContain(7);
+  });
+
+  test('the merged jersey job advertises the back numbers, not just the logo', () => {
+    const r = consolidateFrozenJobDecos(frozen, resolverFor(order));
+    expect(frozenJobNonArtLabels(r.jobs[0], resolverFor(order))).toEqual(['Numbers — heat transfer']);
+    expect(frozenJobNonArtLabels(r.jobs[1], resolverFor(order))).toEqual(['Names — embroidery']);
+  });
+});
+
+describe('SO-1774 (live rows) — a released numbers job reclaims its garments’ finished logo', () => {
+  // The patch FILE is approved with production files attached, even though the auto job that owned
+  // it still had a stale art_status of waiting_approval. The gate reads the file.
+  const order = {
+    art_files: [{ id: 'af-0', name: 'CORONADO FC - CHEST LEFT - PATCH', deco_type: 'heat_press', status: 'approved', prod_files_attached: true }],
+    items: [0, 1, 2].map(() => ({ sku: 'JJ0055', decos: [
+      { kind: 'art', art_file_id: 'af-0', position: 'Left Chest' },
+      { kind: 'numbers', num_method: 'heat_transfer', position: 'Back' }] })),
+  };
+  const frozen = [{ id: 'JOB-1774-02', key: 'released_heat_transfer_JOB-1774-02', _released: true,
+    deco_type: 'heat_transfer', art_status: 'art_complete', prod_status: 'hold', total_units: 10, _art_ids: [],
+    items: [0, 1, 2].map((i) => ({ item_idx: i, sku: 'JJ0055', units: 3, deco_idxs: [1] })) }];
+
+  test('the patch joins the numbers job instead of running as a second sheet', () => {
+    const r = consolidateFrozenJobDecos(frozen, resolverFor(order));
+    expect(r.jobs).toHaveLength(1);
+    expect(r.jobs[0].items.map((gi) => gi.deco_idxs)).toEqual([[0, 1], [0, 1], [0, 1]]);
+    expect(r.jobs[0]._art_ids).toEqual(['af-0']);
+  });
+
+  test('units are unchanged — expansion adds decorations, never garments', () => {
+    const r = consolidateFrozenJobDecos(frozen, resolverFor(order));
+    expect(r.jobs[0].total_units).toBe(10);
+    expect(r.jobs[0].items).toHaveLength(3);
+  });
+});
+
+describe('SO-1840 (live rows) — two screen designs on one hoodie run as one job', () => {
+  const order = {
+    art_files: [
+      { id: 'af-cui', name: 'CUI Basketball', deco_type: 'screen_print', status: 'approved', prod_files_attached: true },
+      { id: 'af-talon', name: 'Talon', deco_type: 'screen_print', status: 'approved', prod_files_attached: true }],
+    items: [null, null, null, { sku: 'JW6602', decos: [
+      { kind: 'art', art_file_id: 'af-cui', position: 'Front Center' },
+      { kind: 'art', art_file_id: 'af-talon', position: 'Back' }] }],
+  };
+  const frozen = [
+    { id: 'JOB-1840-03', key: 'released_screen_print_JOB-1840-03', _released: true, deco_type: 'screen_print',
+      art_status: 'art_complete', prod_status: 'hold', total_units: 21, art_file_id: 'af-cui', _art_ids: ['af-cui'],
+      items: [{ item_idx: 3, sku: 'JW6602', units: 21, deco_idxs: [0] }] },
+    { id: 'JOB-1840-04', key: 'released_screen_print_JOB-1840-04', _released: true, deco_type: 'screen_print',
+      art_status: 'art_complete', prod_status: 'hold', total_units: 21, art_file_id: 'af-talon', _art_ids: ['af-talon'],
+      items: [{ item_idx: 3, sku: 'JW6602', units: 21, deco_idxs: [1] }] },
+  ];
+
+  test('21 hoodies count once, not 42', () => {
+    const r = consolidateFrozenJobDecos(frozen, resolverFor(order));
+    expect(r.jobs).toHaveLength(1);
+    expect(r.jobs[0]._art_ids).toEqual(['af-cui', 'af-talon']);
+    expect(r.jobs[0].items[0].deco_idxs).toEqual([0, 1]);
+    expect(r.jobs[0].total_units).toBe(21);
+  });
+});

@@ -430,6 +430,62 @@ export function consolidateFrozenJobDecos(frozenJobs, resolveItemDecos, reserved
 }
 
 /**
+ * Describe one garment line's live IN-HOUSE decorations for the consolidation above.
+ *
+ * Kept here rather than in the editors because both copies need the identical reading of a
+ * decoration, and because the `consolidatable` rule is the load-bearing one: it decides whether a
+ * decoration may be folded into a frozen job.
+ *
+ *   - Anything routed to an outside decorator is not in-house work and is omitted entirely.
+ *   - Numbers / names always consolidate — they carry no art workflow to strand.
+ *   - Art consolidates only once its file reaches `art_complete`. A design still being proofed
+ *     keeps its own job so folding it in can't move garments out from under an open art request or
+ *     coach send, and can't leave a job reading further along than the artwork it carries. Judged on
+ *     the FILE, not the owning job's stored art_status, which goes stale (SO-1774's patch job still
+ *     read waiting_approval long after its file was approved with production files attached).
+ *   - Split-art shares carry their own per-size allocation and always keep their own job.
+ *
+ * Returns null when the caller can't vouch for the line (missing, or art declared but not hydrated)
+ * — never reshape a frozen job off a half-loaded order.
+ *
+ * @param {object[]} decos — the line's decorations, in index order
+ * @param {{findArt:(id:string)=>object|undefined, artStatusOf:(art:object|null,fallbackDt:string)=>string,
+ *          isOutsourced:(deco:object, method:string)=>boolean}} deps
+ */
+export function liveItemDecoDescriptors(decos, deps) {
+  const { findArt, artStatusOf, isOutsourced } = deps || {};
+  const out = [];
+  const list = Array.isArray(decos) ? decos : [];
+  for (let di = 0; di < list.length; di += 1) {
+    const d = list[di];
+    if (!d) continue;
+    if (d.kind !== 'art' && d.kind !== 'numbers' && d.kind !== 'names') continue;
+    let method; let label; let artFileId = null; let consolidatable = true;
+    if (d.kind === 'art') {
+      const artF = d.art_file_id ? findArt(d.art_file_id) : null;
+      if (d.art_file_id && d.art_file_id !== '__tbd' && !artF) return null;// declared art not hydrated
+      method = (artF && artF.deco_type) || d.deco_type || 'screen_print';
+      label = (artF && artF.name) || ('Unassigned Art (' + String(d.position || '') + ')');
+      artFileId = d.art_file_id || null;
+      const isSplitShare = !!(d.split_group && d.split_sizes && Object.keys(d.split_sizes).length > 0);
+      consolidatable = !isSplitShare && artStatusOf(artF || null, d.deco_type) === 'art_complete';
+    } else if (d.kind === 'numbers') {
+      method = d.num_method || 'heat_transfer';
+      label = 'Numbers — ' + method.replace(/_/g, ' ');
+    } else {
+      method = d.name_method || 'heat_press';
+      label = 'Names — ' + method.replace(/_/g, ' ');
+    }
+    if (isOutsourced(d, method)) continue;
+    out.push({
+      deco_idx: di, kind: d.kind, method, position: String(d.position || ''),
+      art_file_id: artFileId, label, consolidatable,
+    });
+  }
+  return out;
+}
+
+/**
  * Display labels for the non-art decorations a frozen job claims ("Numbers — heat transfer",
  * "Names — embroidery"), in the auto-builder's wording and order.
  *

@@ -37,7 +37,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
@@ -3435,36 +3435,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _liveItemDecos=ii=>{
       const it=safeItems(o)[ii];if(!it)return null;
       const outTypes=outsourcedByItem[ii];
-      const out=[];
-      const decos=safeDecos(it);
-      for(let di=0;di<decos.length;di++){
-        const d=decos[di];if(!d)continue;
-        if(d.kind!=='art'&&d.kind!=='numbers'&&d.kind!=='names')continue;
-        if(d.fulfillment==='outside'||d.deco_po_id)continue;// routed outside — never in-house work
-        let method,label,artFileId=null,consolidatable=true;
-        if(d.kind==='art'){
-          const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
-          // Declared art that isn't hydrated yet — never reshape a frozen job off a half-loaded order.
-          if(d.art_file_id&&d.art_file_id!=='__tbd'&&!artF)return null;
-          method=artF?.deco_type||d.deco_type||'screen_print';
-          label=artF?.name||('Unassigned Art ('+safeStr(d.position)+')');
-          artFileId=d.art_file_id||null;
-          // Split-art shares carry their own per-size allocation and MUST keep their own job.
-          // A design still moving through art keeps its own job too: folding it into a frozen job
-          // would move its garments out from under an open art request / coach send. Once it lands
-          // on art_complete there is no in-flight workflow left to strand, and the next sync
-          // consolidates it — so this self-corrects rather than freezing the split in place.
-          consolidatable=!(d.split_group&&d.split_sizes&&Object.keys(d.split_sizes).length>0)
-            &&_artStForFile(artF,d.deco_type)==='art_complete';
-        }else if(d.kind==='numbers'){
-          method=d.num_method||'heat_transfer';label='Numbers — '+method.replace(/_/g,' ');
-        }else{
-          method=d.name_method||'heat_press';label='Names — '+method.replace(/_/g,' ');
-        }
-        if(decoIsOutsourced(outTypes,method)&&_itemFullyOutsourced(ii))continue;// whole item vendor-decorated
-        out.push({deco_idx:di,kind:d.kind,method,position:safeStr(d.position),art_file_id:artFileId,label,consolidatable});
-      }
-      return out;
+      return liveItemDecoDescriptors(safeDecos(it),{
+        findArt:id=>af.find(a=>a.id===id),
+        artStatusOf:_artStForFile,
+        // Explicit per-deco routing is never in-house; a PO-covered TYPE only counts when the
+        // vendor decorates the WHOLE item (a partially covered item is a materials purchase and
+        // the floor still applies it) — same gate the auto-builder uses below.
+        isOutsourced:(d,method)=>d.fulfillment==='outside'||!!d.deco_po_id
+          ||(decoIsOutsourced(outTypes,method)&&_itemFullyOutsourced(ii)),
+      });
     };
     // Decorations a NON-frozen job already took to the floor. The auto-builder rebuilds those jobs
     // every pass, so quietly moving their decorations into a frozen job would restructure work that
@@ -3989,14 +3968,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // and _healReleasedArtName's rename-only refresh, which previously only landed when a unit
     // or status change happened to ride along. Both converge on live data — no ping-pong.
     const _artSig=j=>(j.art_file_id||'')+'.'+((j._art_ids||[]).join('~'))+'.'+(j.positions||'')+'.'+(j.art_name||'');
+    // WHICH DECORATIONS each job produces is part of the signature too. Nothing else in the
+    // signature moves when a frozen job merely widens its claim — a numbers-only job absorbing a
+    // second numbers location leaves ids, units, statuses and names identical — so the frozen-deco
+    // consolidation was computed and then silently discarded here. Claims only change on a real
+    // structural heal and every one of them converges, so this can't ping-pong.
+    const _decoSig=gi=>gi.item_idx+'.'+(Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[])).join('-');
+    const _claimSig=js=>js.map(j=>(j.id||j.key)+':'+(j.items||[]).map(_decoSig).sort().join('|')).sort().join(',');
     const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
-    if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
+    const _claimsChanged=_claimSig(currentJobs)!==_claimSig(synced);
+    if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)||_claimsChanged){
       setO(e=>{
         const next={...e,jobs:synced};
         // Persist when jobs shrink (dead _merged/released retired after line art cleared, or
         // carry-over dropped). Without a save, so_jobs rows linger — empty jobs[] used to be a
         // no-op delete, which is why JOB-1057-01 survived after decorations were wiped.
-        if(synced.length<safeJobs(e).length){
+        // Persist on a claim change too: a consolidated job that only lives in this component's
+        // state never reaches the production board, which reads the SAVED jobs (buildJobs returns
+        // so.jobs verbatim) — the sheets would stay duplicated on the floor no matter how many
+        // times the order was opened.
+        if(synced.length<safeJobs(e).length||_claimsChanged){
           Promise.resolve().then(()=>{try{onSave(next)}catch(_){}});
         }
         return next;
