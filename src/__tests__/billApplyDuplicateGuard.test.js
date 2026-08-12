@@ -32,8 +32,16 @@ const APP = fs.readFileSync(path.join(__dirname, '..', 'App.js'), 'utf8');
 const APPEND_RE = /_bill_details:\[\.\.\.\((po|pl)\._bill_details/g;
 
 // How far back to look for the guard. The guard sits at the top of the same
-// `.map(po=>{ ... })` callback; the widest real gap is ~35 lines.
-const LOOKBACK_LINES = 40;
+// `.map(po=>{ ... })` callback, but the body between them grows, so this window is
+// bounded on both sides:
+//   lower — must exceed the widest real guard→append gap (currently 40 lines, at the
+//           third site, where the overage qty-fix and price-sync blocks sit between).
+//   upper — must stay well under the distance from an append back to the *previous*
+//           site's guard (currently 123 lines), or a neighbouring block's guard would
+//           satisfy the assertion and the test would pass while unguarded.
+// 60 sits clear of both. If a future change pushes a real gap past this, widen the
+// window — do not delete the site from the regex.
+const LOOKBACK_LINES = 60;
 
 const lineOf = (src, idx) => src.slice(0, idx).split('\n').length;
 
