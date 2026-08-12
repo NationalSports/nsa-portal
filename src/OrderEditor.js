@@ -859,6 +859,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return safeDecos(it).filter(d=>d&&(d.kind==='outside_deco'||d.fulfillment==='outside'||d.deco_po_id===dp.po_id)).map(d=>({sku:it.sku||'',position:d.position||'',type:d.type||d.deco_type||'',notes:d.notes||''}))});
       return new Promise(resolve=>{setSspConfirm({dp,baseOrder:cur,rows,totalPcs,deco_instructions,_resolve:resolve})});
     };
+    // Where Silver Screen sends the FINISHED goods: the order's own ship-to when set, else the
+    // customer's shipping address, else their billing address.
+    const _ssShipTo=()=>{
+      const a=(o.ship_to&&(o.ship_to.line1||o.ship_to.city))?o.ship_to:null;
+      if(a)return{name:a.name||cust?.name||'',line1:a.line1||'',line2:a.line2||'',city:a.city||'',state:a.state||'',zip:a.zip||''};
+      if(cust?.shipping_address_line1||cust?.shipping_city)return{name:cust.name||'',line1:cust.shipping_address_line1||'',line2:cust.shipping_address_line2||'',city:cust.shipping_city||'',state:cust.shipping_state||'',zip:cust.shipping_zip||''};
+      if(cust?.billing_address_line1||cust?.billing_city)return{name:cust.name||'',line1:cust.billing_address_line1||'',line2:cust.billing_address_line2||'',city:cust.billing_city||'',state:cust.billing_state||'',zip:cust.billing_zip||''};
+      return null;
+    };
     const _sspSendNow=async({dp,baseOrder,rows,deco_instructions})=>{
       const cur=baseOrder;
       setSspSending(true);
@@ -866,6 +875,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',
             po:{po_id:dp.po_id,deco_type:dp.deco_type,qty:dp.qty,unit_cost:dp.unit_cost,expected_date:dp.expected_date,notes:dp.notes,drop_ship:!!dp.drop_ship},
+            // Finished goods ship to the CUSTOMER, not back to NSA — their create form has no
+            // ship-to field, so send it for the job sheet (and for the field map once known).
+            ship_to:_ssShipTo(),
             items:rows,deco_instructions})});
         const j=await r.json().catch(()=>({}));
         if(!r.ok||!j.ok){nf('Silver Screen job failed: '+(j.error||('HTTP '+r.status)),'error');return}

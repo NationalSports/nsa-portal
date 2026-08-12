@@ -65,7 +65,9 @@ function parseFormTag(formHtml) {
     const t = m[0];
     const name = attr(t, 'name');
     if (!name) continue;
-    fields.push({ tag: 'input', type: (attr(t, 'type') || 'text').toLowerCase(), name, value: attr(t, 'value') || '' });
+    // `checked` matters: a generic re-post of every radio/checkbox would flip the order's
+    // shipping mode (e.g. "Ship to customer" → "Hold for pickup").
+    fields.push({ tag: 'input', type: (attr(t, 'type') || 'text').toLowerCase(), name, value: attr(t, 'value') || '', checked: /\bchecked\b/i.test(t) });
   }
   for (const m of body.matchAll(/<textarea\b[^>]*>([\s\S]*?)<\/textarea>/gi)) {
     const name = attr(m[0], 'name');
@@ -167,6 +169,12 @@ function buildJobSheet(p) {
   lines.push('Service: ' + (svc || 'decoration') + ' — ' + (p.po.qty || 0) + ' pcs');
   if (p.po.expected_date) lines.push('Needed by: ' + p.po.expected_date);
   if (p.po.drop_ship) lines.push('Garments drop-ship to Silver Screen from our supplier.');
+  // Finished goods go to the CUSTOMER, not back to NSA — their create form carries no ship-to
+  // field (it defaults to the third-party NSA address on the account), so state it here too.
+  if (p.ship_to && (p.ship_to.line1 || p.ship_to.city)) {
+    lines.push('SHIP FINISHED GOODS TO (not NSA): ' + [p.ship_to.name, p.ship_to.line1, p.ship_to.line2,
+      [p.ship_to.city, p.ship_to.state, p.ship_to.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '));
+  }
   if (p.po.notes) lines.push('Notes: ' + p.po.notes);
   if ((p.deco_instructions || []).length) {
     lines.push('', 'Decoration:');
@@ -200,7 +208,9 @@ function fillForm(form, payload) {
   }
   const visible = form.fields.filter(f => !used.has(f.name) && f.type !== 'checkbox' && f.type !== 'radio');
   const assigned = {};
-  const jobName = payload.po.po_id + (payload.customer ? ' — ' + payload.customer : '') + (payload.memo ? ' ' + payload.memo : '');
+  // Job name is customer + memo only — the PO number has its own field right above it on their
+  // form, so repeating it here just truncates the part that identifies the job.
+  const jobName = [payload.customer, payload.memo].filter(Boolean).join(' ').trim() || payload.po.po_id;
   // customer_po carries the PO number VERBATIM — the bill parser matches their invoice by it.
   // The sales-rep selects keep the form's own pre-selected value (seeded by ?order[sales_rep_id]=…).
   const KNOWN = {
@@ -247,34 +257,164 @@ function fillForm(form, payload) {
 // find a form with a textarea (notes/comment) on the created order's page — following
 // lazily-loaded turbo-frames — keep its hidden defaults, put the sheet in the textarea,
 // and post it. Best-effort: returns true when a post succeeded.
+// Their product modal has its own size columns; ours are SO size keys. Anything unrecognized
+// (OSFA, youth, numeric) accumulates into their catch-all "OTH" column so no pieces are lost.
+const SS_SIZE_COL = { XS: 'XS', S: 'SM', SM: 'SM', M: 'MD', MD: 'MD', L: 'LG', LG: 'LG', XL: 'XL',
+  '2XL': '2XL', XXL: '2XL', '3XL': '3XL', XXXL: '3XL', '4XL': '4XL', XXXXL: '4XL' };
+const ssSizeCol = (sz) => SS_SIZE_COL[String(sz || '').toUpperCase().replace(/\s+/g, '')] || 'OTH';
+
+// Baseline params for a discovered form: hidden/submit defaults, selects at their selected
+// option, and radios/checkboxes ONLY when already checked (so the form's own choices survive).
+function baseParams(form) {
+  const params = new URLSearchParams();
+  for (const f of form.fields) {
+    if (f.type === 'radio' || f.type === 'checkbox') { if (f.checked) params.set(f.name, f.value || 'on'); continue; }
+    params.set(f.name, f.value || '');
+  }
+  return params;
+}
+
+// The first field whose NAME matches re (skipping any already claimed).
+function pick(form, re, claimed) {
+  const f = form.fields.find((x) => re.test(x.name) && !claimed.has(x.name)
+    && x.type !== 'hidden' && x.type !== 'submit' && x.type !== 'radio' && x.type !== 'checkbox');
+  if (f) claimed.add(f.name);
+  return f;
+}
+
+// Every <form> on a page, parsed.
+function allForms(html) {
+  return [...html.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi)].map((m) => parseFormTag(m[0])).filter((f) => f.action);
+}
+
+// Set the order's Ship To Location to the customer (their create form has no ship-to fields —
+// it defaults to the third-party NSA account address, which would send finished goods to us).
+// Drives the order's own edit form, so CSRF/hidden defaults and the already-selected
+// "Ship to customer" radio are preserved.
+async function postShipTo(jar, orderPath, shipTo, diag) {
+  if (!shipTo || !(shipTo.line1 || shipTo.city)) return false;
+  const paths = [orderPath + '/edit', orderPath];
+  for (const p of paths) {
+    let html;
+    try { const res = await ssFetch(jar, p, { headers: { Accept: 'text/html, application/xhtml+xml' } }); html = await res.text(); }
+    catch { continue; }
+    for (const form of allForms(html)) {
+      const claimed = new Set();
+      const a1 = pick(form, /address_?1|address_?line_?1|street/i, claimed);
+      const city = pick(form, /city/i, claimed);
+      if (!a1 || !city) continue;
+      const params = baseParams(form);
+      params.set(a1.name, shipTo.line1 || '');
+      params.set(city.name, shipTo.city || '');
+      const put = (re, val) => { const f = pick(form, re, claimed); if (f && val) params.set(f.name, val); };
+      put(/company|ship.*name/i, shipTo.name || '');
+      put(/attention|attn/i, shipTo.attention || '');
+      put(/address_?2|address_?line_?2|suite/i, shipTo.line2 || '');
+      put(/state|region|province/i, shipTo.state || '');
+      put(/zip|postal/i, shipTo.zip || '');
+      try {
+        const resp = await ssFetch(jar, form.action, { method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
+          body: params.toString() });
+        if (resp.status < 400) return true;
+        diag.shipTo = 'POST ' + form.action + ' → ' + resp.status;
+      } catch { diag.shipTo = 'POST ' + form.action + ' threw'; }
+    }
+  }
+  if (!diag.shipTo) diag.shipTo = 'no ship-to form found';
+  return false;
+}
+
+// Add each item as a product line via the order's product form (the "Add Additional Product"
+// modal). Posts to a form discovered on the page — never a guessed endpoint. Returns the count
+// added so a partial result is reportable rather than silently wrong.
+async function postProducts(jar, orderPath, items, diag) {
+  const paths = [orderPath + '/order_products/new', orderPath + '/products/new', orderPath + '/edit', orderPath];
+  let form = null;
+  for (const p of paths) {
+    let html;
+    try { const res = await ssFetch(jar, p, { headers: { Accept: 'text/html, application/xhtml+xml' } }); html = await res.text(); }
+    catch { continue; }
+    for (const f of allForms(html)) {
+      const names = f.fields.map((x) => x.name).join(' ');
+      // Their modal's signature: a style field plus per-size quantity columns.
+      if (/style/i.test(names) && /(size|xs\b|qty|quantity)/i.test(names)) { form = f; break; }
+    }
+    if (form) break;
+  }
+  if (!form) { diag.products = 'no product form found'; return 0; }
+  let added = 0;
+  for (const it of items) {
+    const claimed = new Set();
+    const params = baseParams(form);
+    const put = (re, val) => { const f = pick(form, re, claimed); if (f && val !== '') params.set(f.name, String(val)); return !!f; };
+    put(/style|sku|item_?number/i, it.sku || '');
+    put(/desc|name|title/i, it.name || '');
+    put(/colou?r/i, it.color || '');
+    put(/supplier|vendor|brand/i, 'NSA (drop ship)');
+    // Per-size quantity boxes: match a field whose name carries their column label.
+    const cols = {};
+    for (const [sz, q] of Object.entries(it.sizes || {})) { const c = ssSizeCol(sz); cols[c] = (cols[c] || 0) + (Number(q) || 0); }
+    let placed = 0;
+    for (const [col, q] of Object.entries(cols)) {
+      if (!q) continue;
+      const f = form.fields.find((x) => new RegExp('(^|[^a-z0-9])' + col.toLowerCase() + '([^a-z0-9]|$)', 'i').test(x.name) && x.type !== 'hidden');
+      if (f) { params.set(f.name, String(q)); placed += q; }
+    }
+    if (!placed) { const qf = form.fields.find((x) => /qty|quantity/i.test(x.name) && x.type !== 'hidden'); if (qf) params.set(qf.name, String(it.qty || 0)); }
+    try {
+      const resp = await ssFetch(jar, form.action, { method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
+        body: params.toString() });
+      if (resp.status < 400) added++;
+      else diag.products = 'POST ' + form.action + ' → ' + resp.status;
+    } catch { diag.products = 'POST ' + form.action + ' threw'; }
+  }
+  return added;
+}
+
+// Returns { posted, diag } — diag names the forms/frames actually found on the order page so
+// a failure is self-describing (the same trick that identified the create form's fields),
+// instead of just "couldn't attach it".
 async function postJobSheet(jar, orderPath, sheet) {
   const pages = [orderPath];
+  const diag = { pages: [], forms: [] };
   for (let i = 0; i < pages.length && i < 6; i++) {
     let html;
     try {
       const res = await ssFetch(jar, pages[i], { headers: { Accept: 'text/html, application/xhtml+xml' } });
       html = await res.text();
-    } catch { continue; }
+      diag.pages.push(pages[i] + ' (' + res.status + ')');
+    } catch { diag.pages.push(pages[i] + ' (fetch failed)'); continue; }
     for (const m of html.matchAll(/<turbo-frame\b[^>]*\bsrc="([^"]+)"/gi)) {
       if (pages.length < 6 && !pages.includes(m[1])) pages.push(m[1]);
     }
+    // Every form on the page, with its field names — recorded whether or not we post to it.
+    const candidates = [];
     for (const fm of html.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi)) {
-      if (!/<textarea\b/i.test(fm[0])) continue;
       const f = parseFormTag(fm[0]);
-      if (!f.action) continue;
+      const named = f.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit');
+      diag.forms.push((f.action || '(no action)') + ' [' + named.map((x) => x.tag + ':' + x.name).join(', ') + ']');
+      // A notes/message target: has a textarea, or a field named like a message/comment/note.
+      const target = f.fields.find((x) => x.tag === 'textarea')
+        || f.fields.find((x) => /message|comment|note|instruction|description/i.test(x.name) && x.type !== 'hidden');
+      if (f.action && target) candidates.push({ f, target });
+    }
+    for (const { f, target } of candidates) {
       const params = new URLSearchParams();
-      for (const fld of f.fields) params.set(fld.name, fld.tag === 'textarea' ? sheet : (fld.value || ''));
+      for (const fld of f.fields) params.set(fld.name, fld.name === target.name ? sheet : (fld.value || ''));
       try {
         const resp = await ssFetch(jar, f.action, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
           body: params.toString()
         });
-        if (resp.status < 400) return true;
-      } catch { /* try the next form */ }
+        if (resp.status < 400) return { posted: true, diag };
+        diag.forms.push('→ POST ' + f.action + ' returned ' + resp.status);
+      } catch { diag.forms.push('→ POST ' + f.action + ' threw'); }
     }
   }
-  return false;
+  return { posted: false, diag };
 }
 
 exports.handler = async (event) => {
@@ -327,12 +467,35 @@ exports.handler = async (event) => {
       // notes/comment form now. If that also finds nowhere to post, the job still exists;
       // tell the rep so they paste the breakdown (it's on the printed PO) instead of the
       // decorator quietly receiving a job with no items.
+      // The create form carries only the header — products, ship-to and notes are separate
+      // sections on the order itself, so fill them in now against forms discovered on the page.
+      const orderPath = idMatch ? '/orders/' + idMatch[1] : '';
       let sheetPosted = filled.sheetIncluded;
-      if (!sheetPosted && idMatch) sheetPosted = await postJobSheet(jar, '/orders/' + idMatch[1], filled.sheet);
+      let sheetDiag = null;
+      let shipToSet = false;
+      let productsAdded = 0;
+      if (orderPath) {
+        const r2 = await postJobSheet(jar, orderPath, filled.sheet);
+        if (!sheetPosted) sheetPosted = r2.posted;
+        sheetDiag = r2.diag;
+        shipToSet = await postShipTo(jar, orderPath, body.ship_to, sheetDiag);
+        productsAdded = await postProducts(jar, orderPath, body.items, sheetDiag);
+      }
+      // Anything left undone is named explicitly (with the forms we saw), so the rep knows what
+      // to finish by hand and the field map can be corrected from the message alone.
+      const todo = [];
+      if (!productsAdded) todo.push('add the ' + body.items.length + ' product line' + (body.items.length !== 1 ? 's' : '') + ' (breakdown is on the printed PO)');
+      else if (productsAdded < body.items.length) todo.push('check product lines — only ' + productsAdded + ' of ' + body.items.length + ' were added');
+      if (!shipToSet && body.ship_to && (body.ship_to.line1 || body.ship_to.city)) todo.push('set Ship To Location to the customer (it defaults to the third-party NSA address)');
+      if (!sheetPosted) todo.push('paste the job sheet into the order notes');
+      const diagStr = sheetDiag ? ' [forms: ' + (sheetDiag.forms.slice(0, 8).join(' · ') || 'none')
+        + (sheetDiag.shipTo ? ' | ship-to: ' + sheetDiag.shipTo : '') + (sheetDiag.products ? ' | products: ' + sheetDiag.products : '') + ']' : '';
       return {
         statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc, sheet_posted: sheetPosted, assigned: filled.assigned, unmapped: filled.unmapped,
-          ...(sheetPosted ? {} : { warning: 'Job created, but the item list could not be attached to it — open the job on the Silver Screen portal and paste the item breakdown (it\'s on the printed PO).' }) })
+        body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc,
+          sheet_posted: sheetPosted, ship_to_set: shipToSet, products_added: productsAdded, sheet_diag: sheetDiag,
+          assigned: filled.assigned, unmapped: filled.unmapped,
+          ...(todo.length ? { warning: 'Job ' + (idMatch ? '#' + idMatch[1] + ' ' : '') + 'created, but finish it on the Silver Screen portal — ' + todo.join('; ') + '.' + diagStr } : {}) })
       };
     }
 
