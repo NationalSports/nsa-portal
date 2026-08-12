@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals, sortOrders, ORDER_SORTS } from './bagLogic';
 import { buildBagLabelHtml } from './bagLabel';
+import { printPdfLabels } from '../utils';
 
 // Bagging Station — one-order-at-a-time webstore bagging on a tablet
 // (BAGGING_STATION_PLAN.md). Routed at /bagging-station by src/index.js, same
@@ -738,10 +739,19 @@ function BaggingScreen({ stationToken, staffMode }) {
     fxComplete();
     const hdr = playerHeader(completed, o.webstore_order_items);
     const hasShorts = shortSummary(o.webstore_order_items).some((s) => s.status === 'open');
+    // Ship-direct: the server auto-created the ShipStation label — print it
+    // right behind the bag label so the box gets both in one stop.
+    let shipNote = '';
+    if (r.ship && r.ship.labelData) {
+      try { await printPdfLabels([r.ship.labelData]); shipNote = '  ·  📦 Shipping label printed'; }
+      catch { shipNote = '  ·  Shipping label created — reprint from Webstores'; }
+    } else if (r.ship && r.ship.error) {
+      shipNote = '  ·  ⚠ Shipping label failed — print from Webstores → Batches';
+    }
     setMsg({
       kind: 'info',
       text: `Bag ${completed.bag_seq || ''}${total ? ' of ' + total : ''} ✓ — ${hdr.name}${hdr.number ? ' #' + hdr.number : ''}`
-        + (hasShorts ? '  ·  ⚠ Set this bag on the PROBLEM SHELF' : ''),
+        + (hasShorts ? '  ·  ⚠ Set this bag on the PROBLEM SHELF' : '') + shipNote,
     });
     await nextOrder();
   };

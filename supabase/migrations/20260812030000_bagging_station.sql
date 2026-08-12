@@ -408,3 +408,10 @@ language sql stable as $$
   having count(*) filter (where o.bagged_at is null) > 0
 $$;
 revoke execute on function bagging_list_groups() from public, anon, authenticated;
+
+-- ── Per-store knobs ─────────────────────────────────────────────────────────
+-- bagged_email_enabled: buyer "order is packed" email on bag completion.
+-- bagging_auto_label: auto ShipStation label when a ship-home bag completes.
+alter table webstores
+  add column if not exists bagged_email_enabled boolean not null default true,
+  add column if not exists bagging_auto_label boolean not null default true;

@@ -4823,6 +4823,7 @@ const BLANK = {
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'deliver_club',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
+  bagged_email_enabled: true, bagging_auto_label: true,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -5161,6 +5162,17 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'ups'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['ups', 'fedex', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
           <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
           <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
+        </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Bagging Station</div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={f.bagged_email_enabled !== false} onChange={(e) => set('bagged_email_enabled', e.target.checked)} />
+            Email the buyer when their order is bagged (includes any missing/backordered pieces)
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+            <input type="checkbox" checked={f.bagging_auto_label !== false} onChange={(e) => set('bagging_auto_label', e.target.checked)} />
+            Auto-create the shipping label when a ship-to-home order's bag completes
+          </label>
         </div>
       </Section>
 

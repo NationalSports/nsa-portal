@@ -217,9 +217,10 @@ async function sendOrderBagged(sb, order) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!brevoKey || !order.buyer_email) return;
   if (/@example\.(com|org|net)$/i.test(order.buyer_email)) return; // seeded test orders
-  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url,delivery_mode').eq('id', order.store_id).limit(1);
+  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url,delivery_mode,bagged_email_enabled').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
+  if (store.bagged_email_enabled === false) return; // per-store setting (Webstores → Settings)
   const { data: items } = await sb.from('webstore_order_items')
     .select('sku,name,size,qty,bagged_qty,short_qty,short_status,backorder_eta,player_name,player_number,is_bundle_parent,line_status')
     .eq('order_id', order.id);

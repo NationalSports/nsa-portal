@@ -14,6 +14,7 @@
 
 const { corsHeaders, getSupabaseAdmin, verifyUser, safeEqualStr } = require('./_shared');
 const { sendOrderBagged } = require('./_webstoreEmail');
+const { createBagShipLabel } = require('./_baggingShip');
 
 const LIVE = ['pending_payment', 'cancelled', 'refunded']; // excluded statuses
 
@@ -133,9 +134,24 @@ exports.handler = async (event) => {
         const row = data && data[0];
         // Buyer notification — "your order is packed", honest about backordered
         // and refunded pieces. Best-effort: a Brevo hiccup never fails the bag.
+        // Respects webstores.bagged_email_enabled (checked inside).
         try { if (row) await sendOrderBagged(sb, row); }
         catch (e) { console.warn('[bagging] bagged email failed:', e.message || e); }
-        return ok({ order: row });
+        // Ship-direct: auto-create the ShipStation label so the packer never
+        // touches a desktop (webstores.bagging_auto_label gates it; checked
+        // inside). A label failure NEVER fails the bag — the station shows
+        // "print from Webstores" instead.
+        let ship = null;
+        if (row && row.ship_method === 'ship_home') {
+          try {
+            const { data: its } = await sb.from('webstore_order_items').select('*').eq('order_id', row.id);
+            ship = await createBagShipLabel(sb, row, its || []);
+          } catch (e) {
+            console.warn('[bagging] auto ship label failed for', row.id, ':', e.message || e);
+            ship = { error: e.message || 'label failed' };
+          }
+        }
+        return ok({ order: row, ship });
       }
 
       case 'resolve_short': {
