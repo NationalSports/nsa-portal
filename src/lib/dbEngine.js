@@ -456,6 +456,18 @@ const _dbLoad = async (opts={}) => {
       // _saveAppStateCAS. version is undefined until the migration lands — treated as 0.
       if(!r.id.startsWith('_pimg_'))_appStateVersions[r.id]={v:r.version||0,s:r.value};});
     // ─── Reconstruct nested objects ───
+    // deco_pos is read as `(o.deco_pos||[]).forEach(...)` at ~100 call sites. The `||[]` only covers
+    // null/undefined, so a row whose jsonb holds an OBJECT sails through and throws "forEach is not a
+    // function" — and because global search and the dashboards scan every SO, one malformed row
+    // white-screens the whole portal (SO-TEST-BAG carried `{}`, crashing global search 2026-08-12).
+    // Normalise on the way in so a bad row degrades to "no deco POs" instead of taking the app down.
+    // Returns {} — not {deco_pos:[]} — when the column is absent/null so the save path keeps omitting
+    // the column rather than writing an empty array over the DB's deco POs.
+    const _decoPosGuard=(row)=>{
+      if(row?.deco_pos==null||Array.isArray(row.deco_pos))return{};
+      console.warn('[DB]',row.id,'has a non-array deco_pos ('+typeof row.deco_pos+') — treating it as empty');
+      return{deco_pos:[]};
+    };
     // Product image backups from app_state (reliable fallback when image columns are missing)
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
@@ -487,7 +499,7 @@ const _dbLoad = async (opts={}) => {
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
       const _estItemsHydrated=!_lastLoadTimedOut.has('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
-      return{...est,items,art_files,_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...est,items,art_files,..._decoPosGuard(est),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -552,7 +564,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
       const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
