@@ -851,8 +851,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // update here would map over the stale deco_pos and drop the brand-new entry on save.
     const _isSilverScreenDp=dp=>!!dp&&(dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||''));
     const[sspSending,setSspSending]=useState(false);
-    const sendSilverScreenJob=async(dp,baseOrder)=>{
-      if(sspSending)return;
+    const[sspConfirm,setSspConfirm]=useState(null);// {dp,baseOrder,rows,totalPcs,deco_instructions,_resolve} — in-app confirm for the Silver Screen job (window.confirm looked broken/out of place)
+    // Opens the in-app confirm. Returns a promise that resolves when the rep answers — after the
+    // send completes on OK, immediately on cancel — so callers chaining .finally(_afterPo) still
+    // open their follow-on modal at the same point the blocking window.confirm used to give them.
+    const sendSilverScreenJob=(dp,baseOrder)=>{
+      if(sspSending)return Promise.resolve();
       const cur=baseOrder||o;
       const soItems=safeItems(cur);
       const rows=(dp.item_idxs||[]).map(ii=>{const it=soItems[ii];if(!it)return null;
@@ -860,11 +864,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
         if(qty===0)return null;
         return{sku:it.sku||'',name:it.name||it.custom_desc||'',color:it.color||'',sizes:Object.fromEntries(sizes),qty}}).filter(Boolean);
-      if(rows.length===0){nf('No covered items with quantities — nothing to send to Silver Screen','error');return}
+      if(rows.length===0){nf('No covered items with quantities — nothing to send to Silver Screen','error');return Promise.resolve()}
       const totalPcs=rows.reduce((a,r)=>a+r.qty,0);
       const deco_instructions=(dp.item_idxs||[]).flatMap(ii=>{const it=soItems[ii];if(!it)return[];
         return safeDecos(it).filter(d=>d&&(d.kind==='outside_deco'||d.fulfillment==='outside'||d.deco_po_id===dp.po_id)).map(d=>({sku:it.sku||'',position:d.position||'',type:d.type||d.deco_type||'',notes:d.notes||''}))});
-      if(!window.confirm('Create this job on the Silver Screen portal?\n\n'+(dp.po_id||'(no PO number)')+' — '+rows.length+' item line'+(rows.length!==1?'s':'')+', '+totalPcs+' pcs\nP.O. number sent (verbatim): '+dp.po_id))return;
+      return new Promise(resolve=>{setSspConfirm({dp,baseOrder:cur,rows,totalPcs,deco_instructions,_resolve:resolve})});
+    };
+    const _sspSendNow=async({dp,baseOrder,rows,deco_instructions})=>{
+      const cur=baseOrder;
       setSspSending(true);
       try{
         const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2565,7 +2572,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Decorator drop-ship: pre-lock ship-to and pre-fill DPO number in attention line
       ...(relDeco?{
         shipToDecoId:relDeco.deco_vendor_id,
-        initialDpoNumber:String(relDeco.po_id||'').replace(/^DPO\s*/i,''),
+        initialDpoNumber:String(relDeco.po_id||''),// full "DPO ####" — the attention line must carry the DPO prefix, so the field holds it verbatim
       }:{}),
     };
   };
@@ -9546,7 +9553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
                   batchPOs:[{so_id:o.id,items:apiPayloadItems}],
                   shipToDecoId:_linkDeco.deco_vendor_id,
-                  initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,''),
+                  initialDpoNumber:String(_linkDeco.po_id||''),// full "DPO ####" — the attention line must carry the DPO prefix, so the field holds it verbatim
                   ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
               }else{
                 // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
@@ -9595,6 +9602,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Batch threshold popup — fires after Add-to-Batch when a BATCH_NOTIFY_VENDORS queue
           (Momentec/SanMar/S&S) hits its free-ship threshold.
           Reads live from batchPOs (rather than the popup snapshot) so price edits show immediately. */}
+      {/* In-app confirm for creating the job on the Silver Screen portal (replaces window.confirm).
+          Cancel resolves the caller's promise immediately; OK resolves it after the send finishes,
+          so chained follow-ons (blanks API order) open at the same point as before. */}
+      {sspConfirm&&(()=>{const _sspClose=()=>{const c=sspConfirm;setSspConfirm(null);c._resolve&&c._resolve()};
+        return<div className="modal-overlay" onClick={_sspClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div className="modal-header"><h2>🖨 Send to Silver Screen?</h2><button className="modal-close" onClick={_sspClose}>x</button></div>
+        <div className="modal-body">
+          <div style={{padding:'10px 12px',background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:10}}>
+            <div style={{fontSize:17,fontWeight:900,fontFamily:'monospace',color:'#7c3aed'}}>{sspConfirm.dp.po_id||'(no PO number)'}</div>
+            <div style={{fontSize:12,color:'#6d28d9',marginTop:2}}>{sspConfirm.rows.length} item line{sspConfirm.rows.length!==1?'s':''} · <strong>{sspConfirm.totalPcs} pcs</strong> — creates the job on their portal with the P.O. number sent verbatim, so their invoice matches back automatically.</div>
+          </div>
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>
+            {sspConfirm.rows.map((r,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',borderTop:i>0?'1px solid #f1f5f9':'none',fontSize:12,background:i%2?'#fafbfc':'white'}}>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{r.sku}</span>
+              <span style={{flex:1,fontWeight:600,minWidth:0}}>{r.name}</span>
+              {r.color&&<span style={{color:'#64748b',whiteSpace:'nowrap'}}>{r.color}</span>}
+              <span style={{fontSize:11,color:'#475569',whiteSpace:'nowrap'}}>{Object.entries(r.sizes).map(([sz,q])=>sz+'×'+q).join(' ')}</span>
+              <span style={{fontWeight:700,whiteSpace:'nowrap'}}>{r.qty} pcs</span>
+            </div>)}
+          </div>
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+            <button className="btn btn-secondary" onClick={_sspClose}>Not now</button>
+            <button className="btn btn-primary" disabled={sspSending} style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{const c=sspConfirm;setSspConfirm(null);_sspSendNow(c).finally(()=>{c._resolve&&c._resolve()})}}>{sspSending?'Sending…':'🖨 Create Job on Silver Screen'}</button>
+          </div>
+        </div>
+      </div></div>})()}
       {batchReadyPopup&&(()=>{
         const liveBatches=(batchPOs||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===(batchReadyPopup.groupKey||batchReadyPopup.vendorKey));
         const liveTotal=liveBatches.reduce((a,bp)=>a+(bp.total_cost||0),0);
