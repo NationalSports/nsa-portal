@@ -207,6 +207,69 @@ async function sendPoOrderApproved(sb, order) {
   });
 }
 
+// "Order bagged" — sent by bagging-api's complete_order when a packer finishes
+// the bag at the Bagging Station (BAGGING_STATION_PLAN.md). Same contract as
+// every sender above: builds everything from DB rows, renders through the ONE
+// emailShell, caller wraps in try/catch so a Brevo hiccup never fails the bag.
+// Honest about shorts: backordered pieces (follow separately, ETA if known)
+// and refunded pieces are listed; nothing implies they're in the bag.
+async function sendOrderBagged(sb, order) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey || !order.buyer_email) return;
+  if (/@example\.(com|org|net)$/i.test(order.buyer_email)) return; // seeded test orders
+  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url,delivery_mode').eq('id', order.store_id).limit(1);
+  const store = stores && stores[0];
+  if (!store) return;
+  const { data: items } = await sb.from('webstore_order_items')
+    .select('sku,name,size,qty,bagged_qty,short_qty,short_status,backorder_eta,player_name,player_number,is_bundle_parent,line_status')
+    .eq('order_id', order.id);
+  const live = (items || []).filter((i) => !i.is_bundle_parent && i.line_status !== 'cancelled');
+  const inBag = live.filter((i) => (Number(i.bagged_qty) || 0) > 0);
+  const backordered = live.filter((i) => i.short_status === 'backordered' && (Number(i.short_qty) || 0) > 0);
+  const refunded = live.filter((i) => i.short_status === 'refunded' && (Number(i.short_qty) || 0) > 0);
+  const lineRow = (i, qty) => `<tr><td style="padding:6px 0;border-bottom:1px solid #eef1f5">${esc(i.name || i.sku || 'Item')}${qty > 1 ? ` ×${qty}` : ''}<div style="font-size:12px;color:#64748b">${[i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).map(esc).join(' · ')}</div></td></tr>`;
+  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
+  const link = order.status_token ? `${portal}/shop/order/${order.status_token}` : (store.slug ? `${portal}/shop/${store.slug}/order/${order.id}` : null);
+  const accent = store.accent_color || '#e11d2a';
+  const player = (live.find((i) => i.player_name) || {}).player_name || order.buyer_name || '';
+  const clubDelivery = order.ship_method !== 'ship_home';
+  const eta = backordered.map((i) => i.backorder_eta).filter(Boolean).sort()[0] || null;
+  const num = order.omg_order_number || order.order_number || String(order.id || '').slice(0, 8);
+  const shortBlock = (backordered.length || refunded.length) ? `
+      ${backordered.length ? `<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 14px;margin-top:16px">
+        <div style="font-weight:800;margin-bottom:6px">On its way separately</div>
+        <div style="font-size:13px;color:#475569;margin-bottom:6px">These pieces weren't available when we packed — they're on a follow-up order and will ${clubDelivery ? 'be delivered' : 'ship'} as soon as they arrive${eta ? ` (expected around ${esc(eta)})` : ''}:</div>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">${backordered.map((i) => lineRow(i, Number(i.short_qty) || 0)).join('')}</table>
+      </div>` : ''}
+      ${refunded.length ? `<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;margin-top:16px">
+        <div style="font-weight:800;margin-bottom:6px">Refunded</div>
+        <div style="font-size:13px;color:#475569;margin-bottom:6px">These pieces couldn't be fulfilled and have been refunded:</div>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">${refunded.map((i) => lineRow(i, Number(i.short_qty) || 0)).join('')}</table>
+      </div>` : ''}` : '';
+  const bodyHtml = `
+      <p style="margin:0 0 14px">Good news${order.buyer_name ? ', ' + esc(order.buyer_name) : ''}! ${player && player !== order.buyer_name ? `${esc(player)}'s` : 'Your'} order has been packed${clubDelivery ? ' and will be delivered with your club’s shipment' : ' and ships next'}.</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">${inBag.map((i) => lineRow(i, Math.min(Number(i.bagged_qty) || 0, Number(i.qty) || 0))).join('')}</table>
+      ${shortBlock}
+      ${link ? `<a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>` : ''}`;
+  const partial = backordered.length > 0;
+  const isFollowUp = !!order.backorder_of; // child backorder order: "the rest of your order"
+  const html = emailShell({
+    store, portal,
+    headline: isFollowUp ? 'The rest of your order is packed'
+      : partial ? 'Packed &mdash; a piece will follow' : 'Your order is packed',
+    subhead: `Order #${esc(num)}`,
+    bodyHtml,
+  });
+  await postBrevo(brevoKey, {
+    fromName: store.name,
+    toEmail: order.buyer_email, toName: order.buyer_name || '',
+    subject: isFollowUp ? `The rest of your ${store.name} order is packed`
+      : partial ? `Your ${store.name} order is packed — a piece will follow separately`
+      : `Your ${store.name} order is packed`,
+    html,
+  });
+}
+
 // Compare-and-swap increment so concurrent redemptions can't under-count
 // (a plain read-add-write loses updates and lets max_uses quotas be exceeded).
 async function bumpCouponUse(sb, storeId, code) {
@@ -222,4 +285,4 @@ async function bumpCouponUse(sb, storeId, code) {
   console.warn('[webstore] coupon used_count increment lost the race 3x for code:', code);
 }
 
-module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, bumpCouponUse };
+module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendOrderBagged, bumpCouponUse };

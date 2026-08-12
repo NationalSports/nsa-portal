@@ -4,7 +4,7 @@ import { buildBagLabelHtml, bagScanCode, bagScanUrl } from '../baggingstation/ba
 
 const order = { id: 'ord-123', bag_seq: 15, buyer_name: 'Parent Person' };
 const items = [
-  { id: 'i1', name: 'Squadra Jersey', size: 'YM', qty: 2, bagged_qty: 2, player_name: 'Jimmy Smith', player_number: '23' },
+  { id: 'i1', name: 'Squadra Jersey', color: 'Navy', size: 'YM', qty: 2, bagged_qty: 2, player_name: 'Jimmy Smith', player_number: '23' },
   { id: 'i2', name: 'Team <Hoodie> & Co', size: 'YS', qty: 1, bagged_qty: 0, short_qty: 1, short_status: 'open' },
 ];
 const store = { name: 'Lakeville Soccer Club' };
@@ -36,4 +36,26 @@ test('backorder child order gets the BACKORDER banner; normal order does not', (
 
 test('scan url shape', () => {
   expect(bagScanUrl('https://x.test', 'abc')).toBe('https://x.test/bagging-station?scan=WO-abc');
+});
+
+test('label carries order number, buyer (when distinct), and item color', () => {
+  const o = { ...order, omg_order_number: '48213' };
+  const html = buildBagLabelHtml({ order: o, items, store, origin: '' });
+  expect(html).toContain('Order #48213');
+  expect(html).toContain('Parent Person'); // buyer differs from player → shown
+  expect(html).toContain('Navy'); // color when items carry it
+});
+
+test('order number falls back to short id; buyer hidden when same as player', () => {
+  const o = { id: 'abcdef123456', buyer_name: 'Jimmy Smith' };
+  const html = buildBagLabelHtml({ order: o, items: [items[0]], store, origin: '' });
+  expect(html).toContain('Order #abcdef12');
+  expect((html.match(/Jimmy Smith/g) || []).length).toBeGreaterThan(0);
+  expect(html).not.toContain('· Jimmy Smith</div>'); // no duplicate buyer suffix
+});
+
+test('9+ item orders switch to the compact item list so everything fits', () => {
+  const many = Array.from({ length: 10 }, (_, k) => ({ id: 'x' + k, name: 'Item ' + k, size: 'M', qty: 1, bagged_qty: 1 }));
+  expect(buildBagLabelHtml({ order, items: many, store, origin: '' })).toContain('class="items compact"');
+  expect(buildBagLabelHtml({ order, items: many.slice(0, 3), store, origin: '' })).toContain('class="items"');
 });

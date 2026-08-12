@@ -61,7 +61,9 @@ const friendlyErr = (msg) => {
 function printHtml(html) {
   const w = window.open('', '_blank', 'width=460,height=680');
   if (!w) return false;
-  w.document.write(html + '<script>window.onload=function(){setTimeout(function(){window.print()},150)}</script>');
+  // Auto-print, then auto-close once the dialog resolves — tap → label, no
+  // window cleanup taps in between.
+  w.document.write(html + '<script>window.onload=function(){setTimeout(function(){window.onafterprint=function(){setTimeout(function(){window.close()},250)};window.print()},150)}</script>');
   w.document.close();
   return true;
 }
@@ -463,6 +465,19 @@ function BaggingScreen({ stationToken, staffMode }) {
     await loadBoard(group);
   };
 
+  // One-tap label (re)print for any order — used by the board's print buttons
+  // and completion. Board rows carry their items, so no extra fetch.
+  const printOrderLabel = (o, opts = {}) => {
+    const html = buildBagLabelHtml({
+      order: o, items: o.webstore_order_items || [],
+      store: { name: (o.webstores && o.webstores.name) || (group && group.store_name) || '' },
+      seqTotal: (progress && progress.total) || null, origin: window.location.origin,
+    });
+    if (printHtml(html)) { api({ action: 'log_label_print', order_id: o.id }); return true; }
+    setMsg({ kind: 'err', text: 'Pop-up blocked — allow pop-ups to print bag labels.' });
+    return false;
+  };
+
   const completeOrder = async (o) => {
     setBusy(true);
     const r = await api({ action: 'complete_order', order_id: o.id });
@@ -471,13 +486,7 @@ function BaggingScreen({ stationToken, staffMode }) {
     const completed = { ...o, ...r.order };
     // Bag label prints automatically on completion ("full auto").
     const total = (progress && progress.total) || null;
-    const html = buildBagLabelHtml({
-      order: completed, items: o.webstore_order_items,
-      store: { name: (o.webstores && o.webstores.name) || (group && group.store_name) || '' },
-      seqTotal: total, origin: window.location.origin,
-    });
-    if (printHtml(html)) api({ action: 'log_label_print', order_id: o.id });
-    else setMsg({ kind: 'err', text: 'Pop-up blocked — allow pop-ups to print bag labels.' });
+    printOrderLabel({ ...completed, webstore_order_items: o.webstore_order_items });
     const hdr = playerHeader(completed, o.webstore_order_items);
     setMsg({ kind: 'info', text: `Bag ${completed.bag_seq || ''}${total ? ' of ' + total : ''} ✓ — ${hdr.name}${hdr.number ? ' #' + hdr.number : ''}` });
     await nextOrder();
@@ -586,16 +595,25 @@ function BaggingScreen({ stationToken, staffMode }) {
             const p = orderProgress(o.webstore_order_items || []);
             const claimedElsewhere = o.bagging_claimed_by && !o.bagged_at;
             return (
-              <button key={o.id} type="button" style={{ ...S.card, marginTop: 8, opacity: o.bagged_at ? 0.5 : 1 }} onClick={() => openOrder(o)}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                  <span style={{ fontSize: 18, fontWeight: 800 }}>
-                    {hdr.number ? '#' + hdr.number + ' ' : ''}{hdr.name}
-                  </span>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: o.bagged_at ? '#22c55e' : claimedElsewhere ? '#fbbf24' : '#94a3b8' }}>
-                    {o.bagged_at ? `Bagged · Bag ${o.bag_seq || ''}` : claimedElsewhere ? 'In progress' : `${p.checked}/${p.total} items`}
-                  </span>
-                </div>
-              </button>
+              <div key={o.id} style={{ display: 'flex', gap: 8, alignItems: 'stretch', marginTop: 8 }}>
+                <button type="button" style={{ ...S.card, flex: 1, opacity: o.bagged_at ? 0.5 : 1 }} onClick={() => openOrder(o)}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                    <span style={{ fontSize: 18, fontWeight: 800 }}>
+                      {hdr.number ? '#' + hdr.number + ' ' : ''}{hdr.name}
+                    </span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: o.bagged_at ? '#22c55e' : claimedElsewhere ? '#fbbf24' : '#94a3b8' }}>
+                      {o.bagged_at ? `Bagged · Bag ${o.bag_seq || ''}` : claimedElsewhere ? 'In progress' : `${p.checked}/${p.total} items`}
+                    </span>
+                  </div>
+                </button>
+                {o.bagged_at && (
+                  <button type="button" title="Reprint bag label" aria-label={'print-label-' + o.id}
+                    style={{ ...S.backBtn, minWidth: 64, fontSize: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => printOrderLabel(o)}>
+                    🖨
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>

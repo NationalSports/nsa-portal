@@ -13,6 +13,7 @@
 //     x-machine-token (constant-time compare).
 
 const { corsHeaders, getSupabaseAdmin, verifyUser, safeEqualStr } = require('./_shared');
+const { sendOrderBagged } = require('./_webstoreEmail');
 
 const LIVE = ['pending_payment', 'cancelled', 'refunded']; // excluded statuses
 
@@ -129,7 +130,12 @@ exports.handler = async (event) => {
       case 'complete_order': {
         const { data, error } = await sb.rpc('bagging_complete_order', { p_order_id: body.order_id, p_actor: actor });
         if (error) return rpcFail(error);
-        return ok({ order: data && data[0] });
+        const row = data && data[0];
+        // Buyer notification — "your order is packed", honest about backordered
+        // and refunded pieces. Best-effort: a Brevo hiccup never fails the bag.
+        try { if (row) await sendOrderBagged(sb, row); }
+        catch (e) { console.warn('[bagging] bagged email failed:', e.message || e); }
+        return ok({ order: row });
       }
 
       case 'resolve_short': {
