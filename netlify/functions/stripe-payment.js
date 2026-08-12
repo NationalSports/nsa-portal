@@ -323,7 +323,9 @@ exports.handler = async (event) => {
         try {
           const admin = getSupabaseAdmin();
           const ref = 'Refund ' + refund.id;
-          const payDate = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+          // Pacific, not the function's UTC clock — same reason as reconcileInvoiceFromIntent
+          // in _shared.js: an evening refund stamped with tomorrow's date can cross a month end.
+          const payDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
           const { data: existing } = await admin.from('invoice_payments').select('id').eq('invoice_id', invoice_id).eq('ref', ref).limit(1);
           if (!existing || !existing.length) {
             await admin.from('invoice_payments').insert({ invoice_id, amount: -(refund.amount / 100), method: 'cc', ref, date: payDate });

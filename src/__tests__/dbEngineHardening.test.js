@@ -346,3 +346,88 @@ describe('_dbSaveProductInner — a partial product save must not wipe available
     expect(productUpsert(__mockState).args[0]).not.toHaveProperty('available_sizes');
   });
 });
+
+// ── Fix 8: _dbSaveInvoiceInner — a failed payment write must never delete payment rows ──────
+// INV-1053 (2026-08-12): the old fallback here deleted every invoice_payments row and then
+// re-inserted the SAME payload that had just failed, swallowing both errors. With the payment
+// row gone, CommissionsPage falls back to the INVOICE date and books the rep's commission in
+// the wrong month — an invoice paid 8/11 landed on the July statement.
+describe('_dbSaveInvoiceInner — payment write failures never destroy payment rows (fix 8)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const invWithPayment = () => ({
+    id: 'INV-PAY-1',
+    payments: [{ amount: 500, method: 'check', ref: 'chk 8891', date: '08/11/2026', cc_fee: 0 }],
+  });
+
+  test('cc_fee is coerced to a number so an undefined can never reject the batch', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ error: null }],
+      invoice_payments: [
+        { data: [], error: null }, // restore read
+        { error: null },           // upsert succeeds
+        { data: [], error: null }, // stale-row read
+      ],
+      invoice_items: [{ count: 0, error: null }],
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = invWithPayment();
+    delete inv.payments[0].cc_fee;
+    await _dbSaveInvoice(inv);
+
+    const upsert = __mockState.calls.find(c => c.table === 'invoice_payments' && c.method === 'upsert');
+    expect(upsert.args[0][0].cc_fee).toBe(0);
+    expect(upsert.args[0][0].date).toBe('08/11/2026');
+  });
+
+  test('a failed upsert issues NO delete, falls back to inserting the missing row, and succeeds', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ error: null }],
+      invoice_payments: [
+        { data: [], error: null },                                   // restore read — DB holds none
+        { error: { message: 'no unique constraint matching ON CONFLICT' } }, // upsert FAILS
+        { error: null },                                             // plain insert succeeds
+      ],
+      invoice_items: [{ count: 0, error: null }],
+    };
+
+    const { _dbSaveInvoice, _dbSaveFailedIds } = require('../lib/dbEngine');
+    const result = await _dbSaveInvoice(invWithPayment());
+
+    expect(result).toBe(true);
+    expect(_dbSaveFailedIds.has('INV-PAY-1')).toBe(false);
+    const payDeletes = __mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'delete');
+    expect(payDeletes.length).toBe(0);
+    const inserts = __mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'insert');
+    expect(inserts.length).toBe(1);
+    expect(inserts[0].args[0][0].ref).toBe('chk 8891');
+  });
+
+  test('when the insert fallback also fails the save reports failure instead of dropping the payment', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [{ error: null }],
+      invoice_payments: [
+        { data: [], error: null },
+        { error: { message: 'column cc_fee does not exist' } }, // upsert FAILS
+        { error: { message: 'column cc_fee does not exist' } }, // insert FAILS too
+      ],
+      invoice_items: [{ count: 0, error: null }],
+    };
+
+    const { _dbSaveInvoice, _dbSaveFailedIds } = require('../lib/dbEngine');
+    const result = await _dbSaveInvoice(invWithPayment());
+
+    expect(result).toBe(false);
+    expect(_dbSaveFailedIds.has('INV-PAY-1')).toBe(true);
+    const payDeletes = __mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'delete');
+    expect(payDeletes.length).toBe(0);
+  });
+});

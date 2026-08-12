@@ -2332,6 +2332,7 @@ const _dbSaveInvoiceInner = async (inv) => {
     // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
     // was never aware of, so only a payment the client loaded and then deleted is actually removed.
     let _payments=payments;
+    let _dbPayRows=[];
     {
       const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
       if(_dbPayErr){
@@ -2339,6 +2340,7 @@ const _dbSaveInvoiceInner = async (inv) => {
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing payments. Please reload the page.','error');
         _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments SELECT errored: '+_dbPayErr.message);_persistFailedIds();return false;
       }
+      _dbPayRows=_dbPays||[];
       if(_dbPays&&_dbPays.length){
         const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
         const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
@@ -2355,12 +2357,31 @@ const _dbSaveInvoiceInner = async (inv) => {
     }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
     if(_payments?.length){
-      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
+      // cc_fee is coerced: the column is NOT NULL, and an undefined here would make PostgREST
+      // reject the whole batch rather than default it.
+      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0}));
       const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
       if(payErr){
-        // Fallback: DELETE+INSERT if upsert constraint doesn't exist
-        await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
-        await supabase.from('invoice_payments').insert(payRows);
+        // FAIL CLOSED (2026-08-12, INV-1053). The old fallback here deleted every payment row on the
+        // invoice and then re-inserted the SAME payload that had just failed — so a schema or
+        // constraint error (this table was missing the cc_fee column the payload always carried, and
+        // the unique index the upsert targets) destroyed the invoice's payment history and swallowed
+        // both errors. Not one payment recorded through the portal ever reached the DB, and with no
+        // payment rows CommissionsPage falls back to the INVOICE date — quietly paying reps their
+        // commission in the wrong month.
+        //
+        // A payment is a financial record and its date decides a rep's statement month: never delete
+        // on a failed write. Try a plain insert of the rows the DB does not already hold, and if that
+        // fails too, fail the save so the retry loop keeps the payment instead of dropping it.
+        const _known=new Set(_dbPayRows.map(r=>String(r.ref)));
+        const _missing=payRows.filter(r=>!_known.has(String(r.ref)));
+        const{error:insErr}=_missing.length?await supabase.from('invoice_payments').insert(_missing):{error:null};
+        if(insErr){
+          console.error('[DB] invoice_payments write failed for',inv.id,'— upsert:',payErr.message,'/ insert:',insErr.message);
+          if(_dbNotify)_dbNotify('Payment NOT saved on '+inv.id+' — the payment record failed to write, so this invoice would commission in the wrong month. Retrying; reload if it persists.','error');
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments: '+payErr.message+' | insert fallback: '+insErr.message);_persistFailedIds();return false;
+        }
+        console.warn('[DB] invoice_payments upsert failed for',inv.id,'—',payErr.message,'; inserted',_missing.length,'new payment(s) instead (existing rows left intact)');
       }else{
         // Delete payments beyond current set
         const{data:existingPays}=await supabase.from('invoice_payments').select('id,ref').eq('invoice_id',inv.id);
