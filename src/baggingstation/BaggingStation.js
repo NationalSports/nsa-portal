@@ -379,7 +379,8 @@ function StoreDrilldown({ s }) {
             {open ? '▾ ' : '▸ '}{s.store_name}
           </span>
           <span style={{ fontSize: 14, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
-            {s.bags} bags · {span} · <span style={{ color: '#60a5fa' }}>{s.bags_per_15min}/15min</span>
+            {s.bags} bags · {span}
+            {s.orders_per_hr != null && <span style={{ color: '#60a5fa' }}> · {s.orders_per_hr} orders/hr · {s.units_per_hr} items/hr</span>}
             {s.vs_target_pct != null && (
               <span style={{
                 marginLeft: 8, padding: '2px 8px', borderRadius: 10, fontSize: 12,
@@ -393,7 +394,8 @@ function StoreDrilldown({ s }) {
         </div>
         <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginTop: 2 }}>
           {fmtD(s.started_at)} {fmtT(s.started_at)} → {fmtT(s.finished_at)}
-          {s.sec_per_unit != null ? ` · ${s.units} units · ${s.sec_per_unit}s/unit` : ''}
+          {s.units != null ? ` · ${s.units} units` : ''}
+          {s.efficiency_pct != null ? ` · ${s.efficiency_pct}% of model pace` : ''}
         </div>
       </button>
       {open && (
@@ -424,16 +426,16 @@ function ReportsView({ api, onBack }) {
       if (r.ok) setStats(r.stats); else setErr(friendlyErr(r.error));
     });
     api({ action: 'stats_stores', days }).then((r) => {
-      if (alive && r.ok) setStoreStats({ stores: r.stores, target: r.target_sec_per_unit, fleet: r.fleet_sec_per_unit, learned: r.fleet_learned });
+      if (alive && r.ok) setStoreStats({ stores: r.stores, target: r.target_pct, model: r.model });
     });
     return () => { alive = false; };
   }, [api, days]);
   const saveTarget = async () => {
-    const cur = (storeStats && storeStats.target) || 30;
-    const v = window.prompt('Expected pace — seconds per unit (lower = faster). Fleet true average is shown in the report.', String(cur));
+    const cur = (storeStats && storeStats.target) || 100;
+    const v = window.prompt('Target efficiency vs the learned model (100 = model pace, 110 = 10% faster):', String(cur));
     if (v == null) return;
-    const r = await api({ action: 'set_target_pace', sec_per_unit: Number(v) });
-    if (r.ok) setStoreStats((s) => (s ? { ...s, target: r.target_sec_per_unit } : s));
+    const r = await api({ action: 'set_target', efficiency_pct: Number(v) });
+    if (r.ok) setStoreStats((s) => (s ? { ...s, target: r.target_pct } : s));
   };
   const tile = (n, label, color = '#f1f5f9') => (
     <div key={label} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '14px 20px', textAlign: 'center', minWidth: 118, flex: 1 }}>
@@ -498,17 +500,18 @@ function ReportsView({ api, onBack }) {
           <div style={{ marginTop: 16, background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
               <div style={S.cap}>By store — vs expectation</div>
-              {storeStats && (
+              {storeStats && storeStats.model && (
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#94a3b8' }}>
-                  True average: <span style={{ color: '#60a5fa' }}>{storeStats.fleet != null ? storeStats.fleet + 's/unit' : '—'}</span>
-                  {storeStats.learned === false ? ' (building history)' : ''}
-                  {' · '}Target: <span style={{ color: '#fbbf24' }}>{storeStats.target}s/unit</span>
+                  True average: <span style={{ color: '#60a5fa' }}>{storeStats.model.sec_per_bag}s/bag + {storeStats.model.sec_per_item}s/item</span>
+                  {storeStats.model.learned ? '' : ' (building history)'}
+                  {' · '}Target: <span style={{ color: '#fbbf24' }}>{storeStats.target}% of model</span>
                   <button type="button" style={{ ...S.backBtn, marginLeft: 8, padding: '4px 10px', fontSize: 12 }} onClick={saveTarget}>Set target</button>
                 </div>
               )}
             </div>
             <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
-              Green beat the target, red missed it — pace measured on active 15-minute blocks only. Tap a store for its timeline.
+              Each store is graded against what the model expected for its exact order mix (bag overhead + per-item time), on active
+              15-minute blocks only — so big-bag stores and small-bag stores compare fairly. Green beat the target, red missed it.
             </div>
             {!storeStats && <div style={{ color: '#475569', fontWeight: 700 }}>Crunching…</div>}
             {storeStats && storeStats.stores.length === 0 && <div style={{ color: '#475569', fontWeight: 700 }}>No completed bags in this window.</div>}

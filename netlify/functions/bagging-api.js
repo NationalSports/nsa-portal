@@ -18,12 +18,16 @@ const { createBagShipLabel } = require('./_baggingShip');
 
 const LIVE = ['pending_payment', 'cancelled', 'refunded']; // excluded statuses
 
-// Learned pack rate (seconds per unit) from the last 30 days of completed
-// bags — the input for "this store should take ~N minutes" projections.
-// Cached per warm container for 10 minutes; falls back to a 30s/unit default
-// until there's real history. Deliberately data-driven, not an LLM guess.
+// Learned pack-rate MODEL from the last 30 days: time = secPerBag × bags +
+// secPerItem × items. Two parameters, because order mix varies — a bag has
+// fixed overhead (claim, label, handling) plus per-item time, so stores with
+// 1-item bags and 6-item bags can't share a single per-unit number. Fitted by
+// least squares over active 15-minute blocks (each block: a·bags + b·items ≈
+// 900s), clamped to sane ranges, defaults (40s/bag + 15s/item) until there are
+// 12+ active blocks of history. Cached per warm container for 10 minutes.
+// Deliberately data-driven, not an LLM guess.
 const RATE_TTL_MS = 10 * 60 * 1000;
-let _rateCache = null; // { at, secPerUnit, sample }
+let _rateCache = null; // { at, secPerBag, secPerItem, sample, learned }
 async function packRate(sb) {
   if (_rateCache && Date.now() - _rateCache.at < RATE_TTL_MS) return _rateCache;
   const since = new Date(Date.now() - 30 * 86400000).toISOString();
@@ -31,21 +35,46 @@ async function packRate(sb) {
     .select('order_id, created_at').eq('event', 'complete')
     .gte('created_at', since).limit(10000);
   const completes = evs || [];
-  const activeHours = new Set(completes.map((e) => String(e.created_at || '').slice(0, 13))).size;
-  let units = 0;
+  const unitsByOrder = {};
   const ids = [...new Set(completes.map((e) => e.order_id).filter(Boolean))];
   for (let i = 0; i < ids.length; i += 200) {
     const { data: its } = await sb.from('webstore_order_items')
       .select('order_id, qty, bagged_qty').in('order_id', ids.slice(i, i + 200));
-    units += (its || []).reduce((a, x) => a + Math.min(Number(x.bagged_qty) || 0, Number(x.qty) || 0), 0);
+    (its || []).forEach((x) => {
+      unitsByOrder[x.order_id] = (unitsByOrder[x.order_id] || 0) + Math.min(Number(x.bagged_qty) || 0, Number(x.qty) || 0);
+    });
   }
-  // Need a real sample before trusting the learned rate.
-  const secPerUnit = (completes.length >= 20 && units > 0 && activeHours > 0)
-    ? (activeHours * 3600) / units
-    : 30;
-  _rateCache = { at: Date.now(), secPerUnit, sample: completes.length };
+  // Observations: per active 15-min block, bags + items completed in it.
+  const buckets = new Map(); // bucketStart -> {bags, items}
+  for (const e of completes) {
+    const b = Math.floor(Date.parse(e.created_at) / 900000) * 900000;
+    const cur = buckets.get(b) || { bags: 0, items: 0 };
+    cur.bags += 1; cur.items += unitsByOrder[e.order_id] || 0;
+    buckets.set(b, cur);
+  }
+  let secPerBag = 40; let secPerItem = 15; let learned = false;
+  const obs = [...buckets.values()].filter((o) => o.bags > 0);
+  if (obs.length >= 12) {
+    // Least squares for [a,b] in a·bags + b·items = 900 (normal equations).
+    let sxx = 0; let sxy = 0; let syy = 0; let sxT = 0; let syT = 0;
+    for (const o of obs) { sxx += o.bags * o.bags; sxy += o.bags * o.items; syy += o.items * o.items; sxT += o.bags * 900; syT += o.items * 900; }
+    const det = sxx * syy - sxy * sxy;
+    if (Math.abs(det) > 1e-6) {
+      const a = (sxT * syy - syT * sxy) / det;
+      const b = (syT * sxx - sxT * sxy) / det;
+      // Clamp to sane physical ranges; degenerate fits fall back to defaults.
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        secPerBag = Math.min(300, Math.max(5, a));
+        secPerItem = Math.min(120, Math.max(3, b));
+        learned = true;
+      }
+    }
+  }
+  _rateCache = { at: Date.now(), secPerBag, secPerItem, sample: obs.length, learned };
   return _rateCache;
 }
+// Expected seconds for a workload under the learned model.
+const expectedSec = (rate, bags, items) => rate.secPerBag * bags + rate.secPerItem * items;
 
 exports.handler = async (event) => {
   const headers = { ...corsHeaders(), 'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-machine-token' };
@@ -98,10 +127,11 @@ exports.handler = async (event) => {
           try {
             const { data: n } = await sb.rpc('bagging_ready_items', { p_kind: g.kind, p_group_id: String(g.group_id) });
             const units = Number(n) || 0;
-            return { ...g, ready_units: units, est_minutes: units ? Math.max(1, Math.round((units * rate.secPerUnit) / 60)) : 0 };
+            const est = expectedSec(rate, Number(g.ready) || 0, units);
+            return { ...g, ready_units: units, est_minutes: units ? Math.max(1, Math.round(est / 60)) : 0 };
           } catch { return g; }
         }));
-        return ok({ groups, rate: { sec_per_unit: +rate.secPerUnit.toFixed(1), learned: rate.sample >= 20 } });
+        return ok({ groups, rate: { sec_per_bag: +rate.secPerBag.toFixed(1), sec_per_item: +rate.secPerItem.toFixed(1), learned: rate.learned } });
       }
 
       case 'group_detail': {
@@ -327,8 +357,10 @@ exports.handler = async (event) => {
             unitsByOrder[x.order_id] = (unitsByOrder[x.order_id] || 0) + Math.min(Number(x.bagged_qty) || 0, Number(x.qty) || 0);
           });
         }
-        const { data: cfgRows } = await sb.from('bagging_config').select('value').eq('key', 'target_sec_per_unit').limit(1);
-        const targetSec = Number(cfgRows && cfgRows[0] && cfgRows[0].value) || 30;
+        // Target = expected efficiency vs the learned two-parameter model
+        // (100% = exactly model pace); manager-set via set_target.
+        const { data: cfgRows } = await sb.from('bagging_config').select('value').eq('key', 'target_efficiency_pct').limit(1);
+        const targetPct = Number(cfgRows && cfgRows[0] && cfgRows[0].value) || 100;
         const fleet = await packRate(sb);
         const BUCKET = 15 * 60 * 1000;
         const perStore = new Map();
@@ -347,15 +379,20 @@ exports.handler = async (event) => {
         }
         const stores = [...perStore.values()].map((s) => {
           const activeBuckets = s.buckets.size;
-          // Actual pace on ACTIVE time (15-min blocks with bagging), graded
-          // against the manager expectation and the fleet's true average.
-          const secPerUnit = s.units > 0 ? (activeBuckets * 900) / s.units : null;
+          // Grade against what the MODEL expected for this store's exact mix
+          // (bags × overhead + items × per-item), on active time only — so a
+          // store of 6-item bags isn't punished next to a store of 1-item bags.
+          const actualSec = activeBuckets * 900;
+          const expSec = expectedSec(fleet, s.bags, s.units);
+          const effPct = actualSec > 0 && expSec > 0 ? Math.round((expSec / actualSec) * 100) : null;
+          const activeHrs = activeBuckets / 4;
           return {
             store_id: s.store_id, store_name: s.store_name, bags: s.bags,
             units: s.units,
-            sec_per_unit: secPerUnit != null ? +secPerUnit.toFixed(1) : null,
-            vs_target_pct: secPerUnit != null ? Math.round(((targetSec - secPerUnit) / targetSec) * 100) : null,
-            vs_fleet_pct: secPerUnit != null && fleet.secPerUnit ? Math.round(((fleet.secPerUnit - secPerUnit) / fleet.secPerUnit) * 100) : null,
+            orders_per_hr: activeHrs > 0 ? +(s.bags / activeHrs).toFixed(1) : null,
+            units_per_hr: activeHrs > 0 ? +(s.units / activeHrs).toFixed(1) : null,
+            efficiency_pct: effPct,
+            vs_target_pct: effPct != null ? effPct - targetPct : null,
             started_at: new Date(s.first).toISOString(), finished_at: new Date(s.last).toISOString(),
             span_minutes: Math.max(1, Math.round((s.last - s.first) / 60000)),
             // pace over buckets that actually had bagging, so breaks don't dilute
@@ -366,22 +403,22 @@ exports.handler = async (event) => {
         }).sort((a, b) => b.finished_at.localeCompare(a.finished_at));
         return ok({
           stores,
-          target_sec_per_unit: targetSec,
-          fleet_sec_per_unit: fleet.secPerUnit ? +fleet.secPerUnit.toFixed(1) : null,
-          fleet_learned: fleet.sample >= 20,
+          target_pct: targetPct,
+          model: { sec_per_bag: +fleet.secPerBag.toFixed(1), sec_per_item: +fleet.secPerItem.toFixed(1), learned: fleet.learned },
         });
       }
 
-      case 'set_target_pace': {
-        // Manager-set expectation (sec/unit). Staff only — station tokens can't
-        // move the goalposts.
+      case 'set_target': {
+        // Manager-set expectation: efficiency vs the learned model, in percent
+        // (100 = model pace, 110 = 10% faster than model). Staff only —
+        // station tokens can't move the goalposts.
         if (actor.startsWith('station:')) return fail(403, 'Set the target from a staff login');
-        const sec = Math.max(5, Math.min(600, Number(body.sec_per_unit) || 0));
-        if (!sec) return fail(400, 'bad sec_per_unit');
+        const pct = Math.max(50, Math.min(200, Number(body.efficiency_pct) || 0));
+        if (!pct) return fail(400, 'bad efficiency_pct');
         const { error } = await sb.from('bagging_config')
-          .upsert({ key: 'target_sec_per_unit', value: sec, updated_by: actor, updated_at: new Date().toISOString() });
+          .upsert({ key: 'target_efficiency_pct', value: pct, updated_by: actor, updated_at: new Date().toISOString() });
         if (error) return rpcFail(error);
-        return ok({ target_sec_per_unit: sec });
+        return ok({ target_pct: pct });
       }
 
       case 'log_label_print': {
