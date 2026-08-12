@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
-import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals, sortOrders, ORDER_SORTS } from './bagLogic';
+import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals, sortOrders, ORDER_SORTS, orderInDeco } from './bagLogic';
 import { buildBagLabelHtml } from './bagLabel';
 import { printPdfLabels } from '../utils';
 
@@ -169,6 +169,9 @@ function GroupPicker({ groups, onPick, onRefresh, busy }) {
               </div>
               <div style={{ color: '#94a3b8', fontSize: 15, fontWeight: 700, marginTop: 6 }}>
                 {g.kind === 'so' ? g.group_id + ' · ' : ''}{g.bagged} / {g.total} bagged
+                {g.ready != null && g.ready < (g.total - g.bagged)
+                  ? <span style={{ color: '#fbbf24' }}> · {g.ready} ready, {g.total - g.bagged - g.ready} in deco</span>
+                  : ''}
                 {g.open_shorts > 0 ? ' · ' + g.open_shorts + ' short' : ''}
                 {g.earliest_eta ? ' · ETA ' + g.earliest_eta : ''}
               </div>
@@ -689,7 +692,8 @@ function BaggingScreen({ stationToken, staffMode }) {
     // list and claim the first free order (a 409 just means another tablet got
     // there first — move to the next).
     if (sort !== 'oldest') {
-      const candidates = sortOrders(orders, sort).filter((o) => !o.bagged_at);
+      const candidates = sortOrders(orders, sort)
+        .filter((o) => !o.bagged_at && !orderInDeco(o, o.webstore_order_items || []));
       for (const c of candidates) {
         const r = await api({ action: 'claim_order', order_id: c.id });
         if (r.ok) { setBusy(false); setOrder(r.order); setView('order'); setMsg(null); return; }
@@ -705,6 +709,11 @@ function BaggingScreen({ stationToken, staffMode }) {
   };
 
   const openOrder = async (o) => {
+    if (orderInDeco(o, o.webstore_order_items || [])) {
+      fxError();
+      setMsg({ kind: 'err', text: 'Still in decoration — this order can’t be bagged yet.' });
+      return;
+    }
     setBusy(true);
     const r = await api({ action: o.bagged_at ? 'reopen_order' : 'claim_order', order_id: o.id });
     setBusy(false);
@@ -940,15 +949,16 @@ function BaggingScreen({ stationToken, staffMode }) {
             const hdr = playerHeader(o, o.webstore_order_items || []);
             const p = orderProgress(o.webstore_order_items || []);
             const claimedElsewhere = o.bagging_claimed_by && !o.bagged_at;
+            const inDeco = orderInDeco(o, o.webstore_order_items || []);
             return (
               <div key={o.id} style={{ display: 'flex', gap: 8, alignItems: 'stretch', marginTop: 8 }}>
-                <button type="button" style={{ ...S.card, flex: 1, opacity: o.bagged_at ? 0.5 : 1 }} onClick={() => openOrder(o)}>
+                <button type="button" style={{ ...S.card, flex: 1, opacity: o.bagged_at ? 0.5 : inDeco ? 0.45 : 1, cursor: inDeco ? 'default' : 'pointer' }} onClick={() => openOrder(o)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
                     <span style={{ fontSize: 18, fontWeight: 800 }}>
                       {hdr.number ? '#' + hdr.number + ' ' : ''}{hdr.name}
                     </span>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: o.bagged_at ? '#22c55e' : claimedElsewhere ? '#fbbf24' : '#94a3b8' }}>
-                      {o.bagged_at ? `Bagged · Bag ${o.bag_seq || ''}` : claimedElsewhere ? 'In progress' : `${p.checked}/${p.total} items`}
+                    <span style={{ fontSize: 14, fontWeight: 700, color: o.bagged_at ? '#22c55e' : inDeco ? '#64748b' : claimedElsewhere ? '#fbbf24' : '#94a3b8' }}>
+                      {o.bagged_at ? `Bagged · Bag ${o.bag_seq || ''}` : inDeco ? '🎨 In deco' : claimedElsewhere ? 'In progress' : `${p.checked}/${p.total} items`}
                     </span>
                   </div>
                 </button>

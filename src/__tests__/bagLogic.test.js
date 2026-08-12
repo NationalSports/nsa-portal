@@ -2,7 +2,7 @@
 
 import {
   claimIsStale, lineSatisfied, lineOnOrder, orderProgress, sortLinesForBag,
-  playerHeader, shortSummary, nextOrderPick, batchItemTotals, sortOrders, dominantSize, CLAIM_STALE_MS,
+  playerHeader, shortSummary, nextOrderPick, batchItemTotals, sortOrders, dominantSize, orderInDeco, CLAIM_STALE_MS,
 } from '../baggingstation/bagLogic';
 
 const NOW = Date.parse('2026-08-12T12:00:00Z');
@@ -106,6 +106,20 @@ describe('batchItemTotals — the staging start page', () => {
     expect(jersey.sizes.get('YM')).toEqual({ total: 3, bagged: 1, short: 1 });
     expect(jersey.sizes.get('M')).toEqual({ total: 1, bagged: 0, short: 0 });
     expect(totals).toEqual({ total: 5, bagged: 2, short: 1, remaining: 2 });
+  });
+});
+
+describe('orderInDeco — deco gate mirrors server bagging_order_ready', () => {
+  test('blocks while any live line is pre-bagging; on_order does not block', () => {
+    expect(orderInDeco({}, [{ line_status: 'in_production' }])).toBe(true);
+    expect(orderInDeco({}, [{ line_status: 'received' }])).toBe(true);
+    expect(orderInDeco({}, [{}])).toBe(true); // missing status = pending
+    expect(orderInDeco({}, [{ line_status: 'bagging' }, { line_status: 'on_order' }])).toBe(false);
+    expect(orderInDeco({}, [{ line_status: 'shipped' }])).toBe(false);
+    expect(orderInDeco({}, [{ line_status: 'pending', is_bundle_parent: true }, { line_status: 'bagging' }])).toBe(false);
+  });
+  test('backorder child orders are exempt', () => {
+    expect(orderInDeco({ backorder_of: 'parent' }, [{ line_status: 'pending' }])).toBe(false);
   });
 });
 

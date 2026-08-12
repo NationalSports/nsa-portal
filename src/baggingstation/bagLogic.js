@@ -31,6 +31,16 @@ export const lineSatisfied = (i) => {
 // on_order until goods arrive — it's a WAIT, not a short.
 export const lineOnOrder = (i) => (i.line_status || '') === 'on_order';
 
+// Deco gate — mirrors server bagging_order_ready: an order still has lines in
+// production (before the job rollups advance them to 'bagging') and must not
+// be bagged yet. Backorder child orders are exempt (lines sit at 'pending' by
+// design; their goods come from receiving, not production).
+export const orderInDeco = (order, items) => {
+  if (order && order.backorder_of) return false;
+  return (items || []).some((i) => !i.is_bundle_parent
+    && ['pending', 'received', 'in_production'].includes(i.line_status || 'pending'));
+};
+
 // Unit-level progress for the order screen + confirmation:
 // { total, checked, short, waiting, complete } (cancelled lines excluded).
 export function orderProgress(items) {
