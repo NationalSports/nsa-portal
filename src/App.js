@@ -28,7 +28,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
@@ -1481,14 +1481,9 @@ const loadPdfJs=()=>{
   });
   return _pdfjsLoadPromise;
 };
-// Reject (instead of hanging forever) if a promise doesn't settle within `ms`. Used to bound PDF
-// text extraction so one corrupt / encrypted / scanned-image / huge file can't freeze the whole
-// import on "Parsing PDFs…". Note: this lets the UI recover; any orphaned pdf.js work is harmless.
-const _withTimeout=(promise,ms,msg)=>{
-  let t=null;
-  const timeout=new Promise((_,reject)=>{t=setTimeout(()=>reject(new Error(msg||('Timed out after '+ms+'ms'))),ms)});
-  return Promise.race([promise,timeout]).finally(()=>{if(t)clearTimeout(t)});
-};
+// _withTimeout (src/utils.js) bounds the extraction below so one corrupt / encrypted /
+// scanned-image / huge file can't freeze the whole import on "Parsing PDFs…". It lets the
+// UI recover; any orphaned pdf.js work left running is harmless.
 const extractPdfText=async(file,opts={})=>{
   // Bound the whole extraction so a corrupt / encrypted / scanned / huge PDF can't hang the
   // import on "Parsing PDFs…" forever — pdf.js getDocument()/getTextContent() can otherwise
