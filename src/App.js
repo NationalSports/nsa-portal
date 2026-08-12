@@ -2159,6 +2159,13 @@ export default function App(){
   // Migrate bad SO/EST/INV IDs from localStorage (non-numeric suffixes like SO-h4o401)
   const migrateState=()=>{
     let soList=loadState('sos',D_SO);let invList=loadState('invs',D_INV);let msgList=loadState('msgs',D_MSG);let estList=loadState('ests',D_E);
+    // deco_pos is read as `(o.deco_pos||[]).forEach(...)` everywhere; `||[]` doesn't catch a value that
+    // is an object rather than an array, so one such row throws "forEach is not a function" and takes
+    // down every screen that scans SOs (global search crashed on SO-TEST-BAG's `{}` on 2026-08-12).
+    // dbEngine normalises the DB copy, but this cached copy renders first — guard it too. Only coerce
+    // a present-but-wrong value: leaving absent/null alone keeps the save path omitting the column
+    // instead of writing an empty array over the DB's deco POs.
+    [soList,estList].forEach(l=>(Array.isArray(l)?l:[]).forEach(r=>{if(r&&r.deco_pos!=null&&!Array.isArray(r.deco_pos))r.deco_pos=[]}));
     const idMap={};let needsMigrate=false;
     // Fix SO IDs
     const badSOs=soList.filter(s=>!(/^SO-\d+$/).test(s.id));
