@@ -367,6 +367,45 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
   }
   return [];
 };
+// Apply ONE garment -> source link on the art file `artId`: chains are flattened (linking
+// to an already-linked garment stores its root) and anything that pointed AT the member is
+// re-pointed at the new root, so the map never grows a hop. sourceKey null = unlink.
+// Pure: returns a NEW array only when the map actually changed, else the same reference.
+// Extracted from the three hand-synced setMockLink handlers (SO page x2, Art Dashboard) so
+// the group writer below can't drift from single-click linking.
+export const applyMockLink = (artFiles, artId, memberKey, sourceKey) => {
+  const arr = safeArr(artFiles);
+  if (!artId || !memberKey || memberKey === sourceKey) return arr;
+  let changed = false;
+  const out = arr.map(a => {
+    if (!a || a.id !== artId) return a;
+    const before = mockLinksOf(a);
+    const links = { ...before };
+    let root = sourceKey;
+    const seen = new Set([memberKey]);
+    while (root && links[root] && !seen.has(root)) { seen.add(root); root = links[root]; }
+    if (root === memberKey) root = sourceKey === memberKey ? null : sourceKey;
+    if (root) links[memberKey] = root; else delete links[memberKey];
+    Object.keys(links).forEach(k => {
+      if (links[k] === memberKey) links[k] = root || memberKey;
+      if (links[k] === k) delete links[k];
+    });
+    const keys = Object.keys(links);
+    if (keys.length === Object.keys(before).length && keys.every(k => before[k] === links[k])) return a;
+    changed = true;
+    return { ...a, mock_links: links };
+  });
+  return changed ? out : arr;
+};
+// Squash several garments onto ONE mockup in a single write: the FIRST key is the source
+// (it keeps its own mock), every later key links to it. Used by the art-request modal so a
+// near-identical group is grouped BEFORE the artist starts and only one mock gets built.
+// Nothing is moved or deleted — unchecking/unlinking restores per-garment behavior exactly.
+export const squashMockLinks = (artFiles, artId, memberKeys) => {
+  const keys = [...new Set(safeArr(memberKeys).filter(Boolean))];
+  if (keys.length < 2) return safeArr(artFiles);
+  return keys.slice(1).reduce((acc, k) => applyMockLink(acc, artId, k, keys[0]), safeArr(artFiles));
+};
 
 // ── Mocks follow the garment when its identity changes ──
 // Per-garment mockups and mock links are keyed `sku|color`, so an IN-PLACE sku or color
