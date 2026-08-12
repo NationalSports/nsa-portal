@@ -1,12 +1,56 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase } from './lib/supabase';
+import { SearchSelect } from './components';
 
 // Sales History: read-only rep-facing search across imported NetSuite
 // transaction lines (customer_invoice_lines). Queries Supabase directly
 // rather than loading the whole table into React state — there can be
 // hundreds of thousands of rows.
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 1000;   // PostgREST's max-rows — a bigger .limit() is silently capped
+const WAVE = 5;           // pages fetched concurrently
+const MAX_LINES = 10000;  // safety cap for one search
+const MAX_CUSTOMERS = 20000;
+const LINE_COLS =
+  'id, netsuite_internal_id, line_seq, transaction_type, document_number, ' +
+  'transaction_date, status, raw_customer_name, customer_id, item, ' +
+  'description, quantity, rate, amount, header_memo, line_memo';
+
+// PostgREST caps every response at 1000 rows regardless of .limit(), so a single
+// request silently truncates both the customer book (2.4k rows) and any busy
+// customer's line history. Page with .range() until a short page comes back.
+// buildQuery() must return a FRESH, fully-ordered query on every call — the
+// slices only line up under a deterministic sort.
+async function fetchAllPages(buildQuery, max) {
+  const out = [];
+  let start = 0;
+  let done = false;
+  // Page 0 on its own: most searches fit in one page, and firing a whole wave
+  // for them would multiply the DB load of every keystroke.
+  const first = await buildQuery().range(0, Math.min(PAGE_SIZE, max) - 1);
+  if (first.error) throw first.error;
+  out.push(...(first.data || []));
+  if (out.length < PAGE_SIZE || out.length >= max) return { rows: out, truncated: out.length >= max };
+  start = PAGE_SIZE;
+  while (!done && start < max) {
+    const starts = [];
+    for (let k = 0; k < WAVE && start < max; k++, start += PAGE_SIZE) starts.push(start);
+    const results = await Promise.all(
+      starts.map((s) => buildQuery().range(s, Math.min(s + PAGE_SIZE, max) - 1))
+    );
+    for (const r of results) {
+      if (r.error) throw r.error;
+      const rows = r.data || [];
+      out.push(...rows);
+      if (rows.length < PAGE_SIZE) { done = true; break; }
+    }
+  }
+  return { rows: out, truncated: !done };
+}
+
+// PostgREST's or=(…) list is comma/paren delimited, so those characters in a
+// raw search term produce a parse error rather than a match.
+const sanitize = (s) => s.replace(/[(),"]/g, ' ').replace(/\s+/g, ' ').trim();
 
 export default function SalesHistory() {
   const [search, setSearch] = useState('');
@@ -15,81 +59,151 @@ export default function SalesHistory() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [rows, setRows] = useState([]);
+  const [capped, setCapped] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
   const [expanded, setExpanded] = useState(new Set());
   const [customers, setCustomers] = useState([]);
-  const [customerInput, setCustomerInput] = useState('');
+  const [customerId, setCustomerId] = useState('');
+  const [includeSubs, setIncludeSubs] = useState(true);
 
-  // Load customers once for the picker. Includes netsuite_internal_id so we
-  // can filter lines by the indexed raw_customer_nsid for fast, exact match.
+  // Load customers once for the picker. netsuite_internal_id lets us filter
+  // lines by the indexed raw_customer_nsid for a fast, exact match; alpha_tag /
+  // search_tags / parent_id feed the picker's search.
   useEffect(() => {
     if (!supabase) return;
     let cancelled = false;
     (async () => {
-      const { data, error } = await supabase
-        .from('customers')
-        .select('id, name, netsuite_internal_id')
-        .order('name', { ascending: true });
-      if (!cancelled && !error) setCustomers(data || []);
+      try {
+        const { rows: data } = await fetchAllPages(() => supabase
+          .from('customers')
+          .select('id, name, netsuite_internal_id, alpha_tag, search_tags, parent_id')
+          .order('name', { ascending: true })
+          .order('id', { ascending: true }), MAX_CUSTOMERS);
+        if (!cancelled) setCustomers(data);
+      } catch (e) {
+        if (!cancelled) setErr(e.message || String(e));
+      }
     })();
     return () => { cancelled = true; };
   }, []);
 
-  // When the input matches a known customer name, treat it as a hard filter;
-  // otherwise leave the customer filter unset and let the search field do
-  // fuzzy matching.
-  const selectedCustomer = useMemo(() => {
-    const v = customerInput.trim().toLowerCase();
-    if (!v) return null;
-    return customers.find((c) => (c.name || '').toLowerCase() === v) || null;
-  }, [customerInput, customers]);
+  const selectedCustomer = useMemo(
+    () => customers.find((c) => c.id === customerId) || null,
+    [customerId, customers]
+  );
+
+  // Sub-customers at any depth ("West Valley College" → …Baseball, …Swim, …).
+  // Each is its own NetSuite entity, so a parent-only filter hides most of the
+  // account's history.
+  const descendants = useMemo(() => {
+    if (!selectedCustomer) return [];
+    const kids = new Map();
+    for (const c of customers) {
+      if (!c.parent_id) continue;
+      if (!kids.has(c.parent_id)) kids.set(c.parent_id, []);
+      kids.get(c.parent_id).push(c);
+    }
+    const out = [];
+    const queue = [selectedCustomer.id];
+    const seen = new Set(queue);
+    while (queue.length) {
+      for (const c of kids.get(queue.shift()) || []) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        out.push(c);
+        queue.push(c.id);
+      }
+    }
+    return out;
+  }, [selectedCustomer, customers]);
+
+  // Imported lines only carry a NetSuite id, so a portal-only customer (no
+  // netsuite_internal_id) can only be matched on name.
+  const customerFilter = useMemo(() => {
+    if (!selectedCustomer) return null;
+    const family = includeSubs ? [selectedCustomer, ...descendants] : [selectedCustomer];
+    const nsids = family.map((c) => c.netsuite_internal_id).filter(Boolean);
+    return nsids.length ? { nsids } : { name: selectedCustomer.name };
+  }, [selectedCustomer, descendants, includeSubs]);
+
+  // Searchable by name, alpha tag ("WVC"), bare initials, saved search tags, the
+  // parent account's name/tag, or the NetSuite id — reps rarely type the full
+  // legal name.
+  const customerOptions = useMemo(() => {
+    const byId = new Map(customers.map((c) => [c.id, c]));
+    const opts = customers.map((c) => {
+      const parent = c.parent_id ? byId.get(c.parent_id) : null;
+      const initials = (c.name || '').replace(/[^a-zA-Z0-9 ]/g, ' ')
+        .split(/\s+/).filter(Boolean).map((w) => w[0]).join('');
+      return {
+        value: c.id,
+        label: c.alpha_tag ? `${c.name} (${c.alpha_tag})` : c.name,
+        searchText: [c.alpha_tag, initials, ...(c.search_tags || []),
+          parent?.name, parent?.alpha_tag, c.netsuite_internal_id].filter(Boolean).join(' '),
+      };
+    });
+    return [{ value: '', label: `All customers (${customers.length})`, searchText: '' }, ...opts];
+  }, [customers]);
+
+  // A paged search spans several round-trips, so a slow earlier search can land
+  // after a newer one — only the latest may write to state.
+  const searchSeq = useRef(0);
 
   const runSearch = useCallback(async () => {
     if (!supabase) { setErr('No DB connection'); return; }
+    const seq = ++searchSeq.current;
     setLoading(true);
     setErr(null);
     try {
-      let q = supabase.from('customer_invoice_lines').select(
-        'id, netsuite_internal_id, line_seq, transaction_type, document_number, ' +
-        'transaction_date, status, raw_customer_name, customer_id, item, ' +
-        'description, quantity, rate, amount, header_memo, line_memo'
-      ).order('transaction_date', { ascending: false })
-       .order('netsuite_internal_id', { ascending: false })
-       .order('line_seq', { ascending: true })
-       .limit(PAGE_SIZE * 50);
-      if (type !== 'all') q = q.eq('transaction_type', type);
-      if (status !== 'all') q = q.ilike('status', status);
-      if (from) q = q.gte('transaction_date', from);
-      if (to) q = q.lte('transaction_date', to);
-      if (selectedCustomer) {
-        // Prefer the indexed netsuite id; fall back to name for customers
-        // we haven't matched yet via netsuite_internal_id.
-        if (selectedCustomer.netsuite_internal_id) {
-          q = q.eq('raw_customer_nsid', selectedCustomer.netsuite_internal_id);
-        } else {
-          q = q.ilike('raw_customer_name', selectedCustomer.name);
+      const buildQuery = () => {
+        let q = supabase.from('customer_invoice_lines').select(LINE_COLS)
+          .order('transaction_date', { ascending: false })
+          .order('netsuite_internal_id', { ascending: false })
+          .order('line_seq', { ascending: true })
+          .order('id', { ascending: true });
+        if (type !== 'all') q = q.eq('transaction_type', type);
+        if (status !== 'all') q = q.ilike('status', status);
+        if (from) q = q.gte('transaction_date', from);
+        if (to) q = q.lte('transaction_date', to);
+        if (customerFilter?.nsids) q = q.in('raw_customer_nsid', customerFilter.nsids);
+        else if (customerFilter?.name) q = q.ilike('raw_customer_name', `%${customerFilter.name}%`);
+        const s = sanitize(search);
+        if (s) {
+          // Match across customer name, document number, or item SKU. Trigram
+          // GIN indexes on lower(raw_customer_name) and lower(item) make ILIKE
+          // fast even at 200k+ rows.
+          q = q.or(
+            `raw_customer_name.ilike.%${s}%,document_number.ilike.%${s}%,item.ilike.%${s}%,header_memo.ilike.%${s}%`
+          );
         }
+        return q;
+      };
+      // The unfiltered view is a browse of recent activity — one page is plenty
+      // and keeps the tab snappy. Once the rep has narrowed to something they
+      // actually want complete, page through up to MAX_LINES.
+      const filtered = !!(customerFilter || sanitize(search) || type !== 'all' || status !== 'all' || from || to);
+      const { rows: data, truncated } = await fetchAllPages(buildQuery, filtered ? MAX_LINES : PAGE_SIZE);
+      if (seq !== searchSeq.current) return;
+      // At the cap the oldest transaction is usually cut mid-way through its
+      // lines, which would show a wrong total — drop it rather than lie.
+      let kept = data;
+      if (truncated && data.length) {
+        const lastTxn = data[data.length - 1].netsuite_internal_id;
+        const trimmed = data.filter((r) => r.netsuite_internal_id !== lastTxn);
+        if (trimmed.length) kept = trimmed;
       }
-      const s = search.trim();
-      if (s) {
-        // Match across customer name, document number, or item SKU. Trigram
-        // GIN indexes on lower(raw_customer_name) and lower(item) make ILIKE
-        // fast even at 200k+ rows.
-        q = q.or(
-          `raw_customer_name.ilike.%${s}%,document_number.ilike.%${s}%,item.ilike.%${s}%,header_memo.ilike.%${s}%`
-        );
-      }
-      const { data, error } = await q;
-      if (error) throw error;
-      setRows(data || []);
+      setRows(kept);
+      setCapped(truncated);
     } catch (e) {
+      if (seq !== searchSeq.current) return;
       setErr(e.message || String(e));
       setRows([]);
+      setCapped(false);
     } finally {
-      setLoading(false);
+      if (seq === searchSeq.current) setLoading(false);
     }
-  }, [search, type, status, from, to, selectedCustomer]);
+  }, [search, type, status, from, to, customerFilter]);
 
   // Initial load + re-run on filter changes (debounced for the text search).
   useEffect(() => {
@@ -145,30 +259,26 @@ export default function SalesHistory() {
     <div>
       <div className="card" style={{ marginBottom: 12 }}>
         <div className="card-body" style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
-          <div style={{ flex: '1 1 240px', minWidth: 200, position: 'relative' }}>
+          <div style={{ flex: '1 1 260px', minWidth: 220, position: 'relative' }}>
             <label style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>Customer</label>
-            <input
-              className="form-input"
-              list="sales-history-customers"
-              placeholder={`Pick from ${customers.length} customers…`}
-              value={customerInput}
-              onChange={(e) => setCustomerInput(e.target.value)}
-              autoFocus
+            <SearchSelect
+              options={customerOptions}
+              value={customerId}
+              onChange={setCustomerId}
+              placeholder="All customers"
+              limit={100}
             />
-            <datalist id="sales-history-customers">
-              {customers.map((c) => (
-                <option key={c.id} value={c.name} />
-              ))}
-            </datalist>
-            {customerInput && !selectedCustomer && (
-              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                Type to filter — pick a name from the list to lock the filter.
-              </div>
-            )}
             {selectedCustomer && (
-              <div style={{ fontSize: 10, color: '#166534', marginTop: 2 }}>
+              <div style={{ fontSize: 10, color: '#166534', marginTop: 4 }}>
                 Filtering by <strong>{selectedCustomer.name}</strong>
-                {' '}<button type="button" onClick={() => setCustomerInput('')}
+                {descendants.length > 0 && (
+                  <label style={{ marginLeft: 8, color: '#475569', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={includeSubs} onChange={(e) => setIncludeSubs(e.target.checked)}
+                      style={{ verticalAlign: 'middle', marginRight: 3 }} />
+                    include {descendants.length} sub-customer{descendants.length === 1 ? '' : 's'}
+                  </label>
+                )}
+                {' '}<button type="button" onClick={() => setCustomerId('')}
                   style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 0, fontSize: 10 }}>clear</button>
               </div>
             )}
@@ -217,6 +327,13 @@ export default function SalesHistory() {
 
       {err && <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid #dc2626' }}>
         <div className="card-body" style={{ color: '#991b1b', fontSize: 13 }}>Error: {err}</div>
+      </div>}
+
+      {capped && !loading && <div className="card" style={{ marginBottom: 12, borderLeft: '3px solid #d97706' }}>
+        <div className="card-body" style={{ color: '#92400e', fontSize: 12 }}>
+          Only the most recent lines are shown — older transactions are not listed. Pick a
+          customer, or narrow the search or date range, to see the rest.
+        </div>
       </div>}
 
       <div className="card">
