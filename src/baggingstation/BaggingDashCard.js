@@ -34,6 +34,9 @@ export default function BaggingDashCard() {
   const KIND = { so: 'Club batch', store: 'OMG school', backorders: 'Backorders' };
   const totalReady = (groups || []).reduce((a, g) => a + (Number(g.ready) || 0), 0);
   const totalShorts = (groups || []).reduce((a, g) => a + (Number(g.open_shorts) || 0), 0);
+  const totalMins = (groups || []).reduce((a, g) => a + (Number(g.est_minutes) || 0), 0);
+  const totalUnits = (groups || []).reduce((a, g) => a + (Number(g.ready_units) || 0), 0);
+  const fmtM = (m) => (m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + 'm');
 
   return (
     <div className="card" style={{ borderLeft: '3px solid #7c3aed' }}>
@@ -44,6 +47,13 @@ export default function BaggingDashCard() {
         </a>
       </div>
       <div className="card-body" style={{ padding: 0, maxHeight: 400, overflow: 'auto' }}>
+        {!err && groups && totalMins > 0 && (
+          <div style={{ padding: '8px 14px', fontSize: 12, fontWeight: 600, color: '#4c1d95', background: '#f5f3ff', borderBottom: '1px solid #ede9fe' }}>
+            Today’s packing workload: {totalUnits} units · est <b>{fmtM(totalMins)}</b> for one packer
+            {totalMins >= 90 ? <> · ~{fmtM(Math.ceil(totalMins / 2))} with two</> : null}
+            <span style={{ color: '#7c3aed' }}> — learned from your team’s actual pace</span>
+          </div>
+        )}
         {err && (
           <div style={{ padding: 14, fontSize: 12, color: '#94a3b8' }}>Couldn’t load the bagging queue — retrying…</div>
         )}
@@ -63,6 +73,7 @@ export default function BaggingDashCard() {
                   {KIND[g.kind] || g.kind}{g.kind === 'so' ? ' · ' + g.group_id : ''} · {g.bagged}/{g.total} bagged
                   {inDeco > 0 ? ` · ${inDeco} in deco` : ''}
                   {g.earliest_eta ? ` · ETA ${g.earliest_eta}` : ''}
+                  {g.est_minutes > 0 ? ` · ⏱ ${fmtM(g.est_minutes)}` : ''}
                 </div>
               </div>
               {Number(g.open_shorts) > 0 && (

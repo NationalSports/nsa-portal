@@ -158,6 +158,18 @@ function GroupPicker({ groups, onPick, onRefresh, busy }) {
           Nothing waiting to be bagged
         </div>
       )}
+      {groups.length > 0 && (() => {
+        const mins = groups.reduce((a, g) => a + (Number(g.est_minutes) || 0), 0);
+        const units = groups.reduce((a, g) => a + (Number(g.ready_units) || 0), 0);
+        if (!mins) return null;
+        const fmt = (m) => (m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + 'm');
+        return (
+          <div style={{ margin: '0 0 12px', padding: '10px 16px', borderRadius: 8, background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', fontSize: 15, fontWeight: 700 }}>
+            Today’s queue: {units} units · est <span style={{ color: '#60a5fa' }}>{fmt(mins)}</span> for one packer
+            {mins >= 90 ? <span> · ~{fmt(Math.ceil(mins / 2))} with two</span> : null}
+          </div>
+        );
+      })()}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {groups.map((g) => {
           const badge = KIND_BADGE[g.kind] || KIND_BADGE.so;
@@ -174,6 +186,9 @@ function GroupPicker({ groups, onPick, onRefresh, busy }) {
                   : ''}
                 {g.open_shorts > 0 ? ' · ' + g.open_shorts + ' short' : ''}
                 {g.earliest_eta ? ' · ETA ' + g.earliest_eta : ''}
+                {g.est_minutes > 0 && (
+                  <span style={{ color: '#60a5fa' }}> · ⏱ est {g.est_minutes >= 60 ? Math.floor(g.est_minutes / 60) + 'h ' + (g.est_minutes % 60) + 'm' : g.est_minutes + 'm'}</span>
+                )}
               </div>
             </button>
           );

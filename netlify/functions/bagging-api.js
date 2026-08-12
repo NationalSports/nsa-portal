@@ -18,6 +18,35 @@ const { createBagShipLabel } = require('./_baggingShip');
 
 const LIVE = ['pending_payment', 'cancelled', 'refunded']; // excluded statuses
 
+// Learned pack rate (seconds per unit) from the last 30 days of completed
+// bags — the input for "this store should take ~N minutes" projections.
+// Cached per warm container for 10 minutes; falls back to a 30s/unit default
+// until there's real history. Deliberately data-driven, not an LLM guess.
+const RATE_TTL_MS = 10 * 60 * 1000;
+let _rateCache = null; // { at, secPerUnit, sample }
+async function packRate(sb) {
+  if (_rateCache && Date.now() - _rateCache.at < RATE_TTL_MS) return _rateCache;
+  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const { data: evs } = await sb.from('bagging_events')
+    .select('order_id, created_at').eq('event', 'complete')
+    .gte('created_at', since).limit(10000);
+  const completes = evs || [];
+  const activeHours = new Set(completes.map((e) => String(e.created_at || '').slice(0, 13))).size;
+  let units = 0;
+  const ids = [...new Set(completes.map((e) => e.order_id).filter(Boolean))];
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data: its } = await sb.from('webstore_order_items')
+      .select('order_id, qty, bagged_qty').in('order_id', ids.slice(i, i + 200));
+    units += (its || []).reduce((a, x) => a + Math.min(Number(x.bagged_qty) || 0, Number(x.qty) || 0), 0);
+  }
+  // Need a real sample before trusting the learned rate.
+  const secPerUnit = (completes.length >= 20 && units > 0 && activeHours > 0)
+    ? (activeHours * 3600) / units
+    : 30;
+  _rateCache = { at: Date.now(), secPerUnit, sample: completes.length };
+  return _rateCache;
+}
+
 exports.handler = async (event) => {
   const headers = { ...corsHeaders(), 'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-machine-token' };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
@@ -62,7 +91,17 @@ exports.handler = async (event) => {
       case 'list_groups': {
         const { data, error } = await sb.rpc('bagging_list_groups');
         if (error) return rpcFail(error);
-        return ok({ groups: data || [] });
+        // Enrich each card with remaining units + a learned time estimate so
+        // the picker and the dashboards can plan the day's packing labor.
+        const rate = await packRate(sb);
+        const groups = await Promise.all((data || []).map(async (g) => {
+          try {
+            const { data: n } = await sb.rpc('bagging_ready_items', { p_kind: g.kind, p_group_id: String(g.group_id) });
+            const units = Number(n) || 0;
+            return { ...g, ready_units: units, est_minutes: units ? Math.max(1, Math.round((units * rate.secPerUnit) / 60)) : 0 };
+          } catch { return g; }
+        }));
+        return ok({ groups, rate: { sec_per_unit: +rate.secPerUnit.toFixed(1), learned: rate.sample >= 20 } });
       }
 
       case 'group_detail': {
