@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -22871,12 +22871,12 @@ export default function App(){
                   // and the send-for-approval check always line up.
                   mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
                     if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                      _repSlots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'art',primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
-                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else{const d=nameDecos[sd.idx];
-                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
-                  if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
+                      _repSlots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
+                  if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -22920,7 +22920,7 @@ export default function App(){
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
                        :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
-                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slotMockFiles(slot,_repSlots,gi.sku,gi.color));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         // Reused/pre-digitized art has no per-garment mocks — the approval gate and the SO
                         // page accept the general bucket / sew-out proof instead, so the slot must show it
@@ -23553,15 +23553,15 @@ export default function App(){
                       // check always line up.
                       mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
                         if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                          _slots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'art',primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
-                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else{const d=_nameDecos[sd.idx];
-                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
-                      if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
+                          _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
+                      if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
-                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slotMockFiles(slot,_slots,gi.sku,gi.color));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         // Reused/pre-digitized art: no per-garment mocks anywhere, so show the same
                         // general-bucket / sew-out proof the approval gate + SO page accept, instead of

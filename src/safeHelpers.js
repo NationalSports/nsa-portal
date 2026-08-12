@@ -645,6 +645,40 @@ export const mockSlotKeys = (base, decos) => {
   return slots;
 };
 
+/**
+ * The mockup files one slot should DISPLAY.
+ *
+ * Slot keys are positional: the first art decoration on a garment owns the bare `sku|color` key
+ * and every later one gets a discriminated key (`|<colorWayId>` / `|d1`). That position depends on
+ * how many decorations the JOB claims — so a design that used to run on its own job stored its
+ * mock under the bare key (it was that job's primary slot), and folding several designs onto one
+ * job demotes it to a discriminated key it has nothing under. The slot then renders as an empty
+ * upload box and invites a duplicate re-upload, while the job sheet — which reads through a
+ * fallback chain (_prodJobItemMocks) — still shows the mock. SO-1840's CUI Basketball and Talon
+ * both sit under `JW6602|Black` for exactly this reason.
+ *
+ * So an ART slot with nothing under its own key falls back to the bare-key read, but ONLY when its
+ * art file is not shared with another slot on this garment: a shared file is precisely what the
+ * discriminator exists to separate (reversible Side A/B, per-color-way mocks), and falling back
+ * there would show one side's image in both boxes.
+ *
+ * Numbers and names never fall back. Their slots hang off the job's primary artwork, so a fallback
+ * would put the garment's FRONT mockup in the back-proof box — worse than showing it empty.
+ */
+export const slotMockFiles = (slot, slots, sku, color) => {
+  const art = slot?.artFile;
+  const mocks = safeObj(art?.item_mockups);
+  const bareRead = () => {
+    const v = safeArr(mocks[mockLinkKeyOf(sku, color)]);
+    return v.length > 0 ? v : safeArr(mocks[sku]);
+  };
+  if (slot?.primary) return bareRead();
+  const own = safeArr(mocks[slot?.key]);
+  if (own.length > 0 || slot?.kind !== 'art' || !art) return own;
+  const shared = safeArr(slots).some((s) => s && s !== slot && s.artFile && s.artFile.id === art.id);
+  return shared ? own : bareRead();
+};
+
 // ── Approval-proof fallback for reused / pre-digitized art ──
 // A displayable "proof" file: something a rep/coach can actually look at (image or PDF).
 // Production formats (.dst/.emb/.ai/.eps) never count.
