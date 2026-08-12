@@ -68,12 +68,36 @@ describe('garmentCost', () => {
     expect(garmentCost(it).cost).toBe(55);
   });
 
-  test('billed qty above ordered qty never goes negative', () => {
+  test('bill covering more units than the line → line charged only its pro-rated share', () => {
+    // A doc-level supplier bill reconciled to the FULL document lands on one order's line
+    // with billed qty far above the line's own qty (SO-1396: 50 shirts ordered, billed:{...}=250,
+    // _bill_cost $1,815 spanning other orders). The line owes its share at the billed unit
+    // price — never the whole document.
+    const it = {
+      sizes: { S: 50 }, nsa_cost: 7.26,
+      po_lines: [{ S: 50, unit_cost: 7.26, _bill_cost: 1815, billed: { S: 250 } }],
+    };
+    expect(garmentCost(it).cost).toBeCloseTo(1815 * 50 / 250, 2); // 363 = 50 × $7.26 billed rate
+  });
+
+  test('small billed overage also pro-rates (and never goes negative)', () => {
     const it = {
       sizes: { S: 5 }, nsa_cost: 8,
       po_lines: [{ S: 5, unit_cost: 6, _bill_cost: 40, billed: { S: 9 } }],
     };
-    expect(garmentCost(it).cost).toBe(40);
+    // 5 of the 9 billed units belong to this line: 40 × 5/9
+    expect(garmentCost(it).cost).toBeCloseTo(40 * 5 / 9, 2);
+  });
+
+  test('bill on a line with zero ordered qty → whole item at catalog (unchanged behavior)', () => {
+    const it = {
+      sizes: { S: 5 }, nsa_cost: 8,
+      po_lines: [{ _bill_cost: 40, billed: { S: 5 }, po_id: 'PO 1' }],
+    };
+    // A PO line with no size qty contributes nothing to poQty, so the walk ignores it and
+    // costs the item at catalog — pre-existing behavior the pro-rating guard (lineQty > 0)
+    // deliberately leaves alone rather than dividing by zero into a $0 cost.
+    expect(garmentCost(it).cost).toBe(5 * 8);
   });
 
   test('mixed lines: billed line at bill, un-billed sibling at expected', () => {
