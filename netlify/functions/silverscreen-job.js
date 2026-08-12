@@ -318,7 +318,10 @@ async function postShipTo(jar, orderPath, shipTo, diag) {
       params.set(city.name, shipTo.city || '');
       const put = (re, val) => { const f = pick(form, re, claimed); if (f && val) params.set(f.name, val); };
       put(/company|ship.*name/i, shipTo.name || '');
-      put(/attention|attn/i, shipTo.attention || '');
+      // Their update REQUIRES a shipping attention ("Shipping attention can't be blank" — the
+      // 422 that blocked every ship-to write), so never send it empty: fall back to the
+      // recipient/customer name, then the PO number, then Receiving.
+      put(/attention|attn/i, shipTo.attention || shipTo.name || shipTo.po_id || 'Receiving');
       put(/address_?2|address_?line_?2|suite/i, shipTo.line2 || '');
       put(/state|region|province/i, shipTo.state || '');
       put(/zip|postal/i, shipTo.zip || '');
@@ -384,12 +387,24 @@ async function postProducts(jar, orderPath, items, diag) {
     const cols = {};
     for (const [sz, q] of Object.entries(it.sizes || {})) { const c = ssSizeCol(sz); cols[c] = (cols[c] || 0) + (Number(q) || 0); }
     let placed = 0;
+    const missedCols = [];
     for (const [col, q] of Object.entries(cols)) {
       if (!q) continue;
       const f = form.fields.find((x) => new RegExp('(^|[^a-z0-9])' + col.toLowerCase() + '([^a-z0-9]|$)', 'i').test(x.name) && x.type !== 'hidden');
-      if (f) { params.set(f.name, String(q)); placed += q; }
+      if (f) { params.set(f.name, String(q)); placed += q; } else missedCols.push(col + ':' + q);
     }
-    if (!placed) { const qf = form.fields.find((x) => /qty|quantity/i.test(x.name) && x.type !== 'hidden'); if (qf) params.set(qf.name, String(it.qty || 0)); }
+    // Nothing matched a per-size box: the total goes in the generic quantity field, which lands
+    // in their catch-all OTH column (seen live — 35 pcs in OTH instead of XS 4 / SM 7 / …). That's
+    // pieces-correct but size-wrong, so name the fields we DID see: their real per-size input
+    // names are the one thing needed to place sizes properly, and only this call can reveal them.
+    if (!placed) {
+      const qf = form.fields.find((x) => /qty|quantity/i.test(x.name) && x.type !== 'hidden');
+      if (qf) params.set(qf.name, String(it.qty || 0));
+      diag.sizes = 'per-size boxes not matched (' + missedCols.join(' ') + ') — total went to the catch-all column. Product-form fields: ['
+        + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
+    } else if (missedCols.length) {
+      diag.sizes = 'some sizes had no matching box (' + missedCols.join(' ') + ')';
+    }
     try {
       const resp = await ssFetch(jar, form.action, { method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
@@ -514,10 +529,15 @@ exports.handler = async (event) => {
       const todo = [];
       if (!productsAdded) todo.push('add the ' + body.items.length + ' product line' + (body.items.length !== 1 ? 's' : '') + ' (breakdown is on the printed PO)');
       else if (productsAdded < body.items.length) todo.push('check product lines — only ' + productsAdded + ' of ' + body.items.length + ' were added');
+      // Product lines exist but every piece landed in the catch-all column — pieces right, sizes
+      // wrong. That's silently shippable garbage if unreported (the decorator would run 35 "OTH"),
+      // so it's a to-do of its own.
+      if (productsAdded && sheetDiag && sheetDiag.sizes) todo.push('enter the size breakdown on each product line — the quantities went into the catch-all column, not per size');
       if (!shipToSet && body.ship_to && (body.ship_to.line1 || body.ship_to.city)) todo.push('set Ship To Location to the customer (it defaults to the third-party NSA address)');
       if (!sheetPosted) todo.push('paste the job sheet into the order notes');
       const diagStr = sheetDiag ? ' [forms: ' + (sheetDiag.forms.slice(0, 8).join(' · ') || 'none')
-        + (sheetDiag.shipTo ? ' | ship-to: ' + sheetDiag.shipTo : '') + (sheetDiag.products ? ' | products: ' + sheetDiag.products : '') + ']' : '';
+        + (sheetDiag.shipTo ? ' | ship-to: ' + sheetDiag.shipTo : '') + (sheetDiag.products ? ' | products: ' + sheetDiag.products : '')
+        + (sheetDiag.sizes ? ' | sizes: ' + sheetDiag.sizes : '') + ']' : '';
       return {
         statusCode: 200, headers,
         body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc,
