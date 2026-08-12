@@ -9683,6 +9683,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:17,fontWeight:900,fontFamily:'monospace',color:'#7c3aed'}}>{sspConfirm.dp.po_id||'(no PO number)'}</div>
             <div style={{fontSize:12,color:'#6d28d9',marginTop:2}}>{sspConfirm.rows.length} item line{sspConfirm.rows.length!==1?'s':''} · <strong>{sspConfirm.totalPcs} pcs</strong> — creates the job on their portal with the P.O. number sent verbatim, so their invoice matches back automatically.</div>
           </div>
+          {(sspConfirm.dp._silverscreen_job_id||sspConfirm.dp._silverscreen_job_url)&&<div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:10,fontSize:12,color:'#92400e'}}>
+            ⚠️ This PO already points at job <strong>#{sspConfirm.dp._silverscreen_job_id||'(created)'}</strong>. Sending again creates a <strong>separate new draft</strong> on their portal and re-points this PO at it — delete the old draft on Silver Screen so they don't run it twice.
+          </div>}
           <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>
             {sspConfirm.rows.map((r,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',borderTop:i>0?'1px solid #f1f5f9':'none',fontSize:12,background:i%2?'#fafbfc':'white'}}>
               <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{r.sku}</span>
@@ -14224,7 +14227,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
                 if(!_isSilverScreenDp(dp)||editingPo)return null;
-                if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>;
+                // Already sent: show the job chip, plus a re-send. A first attempt can land
+                // incomplete (their create form is only the order header), so the rep needs a way
+                // to submit a fresh job without hand-editing the PO — this creates a NEW draft on
+                // their portal and re-stamps this PO with it.
+                if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <span style={{display:'inline-flex',gap:6,alignItems:'center'}}>
+                  <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>
+                  <button className="btn btn-sm btn-secondary" disabled={sspSending} style={{fontSize:11}} onClick={()=>sendSilverScreenJob(dp)} title="Send this PO to Silver Screen again — creates a NEW draft job on their portal and points this PO at it (delete the old draft on their side)">{sspSending?'Sending…':'↻ Re-send'}</button>
+                </span>;
                 if(dp.status==='received'||dp.status==='billed')return null;
                 return <button className="btn btn-sm btn-primary" disabled={sspSending} style={{fontSize:11,background:'#475569',borderColor:'#475569'}} onClick={()=>sendSilverScreenJob(dp)} title="Create this job on the Silver Screen account portal — sends the PO number and all covered items with size breakdowns">{sspSending?'Sending…':'🖨 Send to Silver Screen'}</button>;
               })()}
