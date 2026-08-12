@@ -19052,7 +19052,7 @@ export default function App(){
               sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).filter(po=>!po.drop_ship).forEach(po=>{
                 const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
-                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
+                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||vend.find(v=>v.id===it.vendor_id)?.name||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
               })})});
               invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled').forEach(po=>{
                 const units=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
@@ -21429,8 +21429,9 @@ export default function App(){
           <div className="modal-header" style={{background:'#eef2ff'}}><h2>📋 New Stock PO</h2><button className="modal-close" onClick={()=>setShowStockPO(null)}>×</button></div>
           <div className="modal-body">
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
-              <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
-                <option value="">Select vendor...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+              <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=vend.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
+                {/* Every DB vendor, not just the v1–v8 D_V seed — a stock PO for A4/Champro/etc. was unpickable. */}
+                <option value="">Select vendor...</option>{vend.filter(v=>v.is_active!==false).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
               <div><label className="form-label">Memo</label><input className="form-input" value={showStockPO.memo||''} onChange={e=>setShowStockPO(x=>({...x,memo:e.target.value}))} placeholder="Restock reason..."/></div>
             </div>
             <label className="form-label">Items</label>
@@ -21464,7 +21465,7 @@ export default function App(){
                 if(_rpcN!=null&&_rpcN<invPOCounter)console.warn('[next_counter] inv_po_counter behind local ('+_rpcN+' < '+invPOCounter+') — using local counter');
                 const _n=(_rpcN!=null&&_rpcN>=invPOCounter)?_rpcN:invPOCounter;
                 const poNum='PO '+_n+' NSA';
-                const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
+                const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||vend.find(v=>v.id===showStockPO.vendor_id)?.name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
                   items:validItems.map(it=>({product_id:it.product_id||null,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||Object.keys(it.sizes||{}),sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
                   status:'ordered',created_at:new Date().toLocaleString(),expected_date:'',memo:showStockPO.memo||'',
                   created_by:cu?.name||'Warehouse',received_at:null,received_by:null,_qb_synced:false};
