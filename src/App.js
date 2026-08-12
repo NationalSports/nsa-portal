@@ -27,7 +27,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, billOverageQty, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
+import { buildJobs, billOverageQty, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, splitBillToStock } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -27180,11 +27180,72 @@ export default function App(){
     // specific SO item / po_line or batch). Used when the bill was matched manually — the bill's
     // PO-number string won't match the target, so the po_number-based _applyFreightToSOs path can't
     // be used. Freight is split across SOs proportional to the $ mapped to each. Returns true if applied.
+    // Excess units from an over-billed vendor doc, received into STOCK instead of charged to
+    // the single order the bill was matched to. Creates an already-received Stock PO at the
+    // bill's own unit cost (so the goods carry real cost basis and a later order picking them
+    // charges the right money) and credits product inventory. The order keeps only what it
+    // justified; together the two halves still account for the whole document.
+    const _receiveOverageToStock=async(moves,bill)=>{
+      if(!moves.length)return;
+      try{
+      const byProd=new Map();
+      moves.forEach(m=>{
+        const key=m.product_id||('sku:'+(m.sku||'').toUpperCase());
+        if(!byProd.has(key))byProd.set(key,{product_id:m.product_id||null,sku:m.sku||'',name:m.name||m.sku||'',color:m.color||'',sizes:{},received:{},nsa_cost:safeNum(m.unit)});
+        const e=byProd.get(key);
+        e.sizes[m.size]=(e.sizes[m.size]||0)+m.qty;e.received[m.size]=(e.received[m.size]||0)+m.qty;
+      });
+      const items=[...byProd.values()];
+      // Same atomic mint as saveInvPO so two machines can't claim one number.
+      const _rpcN=await _nextCounter('inv_po_counter');
+      const _n=(_rpcN!=null&&_rpcN>=invPOCounter)?_rpcN:invPOCounter;
+      const poNum='PO '+_n+' NSA';
+      const _now=new Date().toLocaleString();
+      const po={id:'ipo-ovr-'+Date.now(),po_number:poNum,vendor_id:null,vendor_name:bill.vendor_name||bill.vendor||'',
+        items:items.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color,available_sizes:Object.keys(it.sizes),sizes:{...it.sizes},received:{...it.received},nsa_cost:it.nsa_cost})),
+        status:'received',created_at:_now,expected_date:'',
+        memo:'Overage from bill '+(bill.doc_number||'')+' — units beyond the order, received to stock',
+        created_by:cu?.name||'Unknown',created_by_id:cu?.id||null,is_booking:false,
+        received_at:_now,received_by:cu?.name||null,_qb_synced:false,
+        _from_bill_overage:{doc:bill.doc_number||'',at:new Date().toISOString()}};
+      setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>Math.max(_n+1,c2+1));
+      const adjLogs=[];
+      items.forEach(it=>{
+        const p2=it.product_id?prod.find(x=>x.id===it.product_id):prod.find(x=>(x.sku||'').toUpperCase()===(it.sku||'').toUpperCase());
+        if(!p2)return;
+        const newInv={...p2._inv};
+        Object.entries(it.received).forEach(([sz,qty])=>{
+          if(qty<=0)return;const prev0=newInv[sz]||0;newInv[sz]=prev0+qty;
+          adjLogs.push({product_id:p2.id,sku:p2.sku,product_name:p2.name,color:p2.color||'',size:sz,qty_change:qty,prev_qty:prev0,new_qty:prev0+qty,
+            reason:'Bill overage to stock: '+(bill.doc_number||'')+' ('+poNum+')',adjustment_type:'po_receive',performed_by:cu?.name||'Unknown',created_at:_now});
+        });
+        setProd(pp=>pp.map(x=>x.id===p2.id?{...x,_inv:newInv}:x));
+      });
+      if(adjLogs.length){
+        setInvAdjLog(prev=>[...adjLogs.map((l,i)=>({...l,id:'ADJ-'+(prev.length+1001+i)})),...prev].slice(0,2000));
+        logChange('po_received','Inventory PO',poNum,'Overage from bill '+(bill.doc_number||'')+': '+adjLogs.map(l=>'+'+l.qty_change+' '+l.size+' '+l.sku).join(', '));
+      }
+      const _u=moves.reduce((a,m)=>a+m.qty,0);
+      setTimeout(()=>nf('Overage received to stock — '+poNum+': '+_u+' unit'+(_u!==1?'s':'')+(adjLogs.length?'':' (no matching catalog product — PO created, inventory not credited)'),adjLogs.length?'success':'error'),0);
+      }catch(e){
+        // The order's charge was already reduced by this excess, so a silent failure here would
+        // lose real money. Never swallow it — name the units and cost that didn't land so the
+        // operator can raise the Stock PO by hand.
+        console.error('[bill overage → stock] failed:',e);
+        const _u=moves.reduce((a,m)=>a+m.qty,0);
+        const _c=moves.reduce((a,m)=>a+m.qty*safeNum(m.unit),0);
+        setTimeout(()=>nf('Overage NOT received to stock — '+_u+' unit(s), $'+_c.toFixed(2)+' from bill '+(bill.doc_number||'')+' were taken off the order but the Stock PO failed to save. Create it manually so the cost isn’t lost.','error'),0);
+      }
+    };
+
     const _applyBillByMappings=(bill)=>{
       const maps=(bill._lineMappings||[]).filter(mp=>mp.allocated_qty>0);
       if(!maps.length)return false;
       const _dupSkips=[];// shipments already billed to a line — skipped, not double-counted
       const _qtyCaps=[];// overage qty-fixes the goods didn't justify — capped, not silently applied
+      // Excess units being routed to stock. KEYED, not appended: React can invoke a setState
+      // updater twice (StrictMode), and a double-push would double the inventory receipt.
+      const _stockMoves=new Map();
       // FULL landed cost reaches the order: the SI upcharge line rides in the freight
       // allocation (it was already in the QB total but never hit SO costing/commissions).
       const billFreight=safeNum(bill.freight||0)+safeNum(bill.si_upcharge||0);
@@ -27241,6 +27302,26 @@ export default function App(){
               // suppresses the overage qty-fix below, so a re-imported bill can't inflate ordered.
               const _dup=duplicateBillDetail(po._bill_details,{doc:bill.doc_number,tracking:bill.tracking,sizes:sizesAdded});
               if(_dup){_dupSkips.push((it.sku||'?')+' '+(po.po_id||'')+' — '+(bill.tracking?'tracking '+bill.tracking:'doc '+bill.doc_number)+' already billed'+(_dup.doc&&_dup.doc!==bill.doc_number?' (as '+_dup.doc+')':''));return po;}
+              // Overage routed to STOCK (operator chose "the extras are a stock buy"): move the
+              // units this order can't justify off its charge and into inventory at the bill's own
+              // unit cost. The order keeps what it justifies; the halves still sum to the whole
+              // document, so nothing is written off — see businessLogic.splitBillToStock.
+              if(bill._overage_ok&&bill._overage_to_stock){
+                const _unitBySz={};
+                lineMaps.forEach(mp=>{const u2=safeNum(mp.bill_unit)||(safeNum(mp.allocated_qty)>0?safeNum(mp.bill_cost)/safeNum(mp.allocated_qty):0);if(u2>0)_unitBySz[mp.size]=u2});
+                const _sp=splitBillToStock(Object.keys(sizesAdded).map(sz=>({size:sz,billed:safeNum(newBilled[sz]),ordered:safeNum(po[sz]),
+                  received:safeNum((po.received||{})[sz]),need:safeNum(safeSizes(it)[sz]),unit:_unitBySz[sz]||safeNum(po.unit_cost)})));
+                if(_sp.splitAny){
+                  Object.entries(_sp.stock).forEach(([sz,q])=>{
+                    newBilled[sz]=Math.max(0,safeNum(newBilled[sz])-q);
+                    sizesAdded[sz]=Math.max(0,safeNum(sizesAdded[sz])-q);
+                    if(!sizesAdded[sz])delete sizesAdded[sz];
+                    _stockMoves.set(s.id+'|'+(po.po_id||'')+'|'+(it.sku||'')+'|'+sz,{product_id:it.product_id||null,sku:it.sku||'',
+                      name:it.name||'',color:it.color||'',size:sz,qty:q,unit:_unitBySz[sz]||safeNum(po.unit_cost)});
+                  });
+                  addedCost=Math.round(Math.max(0,addedCost-_sp.stockCost)*100)/100;
+                }
+              }
               // Approved overage → the bill is the truth about what was bought: raise this
               // line's ordered qty to the billed total (only sizes THIS bill touched, only
               // when the human accepted the flagged overage). Audit in _qty_corrections; the
@@ -27301,6 +27382,8 @@ export default function App(){
         }));
         if(_dupSkips.length)setTimeout(()=>nf('Skipped '+_dupSkips.length+' already-billed shipment(s): '+_dupSkips.join('; '),'error'),0);
         if(_qtyCaps.length)setTimeout(()=>nf('Bill over-claims '+_qtyCaps.length+' size(s) beyond what arrived or was ordered — ordered qty left alone (check for a duplicate/mis-mapped vendor doc): '+_qtyCaps.join('; '),'error'),0);
+        // Fire-and-forget (mints a PO number over the network); the SO write above already stands.
+        if(_stockMoves.size)_receiveOverageToStock([..._stockMoves.values()],bill).catch(e=>console.error('[bill overage → stock]',e));
         return true;
       }
 
@@ -31068,15 +31151,34 @@ export default function App(){
                 </div>
                 <div className="modal-body">
                   <div style={{fontSize:13,color:TXTL,lineHeight:1.55,marginBottom:10}}>
-                    This pushes <b style={{color:NAVY}}>{sb.parsed?.doc_number?'Doc #'+sb.parsed.doc_number:(sb.file||'this bill')}</b> even though it bills more than the order says was ordered. The billed tracking will show the overage. A note is required — say who approved it or why it&rsquo;s right (e.g. &ldquo;vendor shipped extras, rep confirmed&rdquo;).
+                    <b style={{color:NAVY}}>{sb.parsed?.doc_number?'Doc #'+sb.parsed.doc_number:(sb.file||'This bill')}</b> bills more than the order says was ordered. Where do the extra units belong?
                   </div>
+                  {/* Charging the whole document to one order is right only when the extras really
+                      are that job's. A case/bulk buy keyed onto a job used to have nowhere else to
+                      go, so the order ate the entire invoice (SO-1271: 324 hats billed vs 66 sold,
+                      ~$1,453 of it stock). Routing the excess to inventory keeps the order's margin
+                      honest without writing the money off — it lands on a received Stock PO. */}
+                  {[['order','On this order','The vendor shipped extras for this job. The full bill is charged here, and ordered qty rises to match (capped at what the goods justify).'],
+                    ['stock','Into stock','The extras are a stock buy. This order is charged only what it justifies; the rest is received into inventory on a new Stock PO at the bill’s unit cost.']].map(([k,t,d])=>{
+                    const on=(billOverrideModal.dest||'order')===k;
+                    return <label key={k} style={{display:'flex',gap:8,alignItems:'flex-start',padding:'8px 10px',marginBottom:6,borderRadius:8,cursor:'pointer',
+                      border:'1.5px solid '+(on?NAVY:LGRAY),background:on?'#f8fafc':'#fff'}}>
+                      <input type="radio" name="ovr-dest" checked={on} onChange={()=>setBillOverrideModal(m=>({...m,dest:k}))} style={{marginTop:3}}/>
+                      <span><b style={{color:NAVY,fontSize:13}}>{t}</b><span style={{display:'block',fontSize:11.5,color:TXTL,lineHeight:1.45,marginTop:2}}>{d}</span></span>
+                    </label>;
+                  })}
                   <textarea className="form-input" rows={3} style={{width:'100%',fontSize:12}} placeholder="Why is the overage OK? (required)" value={note}
                     onChange={e=>setBillOverrideModal(m=>({...m,note:e.target.value}))} autoFocus/>
                 </div>
                 <div className="modal-footer" style={{display:'flex',justifyContent:'flex-end',gap:8}}>
                   <button className="btn btn-secondary" onClick={()=>setBillOverrideModal(null)}>Cancel</button>
                   <button className="btn btn-primary" disabled={!note.trim()} style={{background:RED,borderColor:RED,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,opacity:note.trim()?1:0.5}}
-                    onClick={()=>{_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()).then(ok=>{if(ok)setBillOverrideModal(null)})}}>Push with note</button>
+                    onClick={()=>{
+                      const toStock=(billOverrideModal.dest||'order')==='stock';
+                      // Flag rides on the bill's parsed payload — _applyBillByMappings reads it.
+                      const _sb=toStock?{...sb,parsed:{...sb.parsed,_overage_to_stock:true}}:sb;
+                      _pushParkedBill(_sb,'pushed with override (overage '+(toStock?'to stock':'accepted')+')',note.trim()).then(ok=>{if(ok)setBillOverrideModal(null)});
+                    }}>{(billOverrideModal.dest||'order')==='stock'?'Push — extras to stock':'Push with note'}</button>
                 </div>
               </div>
             </div>;

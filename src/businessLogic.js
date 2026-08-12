@@ -123,6 +123,45 @@ const billOverageQty = (ordered, billed, received, need) => {
   return Math.min(safeNum(billed), Math.max(ord, safeNum(received), safeNum(need)));
 };
 
+// ── Split an over-billed PO line between the order and stock ──
+// Until now a bill claiming more units than the goods justify left the operator two choices:
+// push the WHOLE document onto the one order it was matched to ("Accept overage & push"), or
+// park it. So a case buy keyed onto a job charged the entire invoice to that job — SO-1271:
+// Richardson 4665290 billed 306 SM-MD hats (25.5 dz) against 48 ordered, and all $1,723.80
+// landed on a 66-hat order, reading as a $1,000 loss.
+//
+// This computes the split so the excess can be received into inventory at the bill's own unit
+// cost instead. Justified qty per size is the SAME ceiling billOverageQty uses (ordered, or
+// what the goods themselves support — received / the order's own need); anything past it is
+// excess. The order keeps what it justifies, stock takes the rest, and the two ALWAYS sum
+// back to the billed quantity — this must never make money disappear, only land it correctly.
+// A size billed within its ordered qty is untouched (excess 0), so ordinary bills are inert.
+//
+// entries: [{size, billed, ordered, received, need, unit}]  (billed = the line's post-apply total)
+// Returns {order:{size:qty}, stock:{size:qty}, stockUnits, stockCost, splitAny}
+function splitBillToStock(entries) {
+  const order = {}, stock = {};
+  let stockUnits = 0, stockCost = 0;
+  (entries || []).forEach(e => {
+    if (!e || e.size == null) return;
+    const billed = safeNum(e.billed);
+    if (!(billed > 0)) return;
+    const ord = safeNum(e.ordered);
+    // billOverageQty returns `ordered` unchanged when the bill isn't over-claiming, so an
+    // in-range size yields excess 0 rather than being clamped down to the ordered qty.
+    const cap = billOverageQty(ord, billed, e.received, e.need);
+    const excess = billed > ord ? Math.max(0, billed - cap) : 0;
+    const keep = billed - excess;
+    if (keep > 0) order[e.size] = (order[e.size] || 0) + keep;
+    if (excess > 0) {
+      stock[e.size] = (stock[e.size] || 0) + excess;
+      stockUnits += excess;
+      stockCost += excess * safeNum(e.unit);
+    }
+  });
+  return { order, stock, stockUnits, stockCost: Math.round(stockCost * 100) / 100, splitAny: stockUnits > 0 };
+}
+
 // ── Booking Order Helpers ──
 function isBookingOrder(ord) {
   return ord?.order_type === 'booking';
@@ -1374,7 +1413,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, billOverageQty, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, billOverage, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, billOverageQty, splitBillToStock, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, billOverage, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
