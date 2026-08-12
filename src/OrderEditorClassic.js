@@ -697,26 +697,77 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // ── Atomic PO-number reservation ──────────────────────────────────────────
     // poCounter above seeds from max+1 over the orders THIS tab has loaded, so two sessions (or one
     // stale tab) could mint the same numbers — PO 3521/3522 were double-issued on 2026-06-30 (CMSF +
-    // OLuST) and PO 3476 on 6/29 (CMSF + EBV). reserve_po_block() atomically claims a 50-number block
-    // from a DB sequence (INCREMENT BY 50: nextval = block start, so concurrent sessions can never
-    // overlap) the first time a PO form opens, and re-arms when the block nears exhaustion. If the RPC
-    // is unavailable (offline, migration not applied yet), the legacy max+1 seed stays in effect.
-    const _poBlockRef=useRef({start:0,reserving:false});
-    const _reservePoBlock=useCallback(async()=>{
-      if(!supabase||_poBlockRef.current.reserving)return;
-      _poBlockRef.current.reserving=true;
+    // OLuST) and PO 3476 on 6/29 (CMSF + EBV). Numbers now come one at a time from a DB sequence:
+    // nextval is atomic, so two reps clicking Create at the same instant can never receive the same
+    // number (the differing alpha tag is not what keeps them apart).
+    //
+    // A drawn number is HELD for this form — reopening reuses it instead of drawing another — so the
+    // only way to spend a number without creating a PO is to open the form and abandon it outright.
+    // The form still DISPLAYS the held number because reps quote it to the vendor before clicking
+    // Create; that is what the po_number_claims breadcrumb below exists to catch.
+    //
+    // Was: reserve_po_block() claimed 50 numbers per form open and the client minted one or two from
+    // it. Measured 2026-08-11 across so_item_po_lines + the deco_pos arrays: 1,527 numbers used out
+    // of a 55,608-wide span — 54,081 (97.25%) burned. Hence one draw per PO.
+    const _poHeldRef=useRef({n:0,drawing:false,n2:0,drawing2:false});
+    // Second held number, for the deco PO that can ride along inside the product-PO modal. Its number
+    // is DISPLAYED in that form too, so it must exist at render — it's drawn the moment the rep opens
+    // the inline deco panel (a deliberate act), not on every product PO.
+    const[poHeld2,setPoHeld2]=useState(0);
+    // Draw `cnt` numbers. Each is its own nextval, so they are unique but NOT assumed consecutive —
+    // that is exactly what keeps concurrent sessions disjoint.
+    const _drawPoNumbers=useCallback(async(cnt)=>{
+      if(!supabase||!(cnt>0))return[];
+      try{
+        const{data,error}=await supabase.rpc('reserve_po_numbers',{cnt});
+        if(!error&&Array.isArray(data)){
+          const ns=data.map(Number).filter(n=>Number.isFinite(n)&&n>0);
+          if(ns.length===cnt)return ns;
+        }
+      }catch(e){}
+      // Fallback when reserve_po_numbers isn't deployed yet (or we're offline): take a legacy block.
+      // reserve_po_block still reserves a genuine 50 on the server, so its first `cnt` stay safe.
       try{
         const{data,error}=await supabase.rpc('reserve_po_block');
         const start=Number(data);
-        if(!error&&Number.isFinite(start)&&start>0){
-          _poBlockRef.current.start=start;
-          setPOCounter(c=>Math.max(c,start));
-        }else{_poBlockRef.current.reserving=false}
-      }catch{_poBlockRef.current.reserving=false}
+        if(!error&&Number.isFinite(start)&&start>0)return Array.from({length:cnt},(_,i)=>start+i);
+      }catch(e){}
+      return[];
     },[supabase]);
-    useEffect(()=>{if(showPO!=null)_reservePoBlock()},[showPO,_reservePoBlock]);
-    // Block nearly spent (>40 of 50 used) — claim a fresh one so the next mints stay collision-free.
-    useEffect(()=>{const b=_poBlockRef.current;if(b.start&&poCounter-b.start>40){b.start=0;b.reserving=false;_reservePoBlock()}},[poCounter,_reservePoBlock]);
+    // Hold one number for this form; reopening reuses it rather than drawing another.
+    const _holdPoNumber=useCallback(async()=>{
+      if(_poHeldRef.current.n||_poHeldRef.current.drawing)return;
+      _poHeldRef.current.drawing=true;
+      const ns=await _drawPoNumbers(1);
+      _poHeldRef.current.drawing=false;
+      // The drawn number is AUTHORITATIVE — deliberately not Math.max(c, drawn). The local max+1 seed
+      // can sit above the sequence (it counts numbers other tabs minted inside old 50-blocks), and
+      // taking the max there would put an unreserved number on a PO while the sequence hands the real
+      // one to someone else. The migration setvals the sequence above every number ever issued so
+      // this can only ever move forward.
+      if(ns.length){_poHeldRef.current.n=ns[0];setPOCounter(ns[0])}
+    },[_drawPoNumbers]);
+    useEffect(()=>{if(showPO!=null)_holdPoNumber()},[showPO,_holdPoNumber]);
+    const _holdPoNumber2=useCallback(async()=>{
+      if(_poHeldRef.current.n2||_poHeldRef.current.drawing2)return;
+      _poHeldRef.current.drawing2=true;
+      const ns=await _drawPoNumbers(1);
+      _poHeldRef.current.drawing2=false;
+      if(ns.length){_poHeldRef.current.n2=ns[0];setPoHeld2(ns[0])}
+    },[_drawPoNumbers]);
+    // Only clear a hold whose number actually landed on a PO. Applying a PREEXISTING PO writes the
+    // rep's own number, so the held one stays held for the next form rather than being thrown away.
+    const _consumeHeldPoNumber=useCallback((usedPrimary=true,usedSecond=false)=>{
+      if(usedPrimary){_poHeldRef.current.n=0;setPOCounter(c=>c+1)}
+      if(usedSecond){_poHeldRef.current.n2=0;setPoHeld2(0)}
+    },[]);
+    // A few clicks mint a SECOND number alongside the held one (the NSA blanks PO). That extra number
+    // is drawn here, at create time, rather than assumed to be poCounter+1 — nothing reserved
+    // poCounter+1, and another session may hold it.
+    const _drawExtraPoNumber=useCallback(async()=>{
+      const ns=await _drawPoNumbers(1);
+      return ns[0]||0;
+    },[_drawPoNumbers]);
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
@@ -791,6 +842,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
     const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
+    // Opening the inline deco panel is what commits us to a second number — draw it here, not at
+    // product-PO open, so a plain product PO never spends one it doesn't use.
+    useEffect(()=>{if(poDecoInline)_holdPoNumber2()},[poDecoInline,_holdPoNumber2]);
     const[pickDecoFor,setPickDecoFor]=useState(null);// item idx awaiting a decorator pick when first flagged Outside
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
@@ -8543,13 +8597,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               }):null;
               const updated={...o,...(_purchasedArt?{art_files:_purchasedArt}:{}),...(_updJobs?{jobs:_updJobs}:{}),deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              if(!preexistingPO)setPOCounter(c=>c+1);
+              if(!preexistingPO)_consumeHeldPoNumber();
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
               nf(_dpoMode==='dtf'
                 ?'🖨️ '+effectivePoId+' '+(preexistingPO?'applied':'created')+' — DTF purchase from '+decoVendor+(artIds.length?' — '+artIds.length+' art folder'+(artIds.length!==1?'s':'')+' marked DTF Purchased':'')+' ($'+expectedCost.toFixed(2)+')'
                 :'🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
             }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>}
-            {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
+            {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={async()=>{
               if(_poCreatingRef.current)return;
               const effectiveDpoId=autoPoId;
               const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
@@ -8570,7 +8624,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 status:'waiting',created_at:new Date().toLocaleDateString(),
                 _bill_cost:0,_bill_details:[],tracking_numbers:[]};
               // Create blanks PO lines on the items (ships to decorator)
-              const blanksPOId='NSA '+(poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
+              // Second number for the blanks PO — drawn now, not assumed to be poCounter+1.
+              const _blanksNo=await _drawExtraPoNumber();
+              const blanksPOId='NSA '+(_blanksNo||poCounter+1)+(cust?.alpha_tag?' '+cust.alpha_tag:'');
               const blanksPayloadItems=[];let blanksVendorName='';
               const updatedItems=safeItems(o).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
               selectedItems.forEach(selIt=>{
@@ -8589,7 +8645,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Save both POs together
               const updated={...o,items:updatedItems,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              setPOCounter(c=>c+2);
+              _consumeHeldPoNumber();
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
               // Open API ordering modal for the blanks vendor
               const vk=_apiVendorKey(blanksVendorName);
@@ -8655,7 +8711,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updated={...o,items:[...safeItems(o),lineItem],deco_pos:[...(o.deco_pos||[]),decoPO],updated_at:new Date().toLocaleString()};
               // Persist the PO BEFORE the network email — a slow/failed send (or a background poll firing
               // during the await) must not be able to drop the optimistic deco_pos record.
-              setO(updated);onSave(updated);setPOCounter(c=>c+1);
+              setO(updated);onSave(updated);_consumeHeldPoNumber();
               if(planOnly){
                 setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
                 nf('🧵 '+tsPoIdFinal+' planned — $'+svc.cost.toFixed(2)+' cost & $'+svc.sell.toFixed(2)+' customer charge will carry to the sales order. Send to Topstar when ready to order.');
@@ -8780,7 +8836,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
       const podItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
-      const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(poAlphaSuffix?' '+poAlphaSuffix:'');
+      // poCounter+1 is only a pre-draw placeholder — nothing reserves it, so it must never be what
+      // actually lands on a PO. The real number is the second hold, drawn when the panel opened.
+      const podPoId='DPO '+(preexistingPO?poCounter:(poHeld2||poCounter+1))+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
       // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
       // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
@@ -9047,7 +9105,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
             // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race)
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:[...(o.deco_pos||[]),podRes.po]}:{}),updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);setPOCounter(c=>c+(podRes?2:1));
+            setO(updated);onSave(updated);_consumeHeldPoNumber(true,!!podRes);
             setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+podRes.po.po_id+' for '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
@@ -9137,9 +9195,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // not-yet-saved order (see _dbPersistNewPoLine). Skipped for preexisting POs, which merge into
           // already-persisted lines rather than creating a first-flush-vulnerable new one.
           if(!preexistingPO)newPoLines.forEach(({lineIdx,poIdx})=>{const _pl=updatedItems[lineIdx]&&updatedItems[lineIdx].po_lines&&updatedItems[lineIdx].po_lines[poIdx];if(_pl&&_pl.po_id)_dbPersistNewPoLine(o.id,lineIdx,_pl);});
-          // Product PO consumes a counter number unless preexisting; the inline deco PO always consumes one.
-          const counterBump=(preexistingPO?0:1)+(podRes?1:0);
-          if(counterBump>0)setPOCounter(c=>c+counterBump);
+          // Product PO consumes the held number unless preexisting; the inline deco PO consumes the second.
+          _consumeHeldPoNumber(!preexistingPO,!!podRes);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
           setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+podRes.po.po_id+' for '+podRes.po.vendor+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           if(newPoLines.length>0&&!preexistingPO){
