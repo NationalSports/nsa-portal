@@ -2856,7 +2856,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const setItemUnderbase=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,underbase:v,sell_override:null}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Routing (in-house ↔ outside) is an item-level soft flag on the art decos. 'outside' produces it
   // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
-  const setItemFulfillment=(ii,val,vendor)=>{setO(e=>{
+  const setItemFulfillment=(ii,val,vendor,quiet)=>{setO(e=>{
     const items=safeItems(e);const afx=e.art_files||[];
     // Combined art qty per art file (same basis as the live cost display) so the vendor tier matches.
     const artQ={};items.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)artQ[d.art_file_id]=(artQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)})});
@@ -2877,7 +2877,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const nd={...d,fulfillment:undefined,vendor:undefined};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
       })};
     }),updated_at:new Date().toLocaleString()};
-  });setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
+  });setDirty(true);if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
@@ -9030,8 +9030,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const podItems=_podSizedItems.filter(it=>!_podHiddenIdx.has(it._idx));
       const podDefault=idx=>_flaggedOutsideIdx.size>0?_flaggedOutsideIdx.has(idx):podPoSel.has(idx);
       const podChecked=idx=>podOverrides[idx]!==undefined?!!podOverrides[idx]:podDefault(idx);
-      const podSelIdxs=podItems.filter(it=>podChecked(it._idx)).map(it=>it._idx);
-      const podQty=podItems.reduce((a,it)=>a+(podChecked(it._idx)?_soQty(it):0),0);
+      // Deco POs this decorator already has on the order, which these items can join instead of
+      // opening another one. Scoped to the decorator picked in this panel — folding items into a
+      // DIFFERENT decorator's PO would silently send them to the wrong shop. Its deco type is shown
+      // on the chip: a second PO is right when the work differs (embroidery vs screen print), so the
+      // rep needs to see which is which to choose. DTF-purchase POs buy art, not decoration.
+      const _podLinkable=(o.deco_pos||[]).filter(dp=>dp&&dp.po_mode!=='dtf_purchase'&&!dp.topstar_service
+        &&(poDecoInline?(dp.vendor===poDecoInline.vendor||(podDv?.id&&dp.deco_vendor_id===podDv.id)):false));
+      const podLink=podLinkId?_podLinkable.find(dp=>dp.id===podLinkId)||null:null;
+      // An item already on a deco PO for the SAME work can never ride a second one — duplicate deco
+      // POs per item are blocked (checkbox locked + filtered out of the selection), not just warned
+      // about. A second PO stays possible only for genuinely different work: pick the other deco
+      // type and the lock lifts. The PO being joined doesn't count against itself.
+      const _podEffType=podLink?(podLink.deco_type||podType):podType;
+      const _podDupOf=idx=>(o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service&&dp.po_mode!=='dtf_purchase'&&(!podLink||dp.id!==podLink.id)&&(dp.deco_type||'')===_podEffType&&(dp.item_idxs||[]).includes(idx))||null;
+      const podSelIdxs=podItems.filter(it=>podChecked(it._idx)&&!_podDupOf(it._idx)).map(it=>it._idx);
+      const _podSelSet=new Set(podSelIdxs);
+      const podQty=podItems.reduce((a,it)=>a+(_podSelSet.has(it._idx)?_soQty(it):0),0);
       // Pass the covered designs' complexity to the rate lookup so it auto-fills the RIGHT tier, not
       // the 1-color / base-stitch default: max ink-colors (SP) / max stitches (EMB) across covered
       // designs, and underbase when any covered garment is darker than white/light grey/vegas gold.
@@ -9042,14 +9057,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const podAutoCost=podDv?_decoVendorPrice(decoVendorPricing,podDv.id,podType,{qty:podQty,colors:_podColors,stitches:_podStitches,underbase:_podUnderbase}):null;
       const podUnitCost=podCost!==null?(parseFloat(podCost)||0):(podAutoCost!==null?podAutoCost:0);
       const podExpectedCost=Math.round(podQty*podUnitCost*100)/100;
-      // Deco POs this decorator already has on the order, which these items can join instead of
-      // opening another one. Scoped to the decorator picked in this panel — folding items into a
-      // DIFFERENT decorator's PO would silently send them to the wrong shop. Its deco type is shown
-      // on the chip: a second PO is right when the work differs (embroidery vs screen print), so the
-      // rep needs to see which is which to choose. DTF-purchase POs buy art, not decoration.
-      const _podLinkable=(o.deco_pos||[]).filter(dp=>dp&&dp.po_mode!=='dtf_purchase'&&!dp.topstar_service
-        &&(poDecoInline?(dp.vendor===poDecoInline.vendor||(podDv?.id&&dp.deco_vendor_id===podDv.id)):false));
-      const podLink=podLinkId?_podLinkable.find(dp=>dp.id===podLinkId)||null:null;
       // Reads the inline deco panel → {decoPos,po,isMerge} or {error}. decoPos is the order's whole
       // deco_pos array to write, so joining an existing PO and opening a new one look the same to
       // the submit paths. Record shape mirrors the standalone deco form.
@@ -9061,7 +9068,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // same basis as the standalone form's "Add to <DPO>".
           const merged=[...new Set([...(podLink.item_idxs||[]),...podSelIdxs])];
           const fresh=merged.filter(ix=>!(podLink.item_idxs||[]).includes(ix));
-          if(fresh.length===0)return{error:'Every checked item is already on '+podLink.po_id+' — check an item it doesn\'t cover yet, or switch to a new deco PO'};
+          // Everything checked is already on the PO — nothing to add, but that's not a dead end:
+          // the submit still goes through so the blanks PO ships to the decorator with this DPO on
+          // the attention line. The deco_pos array is returned untouched.
+          if(fresh.length===0)return{decoPos:_existing,po:podLink,isMerge:true,added:0};
           const items=safeItems(o);
           const qty=merged.reduce((a,ix)=>a+Object.values(safeSizes(items[ix]||{})).reduce((b,v)=>b+safeNum(v),0),0);
           const rate=safeNum(podLink.unit_cost);
@@ -9094,6 +9104,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // task later knows to deliver to the decorator — a drop_ship flag alone loses that.
       const _poShipDecoId=poShipTo==='deco'?(_decoForPo?.id||null):(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')?poShipTo.slice(5):null);
       const _poShipDecoInfo=(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')&&_poShipDecoId)?resolveDecoShipToClient({decoId:_poShipDecoId,so:o,decoVendors,vendors:vendorList,itemIdxs:_poSelIdxs}):null;
+      // The DPO reference the decorator needs on the shipping label, auto-filled so nobody has to
+      // remember to add it: the deco PO being created/joined in this same modal, else the
+      // decorator's existing deco PO when the blanks ship to one. Typed text always wins.
+      const _poAutoAttn=(()=>{
+        if(poDecoInline)return podLink?String(podLink.po_id):podPoId;
+        const _sid=_poShipDecoId||_existingBatchDeco?.deco_vendor_id||null;
+        if(!_sid)return'';
+        const dp=(o.deco_pos||[]).find(d=>d&&!d.topstar_service&&d.po_mode!=='dtf_purchase'&&d.deco_vendor_id===_sid&&d.po_id);
+        return dp?String(dp.po_id):'';
+      })();
+      const _poAttnFinal=poAttention.trim()||_poAutoAttn;
       // Checked PO lines whose decoration happens in-house — flagged when the rep picks Drop Ship,
       // since those blanks must be received at Emerson before we can decorate them.
       const _poDsInHouse=poItems.map((it,vi)=>({it,vi})).filter(({it,vi})=>!poExcluded[vi]&&(it.members||[it]).some(m=>_itemInHouseDeco(m._idx)));
@@ -9186,7 +9207,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true);setPodLinkId(null);const _dv=decoVendors.find(v=>v.name===sel);if(poDropShip===true&&_dv?.id&&resolveDecoShipToClient({decoId:_dv.id,so:o,decoVendors,vendors:vendorList}))setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{const _dv=decoVendors.find(v=>v.name===sel);
+              // If this decorator already has a deco PO on the order, open the panel in JOIN mode on it —
+              // adding to the existing PO is almost always right, and it makes duplicates the hard path.
+              // "✨ New PO" stays one click away for genuinely different work.
+              const _pre=(o.deco_pos||[]).find(dp=>dp&&dp.po_mode!=='dtf_purchase'&&!dp.topstar_service&&(dp.vendor===sel||(_dv?.id&&dp.deco_vendor_id===_dv.id)))||null;
+              setPoDecoInline({vendor:sel});setPodOverrides({});setPodType(_pre?.deco_type||'embroidery');setPodCost(null);setPodDropShip(true);setPodLinkId(_pre?_pre.id:null);if(poDropShip===true&&_dv?.id&&resolveDecoShipToClient({decoId:_dv.id,so:o,decoVendors,vendors:vendorList}))setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
@@ -9218,15 +9244,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6,fontSize:11}}>
                 <span style={{fontWeight:700,color:'#475569'}}>Items covered by this deco PO</span>
-                <span style={{color:'#94a3b8'}}>{_flaggedOutsideIdx.size>0?('pre-selected from the items you marked Outside — toggle any to override'+(_podInHouse.length>0?'; '+_podInHouse.length+' in-house item'+(_podInHouse.length!==1?'s':'')+' hidden':'')):'mirrors the items selected on this '+vn+' PO — toggle any item to override'}</span>
+                <span style={{color:'#94a3b8'}}>{(_flaggedOutsideIdx.size>0?'pre-selected from the items marked Outside':'mirrors the items on this '+vn+' PO')+' — checking routes an item 🎨 Outside (charge set to a 36% margin), unchecking returns it 🏭 In-house'+(_podInHouse.length>0?'; '+_podInHouse.length+' in-house item'+(_podInHouse.length!==1?'s':'')+' hidden':'')}</span>
                 <span style={{flex:1}}/>
-                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=true});setPodOverrides(ov)}}>Select All</button>
-                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov)}}>Deselect All</button>
+                {/* Select/Deselect All also flip the items' Outside routing — the checkbox IS the
+                    routing toggle (same setItemFulfillment as the line-item buttons), so the two
+                    entrances can never disagree. Items locked by a same-work DPO are skipped. */}
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=!_podDupOf(it._idx)});setPodOverrides(ov);
+                  podItems.forEach(it=>{if(!_podDupOf(it._idx)&&safeDecos(it).some(d=>d&&d.kind==='art'))setItemFulfillment(it._idx,'outside',poDecoInline.vendor,true)})}}>Select All</button>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{const ov={};podItems.forEach(it=>{ov[it._idx]=false});setPodOverrides(ov);
+                  podItems.forEach(it=>{const _cov=(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx));
+                    if(!_cov&&safeDecos(it).some(d=>d&&d.kind==='art'))setItemFulfillment(it._idx,null,undefined,true)})}}>Deselect All</button>
               </div>
               <div style={{maxHeight:170,overflow:'auto',marginBottom:8}}>
                 {podItems.map((it,i)=>{const soQ=_soQty(it);const onPo=podPoSel.has(it._idx);
+                  const _onLink=!!podLink&&(podLink.item_idxs||[]).includes(it._idx);// already on the PO being joined — permanently covered
+                  const _dup=_onLink?null:_podDupOf(it._idx);// on another DPO for the SAME work — locked out (no duplicates)
+                  const _hasArt=safeDecos(it).some(d=>d&&d.kind==='art');
+                  const _onAnyDpo=(o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(it._idx));
                   return<div key={i} style={{padding:'5px 10px',border:'1px solid #ede9fe',borderRadius:6,marginBottom:4,background:'white',display:'flex',alignItems:'center',gap:8,fontSize:12}}>
-                    <input type="checkbox" checked={podChecked(it._idx)} style={{width:14,height:14}} onChange={()=>setPodOverrides(ov=>({...ov,[it._idx]:!podChecked(it._idx)}))}/>
+                    {/* The checkbox IS the item's routing toggle — same setItemFulfillment as the
+                        line-item 🎨 Outside / 🏭 In-house buttons, so both entrances write the same
+                        state (vendor + 36%-margin charge on check, back in-house on uncheck). The
+                        first toggle snapshots every row's current state into podOverrides so flipping
+                        one item's flag can't visually flip the others' defaults. */}
+                    <input type="checkbox" checked={_onLink?true:_dup?false:podChecked(it._idx)} disabled={_onLink||!!_dup} style={{width:14,height:14}}
+                      title={_onLink?'Already on '+podLink.po_id+' — covered by the PO you\'re adding to':_dup?'Already on '+_dup.po_id+' for the same work ('+String(_podEffType).replace(/_/g,' ')+') — duplicate deco POs are blocked. Switch Deco Type if this is different work.':undefined}
+                      onChange={()=>{const next=!podChecked(it._idx);
+                        setPodOverrides(ov=>{const nv={};podItems.forEach(x=>{nv[x._idx]=ov[x._idx]!==undefined?!!ov[x._idx]:podDefault(x._idx)});nv[it._idx]=next;return nv});
+                        if(_hasArt){if(next)setItemFulfillment(it._idx,'outside',poDecoInline.vendor,true);else if(!_onAnyDpo)setItemFulfillment(it._idx,null,undefined,true)}}}/>
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
                     <strong style={{flex:1}}>{it.name}</strong>
                     {_itemInHouseDeco(it._idx)&&<span title="Routed In-house — decorated at Emerson, so it doesn't belong on an outside decorator's PO" style={{fontSize:9,fontWeight:700,color:'#1e40af',background:'#dbeafe',borderRadius:4,padding:'1px 6px',whiteSpace:'nowrap'}}>🏭 in-house</span>}
@@ -9293,11 +9338,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {poDropShip===true&&<div style={{marginTop:-4,marginBottom:12}}>
             <label className="form-label">Attention line (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
-              <input className="form-input" style={{flex:1}} value={poAttention} onChange={e=>setPoAttention(e.target.value)} placeholder="e.g. DPO 3081 — printed on the label so the receiver can match the shipment"/>
-              {(()=>{if(poAttention)return null;const _dpo=_decoForPo?.id?(o.deco_pos||[]).find(dp=>dp.deco_vendor_id===_decoForPo.id&&dp.po_id):null;
-                return _dpo?<button type="button" className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap',color:'#7c3aed'}} onClick={()=>setPoAttention(String(_dpo.po_id))}>Use {_dpo.po_id}</button>:null})()}
+              <input className="form-input" style={{flex:1}} value={poAttention} onChange={e=>setPoAttention(e.target.value)} placeholder={_poAutoAttn?_poAutoAttn+' (auto-filled — type to override)':'e.g. DPO 3081 — printed on the label so the receiver can match the shipment'}/>
             </div>
-            <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>Goes on the shipment's attention line — use it when the decorator already has a DPO so they can match the blanks to their job.</div>
+            <div style={{fontSize:10,color:_poAutoAttn&&!poAttention.trim()?'#7c3aed':'#94a3b8',marginTop:2}}>{_poAutoAttn&&!poAttention.trim()?<><strong>{_poAutoAttn}</strong> goes on the shipment's attention line automatically, so the decorator can match the blanks to their deco PO.</>:"Goes on the shipment's attention line — use it when the decorator already has a DPO so they can match the blanks to their job."}</div>
           </div>}
           <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(_decoForPo?'deco':(addrs[0]?.id||'warehouse')):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
@@ -9395,7 +9438,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(batchDecoId)bItem.ship_to_deco_id=batchDecoId;
                 else if(isDropShip){bItem.drop_ship=true;if(_poShipDecoId)bItem.ship_to_deco_id=_poShipDecoId}
                 if(isDropShip&&!batchDecoId&&poShipTo==='custom'&&(poShipCustom.line1||poShipCustom.city))bItem.ship_to={...poShipCustom};
-                if((isDropShip||batchDecoId)&&poAttention.trim())bItem.attention=poAttention.trim();
+                if((isDropShip||batchDecoId)&&_poAttnFinal)bItem.attention=_poAttnFinal;
                 batchItems.push(bItem);
               });
             });
@@ -9426,7 +9469,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // second held number.
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);_consumeHeldPoNumber(true,!!podRes&&!podRes.isMerge);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -9490,7 +9533,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(isDropShip)poLine.drop_ship=true;
               if(isDropShip&&_poShipDecoId)poLine.ship_to_deco_id=_poShipDecoId;
               if(isDropShip&&poShipTo==='custom'&&(poShipCustom.line1||poShipCustom.city))poLine.ship_to={...poShipCustom};
-              if(isDropShip&&poAttention.trim())poLine.attention=poAttention.trim();
+              if(isDropShip&&_poAttnFinal)poLine.attention=_poAttnFinal;
               Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty){
@@ -9529,7 +9572,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // the second. Joining an existing DPO consumes nothing — the second hold stays held.
           _consumeHeldPoNumber(!preexistingPO,!!podRes&&!podRes.isMerge);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Follow-on modal for the just-created product PO (vendor API order box, else Edit-PO).
           const _afterPo=()=>{
             if(newPoLines.length>0&&!preexistingPO){
@@ -9577,7 +9620,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
                     else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
                   }
-                  if(s&&poAttention.trim())s.attentionTo=poAttention.trim();
+                  if(s&&_poAttnFinal)s.attentionTo=_poAttnFinal;
                   return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
                 })();
                 if(_dsShipTo){
