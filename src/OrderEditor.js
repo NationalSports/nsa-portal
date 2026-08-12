@@ -27,6 +27,7 @@ import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
@@ -60,6 +61,11 @@ const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.
 // runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass through
 // untouched. Any size that already carries a quantity is always kept so entered qtys never drop.
 const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
+// Size pools offered by the Copy Item modal's "New sizes" picker — the common run a rep
+// re-sizes a copied line into (a 3/L one-off, a couple of bigs), not the full catalog pool.
+// Outliers (5XL, tall, youth, half sizes below 6) are still added on the line with +Size.
+const COPY_APPAREL_SIZES=['XS','S','M','L','XL','2XL','3XL','4XL'];
+const COPY_FOOTWEAR_SIZES=['6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12'];
 const orderLineSizes=(catalogSizes,qtySizes=[])=>{
   const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
   const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
@@ -192,18 +198,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       nf('This job still has Art TBD — assign real artwork before approving it','error');return;
     }
     if(_jb&&_jb.coach_rejected){const _lr=(_jb.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return;}
-    const updJobs=safeJobs(curO).map(jj=>jj.id===jobId?{...jj,art_status:targetStatus,coach_rejected:false,art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}:jj);
-    const updArt=(artIds&&artIds.length)?safeArt(curO).map(a=>artIds.includes(a.id)?{...a,status:'approved',...(stampProd?{prod_files_attached:true}:{})}:a):safeArt(curO);
-    const updated={...curO,jobs:updJobs,art_files:updArt,updated_at:new Date().toLocaleString()};
+    const updated=approveArtOnSO({...curO,jobs:safeJobs(curO),art_files:safeArt(curO)},{match:jj=>jj.id===jobId,artIds,targetStatus,stampProd,updatedAt:new Date().toLocaleString()});
     setArtRevisionNote('');
     await saveSONow(updated,'Art approval','✅ Art approved — '+(targetStatus==='art_complete'?'production files confirmed, ready for production!':targetStatus==='order_dtf_transfers'?'order DTF transfers':targetStatus==='upload_emb_files'?'upload embroidery files':'sent to the artist for production separations'));
   };
-  // Every path that pulls art back for rework (Recall or an Update request) must clear the same
-  // approval residue — one shared list so the call sites can't drift apart. Stale coach flags
-  // produce phantom todos/"Sent to Customer" badges; a stale follow_up_at keeps nagging the coach.
-  // _coach_cleared marks the nulls as DELIBERATE for dbEngine's coach-decision guard (audit A9) —
-  // without it a save nulling a non-null coach column is treated as stale and the DB value is kept.
-  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false,_coach_cleared:true};
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
   // redrawn — put them on hold along with the job being acted on. Any decorator clock on a
@@ -263,13 +261,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // share ONE implementation instead of two hand-synced copies.
   const _sendArtBackToArtist=(ji,reason)=>{
     const j=safeJobs(o)[ji];if(!j)return;
-    const _revAt=new Date().toISOString();
-    const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
     const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
     const _revFamIdx=new Set(_artFamilyIdxs(ji));
-    const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
-    const updArt2=safeArt(o).map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
-    saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
+    const updated=sendArtBackOnSO({...o,jobs:safeJobs(o),art_files:safeArt(o)},{match:(jj,i2)=>_revFamIdx.has(i2),artIds:_revArtIds,reason,by:cu.name,updatedAt:new Date().toLocaleString()});
+    saveSONow(updated,'Revision request','Art sent back to artist for revision');
   };
   // Garment lines for a job: SKU/name/color with a size breakdown, honoring the split-job
   // convention where gi.sizes carries only that job's subset of the SO item's sizes.
@@ -2251,8 +2246,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(isLive){if(canRecost&&next.sku)setPendingCostSku(p=>({...p,[next.sku]:true}));fetchVendorInventory(next.sku,vid,next)}
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
-  const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
-  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  // Copy Item → "New sizes": the copied line takes exactly the sizes the rep typed in the modal
+  // (e.g. 3/L only) instead of inheriting the source line's whole size run. An empty picker is a
+  // no-op so an accidentally-opened panel can't strip a copy down to no sizes at all.
+  const _applyCopySizes=(clone,newSz)=>{
+    const picked=Object.entries(newSz||{}).filter(([,v])=>safeNum(v)>0);
+    if(!picked.length)return clone;
+    clone.sizes=Object.fromEntries(picked.map(([sz,v])=>[sz,safeNum(v)]));
+    clone.available_sizes=picked.map(([sz])=>sz).sort((a,b)=>szRank(a)-szRank(b));
+    return clone;
+  };
+  const _copySzStr=newSz=>Object.entries(newSz||{}).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0])).map(([sz,v])=>safeNum(v)+'/'+sz).join(' ');
+  const copyI=(i,newSz)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);const szStr=_copySzStr(newSz);sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
+  const copyIWithSku=(i,p,newSz)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -2266,8 +2272,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // source line may stay). Link the new garment to the source's mock instead — same-color
     // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
     const _linked=linkSwappedGarmentMock(safeArt(o),it,p.sku,p.color)!==safeArt(o);
+    _applyCopySizes(clone,newSz);const _szStr=_copySzStr(newSz);
     setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
-    setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku+(_linked?' — mockup linked to '+it.sku:''))};
+    setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku+(_szStr?' — '+_szStr:'')+(_linked?' — mockup linked to '+it.sku:''))};
   // Momentec API order SKUs (_mt_style/_mt_color/_mt_sku/_mt_skus) must always describe the
   // item's CURRENT garment. Every flow that swaps the style or color has to re-stamp (or clear)
   // them: a stale stamp silently survives into the batch queue, and the API order ships the OLD
@@ -2283,7 +2290,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
-  const copyIWithVendorResult=(i,style,color,source)=>{
+  const copyIWithVendorResult=(i,style,color,source,newSz)=>{
     const it=o.items[i];if(!it)return;
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
@@ -2326,6 +2333,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
+    _applyCopySizes(clone,newSz);const _szStr=_copySzStr(newSz);
     // Same-color style swap: link the new garment to the source's mock so it follows the
     // swap (see copyIWithSku — shared linkSwappedGarmentMock, color-exact only).
     setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
@@ -2336,7 +2344,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       fetchVendorInventory(style.sku,vId,clone);
     }
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
-    nf('📋 Copied decorations from '+it.sku+' → '+style.sku);
+    nf('📋 Copied decorations from '+it.sku+' → '+style.sku+(_szStr?' — '+_szStr:''));
   };
   // Change the SKU/product on an existing item in place (keeps decorations + sizes).
   // Only allowed when no PO/IF has been created on the item.
@@ -14628,8 +14636,16 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const mode=isCopy?(copySkuModal.mode||'clone'):'replace';
         const isReplace=mode==='replace';// change SKU on this line in place
         const isClone=mode==='clone';// copy this line as-is (same SKU)
-        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p);
-        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src);
+        // "New sizes" — resize the copy instead of inheriting the source's run (3/L only, etc).
+        // Applies to both copy modes; never to Change SKU, which keeps the line's own sizes.
+        // Qty-only lines carry no size grid at all, so a size run has nothing to land in — the
+        // picker stays hidden there rather than accepting input the copied line would ignore.
+        const canNewSz=isCopy&&!srcIt.qty_only;
+        const szOn=canNewSz&&!!copySkuModal.szOn;
+        const newSz=szOn?(copySkuModal.sz||{}):null;
+        const newSzTot=Object.values(newSz||{}).reduce((a,v)=>a+safeNum(v),0);
+        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz);
+        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz);
         const sqTokens=sq.split(/\s+/).filter(Boolean);
         const matches=sq.length>=2?products.filter(p=>{if(p.is_archived)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return sqTokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))}).slice(0,12):[];
         const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
@@ -14662,15 +14678,34 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
               <div style={{fontWeight:700}}>{isClone?'Copying':isCopy?'Copying from':'Changing'}: {srcIt.sku} — {srcIt.name}</div>
-              <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) + sizes will {isReplace?'be kept on this line':'carry over'}</div>
+              <div style={{color:'#64748b'}}>{safeDecos(srcIt).length} decoration(s) {isReplace?'+ sizes will be kept on this line':(newSzTot>0?'will carry over — sizes replaced with '+_copySzStr(newSz):'+ sizes will carry over')}</div>
             </div>
             {isCopy&&<div style={{display:'flex',gap:6,marginBottom:10,padding:4,background:'#f1f5f9',borderRadius:8}}>
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'clone'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:isClone?'#2563eb':'transparent',color:isClone?'white':'#475569'}}>📋 Copy as-is (same SKU)</button>
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isClone?'#2563eb':'transparent',color:!isClone?'white':'#475569'}}>🆕 Copy to new line with new SKU</button>
             </div>}
+            {/* New sizes — works with either copy mode: type only the sizes the copy needs. */}
+            {canNewSz&&(()=>{const isFw=!!srcIt.is_footwear;const pool=isFw?COPY_FOOTWEAR_SIZES:COPY_APPAREL_SIZES;
+              return<div style={{marginBottom:10,border:'1px solid '+(szOn?'#bfdbfe':'#e2e8f0'),borderRadius:8,overflow:'hidden'}}>
+                <button onClick={()=>setCopySkuModal(m=>({...m,szOn:!m.szOn}))} style={{width:'100%',padding:'7px 10px',border:'none',cursor:'pointer',background:szOn?'#eff6ff':'#f8fafc',display:'flex',alignItems:'center',gap:8,fontSize:11,fontWeight:700,color:szOn?'#1e40af':'#475569'}}>
+                  <span style={{fontSize:9}}>{szOn?'▼':'▶'}</span>
+                  <span>📏 New sizes</span>
+                  <span style={{fontWeight:500,color:'#64748b'}}>{szOn?(newSzTot>0?_copySzStr(newSz)+' · '+newSzTot+' pcs':'enter the sizes you need'):'keep '+srcIt.sku+"'s size run"}</span>
+                </button>
+                {szOn&&<div style={{padding:'8px 10px',background:'white',borderTop:'1px solid #e2e8f0'}}>
+                  <div style={{fontSize:11,color:'#64748b',marginBottom:7}}>The copied line gets only these sizes — {isFw?'footwear 6–12':'XS–4XL'}. Add anything outside this run with <b>+Size</b> on the line. Leave blank to carry over the source sizes.</div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                    {pool.map(s=>{const v=(copySkuModal.sz||{})[s];const has=safeNum(v)>0;return<label key={s} style={{display:'flex',alignItems:'center',gap:4,padding:'3px 5px 3px 7px',borderRadius:6,border:'1px solid '+(has?'#2563eb':'#e2e8f0'),background:has?'#eff6ff':'white'}}>
+                      <span style={{fontSize:11,fontWeight:700,color:has?'#1e40af':'#475569'}}>{s}</span>
+                      <input type="number" min="0" value={v??''} placeholder="0" onChange={e=>{const q=Math.max(0,parseInt(e.target.value,10)||0);setCopySkuModal(m=>{const n={...(m.sz||{})};if(q>0)n[s]=q;else delete n[s];return{...m,sz:n}})}} style={{width:40,padding:'2px 4px',border:'1px solid #e2e8f0',borderRadius:4,fontSize:11,fontWeight:700,textAlign:'center'}}/>
+                    </label>})}
+                  </div>
+                  {newSzTot>0&&<button onClick={()=>setCopySkuModal(m=>({...m,sz:{}}))} style={{marginTop:7,padding:'3px 8px',borderRadius:5,border:'1px solid #e2e8f0',background:'white',cursor:'pointer',fontSize:10,fontWeight:700,color:'#64748b'}}>Clear sizes</button>}
+                </div>}
+              </div>})()}
             {isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
-              <div style={{fontSize:12,color:'#64748b'}}>Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.</div>
-              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
+              <div style={{fontSize:12,color:'#64748b'}}>{newSzTot>0?'Adds a duplicate of this line (same SKU and decorations) below it, sized '+_copySzStr(newSz)+'.':'Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.'}</div>
+              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
             </div>:<>
             {isReplace&&!canReplace&&<div style={{padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:10,fontSize:11,color:'#dc2626',fontWeight:600}}>⚠️ This line has a PO or IF — remove them first to change its SKU in place. (Use Copy item → new SKU to add it as a separate line instead.)</div>}
             <label className="form-label">Search for {isReplace?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>

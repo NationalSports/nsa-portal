@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -34,7 +34,8 @@ import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedA
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
-import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
+import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
+import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
@@ -994,6 +995,43 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
 };
+// ── Dashboard art preview (READ-ONLY) ──
+// The mock images behind an "Art awaiting approval" to-do, so a rep can eyeball the proof
+// from the home page instead of opening the order. Scoping is the production board's
+// (_prodJobArtFiles / _prodJobItemMocks / _prodJobGenericMocks), so what shows here is the
+// same set the job sheet prints — this decides nothing, it only displays. When a job has no
+// garment mockup at all (the "set up the mockup" to-do) it falls back to the raw design art,
+// flagged as such: seeing the logo helps, and calling it a mockup is exactly the SO-1661
+// mistake. Non-renderable production formats (.ai/.eps/.dst/.psd) are skipped — the preview
+// shows what a browser can actually draw.
+const _shotUrl=f=>typeof f==='string'?f:(f?.url||'');
+const dashArtShots=(job,so)=>{
+  const empty={shots:[],hasMock:false,artFiles:[],units:0,garments:[]};
+  if(!job||!so)return empty;
+  const artFiles=_prodJobArtFiles(job,so);
+  const shots=[];const seen=new Set();
+  const push=(f,label,kind)=>{
+    const u=_shotUrl(f);if(!u||seen.has(u))return;
+    const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);
+    if(!isImg&&!isPdf)return;
+    // A PDF proof only previews if Cloudinary can rasterize page 1; anything else has no thumb.
+    const thumb=isImg?u:_cloudinaryPdfThumb(u);
+    if(!thumb)return;
+    seen.add(u);shots.push({url:u,thumb,file:f,label,kind,name:fileDisplayName(f)});
+  };
+  const garments=[];let units=0;
+  (job.items||[]).forEach(gi=>{
+    const it=safeItems(so)[gi.item_idx];if(!it)return;
+    const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';
+    const qty=Object.values(gi.sizes||safeSizes(it)||{}).reduce((a,v)=>a+(safeNum(v)||0),0);
+    units+=qty;garments.push({sku,color,name:it.name||gi.name||'',qty});
+    _prodJobItemMocks(artFiles,so,gi).forEach(f=>push(f,[sku,color].filter(Boolean).join(' · ')||'Garment mockup','mock'));
+  });
+  _prodJobGenericMocks(artFiles).forEach(f=>push(f,'Design mockup','mock'));
+  const hasMock=shots.length>0;
+  if(!hasMock)artFiles.forEach(a=>(a?.files||[]).forEach(f=>push(f,'Design art','design')));
+  return{shots,hasMock,artFiles,units,garments};
+};
 // Production Job Sheet PDF options — the single builder shared by the production-board
 // prodJobModal and the SO editor's Jobs tab so both render an identical sheet. Pure: reads
 // the job (j) and its sales order (so), pulling customer/rep/sibling context from ctx
@@ -1697,6 +1735,9 @@ export { dP, rQ, parseDate, _decoUnitCostComb };
 // InvoicesPage additionally shares these (RowLink/_buildTabHref are the deep-link row
 // helpers; the brevo pair and the invoice-PDF builder move with a later comms/pdf pass).
 export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms };
+// Exported for its unit test — the dashboard's inline art preview resolves what a rep sees
+// before opening the order, so its scoping (mock vs. raw design art) is worth pinning down.
+export { dashArtShots };
 
 // ── Combined deco COST for manually-linked jobs that share a screen ──
 // Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)
@@ -4570,6 +4611,53 @@ export default function App(){
     },250);
     return ()=>{if(_siSearchTimer.current)clearTimeout(_siSearchTimer.current)};
   },[gSearchQ,pg]);
+  // Webstore orders aren't held in memory either — Webstores loads them per-store on demand —
+  // so global search reaches them with the same debounced-DB-query pattern (dropdown + results
+  // page). order_number is a bigint from a sequence starting at 1010000, so a pure-numeric
+  // query matches it exactly; buyer name/email and the OMG order # match by ilike.
+  const _queryWsOrders=useCallback(async(q,limit)=>{
+    const drive=(q||'').replace(/^#/,'').replace(/[,()%]/g,'').trim();
+    if(!drive)return[];
+    const like='%'+drive+'%';
+    const ors=['buyer_name.ilike.'+like,'buyer_email.ilike.'+like,'omg_order_number.ilike.'+like];
+    if(/^\d+$/.test(drive))ors.push('order_number.eq.'+drive);
+    try{
+      const{data,error}=await supabase.from('webstore_orders')
+        .select('id,store_id,order_number,omg_order_number,buyer_name,buyer_email,status,total,created_at,webstores(name,source,omg_sale_code)')
+        .or(ors.join(','))
+        .order('created_at',{ascending:false}).limit(limit);
+      return error?[]:(data||[]);
+    }catch{return[]}
+  },[]);
+  const[gWsOrders,setGWsOrders]=useState([]);const _gWsOrderTimer=useRef(null);
+  useEffect(()=>{
+    if(_gWsOrderTimer.current)clearTimeout(_gWsOrderTimer.current);
+    if(!supabase||!gQ||gQ.trim().length<2){setGWsOrders([]);return}
+    _gWsOrderTimer.current=setTimeout(async()=>{setGWsOrders(await _queryWsOrders(gQ.trim(),5))},250);
+    return()=>{if(_gWsOrderTimer.current)clearTimeout(_gWsOrderTimer.current)};
+  },[gQ]);// eslint-disable-line
+  const[wsOrderSearchResults,setWsOrderSearchResults]=useState([]);const _wsOrderSearchTimer=useRef(null);
+  useEffect(()=>{
+    if(_wsOrderSearchTimer.current)clearTimeout(_wsOrderSearchTimer.current);
+    if(!supabase||pg!=='search'||!gSearchQ||gSearchQ.trim().length<2){setWsOrderSearchResults([]);return}
+    _wsOrderSearchTimer.current=setTimeout(async()=>{setWsOrderSearchResults(await _queryWsOrders(gSearchQ.trim(),50))},250);
+    return()=>{if(_wsOrderSearchTimer.current)clearTimeout(_wsOrderSearchTimer.current)};
+  },[gSearchQ,pg]);// eslint-disable-line
+  // Open a webstore-order search hit: OMG-sourced stores route to the OMG page (its order
+  // portal owns those), everything else deep-links into Webstores via the same ?store/?tab/?order
+  // params the daily-store email uses. If Webstores is already mounted, its popstate handler
+  // reconciles from the URL (the deep-link boot only runs on mount).
+  const openWsOrderResult=(o)=>{
+    setGQ('');setGOpen(false);
+    const ws=o.webstores||{};
+    if(ws.source==='omg'){
+      const st=omgStores.find(s2=>s2._omg_sale_code&&s2._omg_sale_code===ws.omg_sale_code);
+      if(st){setOmgSel(st);setOmgFocusOrder(String(o.id));setPg('omg');return}
+    }
+    try{const u=new URL(window.location);u.searchParams.set('store',o.store_id);u.searchParams.set('tab','orders');u.searchParams.set('order',o.id);window.history.replaceState({},'',u)}catch(e){}
+    if(pg==='webstores'){try{window.dispatchEvent(new PopStateEvent('popstate'))}catch(e){}}
+    else setPg('webstores');
+  };
   useEffect(()=>{
     if(_gProdTimer.current)clearTimeout(_gProdTimer.current);
     if(!gQ||gQ.length<2){setGProdResults([]);return}
@@ -5628,6 +5716,97 @@ export default function App(){
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
   const ActiveOrderEditor=uiMode==='new'?OrderEditor:OrderEditorClassic;// classic gets the frozen pre-redesign editor, not a reskin
   const[dashActionOpen,setDashActionOpen]=useState(null);// which dash2 action card is expanded below the grid ('art'|'todos'|'msgs') — Batch-POs-style accordion
+  const[dashArtRow,setDashArtRow]=useState(null);// dismissKey of the expanded action row showing its art mocks inline (one open at a time)
+  const[dashArtLb,setDashArtLb]=useState(null);// {shots,idx,title,sub} — full-size mock viewer opened from that inline preview
+  // Lightbox keys: Esc closes, ←/→ walk the gallery. Bound only while it's open.
+  useEffect(()=>{
+    if(!dashArtLb)return;
+    const onKey=e=>{
+      if(e.key==='Escape'){setDashArtLb(null);return}
+      if(e.key==='ArrowRight')setDashArtLb(l=>l&&l.shots.length>1?{...l,idx:(l.idx+1)%l.shots.length}:l);
+      if(e.key==='ArrowLeft')setDashArtLb(l=>l&&l.shots.length>1?{...l,idx:(l.idx-1+l.shots.length)%l.shots.length}:l);
+    };
+    window.addEventListener('keydown',onKey);
+    return()=>window.removeEventListener('keydown',onKey);
+  },[dashArtLb]);
+  // ─── Inline art decisions from the dashboard's "Art awaiting approval" panel ───
+  // Approve / Request changes without opening the order. Both write through the SAME shared
+  // transitions the order page uses (lib/artReview) — the dashboard contributes no new state
+  // rules, only the gates and the confirmation UI in front of them. {key,mode,note}: which row
+  // is mid-decision, 'confirm' (approve, awaiting the second click) or 'reject' (writing a reason).
+  const[dashArtAct,setDashArtAct]=useState(null);
+  const _dashArtReset=()=>setDashArtAct(null);
+  // Row action menu (⋯) on the expanded panel — Assign / Snooze / Dismiss, the same three the
+  // Activity Center offers, in one place instead of three buttons crowding the row. Positioned
+  // fixed from the button's rect: the panel body scrolls with overflow:auto, and an absolutely
+  // positioned menu on the last row would be clipped by it. {key,t,x,y,up} — `up` flips it above
+  // the button near the bottom of the window. Any scroll closes it rather than letting it detach.
+  const[dashRowMenu,setDashRowMenu]=useState(null);
+  const _openDashRowMenu=(e,key,t)=>{
+    const r=e.currentTarget.getBoundingClientRect();
+    const up=r.bottom+240>window.innerHeight;
+    setDashRowMenu(m=>m&&m.key===key?null:{key,t,x:r.right,y:up?r.top-6:r.bottom+6,up});
+  };
+  useEffect(()=>{
+    if(!dashRowMenu)return;
+    const close=()=>setDashRowMenu(null);
+    const onKey=e=>{if(e.key==='Escape')close()};
+    window.addEventListener('keydown',onKey);
+    window.addEventListener('scroll',close,true);
+    window.addEventListener('resize',close);
+    return()=>{window.removeEventListener('keydown',onKey);window.removeEventListener('scroll',close,true);window.removeEventListener('resize',close)};
+  },[dashRowMenu]);
+  // Both handlers re-read the SO from `sos` rather than trusting the to-do's captured snapshot,
+  // and rebuild its jobs with buildJobs — the same read the art workboard does before writing.
+  // A to-do can sit on screen for a long time; writing back a stale snapshot is how edits made
+  // elsewhere in the meantime get clobbered.
+  const _dashArtJob=(t)=>{
+    const so=sos.find(s=>s.id===(t?.so?.id));
+    if(!so){nf('That order isn\'t loaded anymore — reload the page and try again','error');return null}
+    const jobs=buildJobs(so);const j=jobs.find(x=>x.id===t.jobId);
+    if(!j){nf('That job is no longer on '+so.id+' — reload the dashboard','error');return null}
+    // The bar is only ever drawn for a job parked at waiting_approval, but the row it sits on can
+    // go stale on screen — someone else approves it, or sends it back to the artist, while the
+    // panel is open. Deciding from that stale row would silently overrule them (a send-back would
+    // jump straight back to approved). Refuse instead; the list refreshes on its own.
+    if(j.art_status!=='waiting_approval'){nf('This artwork moved on since the dashboard loaded (now: '+(ART_LABELS[j.art_status]||j.art_status)+') — open the order to see where it stands','error');return null}
+    return{so,jobs,j};
+  };
+  const _dashArtApprove=(t)=>{
+    const ctx=_dashArtJob(t);if(!ctx)return;const{so,jobs,j}=ctx;
+    // Same gates as the order page's ✅ Approve Artwork, in the same order.
+    // Per-garment mockups first: a garment whose mock was orphaned (e.g. a stock-swap SKU
+    // change) ships unmocked if this passes (SO-1480). The bar is hidden on rows that fail it,
+    // so this is the belt-and-braces check for a row that went stale on screen.
+    const _mm=skusMissingMockups(j,so);
+    if(_mm.length>0){nf(missingMockupsMsg('approve',_mm),'error');_dashArtReset();return}
+    if(jobHasUnresolvedArt(j,so,{archivedIsUnresolved:true})){nf('This job still has Art TBD — assign real artwork before approving it','error');_dashArtReset();return}
+    if(j.coach_rejected){const _lr=(j.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return}
+    const artIds=jobLiveArtIds(j,so);
+    const afs=artIds.map(id=>safeArt(so).find(a=>a.id===id));
+    const{allConfirmed,targetStatus}=artApproveTarget(afs,afs.find(Boolean)?.deco_type||j.deco_type);
+    // Split slices share one artwork by construction — approve the whole family or a sibling
+    // stays stranded in an earlier column and the artist redoes work that's already done.
+    // (buildJobs output has no _famIds marker, so this resolves the family from the list.)
+    const _fam=artFamilyIdsIn(jobs,j.id);
+    savSO(approveArtOnSO({...so,jobs},{match:jj=>_fam.includes(jj.id),artIds,targetStatus,stampProd:allConfirmed}));
+    _dashArtReset();
+    nf(targetStatus==='art_complete'?'✅ Art approved — '+(j.art_name||j.id)+' is ready for production'
+      :targetStatus==='upload_emb_files'?'✅ Art approved — now upload the embroidery files (DST + PDF)'
+      :targetStatus==='order_dtf_transfers'?'✅ Art approved — now order the DTF transfer films'
+      :'✅ Art approved — the artist still owes production separations');
+  };
+  const _dashArtSendBack=(t,reason)=>{
+    const _r=(reason||'').trim();if(!_r)return;
+    const ctx=_dashArtJob(t);if(!ctx)return;const{so,jobs,j}=ctx;
+    // Every location of the design goes back, not just the primary art_file_id — a second
+    // location left at 'approved' drags the job's derived status around (SO-1625).
+    const artIds=jobLiveArtIds(j,so);
+    const _fam=artFamilyIdsIn(jobs,j.id);
+    savSO(sendArtBackOnSO({...so,jobs},{match:jj=>_fam.includes(jj.id),artIds,reason:_r,by:cu?.name||'Rep'}));
+    _dashArtReset();
+    nf('🔄 Sent back to the artist — '+(j.art_name||j.id));
+  };
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
@@ -8784,7 +8963,8 @@ export default function App(){
       const _kpi=(icon,label,val,cur,prev,pct,vs)=>(<div className="dash2-kpi"><div className="dash2-kpi-top"><span className="dash2-icon">{icon}</span>{label}</div><div className="dash2-kpi-val">{val}</div><div className="dash2-kpi-foot">{_delta(cur,prev,pct)}<span className="dash2-vs">vs {vs}</span></div></div>);
       // Action-card counts — the same live set the To-Do card shows (undismissed, unsnoozed)
       const _live=adminTodos.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
-      const _art=_live.filter(t=>['art','coach_followup','art_rejected'].includes(t.type));
+      const _ART_TYPES=['art','coach_followup','art_rejected'];
+      const _art=_live.filter(t=>_ART_TYPES.includes(t.type));
       const _artWaiting=_art.filter(t=>t.type==='coach_followup').length;
       const _due=_live.filter(t=>t.type==='deadline').length;
       const _n2=(n)=>String(n).padStart(2,'0');
@@ -8809,23 +8989,112 @@ export default function App(){
         const _isMsgs=dashActionOpen==='msgs';
         const _rows=dashActionOpen==='art'?_art:dashActionOpen==='todos'?_live:unreadMsgs;
         const _title=dashActionOpen==='art'?'Art awaiting approval':dashActionOpen==='todos'?'To-dos waiting on you':'Unread messages';
+        // Job lookup for the inline art preview, memoized per SO — several to-dos can point at
+        // the same order and buildJobs walks every line item.
+        const _jobCache=new Map();
+        const _jobOf=t=>{const so=t.so;if(!so)return null;let js=_jobCache.get(so.id);if(!js){js=buildJobs(so);_jobCache.set(so.id,js)}return js.find(j=>j.id===t.jobId)||null};
         return<div className="card dash2-expand" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2 style={{fontSize:15}}>{_title} <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>({_rows.length})</span></h2>
             <button style={{background:'none',border:'1px solid #e7e9ef',borderRadius:8,cursor:'pointer',padding:'3px 10px',fontSize:12,color:'#64748b',fontWeight:600}} onClick={()=>setDashActionOpen(null)}>Collapse ▴</button>
           </div>
-          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:480,overflow:'auto'}}>
+          {/* Taller while a mock preview is open so the gallery isn't squeezed into a scroll sliver */}
+          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:dashArtRow?760:480,overflow:'auto'}}>
             {_rows.length===0&&<div style={{padding:'20px 12px',fontSize:14,color:'#64748b'}}>✓ Nothing here — you're caught up.</div>}
             {_rows.length>0&&<div className="dash2x-head"><span>{_isMsgs?'Message':'Item'}</span><span>Account</span><span>SO / Job #</span><span style={{textAlign:'right'}}>Action</span></div>}
             {!_isMsgs&&_rows.map((t,i)=>{
               const _acct=cust.find(c=>c.id===(t.so?.customer_id||t.est?.customer_id||t.inv?.customer_id||t.customer_id))?.name||'';
               const _ref=t.so?.id||t.est?.id||t.inv?.id||(t.jobId?'Job '+t.jobId:'');
               const _sub=[_acct?null:t.detail,t.date&&_fmtDueDate?_fmtDueDate(t.date):null].filter(Boolean).join(' · ')||t.detail;
-              return<div className="dash2x-row" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openDashPriority(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openDashPriority(t)}}}>
-                <span className="dash2x-main"><strong>{t.msg}</strong><small>{_sub}</small></span>
-                <span className="dash2x-acct">{_acct||'—'}</span>
-                <span className="dash2x-ref">{_ref||'—'}</span>
-                <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button></span>
+              const _key=t.dismissKey||('row-'+i);
+              // Inline art preview — the mocks render right here so the rep can eyeball a proof
+              // without leaving the dashboard, and decide on it right there. Scoped to the art
+              // to-dos (the set the 🎨 tile counts) because resolving mocks means walking the
+              // SO's jobs. Approve / Request changes write through lib/artReview — the same
+              // transitions the order page uses — behind the same gates (_dashArtApprove).
+              // Send to Coach is NOT here: it needs the contact picker and the email/SMS
+              // composer, so it stays on the order page behind the row's action button.
+              const _job=_ART_TYPES.includes(t.type)&&t.so&&t.jobId?_jobOf(t):null;
+              const _pv=_job?dashArtShots(_job,t.so):null;
+              const _canPv=!!(_pv&&_pv.shots.length>0);
+              const _pvOpen=_canPv&&dashArtRow===_key;
+              const _togglePv=()=>{_dashArtReset();setDashArtRow(k=>k===_key?null:_key)};
+              // Approve / Request-changes bar — shown only where the order page would also offer
+              // it: the job is parked at waiting_approval and every decorated SKU has a real
+              // garment mockup. The "set up the mockup" rows deliberately get no decision bar
+              // (SO-1727 — there is no proof to approve yet), and neither does a row falling back
+              // to raw design art (_pv.hasMock false), which must never read as sign-off (SO-1661).
+              const _canDecide=!!(_job&&_job.art_status==='waiting_approval'&&_canPv&&_pv.hasMock&&skusMissingMockups(_job,t.so).length===0);
+              const _decArt=_canDecide?jobLiveArtIds(_job,t.so).map(id=>safeArt(t.so).find(a=>a.id===id)):null;
+              const _apTgt=_canDecide?artApproveTarget(_decArt,_decArt.find(Boolean)?.deco_type||_job.deco_type):null;
+              const _decAct=_canDecide&&dashArtAct&&dashArtAct.key===_key?dashArtAct:null;
+              // A previewable row opens its art on click; the action button still opens the order.
+              const _rowAct=()=>_canPv?_togglePv():_openDashPriority(t);
+              const _deco=String(_job?.deco_type||_pv?.artFiles[0]?.deco_type||'').replace(/_/g,' ');
+              const _inks=_pv?[...new Set(_pv.artFiles.flatMap(a=>String(a?.ink_colors||a?.thread_colors||'').split(/[,\n]/).map(s=>s.trim()).filter(Boolean)))]:[];
+              return<div className={`dash2x-item ${_pvOpen?'is-open':''}`} key={_key}>
+                <div className="dash2x-row" role="button" tabIndex={0} aria-expanded={_canPv?_pvOpen:undefined} onClick={_rowAct} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_rowAct()}}}>
+                  <span className="dash2x-main">
+                    {_canPv&&<span className="dash2x-thumb" aria-hidden="true"><img src={_cloudinaryDisplay(_pv.shots[0].thumb,240)} alt="" loading="lazy" onError={e=>{e.target.style.visibility='hidden'}}/>{_pv.shots.length>1&&<i>+{_pv.shots.length-1}</i>}</span>}
+                    <span className="dash2x-txt"><strong>{t.msg}</strong><small>{_sub}</small></span>
+                  </span>
+                  <span className="dash2x-acct">{_acct||'—'}</span>
+                  <span className="dash2x-ref">{_ref||'—'}</span>
+                  <span className="dash2x-act">
+                    {_canPv&&<button className="dash2x-pv" onClick={e=>{e.stopPropagation();_togglePv()}}>{_pvOpen?'Hide art ▴':(_pv.hasMock?'View mock ▾':'View art ▾')}</button>}
+                    <span className="dash2x-actrow">
+                      <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button>
+                      {t.dismissKey&&<button className={`dash2x-more ${dashRowMenu&&dashRowMenu.key===_key?'is-on':''}`} aria-label="More actions" aria-haspopup="menu" aria-expanded={!!(dashRowMenu&&dashRowMenu.key===_key)}
+                        onClick={e=>{e.stopPropagation();_openDashRowMenu(e,_key,t)}}>⋯</button>}
+                    </span>
+                  </span>
+                </div>
+                {_pvOpen&&<div className="dash2x-drawer">
+                  {!_pv.hasMock&&<div className="dash2x-warn">⚠️ No garment mockup yet — this is the raw design art, not a proof. Set up a mockup before this goes to the coach.</div>}
+                  <div className="dash2x-shots">
+                    {_pv.shots.map((s,si)=><button type="button" className="dash2x-shot" key={s.url} title={s.name||s.label}
+                      onClick={e=>{e.stopPropagation();setDashArtLb({shots:_pv.shots,idx:si,title:_job.art_name||t.msg,sub:[_acct,_ref].filter(Boolean).join(' · ')})}}>
+                      <img src={_cloudinaryDisplay(s.thumb,700)} alt={s.label} loading="lazy"/>
+                      <span className="dash2x-shot-cap">{s.label}</span>
+                    </button>)}
+                  </div>
+                  <div className="dash2x-facts">
+                    {_deco&&<span className="dash2x-chip">🖨️ {_deco}</span>}
+                    {_inks.length>0&&<span className="dash2x-chip">🎨 {_inks.join(', ')}</span>}
+                    {_pv.units>0&&<span className="dash2x-chip">👕 {_pv.units} unit{_pv.units!==1?'s':''}</span>}
+                    {_pv.garments.slice(0,6).map((g,gi)=><span className="dash2x-chip soft" key={gi}>{[g.sku,g.color].filter(Boolean).join(' · ')}{g.qty?' ×'+g.qty:''}</span>)}
+                    {_pv.garments.length>6&&<span className="dash2x-chip soft">+{_pv.garments.length-6} more</span>}
+                  </div>
+                  {_canDecide&&<div className="dash2x-decide" onClick={e=>e.stopPropagation()}>
+                    {_job.sent_to_coach_at&&<div className="dash2x-decide-note">📤 With the coach since {new Date(_job.sent_to_coach_at).toLocaleDateString()} — approving here records the decision without waiting for their portal reply.</div>}
+                    {!_decAct&&<div className="dash2x-decide-row">
+                      <button className="dash2x-ok" onClick={()=>setDashArtAct({key:_key,mode:'confirm',note:''})}>✅ Approve art</button>
+                      <button className="dash2x-no" onClick={()=>setDashArtAct({key:_key,mode:'reject',note:''})}>🔄 Request changes</button>
+                      <span className="dash2x-decide-hint">{_apTgt.allConfirmed?'Approving marks it ready for production.'
+                        :_apTgt.targetStatus==='upload_emb_files'?'Approving moves it to the embroidery files step (DST + PDF).'
+                        :_apTgt.targetStatus==='order_dtf_transfers'?'Approving moves it to the DTF films step.'
+                        :'Approving moves it to production separations — the artist still owes those.'}</span>
+                    </div>}
+                    {_decAct&&_decAct.mode==='confirm'&&<div className="dash2x-decide-row">
+                      <strong className="dash2x-decide-ask">Approve this artwork{_job.sent_to_coach_at?' on the coach’s behalf':''}?</strong>
+                      <button className="dash2x-ok" onClick={()=>_dashArtApprove(t)}>Yes, approve</button>
+                      <button className="dash2x-cancel" onClick={_dashArtReset}>Cancel</button>
+                    </div>}
+                    {_decAct&&_decAct.mode==='reject'&&<div className="dash2x-decide-col">
+                      <textarea className="dash2x-note" rows={2} autoFocus placeholder="What needs to change? Colors, sizing, placement…" value={_decAct.note}
+                        onChange={e=>{const v=e.target.value;setDashArtAct(a=>(a&&a.key===_key)?{...a,note:v}:a)}}/>
+                      <div className="dash2x-decide-row">
+                        <button className="dash2x-no" disabled={!_decAct.note.trim()} onClick={()=>_dashArtSendBack(t,_decAct.note)}>Send back to artist</button>
+                        <button className="dash2x-cancel" onClick={_dashArtReset}>Cancel</button>
+                        <span className="dash2x-decide-hint">The artist sees this note, and it's logged on the job.</span>
+                      </div>
+                    </div>}
+                  </div>}
+                  <div className="dash2x-drawer-foot">
+                    <span>{t.detail}</span>
+                    <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'} →</button>
+                  </div>
+                </div>}
               </div>})}
             {_isMsgs&&_rows.map(m=>{
               const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;
@@ -8841,6 +9110,46 @@ export default function App(){
                 <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_open()}}>Open</button></span>
               </div>})}
           </div>
+        </div>})()}
+      {/* Row action menu — same three actions the Activity Center row offers, and the same
+          guards: rep_delivery to-dos are worked from their own button (never snoozed or handed
+          off), and Assign is rep/manager-only. Rendered once, outside the scrolling panel body. */}
+      {dashRowMenu&&(()=>{
+        const t=dashRowMenu.t;const _canAssign=t.type!=='rep_delivery'&&(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep');
+        const _canSnooze=t.type!=='rep_delivery';
+        const _close=()=>setDashRowMenu(null);
+        return<>
+          <div className="dash2menu-scrim" onClick={_close}/>
+          <div className="dash2menu" role="menu" style={{left:dashRowMenu.x,top:dashRowMenu.y,transform:'translateX(-100%)'+(dashRowMenu.up?' translateY(-100%)':'')}} onClick={e=>e.stopPropagation()}>
+            {_canAssign&&<button role="menuitem" onClick={()=>{_close();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>👤 Assign to a CSR…</button>}
+            {_canSnooze&&<><div className="dash2menu-sep">💤 Snooze for</div>
+              {[[1,'1 day'],[3,'3 days'],[5,'5 days'],[7,'1 week']].map(([d,lbl])=><button key={d} role="menuitem" onClick={()=>{_close();doSnooze(t,d)}}>{lbl}</button>)}</>}
+            <div className="dash2menu-sep"/>
+            {/* Dismissal is permanent for this user (persisted to dismissed_todos), unlike a
+                snooze — so it says so rather than reading like a "hide for now". */}
+            <button role="menuitem" className="danger" onClick={()=>{_close();dismissTodo(t.dismissKey);nf('Dismissed for good — snooze instead if you just want it back later')}}>✕ Dismiss for good</button>
+          </div>
+        </>})()}
+      {/* Full-size mock viewer for the inline art preview — display only (no upload/delete here;
+          those stay in the order editor's art panel). Esc / ← / → are bound in the state effect. */}
+      {dashArtLb&&dashArtLb.shots.length>0&&(()=>{
+        const _n=dashArtLb.shots.length;const _i=Math.min(dashArtLb.idx,_n-1);const _s=dashArtLb.shots[_i];
+        const _go=d=>setDashArtLb(l=>l?{...l,idx:(l.idx+d+_n)%_n}:l);
+        return<div className="dash2lb" onClick={()=>setDashArtLb(null)}>
+          <div className="dash2lb-bar" onClick={e=>e.stopPropagation()}>
+            <div className="dash2lb-ttl"><strong>{dashArtLb.title}</strong><span>{[dashArtLb.sub,_s.label,_n>1?(_i+1)+' of '+_n:null].filter(Boolean).join(' · ')}</span></div>
+            <button className="dash2lb-btn" onClick={()=>openFile(_s.file)}>Download</button>
+            <button className="dash2lb-btn" onClick={()=>setDashArtLb(null)} aria-label="Close preview">✕</button>
+          </div>
+          <div className="dash2lb-stage" onClick={()=>setDashArtLb(null)}>
+            {_n>1&&<button className="dash2lb-nav prev" onClick={e=>{e.stopPropagation();_go(-1)}} aria-label="Previous">&#8249;</button>}
+            <img src={_cloudinaryDisplay(_s.thumb,2000)} alt={_s.label} onClick={e=>e.stopPropagation()}/>
+            {_n>1&&<button className="dash2lb-nav next" onClick={e=>{e.stopPropagation();_go(1)}} aria-label="Next">&#8250;</button>}
+          </div>
+          {_n>1&&<div className="dash2lb-strip" onClick={e=>e.stopPropagation()}>
+            {dashArtLb.shots.map((s,si)=><button key={s.url} className={`dash2lb-th ${si===_i?'is-on':''}`} onClick={()=>setDashArtLb(l=>l?{...l,idx:si}:l)} title={s.label}>
+              <img src={_cloudinaryDisplay(s.thumb,200)} alt=""/></button>)}
+          </div>}
         </div>})()}
       <div className="dash2-sec">Performance<span className="dash2-link" onClick={()=>setPg('reports')}>View full report →</span></div>
       <div className="dash2-grid dash2-kpis">
@@ -35572,7 +35881,11 @@ export default function App(){
     // apply the same all-tokens-must-match narrowing so "PO 3522 CMSF" matches "PO3522CMSF" etc.
     const _siHay=(d)=>((d.po_number||'')+' '+(d.supplier||'')+' '+(d.supplier_doc_number||'')+' '+(d.matched_po_id||'')+' '+(d.matched_so_id||'')+' '+(d.si_doc_number||'')).toLowerCase();
     const rsi=(siSearchResults||[]).filter(d=>_toks.every(t=>_siHay(d).includes(t)));
-    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length;
+    // Webstore orders — fetched into wsOrderSearchResults by the debounced effect above; same
+    // all-tokens-must-match narrowing. '#1010492' should match too, so strip leading '#' per token.
+    const _wsoHay=(o)=>((o.order_number||'')+' '+(o.omg_order_number||'')+' '+(o.buyer_name||'')+' '+(o.buyer_email||'')+' '+(o.webstores?.name||'')+' '+(o.status||'')).toLowerCase();
+    const rwso=(wsOrderSearchResults||[]).filter(o=>_toks.every(t=>_wsoHay(o).includes(t.replace(/^#/,''))));
+    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length+rwso.length;
     const row=(children,onClick,key)=><div key={key} style={{padding:'10px 14px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',borderTop:'1px solid #f1f5f9'}} onClick={onClick}>{children}</div>;
     const section=(label,items,render)=>items.length>0&&<div className="card" style={{marginBottom:12}}>
       <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -35596,6 +35909,7 @@ export default function App(){
         {section('Customers',rc,cc=>row(<><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span>{cc.alpha_tag&&<span className="badge badge-gray">{cc.alpha_tag}</span>}</>,()=>{setSelC(cc);setPg('customers')},cc.id))}
         {section('Sales Orders',rs,so=>{const cc=cust.find(x=>x.id===so.customer_id);return row(<><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setESO(so);setESOC(cc);setPg('orders')},so.id)})}
         {section('Estimates',re,e=>{const cc=cust.find(x=>x.id===e.customer_id);return row(<><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span>{e.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setEEst(e);setEEstC(cc);setPg('estimates')},e.id)})}
+        {section('Webstore Orders',rwso,o=>row(<><Icon name="store" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>#{o.order_number||o.omg_order_number}</span><span>{o.buyer_name||o.buyer_email||''}</span>{o.webstores?.name&&<span style={{color:'#64748b',fontSize:11}}>{o.webstores.name}</span>}<span style={{fontWeight:700,marginLeft:'auto'}}>${(Number(o.total)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><span className={`badge ${o.status==='paid'||o.status==='shipped'||o.status==='completed'?'badge-green':o.status==='cancelled'||o.status==='refunded'?'badge-gray':'badge-blue'}`}>{o.status}</span></>,()=>openWsOrderResult(o),'wso-'+o.id))}
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
         {section('Ordered Items (sold before, not in catalog)',rti,ti=>row(<><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569'}}>{ti.sku}</span>{ti.name&&<span>{ti.name}</span>}
           {ti.archive&&<span style={{fontSize:11,color:'#64748b'}}>{ti.archive.txn_count} NetSuite txn{ti.archive.txn_count===1?'':'s'} · {String(ti.archive.first_date||'').slice(0,4)}–{String(ti.archive.last_date||'').slice(0,4)} · ${Math.round(Number(ti.archive.total_amount)||0).toLocaleString()}</span>}
@@ -35809,12 +36123,15 @@ export default function App(){
             const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s)).slice(0,4);
             // Vendors
             const rv=vend.filter(v=>(v.name+' '+(v.rep_name||'')).toLowerCase().includes(s)).slice(0,4);
-            const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
+            const rwso=gWsOrders.slice(0,5);
+            const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rwso.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
                 {rc.map(cc=><a key={cc.id} href={_newTabHref({cust:cc.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></a>)}</>}
               {rs.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Sales Orders</div>
                 {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<a key={so.id} href={_newTabHref({so:so.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
+              {rwso.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Webstore Orders</div>
+                {rwso.map(o=><div key={'wso-'+o.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>openWsOrderResult(o)}><Icon name="store" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>#{o.order_number||o.omg_order_number}</span><span>{o.buyer_name||o.buyer_email||''}</span>{o.webstores?.name&&<span style={{color:'#64748b',fontSize:11,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{o.webstores.name}</span>}<span className={`badge ${o.status==='paid'||o.status==='shipped'||o.status==='completed'?'badge-green':o.status==='cancelled'||o.status==='refunded'?'badge-gray':'badge-blue'}`} style={{marginLeft:'auto'}}>{o.status}</span></div>)}</>}
               {re.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Estimates</div>
                 {re.map(est=>{const cc=cust.find(x=>x.id===est.customer_id);return<a key={est.id} href={_newTabHref({est:est.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setEEst(est);setEEstC(cc);setPg('estimates');setGQ('');setGOpen(false)}}><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{est.id}</span><span>{est.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
               {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>
