@@ -9273,6 +9273,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(BATCH_NOTIFY_VENDORS.includes(batchKey)&&batchConfig.threshold>0&&newBatchTotal>=batchConfig.threshold){
               setBatchReadyPopup({vendorKey:batchKey,groupKey:batchGroupKey,vendorName:batchConfig.name+(batchDecoName?' → '+batchDecoName:''),total:newBatchTotal,threshold:batchConfig.threshold,batchPOs:[...pendingBatches,bp],count:pendingBatches.length+1});
             }
+            // Silver Screen: an inline deco PO for them prompts to build the job on their portal, the
+            // same as creating the deco PO from the standalone form — one flow, two ways in. Only a NEW
+            // deco PO: joining an existing one would re-create a job it may already carry.
+            if(podRes&&!podRes.isMerge&&_isSilverScreenDp(podRes.po))setTimeout(()=>sendSilverScreenJob(podRes.po,updated),200);
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}
           {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
           if(_poCreatingRef.current)return;
@@ -9362,65 +9366,75 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
           setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
-          if(newPoLines.length>0&&!preexistingPO){
-            // Marry-up with the deco flow: blanks drop-shipping to a decorator — via the inline
-            // deco PO created in this same submit, or an existing drop-ship deco PO that already
-            // covers these items (line-item outside-deco flow) — open the vendor API order box
-            // prefilled with the decorator ship-to + DPO number, exactly like the
-            // "Create Deco PO + Order Blanks" button. Otherwise keep opening the Edit-PO modal.
-            // Full-coverage rule: the deco PO must cover EVERY item on this product PO — a
-            // partial match would ship items never meant for that decorator to its address.
-            // Partially-covered POs keep today's behavior (Edit-PO modal, pick ship-to yourself).
-            const _newIdxs=[...new Set(newPoLines.map(l=>l.lineIdx))];
-            const _covers=dp=>dp&&dp.deco_vendor_id&&_newIdxs.length>0&&_newIdxs.every(ix=>(dp.item_idxs||[]).includes(ix));
-            const _linkDeco=isDropShip?((podRes&&_covers(podRes.po)?podRes.po:null)||(o.deco_pos||[]).find(_covers)||null):null;
-            const _linkVk=_linkDeco?_apiVendorKey(vn):null;
-            if(_linkVk&&apiPayloadItems.length>0){
-              nf('🎨 Linked to '+(_linkDeco.po_id||'deco PO')+' — opening '+vn+' API order shipping to '+(_linkDeco.vendor||'decorator'));
-              // SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — passing only the
-              // deco id silently shipped the blanks to the NSA warehouse. Resolve the decorator's
-              // address here (same as buildApiOrderFromPO / the batch-ready S&S path) against
-              // `updated`, not `o`: the deco PO created in this same submit isn't on `o` yet, so the
-              // DPO number on the attention line would come back blank.
-              const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
-              setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
-                batchPOs:[{so_id:o.id,items:apiPayloadItems}],
-                shipToDecoId:_linkDeco.deco_vendor_id,
-                initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,''),
-                ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
-            }else{
-              // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
-              // was only offered when a decorator was linked, so direct drop-ships were placed
-              // off-portal and captured no vendor keys (0/26 in July) — the root cause of S&S
-              // bills matching by guesswork instead of by their own numbers. Offer the same
-              // modal with the PO's chosen ship-to prefilled. The modal opens in TEST mode and
-              // shows the address — the human reviews before anything goes live. An incomplete
-              // address falls back to today's Edit-PO flow.
-              const _dsVk=isDropShip?_apiVendorKey(vn):null;
-              const _dsShipTo=(()=>{
-                if(_dsVk!=='sss'||!apiPayloadItems.length)return null;
-                let s=null;
-                if(poShipTo==='custom'&&poShipCustom.line1){s={companyName:poShipCustom.name||cust?.name||'',address1:poShipCustom.line1,city:poShipCustom.city,region:poShipCustom.state,postalCode:poShipCustom.zip}}
-                else{
-                  const m=/_alt_(\d+)$/.exec(String(poShipTo));
-                  if(m){const alts=(cust?.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));const ab=alts[parseInt(m[1],10)];
-                    if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
-                  else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
-                }
-                if(s&&poAttention.trim())s.attentionTo=poAttention.trim();
-                return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
-              })();
-              if(_dsShipTo){
-                nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
-                setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+          // Follow-on modal for the just-created product PO (vendor API order box, else Edit-PO).
+          const _afterPo=()=>{
+            if(newPoLines.length>0&&!preexistingPO){
+              // Marry-up with the deco flow: blanks drop-shipping to a decorator — via the inline
+              // deco PO created in this same submit, or an existing drop-ship deco PO that already
+              // covers these items (line-item outside-deco flow) — open the vendor API order box
+              // prefilled with the decorator ship-to + DPO number, exactly like the
+              // "Create Deco PO + Order Blanks" button. Otherwise keep opening the Edit-PO modal.
+              // Full-coverage rule: the deco PO must cover EVERY item on this product PO — a
+              // partial match would ship items never meant for that decorator to its address.
+              // Partially-covered POs keep today's behavior (Edit-PO modal, pick ship-to yourself).
+              const _newIdxs=[...new Set(newPoLines.map(l=>l.lineIdx))];
+              const _covers=dp=>dp&&dp.deco_vendor_id&&_newIdxs.length>0&&_newIdxs.every(ix=>(dp.item_idxs||[]).includes(ix));
+              const _linkDeco=isDropShip?((podRes&&_covers(podRes.po)?podRes.po:null)||(o.deco_pos||[]).find(_covers)||null):null;
+              const _linkVk=_linkDeco?_apiVendorKey(vn):null;
+              if(_linkVk&&apiPayloadItems.length>0){
+                nf('🎨 Linked to '+(_linkDeco.po_id||'deco PO')+' — opening '+vn+' API order shipping to '+(_linkDeco.vendor||'decorator'));
+                // SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — passing only the
+                // deco id silently shipped the blanks to the NSA warehouse. Resolve the decorator's
+                // address here (same as buildApiOrderFromPO / the batch-ready S&S path) against
+                // `updated`, not `o`: the deco PO created in this same submit isn't on `o` yet, so the
+                // DPO number on the attention line would come back blank.
+                const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
+                setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
+                  batchPOs:[{so_id:o.id,items:apiPayloadItems}],
+                  shipToDecoId:_linkDeco.deco_vendor_id,
+                  initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,''),
+                  ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
               }else{
-                // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
-                const first=newPoLines[0];
-                const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
-                setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+                // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
+                // was only offered when a decorator was linked, so direct drop-ships were placed
+                // off-portal and captured no vendor keys (0/26 in July) — the root cause of S&S
+                // bills matching by guesswork instead of by their own numbers. Offer the same
+                // modal with the PO's chosen ship-to prefilled. The modal opens in TEST mode and
+                // shows the address — the human reviews before anything goes live. An incomplete
+                // address falls back to today's Edit-PO flow.
+                const _dsVk=isDropShip?_apiVendorKey(vn):null;
+                const _dsShipTo=(()=>{
+                  if(_dsVk!=='sss'||!apiPayloadItems.length)return null;
+                  let s=null;
+                  if(poShipTo==='custom'&&poShipCustom.line1){s={companyName:poShipCustom.name||cust?.name||'',address1:poShipCustom.line1,city:poShipCustom.city,region:poShipCustom.state,postalCode:poShipCustom.zip}}
+                  else{
+                    const m=/_alt_(\d+)$/.exec(String(poShipTo));
+                    if(m){const alts=(cust?.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));const ab=alts[parseInt(m[1],10)];
+                      if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
+                    else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
+                  }
+                  if(s&&poAttention.trim())s.attentionTo=poAttention.trim();
+                  return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
+                })();
+                if(_dsShipTo){
+                  nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
+                  setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+                }else{
+                  // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
+                  const first=newPoLines[0];
+                  const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
+                  setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+                }
               }
             }
-          }
+          };
+          // Silver Screen: an inline deco PO for them prompts to build the job on their portal, the same
+          // as creating the deco PO from the standalone form — one flow, two ways in. Only a NEW deco PO:
+          // joining an existing one would re-create a job it may already carry. Runs BEFORE the follow-on
+          // modal for the same reason as "+ Order Blanks": the job stamp saves onto `updated`, so an API
+          // order submitted while the request was in flight would be mapped away by it.
+          if(podRes&&!podRes.isMerge&&_isSilverScreenDp(podRes.po))setTimeout(()=>{sendSilverScreenJob(podRes.po,updated).finally(_afterPo)},200);
+          else _afterPo();
         }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}</div>
       </div></div>})()}
 
