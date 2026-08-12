@@ -272,6 +272,9 @@ function fillForm(form, payload) {
 const SS_SIZE_COL = { XS: 'XS', S: 'SM', SM: 'SM', M: 'MD', MD: 'MD', L: 'LG', LG: 'LG', XL: 'XL',
   '2XL': '2XL', XXL: '2XL', '3XL': '3XL', XXXL: '3XL', '4XL': '4XL', XXXXL: '4XL' };
 const ssSizeCol = (sz) => SS_SIZE_COL[String(sz || '').toUpperCase().replace(/\s+/g, '')] || 'OTH';
+// Their product modal's size boxes, left to right (confirmed from the live modal). Used to place
+// quantities by position when the inputs carry no size labels in their names.
+const SS_SIZE_ORDER = ['XS', 'SM', 'MD', 'LG', 'XL', '2XL', '3XL', '4XL', 'OTH'];
 
 // Baseline params for a discovered form: hidden/submit defaults, selects at their selected
 // option, and radios/checkboxes ONLY when already checked (so the form's own choices survive).
@@ -379,10 +382,15 @@ async function postProducts(jar, orderPath, items, diag) {
     const claimed = new Set();
     const params = baseParams(form);
     const put = (re, val) => { const f = pick(form, re, claimed); if (f && val !== '') params.set(f.name, String(val)); return !!f; };
-    put(/style|sku|item_?number/i, it.sku || '');
-    put(/desc|name|title/i, it.name || '');
-    put(/colou?r/i, it.color || '');
-    put(/supplier|vendor|brand/i, 'NSA (drop ship)');
+    // Claim the modal's header fields in ITS order (Supplier, Description, Style, Colour) and most
+    // specific first: a generic /name/ pattern would otherwise swallow a supplier_name field. How
+    // many of the four land is also the gate for positional size placement below — if these didn't
+    // match, the field order isn't understood well enough to trust positions.
+    let headerHits = 0;
+    if (put(/supplier|vendor|brand/i, 'NSA (drop ship)')) headerHits++;
+    if (put(/desc|title|product_?name/i, it.name || '')) headerHits++;
+    if (put(/style|sku|item_?number/i, it.sku || '')) headerHits++;
+    if (put(/colou?r/i, it.color || '')) headerHits++;
     // Per-size quantity boxes: match a field whose name carries their column label.
     const cols = {};
     for (const [sz, q] of Object.entries(it.sizes || {})) { const c = ssSizeCol(sz); cols[c] = (cols[c] || 0) + (Number(q) || 0); }
@@ -393,16 +401,35 @@ async function postProducts(jar, orderPath, items, diag) {
       const f = form.fields.find((x) => new RegExp('(^|[^a-z0-9])' + col.toLowerCase() + '([^a-z0-9]|$)', 'i').test(x.name) && x.type !== 'hidden');
       if (f) { params.set(f.name, String(q)); placed += q; } else missedCols.push(col + ':' + q);
     }
-    // Nothing matched a per-size box: the total goes in the generic quantity field, which lands
-    // in their catch-all OTH column (seen live — 35 pcs in OTH instead of XS 4 / SM 7 / …). That's
-    // pieces-correct but size-wrong, so name the fields we DID see: their real per-size input
-    // names are the one thing needed to place sizes properly, and only this call can reveal them.
+    // No per-size box matched BY NAME — their inputs are probably indexed (…[quantities][0]) rather
+    // than size-labelled, so names can never match. Their modal's boxes are a fixed nine in a known
+    // order (XS SM MD LG XL 2XL 3XL 4XL OTH, confirmed from the live UI), so fall back to POSITION:
+    // after the supplier/description/style/colour fields are claimed above, the next nine unclaimed
+    // text/number inputs are those boxes. Gated on finding at least nine, and the diag says when
+    // this path was used so the result can be checked against the portal.
+    if (!placed) {
+      const slots = form.fields.filter((x) => !claimed.has(x.name) && x.tag === 'input'
+        && (x.type === 'text' || x.type === 'number' || x.type === 'tel') && !/price|charge|total|search/i.test(x.name));
+      // Only trust positions when the header fields above were actually identified: otherwise the
+      // nine-wide window could start at Style/Colour and write quantities into text fields.
+      if (headerHits < 3) {
+        diag.sizes = 'per-size placement skipped — only ' + headerHits + ' of 4 header fields matched, so field order is not trustworthy. Product-form fields: ['
+          + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
+      } else if (slots.length >= SS_SIZE_ORDER.length) {
+        const slotWin = slots.slice(0, SS_SIZE_ORDER.length);
+        SS_SIZE_ORDER.forEach((col, i) => { const q = cols[col]; if (q) { params.set(slotWin[i].name, String(q)); placed += q; } });
+        // Informational, not a to-do: the sizes DID go in per-column. Worth reading once to confirm
+        // the mapping is right, but it isn't an unfinished step.
+        if (placed) diag.sizesInfo = 'placed BY POSITION (names carry no size labels): '
+          + SS_SIZE_ORDER.map((c, i) => c + '=' + slotWin[i].name).join(', ');
+      }
+    }
     if (!placed) {
       const qf = form.fields.find((x) => /qty|quantity/i.test(x.name) && x.type !== 'hidden');
       if (qf) params.set(qf.name, String(it.qty || 0));
       diag.sizes = 'per-size boxes not matched (' + missedCols.join(' ') + ') — total went to the catch-all column. Product-form fields: ['
         + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
-    } else if (missedCols.length) {
+    } else if (missedCols.length && !diag.sizes) {
       diag.sizes = 'some sizes had no matching box (' + missedCols.join(' ') + ')';
     }
     try {
@@ -533,11 +560,14 @@ exports.handler = async (event) => {
       // wrong. That's silently shippable garbage if unreported (the decorator would run 35 "OTH"),
       // so it's a to-do of its own.
       if (productsAdded && sheetDiag && sheetDiag.sizes) todo.push('enter the size breakdown on each product line — the quantities went into the catch-all column, not per size');
-      if (!shipToSet && body.ship_to && (body.ship_to.line1 || body.ship_to.city)) todo.push('set Ship To Location to the customer (it defaults to the third-party NSA address)');
+      // The job sheet lands in their Notifications message thread, which carries the address as
+      // TEXT only — it is not the order's Ship To Location, and the warehouse ships off the
+      // structured field. So a posted sheet never counts as ship-to being handled.
+      if (!shipToSet && body.ship_to && (body.ship_to.line1 || body.ship_to.city)) todo.push('set the Ship To Location boxes to the customer — it still defaults to the third-party NSA address (the address in the notes message is text only, not the shipping field)');
       if (!sheetPosted) todo.push('paste the job sheet into the order notes');
       const diagStr = sheetDiag ? ' [forms: ' + (sheetDiag.forms.slice(0, 8).join(' · ') || 'none')
         + (sheetDiag.shipTo ? ' | ship-to: ' + sheetDiag.shipTo : '') + (sheetDiag.products ? ' | products: ' + sheetDiag.products : '')
-        + (sheetDiag.sizes ? ' | sizes: ' + sheetDiag.sizes : '') + ']' : '';
+        + (sheetDiag.sizes ? ' | sizes: ' + sheetDiag.sizes : '') + (sheetDiag.sizesInfo ? ' | sizes: ' + sheetDiag.sizesInfo : '') + ']' : '';
       return {
         statusCode: 200, headers,
         body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc,
