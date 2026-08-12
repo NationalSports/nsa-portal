@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -946,6 +946,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setCoachApprovalModal(m=>m?{...m,message:withGreeting(m.message,greetLine(_camToKey.split('|'),m.contacts))}:m)},[_camToKey]);
   const[artApproveGate,setArtApproveGate]=useState(null);// {jobId,artIds,deco,artName} — production-files gate shown when approving/completing art that has no CONFIRMED separation (a vector .ai in prod_files is not one)
   const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
+  // Garment key (`sku|color`) whose mock card has the "squash into another garment's mockup"
+  // picker open. Near-identical garments (two white long-sleeves, same left-chest print) don't
+  // need two proofs — the picker links this garment to another so the coach approves once.
+  const[squashPickFor,setSquashPickFor]=useState(null);
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
   const[vendorModal,setVendorModal]=useState(null);// {itemIdx} — reassign which vendor an item is ordered from
   const[pendingCostSku,setPendingCostSku]=useState({});// {sku:true} — items reassigned to a live vendor, awaiting fresh price to recost
@@ -3095,17 +3099,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // design art file as garment -> source garment. Mirrors the Art Dashboard modal handler
   // so linking done in either place is identical. sourceKey null = unlink. Chains are
   // flattened on write and anything pointing at the member is re-pointed.
-  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const updated={...o,art_files:safeArt(o).map(a=>{
-      if(a.id!==artId)return a;
-      const links={...mockLinksOf(a)};
-      let root=sourceKey;
-      const seen=new Set([memberKey]);
-      while(root&&links[root]&&!seen.has(root)){seen.add(root);root=links[root]}
-      if(root===memberKey)root=sourceKey===memberKey?null:sourceKey;
-      if(root)links[memberKey]=root;else delete links[memberKey];
-      Object.keys(links).forEach(k=>{if(links[k]===memberKey)links[k]=root||memberKey;if(links[k]===k)delete links[k]});
-      return{...a,mock_links:links};
-    }),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup')};
+  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const updated={...o,art_files:applyMockLink(safeArt(o),artId,memberKey,sourceKey),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
@@ -10499,16 +10493,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // refuses to do silently — a different color must never inherit a mock unseen)
                 // asks for confirmation instead of applying on a bare click, since a mismatched
                 // link satisfies skusMissingMockups all the way to coach/production.
-                const _linkChipsR=gi=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=gi.sku+'|'+(gi.color||'');
+                // _lbl overrides the lead-in text: the empty-state renders "or use the same mockup as:"
+                // (an alternative to uploading), the squash picker on an already-mocked card renders
+                // "Squash into the mockup for:" (dropping a redundant proof).
+                const _linkChipsR=(gi,_lbl)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=gi.sku+'|'+(gi.color||'');
                   const others=itemDetails.filter(g=>(g.sku+'|'+(g.color||''))!==myKey);
                   if(others.length===0)return null;
                   return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
-                    <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>or use the same mockup as:</span>
+                    <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{_lbl||'or use the same mockup as:'}</span>
                     {others.map((g,oi)=>{const theirKey=g.sku+'|'+(g.color||'');const hasMock=_hasOwnMockR(g);
                       const colorMatch=(g.color||'')===(gi.color||'');
                       return<button key={oi} onClick={()=>{
                           if(!colorMatch&&!window.confirm('That mockup is on '+(g.color||'no color')+' '+g.sku+' — this garment is '+(gi.color||'no color')+' '+gi.sku+'.\n\nLink it anyway? The coach will see the '+(g.color||'other')+' mockup for this garment.'))return;
-                          setMockLinkOE(_linkArtId,myKey,theirKey);
+                          setMockLinkOE(_linkArtId,myKey,theirKey);setSquashPickFor(null);
                         }}
                         style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:'pointer'}}
                         title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')+(colorMatch?'':' (different color!)')}>🔗 {(g.color?g.color+' ':'')+g.sku}{hasMock?' 🖼️':''}{colorMatch?'':' ⚠️'}</button>;})}
@@ -10630,6 +10627,15 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                         const _mkH=_proofOnly?132:280;const _mkBd=_proofOnly?'#cbd5e1':'#f59e0b';
                         return<><div style={{padding:10}}>
                         {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
+                        {/* Squash: two near-identical garments (same print, near-identical blanks) don't
+                            need two proofs. Linking drops THIS card's image in favour of the source's —
+                            nothing is moved or deleted, so Unlink restores it exactly. Only on the
+                            actionable panel, and never over a sew-out proof (that has its own picker). */}
+                        {!_proofOnly&&_linkArtId&&itemDetails.length>1&&<div style={{marginBottom:6}}>
+                          <button onClick={()=>setSquashPickFor(k=>k===_mk?null:_mk)}
+                            title="Near-identical garment? Share another garment's mockup instead of showing a second, almost-identical proof — the coach then approves one."
+                            style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,border:'1px solid #c7d2fe',background:squashPickFor===_mk?'#e0e7ff':'#eef2ff',color:'#3730a3',fontSize:10,fontWeight:700,cursor:'pointer'}}>🔗 {squashPickFor===_mk?'Cancel':'Squash into another garment\u2019s mockup'}</button>
+                        </div>}
                         {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ This is the digitizer's sew-out proof from the production files — <u>not a garment mockup</u>. It can't be approved or sent to the coach. Pick an option below: reuse an approved mockup, or send to the artist for a new one.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_proofOnly?'repeat(auto-fill,minmax(150px,1fr))':(_ordered.length>1?'1fr 1fr':'1fr'),gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
@@ -10660,6 +10666,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                       </div>
                       {_proofOnly&&(_priorPickR(gi)||_requestMockR(gi,true))}
                       {_proofOnly&&_linkChipsR(gi)}
+                      {!_proofOnly&&squashPickFor===_mk&&_linkChipsR(gi,'Squash into the mockup for:')}
                       </>})():<>
                        <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
                        {_priorPickR(gi)||_requestMockR(gi,false)}
@@ -11344,8 +11351,32 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
         const _artIds2=(j2._art_ids||[j2.art_file_id]).filter(Boolean);
         const existingFiles2=_artIds2.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.sample_art||[]).concat(af?.mockup_files||[]).concat(af?.prod_files||[])});
         const artists2=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);// match the job Artist dropdown — a prefilled 'artist'-role assignee must resolve in this list
+        // ── Group garments onto ONE mockup, before the artist starts ──
+        // Two near-identical garments (same print, near-identical blanks) only need one mock.
+        // Ticking them here writes the mock_links upfront, so the artist sees one garment to
+        // mock instead of three and the coach later approves a single proof. Nothing is moved
+        // or deleted — the link is reversible from the job page at any time.
+        const _grpArtId=(j2.art_file_id&&j2.art_file_id!=='__tbd')?j2.art_file_id:(_artIds2.find(a=>a!=='__tbd')||null);
+        const _grpArts=_artIds2.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+        // Garments read from the LIVE SO line (sku/color can be swapped without rebuilding
+        // so.jobs), deduped — two lines sharing sku|color are one garment to the mock keying.
+        const _grpG=[];
+        (j2.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';const key=sku+'|'+color;if(!sku||_grpG.some(g=>g.key===key))return;_grpG.push({key,sku,color,name:it.name||gi.name||''})});
+        // Pre-tick an existing group so reopening the modal shows live state, not a blank slate
+        // that would read as "not grouped".
+        const _grpDefault=(()=>{for(const g of _grpG){const deps=mockLinkDependents(_grpArts,g.sku,g.color).filter(k=>_grpG.some(x=>x.key===k));if(deps.length>0)return _grpG.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]})();
+        const _grpSel=artReqModal.group||_grpDefault;
+        const _grpLabel=k=>{const g=_grpG.find(x=>x.key===k);return g?((g.color?g.color+' ':'')+g.sku):k};
+        const _grpColors=sel=>new Set(sel.map(k=>(_grpG.find(g=>g.key===k)||{}).color||'')).size;
+        // Selection is stored in _grpG order, so element 0 is always the source garment.
+        const _grpToggle=key=>{const next=new Set(_grpSel);if(next.has(key))next.delete(key);else next.add(key);setArtReqModal(m=>({...m,group:_grpG.filter(g=>next.has(g.key)).map(g=>g.key)}))};
         const submitArtReq2=()=>{
-          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
+          const _grp=_grpSel.filter(k=>_grpG.some(g=>g.key===k));
+          // A cross-color group means the coach approves one color's mockup for a garment in
+          // another color — the same trap the job-page chips confirm on, so confirm here too.
+          if(_grp.length>1&&_grpColors(_grp)>1&&!window.confirm('The grouped garments are different colors:\n\n'+_grp.map(_grpLabel).join('\n')+'\n\nOne mockup covers all of them — the coach will see the '+_grpLabel(_grp[0])+' mockup for every garment in the group.\n\nGroup them anyway?'))return;
+          const _grpNote=_grp.length>1?('\n\n\uD83D\uDD17 ONE MOCKUP COVERS: '+_grp.map(_grpLabel).join(', ')+' — build the mockup on '+_grpLabel(_grp[0])+' only; the others are linked to it and share it.'):'';
+          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:(artReqModal.instructions||'')+_grpNote,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const j2job=jobs[artReqModal.jIdx];
           const artIds2=j2job?(j2job._art_ids||[j2job.art_file_id].filter(Boolean)):[];
           // Pulling approved/submitted art back for rework: ART_PULLBACK_CLEARS wipes the coach-send
@@ -11362,9 +11393,14 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           // prod_files_attached must not survive an update — the old separations are for the old art,
           // and resetting status to waiting_for_art re-queues the design so an old .dst no longer counts.
           const repFiles=artReqModal.files||[];
-          const updArtFiles2=safeArt(o).map(a=>artIds2.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
+          let updArtFiles2=safeArt(o).map(a=>artIds2.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
+          // Links ride the SAME write as the request — the artist can never pick up the job
+          // before the grouping lands. The approval gate still holds every member until the
+          // source garment's mock exists (skusMissingMockups follows the link), so grouping
+          // upfront can't wave an unmocked garment through to the coach.
+          if(_grp.length>1&&_grpArtId)updArtFiles2=squashMockLinks(updArtFiles2,_grpArtId,_grp);
           const _an2=(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),(_wasInProd2||sibs2)?'error':'success');
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs2?'Update sent to '+_an2+' — the revised art will need approval again':'Art request sent to '+_an2)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd2?' · ⚠️ Production put back on hold':'')+(sibs2?' · ⚠️ '+sibs2+' related job(s) held':''),(_wasInProd2||sibs2)?'error':'success');
         };
         const hasExistingReqs2=(j2.art_requests||[]).length>0;
         const activeReq2=(j2.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
@@ -11392,6 +11428,24 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               <div className="form-label">{hasExistingReqs2?'Update / Additional Instructions':'Instructions'}</div>
               <textarea className="form-input" rows={4} placeholder={hasExistingReqs2?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
+            {_grpG.length>1&&<div style={{marginBottom:12}}>
+              <div className="form-label">🔗 One mockup for several garments (optional)</div>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Tick the garments that are near-identical — the artist builds <b>one</b> mockup, the rest are linked to it, and the coach approves a single proof instead of two. Reversible from the job page.</div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+                {_grpG.map((g,gi2)=>{const on=_grpSel.includes(g.key);const isSrc=on&&_grpSel[0]===g.key;
+                  return<label key={g.key} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',borderBottom:gi2<_grpG.length-1?'1px solid #f1f5f9':'none',background:on?'#eef2ff':'white',cursor:'pointer',fontSize:11}}>
+                    <input type="checkbox" checked={on} onChange={()=>_grpToggle(g.key)}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{g.sku}</span>
+                    <span style={{color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.name}</span>
+                    {g.color&&<span style={{color:'#6d28d9',fontWeight:700,whiteSpace:'nowrap'}}>{g.color}</span>}
+                    {isSrc&&<span style={{fontSize:9,fontWeight:800,color:'#3730a3',background:'#e0e7ff',border:'1px solid #c7d2fe',borderRadius:10,padding:'1px 6px',whiteSpace:'nowrap'}}>MOCK THIS ONE</span>}
+                  </label>;})}
+              </div>
+              {_grpSel.length>1&&<div style={{fontSize:10,marginTop:6,fontWeight:700,color:_grpColors(_grpSel)>1?'#b45309':'#3730a3'}}>
+                {_grpColors(_grpSel)>1?'⚠️ ':'🔗 '}Artist builds 1 mockup on {_grpLabel(_grpSel[0])} — {_grpSel.length-1} other garment{_grpSel.length>2?'s':''} share it{_grpColors(_grpSel)>1?' · different colors in this group, so the coach sees the '+_grpLabel(_grpSel[0])+' mockup for all of them':''}
+              </div>}
+              {_grpSel.length===1&&<div style={{fontSize:10,marginTop:6,color:'#94a3b8'}}>Tick at least two garments to group them.</div>}
+            </div>}
             <div style={{marginBottom:12}}>
               <div className="form-label">Sample Art / Reference Files</div>
               <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
@@ -12398,10 +12452,34 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const _artIds=(j._art_ids||[j.art_file_id]).filter(Boolean);
         const existingFiles=_artIds.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.sample_art||[]).concat(af?.mockup_files||[]).concat(af?.prod_files||[])});
         const artists=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);// match the job Artist dropdown — a prefilled 'artist'-role assignee must resolve in this list
+        // ── Group garments onto ONE mockup, before the artist starts ──
+        // Two near-identical garments (same print, near-identical blanks) only need one mock.
+        // Ticking them here writes the mock_links upfront, so the artist sees one garment to
+        // mock instead of three and the coach later approves a single proof. Nothing is moved
+        // or deleted — the link is reversible from the job page at any time.
+        const _grpArtId=(j.art_file_id&&j.art_file_id!=='__tbd')?j.art_file_id:(_artIds.find(a=>a!=='__tbd')||null);
+        const _grpArts=_artIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+        // Garments read from the LIVE SO line (sku/color can be swapped without rebuilding
+        // so.jobs), deduped — two lines sharing sku|color are one garment to the mock keying.
+        const _grpG=[];
+        (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';const key=sku+'|'+color;if(!sku||_grpG.some(g=>g.key===key))return;_grpG.push({key,sku,color,name:it.name||gi.name||''})});
+        // Pre-tick an existing group so reopening the modal shows live state, not a blank slate
+        // that would read as "not grouped".
+        const _grpDefault=(()=>{for(const g of _grpG){const deps=mockLinkDependents(_grpArts,g.sku,g.color).filter(k=>_grpG.some(x=>x.key===k));if(deps.length>0)return _grpG.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]})();
+        const _grpSel=artReqModal.group||_grpDefault;
+        const _grpLabel=k=>{const g=_grpG.find(x=>x.key===k);return g?((g.color?g.color+' ':'')+g.sku):k};
+        const _grpColors=sel=>new Set(sel.map(k=>(_grpG.find(g=>g.key===k)||{}).color||'')).size;
+        // Selection is stored in _grpG order, so element 0 is always the source garment.
+        const _grpToggle=key=>{const next=new Set(_grpSel);if(next.has(key))next.delete(key);else next.add(key);setArtReqModal(m=>({...m,group:_grpG.filter(g=>next.has(g.key)).map(g=>g.key)}))};
         const hasExistingReqs=(j.art_requests||[]).length>0;
         const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         const submitArtReq=()=>{
-          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
+          const _grp=_grpSel.filter(k=>_grpG.some(g=>g.key===k));
+          // A cross-color group means the coach approves one color's mockup for a garment in
+          // another color — the same trap the job-page chips confirm on, so confirm here too.
+          if(_grp.length>1&&_grpColors(_grp)>1&&!window.confirm('The grouped garments are different colors:\n\n'+_grp.map(_grpLabel).join('\n')+'\n\nOne mockup covers all of them — the coach will see the '+_grpLabel(_grp[0])+' mockup for every garment in the group.\n\nGroup them anyway?'))return;
+          const _grpNote=_grp.length>1?('\n\n\uD83D\uDD17 ONE MOCKUP COVERS: '+_grp.map(_grpLabel).join(', ')+' — build the mockup on '+_grpLabel(_grp[0])+' only; the others are linked to it and share it.'):'';
+          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:(artReqModal.instructions||'')+_grpNote,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const artIds3=j?(j._art_ids||[j.art_file_id].filter(Boolean)):[];
           // Pulling approved/submitted art back for rework: ART_PULLBACK_CLEARS wipes the coach-send
           // flags (else stale follow-up todos fire and a re-submitted mock shows "Sent to Customer")
@@ -12417,9 +12495,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // prod_files_attached must not survive an update — the old separations are for the old art,
           // and resetting status to waiting_for_art re-queues the design so an old .dst no longer counts.
           const repFiles=artReqModal.files||[];
-          const updArtFiles3=safeArt(o).map(a=>artIds3.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
+          let updArtFiles3=safeArt(o).map(a=>artIds3.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
+          // Links ride the SAME write as the request — the artist can never pick up the job
+          // before the grouping lands. The approval gate still holds every member until the
+          // source garment's mock exists (skusMissingMockups follows the link), so grouping
+          // upfront can't wave an unmocked garment through to the coach.
+          if(_grp.length>1&&_grpArtId)updArtFiles3=squashMockLinks(updArtFiles3,_grpArtId,_grp);
           const _an3=(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
-          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),(_wasInProd3||sibs3)?'error':'success');
+          const updated={...o,jobs:updatedJobs,art_files:updArtFiles3,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf((hasExistingReqs?'Update sent to '+_an3+' — the revised art will need approval again':'Art request sent to '+_an3)+(_grp.length>1?' · 🔗 '+_grp.length+' garments share one mockup':'')+(_wasInProd3?' · ⚠️ Production put back on hold':'')+(sibs3?' · ⚠️ '+sibs3+' related job(s) held':''),(_wasInProd3||sibs3)?'error':'success');
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
@@ -12445,6 +12528,24 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <div className="form-label">{hasExistingReqs?'Update / Additional Instructions':'Instructions'}</div>
               <textarea className="form-input" rows={4} placeholder={hasExistingReqs?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
+            {_grpG.length>1&&<div style={{marginBottom:12}}>
+              <div className="form-label">🔗 One mockup for several garments (optional)</div>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Tick the garments that are near-identical — the artist builds <b>one</b> mockup, the rest are linked to it, and the coach approves a single proof instead of two. Reversible from the job page.</div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>
+                {_grpG.map((g,gi2)=>{const on=_grpSel.includes(g.key);const isSrc=on&&_grpSel[0]===g.key;
+                  return<label key={g.key} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',borderBottom:gi2<_grpG.length-1?'1px solid #f1f5f9':'none',background:on?'#eef2ff':'white',cursor:'pointer',fontSize:11}}>
+                    <input type="checkbox" checked={on} onChange={()=>_grpToggle(g.key)}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{g.sku}</span>
+                    <span style={{color:'#0f172a',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.name}</span>
+                    {g.color&&<span style={{color:'#6d28d9',fontWeight:700,whiteSpace:'nowrap'}}>{g.color}</span>}
+                    {isSrc&&<span style={{fontSize:9,fontWeight:800,color:'#3730a3',background:'#e0e7ff',border:'1px solid #c7d2fe',borderRadius:10,padding:'1px 6px',whiteSpace:'nowrap'}}>MOCK THIS ONE</span>}
+                  </label>;})}
+              </div>
+              {_grpSel.length>1&&<div style={{fontSize:10,marginTop:6,fontWeight:700,color:_grpColors(_grpSel)>1?'#b45309':'#3730a3'}}>
+                {_grpColors(_grpSel)>1?'⚠️ ':'🔗 '}Artist builds 1 mockup on {_grpLabel(_grpSel[0])} — {_grpSel.length-1} other garment{_grpSel.length>2?'s':''} share it{_grpColors(_grpSel)>1?' · different colors in this group, so the coach sees the '+_grpLabel(_grpSel[0])+' mockup for all of them':''}
+              </div>}
+              {_grpSel.length===1&&<div style={{fontSize:10,marginTop:6,color:'#94a3b8'}}>Tick at least two garments to group them.</div>}
+            </div>}
             <div style={{marginBottom:12}}>
               <div className="form-label">Sample Art / Reference Files</div>
               <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
