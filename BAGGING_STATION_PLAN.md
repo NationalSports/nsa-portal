@@ -16,8 +16,9 @@ Decisions locked with Scott (2026-08-12):
 - **Printing**: 4×6 thermal printer at the station; label prints automatically on
   order completion ("full auto").
 - **Shortages**: flag & bag partial. Shorted orders land on a **Resolve list** that
-  must be cleared (found / pulled from elsewhere / accepted short) before the store's
-  club shipment can be created.
+  must be cleared (found / pulled from elsewhere / **split onto a new backorder
+  order**) before the store's club shipment can be created. Backordered items always
+  become their own child order so they're tracked as real orders, never as notes.
 - **Concurrency**: build for 2+ packers from day one — opening an order claims it.
 - **Batch complete**: prompt the club shipment right on the tablet.
 
@@ -129,11 +130,44 @@ or when — and shortages live in packers' heads.
 - Each batch row shows live bagging progress (`14/42 bagged · 2 short`).
 - **Resolve list** per batch: each shorted line with buttons
   **Found** (clears short, packer re-opens bag to add), **Pull from stock** (link to
-  inventory search; clears short when confirmed), **Accept short** (records
-  `backorder_eta` + note; line ships short and the bag label note stands).
+  inventory search; clears short when confirmed), **Backorder** (records
+  `backorder_eta` + note and **splits the missing qty onto a new backorder order** —
+  see "Backorder orders" below; the original line ships short and the bag label
+  note stands).
 - Club shipment creation (`webstoreToShipStation` / box-tracking entry points) is
   **blocked while the batch has unresolved shorts** — hard gate with an override
-  requiring a typed reason (logged).
+  requiring a typed reason (logged). Backordering *is* a resolution: once every
+  short is found, pulled, or split to a backorder order, the shipment unblocks.
+
+### Backorder orders (decision 2026-08-12: backordered items go on a NEW order)
+
+A shorted item that can't be found or pulled never rides along as a note on the
+original order — it becomes its own order, so tracking it is a list of real orders,
+not tribal memory:
+
+- **Split**: the Backorder action creates (or reuses) one child `webstore_orders`
+  row per parent order — `backorder_of = parent order id`, same store, same buyer /
+  player / ship info, `order_kind='individual'`. Each backordered line is cloned
+  onto it (`sku`, `size`, `player_name`/`number`, `qty = short qty`) with
+  `backorder_of_item` pointing at the parent line. **Money stays on the parent**
+  (child lines at `unit_price 0`, child totals $0) — the customer already paid;
+  the child order is a fulfillment vehicle only.
+- **Tracked like any order**: the child shows up in a **Backorders queue** — on the
+  station's BatchPicker (third card type, grouped by store: "Backorders · Lakeville
+  Soccer · 3 orders · ETA 8/22") and as a Backorders panel on the desktop Batches
+  tab / OMG portal, each row showing player, items, `backorder_eta`, age, and
+  whether stock has since arrived. No spreadsheet, no memory.
+- **Fulfilled like any order**: when goods arrive, the child order is bagged at the
+  station exactly like a normal order — claim, tap, label. Its label is visibly
+  different: **"BACKORDER — completes Bag 15 · Jimmy Smith #23"**. Club-delivery
+  backorders group into a follow-up mini club shipment; ship-home backorders get
+  their own shipping label (Phase 2 path).
+- **No double-fulfillment**: the parent line's shorted qty is excluded from the
+  parent's ship plan (existing `qty − shipped_qty − missing_qty` math), and the
+  child line is the only place that qty can be bagged/shipped.
+- **Customer visibility**: the parent's tracking page and coach portal already read
+  `backorder_eta`; the child inherits a `status_token` so "where's the rest of my
+  order" has a real answer.
 
 ### Bag label (4×6)
 
@@ -173,8 +207,14 @@ Follow the repo's current timestamp naming and the RPC style of
 - `bagged_qty int not null default 0` — the tap counter (≤ `qty`)
 - `short_qty int not null default 0` — packer-declared missing (distinct from the
   existing `missing_qty`, which vendor/receiving flows already write)
-- `short_note text`, `short_status text check (short_status in ('open','found','pulled','accepted')) `,
+- `short_note text`, `short_status text check (short_status in ('open','found','pulled','backordered'))`,
   `short_resolved_by text`, `short_resolved_at timestamptz`
+- `backorder_of_item uuid references webstore_order_items(id)` — set on child
+  backorder lines, pointing at the parent line they fulfill
+
+`webstore_orders` (backorder linkage):
+- `backorder_of uuid references webstore_orders(id)` + partial index
+  (`where backorder_of is not null`) — the Backorders queue query
 
 ### New table
 
@@ -205,7 +245,14 @@ Audit trail + the data for "how long does a bag take" later.
   (max+1 within `so_id`), releases the claim. Does **not** touch `line_status`
   (see monotonic-status note below).
 - `bagging_resolve_short(p_item_id, p_resolution, p_note, p_actor)` — resolution in
-  ('found','pulled','accepted'); 'found' also resets the line so the bag can be reopened.
+  ('found','pulled'); 'found' also resets the line so the bag can be reopened.
+- `bagging_backorder_short(p_item_id, p_eta, p_note, p_actor)` — atomic: finds or
+  creates the parent order's single child backorder order (`backorder_of`), clones
+  the line onto it (`qty = short_qty`, `unit_price 0`, `backorder_of_item` set,
+  fresh `status_token` on the child), sets the parent line
+  `short_status='backordered'` + `backorder_eta`, logs both sides to
+  `bagging_events`. Idempotent per item (re-running updates the child line, never
+  duplicates it).
 - `bagging_next_order(p_group_kind, p_group_id, p_actor)` — server picks + claims the
   next unbagged, unclaimed order in one call (avoids two tablets racing "Next").
   `p_group_kind` in ('so','store'): 'so' matches `webstore_orders.so_id` (native
@@ -270,8 +317,11 @@ src/__tests__/bagLabel.test.js
    - OMG sales: `webstores` with `source='omg'` joined to `omg_stores` on
      `omg_sale_code` where `omg_stores.delivery_mode='deliver_school'`, having
      unbagged orders.
-   Each card shows store, label, kind badge (Club batch / OMG school), progress via
-   `bagging_batch_progress`.
+   - Backorders: `webstore_orders` with `backorder_of is not null` and no
+     `bagged_at`, grouped by store — one card per store showing count, earliest
+     `backorder_eta`, and how many have stock arrived.
+   Each card shows store, label, kind badge (Club batch / OMG school / Backorders),
+   progress via `bagging_batch_progress`.
 2. `BatchBoard` — Next-order button (`bagging_next_order`), search box, progress bar.
    Subscribe to Supabase realtime on `webstore_orders` (`so_id=eq.<id>`) so two tablets'
    progress bars stay live.
@@ -281,8 +331,11 @@ src/__tests__/bagLabel.test.js
    OMG-specific: lines still at `line_status='on_order'` render grayed
    ("on order — not arrived"), untappable, and don't block leaving the order
    partially bagged; they are a *wait*, not a short.
-4. `ResolvePanel` (also embedded in desktop Batches tab) — open shorts with the three
-   resolution actions.
+4. `ResolvePanel` (also embedded in desktop Batches tab) — open shorts with the
+   three resolution actions (Found / Pull from stock / Backorder → new order).
+5. `BackorderQueue` — the per-store backorder card's detail: child orders with
+   player, items, ETA, age, stock-arrived flag; tapping one opens `OrderBag` as
+   usual. Same list renders on the desktop Batches tab and OMG portal.
 
 ### Printing (v1: browser print, no new infra)
 
@@ -332,6 +385,9 @@ PRs at step 4 if review size demands.
    print → next. Realtime progress. Optimistic writes with revert.
 7. **Shortage flow** — "Can't find it" prompt, amber rows, label short flag,
    `ResolvePanel` on the tablet's batch-complete screen.
+   Backorder split: `bagging_backorder_short` RPC + `BackorderQueue` (station and
+   desktop) + the distinct "BACKORDER — completes Bag N" label variant. Test that
+   the split is idempotent and parent ship-plan math excludes the moved qty.
 8. **Desktop integration** — Batches tab progress chip, Resolve list, ship gate,
    station link/QR. Same treatment in `OmgOrderPortal.js`: progress chip on the
    header, Resolve list, gate on `printOmgLabels` and "Move all → Shipped",
@@ -353,7 +409,12 @@ PRs at step 4 if review size demands.
 - A completed bag = printed 4×6 label with correct contents, shorts flagged.
 - Batches tab shows live `bagged/total · shorts` without refresh.
 - Club shipment for a batch with open shorts is blocked until each short is
-  found / pulled / accepted (or explicitly overridden with a reason).
+  found, pulled, or split onto a backorder order (or explicitly overridden with a
+  reason).
+- Backordering a short creates exactly one child order per parent (idempotent),
+  visible in the Backorders queue with ETA and stock-arrived state; the parent
+  batch can then ship, the moved qty can't ship twice, and when goods arrive the
+  child bags like any order with a "BACKORDER — completes Bag N" label.
 - An OMG deliver-to-school sale appears in the BatchPicker, bags exactly like a club
   batch (with `on_order` lines grayed, not shorted), and its "Move all → Shipped" /
   label actions respect the same short gate.
@@ -383,3 +444,10 @@ PRs at step 4 if review size demands.
   live count; seq never reassigned.)
 - Packer identity granularity: per-station token (v1 plan) vs per-person PIN. Events
   record `actor` either way, so upgrading later is additive.
+- Backorder "stock arrived" detection: v1 plan is a cheap heuristic — house
+  inventory on hand for the child line's SKU|size (products stock lookup), shown as
+  a flag, not a gate; staff judgment decides when to bag. Wiring it to PO receipts
+  per store is a later refinement.
+- Backorder delivery for club stores: hold and group into one follow-up club
+  drop (plan default), or ship the odd one home at NSA's cost? Per-store staff
+  call at ship time; nothing in the model forces either.
