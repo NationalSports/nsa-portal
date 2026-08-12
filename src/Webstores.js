@@ -12365,7 +12365,25 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   const imageByPid = {};
   Object.values(productStock || {}).forEach((s) => { if (s.product_id && s.image_front_url) imageByPid[s.product_id] = s.image_front_url; });
   (catalog || []).forEach((c) => { if (c.product_id && c.image_url) imageByPid[c.product_id] = c.image_url; });
+  // Bagging Station ship gate (BAGGING_STATION_PLAN.md): a batch with open
+  // packer-declared shorts must not ship until each short is found, pulled,
+  // backordered, or refunded (resolved at /bagging-station). Override requires
+  // a typed reason. Terminal resolutions also stamp missing_qty, so the ship
+  // plan below already excludes that qty even after an override.
+  const openBagShorts = (soId) => {
+    const ids = new Set(orders.filter((o) => o.so_id === soId).map((o) => o.id));
+    return orderItems.filter((i) => ids.has(i.order_id) && i.short_status === 'open').length;
+  };
+  const bagShortGate = (soId) => {
+    const n = openBagShorts(soId);
+    if (!n) return true;
+    const reason = window.prompt(`${n} open bagging short${n === 1 ? '' : 's'} on this batch — resolve them at the Bagging Station (found / pulled / backorder / refund) before shipping.\n\nTo ship anyway, type a reason:`, '');
+    if (!reason || !reason.trim()) return false;
+    console.warn('[bagging] ship gate overridden for', soId, '—', reason.trim());
+    return true;
+  };
   const sendToShipStation = async (soId) => {
+    if (!bagShortGate(soId)) return;
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Sending ${groups.length}…` }));
@@ -12381,6 +12399,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     setSsMsg((m) => ({ ...m, [soId]: `Sent ${ok} to ShipStation${fail ? `, ${fail} failed` : ''}. Bulk-print labels in ShipStation.` }));
   };
   const printShipLabels = async (soId) => {
+    if (!bagShortGate(soId)) return;
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));

@@ -339,7 +339,7 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const key = (o) => `${String(o.sku || '').toUpperCase()}|${String(o.size || '')}`;
   const { data: existingItems, error } = await sb.from('webstore_order_items')
-    .select('id,sku,size,shipped_qty,missing_qty,line_status').eq('order_id', orderId);
+    .select('id,sku,size,shipped_qty,missing_qty,line_status,bagged_qty,short_status').eq('order_id', orderId);
   if (error) {
     // Can't read current items — fall back to the historical replace so we never risk
     // double-inserting. Worst case this reverts to the old behavior, not data corruption.
@@ -385,7 +385,11 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
     for (const it of q) {
       const active = (Number(it.shipped_qty) || 0) > 0
         || (Number(it.missing_qty) || 0) > 0
-        || (it.line_status && it.line_status !== 'pending');
+        || (it.line_status && it.line_status !== 'pending')
+        // Bagging Station progress: a line that's physically in a bag, or has an
+        // unresolved packer short, must survive a packing-slip re-ingest.
+        || (Number(it.bagged_qty) || 0) > 0
+        || it.short_status === 'open';
       if (!active) stale.push(it.id);
     }
   }
