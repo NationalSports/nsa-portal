@@ -318,13 +318,26 @@ exports.handler = async (event) => {
           const { data: ws } = await sb.from('webstores').select('id, name').in('id', storeIds);
           (ws || []).forEach((w) => { nameByStore[w.id] = w.name; });
         }
+        // Bagged units per order → per store, for actual sec/unit vs expectation.
+        const unitsByOrder = {};
+        for (let i = 0; i < orderIds.length; i += 200) {
+          const { data: its } = await sb.from('webstore_order_items')
+            .select('order_id, qty, bagged_qty').in('order_id', orderIds.slice(i, i + 200));
+          (its || []).forEach((x) => {
+            unitsByOrder[x.order_id] = (unitsByOrder[x.order_id] || 0) + Math.min(Number(x.bagged_qty) || 0, Number(x.qty) || 0);
+          });
+        }
+        const { data: cfgRows } = await sb.from('bagging_config').select('value').eq('key', 'target_sec_per_unit').limit(1);
+        const targetSec = Number(cfgRows && cfgRows[0] && cfgRows[0].value) || 30;
+        const fleet = await packRate(sb);
         const BUCKET = 15 * 60 * 1000;
         const perStore = new Map();
         for (const e of (evs || [])) {
           const sid = storeByOrder[e.order_id];
           if (!sid) continue;
           const t = Date.parse(e.created_at);
-          const cur = perStore.get(sid) || { store_id: sid, store_name: nameByStore[sid] || 'Store', bags: 0, first: t, last: t, buckets: new Map() };
+          const cur = perStore.get(sid) || { store_id: sid, store_name: nameByStore[sid] || 'Store', bags: 0, units: 0, first: t, last: t, buckets: new Map() };
+          cur.units += unitsByOrder[e.order_id] || 0;
           cur.bags += 1;
           cur.first = Math.min(cur.first, t);
           cur.last = Math.max(cur.last, t);
@@ -334,8 +347,15 @@ exports.handler = async (event) => {
         }
         const stores = [...perStore.values()].map((s) => {
           const activeBuckets = s.buckets.size;
+          // Actual pace on ACTIVE time (15-min blocks with bagging), graded
+          // against the manager expectation and the fleet's true average.
+          const secPerUnit = s.units > 0 ? (activeBuckets * 900) / s.units : null;
           return {
             store_id: s.store_id, store_name: s.store_name, bags: s.bags,
+            units: s.units,
+            sec_per_unit: secPerUnit != null ? +secPerUnit.toFixed(1) : null,
+            vs_target_pct: secPerUnit != null ? Math.round(((targetSec - secPerUnit) / targetSec) * 100) : null,
+            vs_fleet_pct: secPerUnit != null && fleet.secPerUnit ? Math.round(((fleet.secPerUnit - secPerUnit) / fleet.secPerUnit) * 100) : null,
             started_at: new Date(s.first).toISOString(), finished_at: new Date(s.last).toISOString(),
             span_minutes: Math.max(1, Math.round((s.last - s.first) / 60000)),
             // pace over buckets that actually had bagging, so breaks don't dilute
@@ -344,7 +364,24 @@ exports.handler = async (event) => {
               .map(([t, n]) => ({ t: new Date(t).toISOString(), n })),
           };
         }).sort((a, b) => b.finished_at.localeCompare(a.finished_at));
-        return ok({ stores });
+        return ok({
+          stores,
+          target_sec_per_unit: targetSec,
+          fleet_sec_per_unit: fleet.secPerUnit ? +fleet.secPerUnit.toFixed(1) : null,
+          fleet_learned: fleet.sample >= 20,
+        });
+      }
+
+      case 'set_target_pace': {
+        // Manager-set expectation (sec/unit). Staff only — station tokens can't
+        // move the goalposts.
+        if (actor.startsWith('station:')) return fail(403, 'Set the target from a staff login');
+        const sec = Math.max(5, Math.min(600, Number(body.sec_per_unit) || 0));
+        if (!sec) return fail(400, 'bad sec_per_unit');
+        const { error } = await sb.from('bagging_config')
+          .upsert({ key: 'target_sec_per_unit', value: sec, updated_by: actor, updated_at: new Date().toISOString() });
+        if (error) return rpcFail(error);
+        return ok({ target_sec_per_unit: sec });
       }
 
       case 'log_label_print': {

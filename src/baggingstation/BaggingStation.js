@@ -380,10 +380,20 @@ function StoreDrilldown({ s }) {
           </span>
           <span style={{ fontSize: 14, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
             {s.bags} bags · {span} · <span style={{ color: '#60a5fa' }}>{s.bags_per_15min}/15min</span>
+            {s.vs_target_pct != null && (
+              <span style={{
+                marginLeft: 8, padding: '2px 8px', borderRadius: 10, fontSize: 12,
+                background: s.vs_target_pct >= 0 ? 'rgba(34,197,94,0.15)' : 'rgba(220,38,38,0.15)',
+                color: s.vs_target_pct >= 0 ? '#22c55e' : '#f87171',
+              }}>
+                {s.vs_target_pct >= 0 ? '▲ ' + s.vs_target_pct + '% faster' : '▼ ' + Math.abs(s.vs_target_pct) + '% slower'} than target
+              </span>
+            )}
           </span>
         </div>
         <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginTop: 2 }}>
           {fmtD(s.started_at)} {fmtT(s.started_at)} → {fmtT(s.finished_at)}
+          {s.sec_per_unit != null ? ` · ${s.units} units · ${s.sec_per_unit}s/unit` : ''}
         </div>
       </button>
       {open && (
@@ -414,10 +424,17 @@ function ReportsView({ api, onBack }) {
       if (r.ok) setStats(r.stats); else setErr(friendlyErr(r.error));
     });
     api({ action: 'stats_stores', days }).then((r) => {
-      if (alive && r.ok) setStoreStats(r.stores);
+      if (alive && r.ok) setStoreStats({ stores: r.stores, target: r.target_sec_per_unit, fleet: r.fleet_sec_per_unit, learned: r.fleet_learned });
     });
     return () => { alive = false; };
   }, [api, days]);
+  const saveTarget = async () => {
+    const cur = (storeStats && storeStats.target) || 30;
+    const v = window.prompt('Expected pace — seconds per unit (lower = faster). Fleet true average is shown in the report.', String(cur));
+    if (v == null) return;
+    const r = await api({ action: 'set_target_pace', sec_per_unit: Number(v) });
+    if (r.ok) setStoreStats((s) => (s ? { ...s, target: r.target_sec_per_unit } : s));
+  };
   const tile = (n, label, color = '#f1f5f9') => (
     <div key={label} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '14px 20px', textAlign: 'center', minWidth: 118, flex: 1 }}>
       <div style={{ fontSize: 32, fontWeight: 800, color, lineHeight: 1 }}>{n}</div>
@@ -479,13 +496,23 @@ function ReportsView({ api, onBack }) {
             </div>
           </div>
           <div style={{ marginTop: 16, background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 16 }}>
-            <div style={{ ...S.cap, marginBottom: 4 }}>By store — time to bag &amp; pace</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+              <div style={S.cap}>By store — vs expectation</div>
+              {storeStats && (
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#94a3b8' }}>
+                  True average: <span style={{ color: '#60a5fa' }}>{storeStats.fleet != null ? storeStats.fleet + 's/unit' : '—'}</span>
+                  {storeStats.learned === false ? ' (building history)' : ''}
+                  {' · '}Target: <span style={{ color: '#fbbf24' }}>{storeStats.target}s/unit</span>
+                  <button type="button" style={{ ...S.backBtn, marginLeft: 8, padding: '4px 10px', fontSize: 12 }} onClick={saveTarget}>Set target</button>
+                </div>
+              )}
+            </div>
             <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
-              Tap a store for its 15-minute timeline. Span is first bag → last bag; pace averages the 15-minute blocks that had activity.
+              Green beat the target, red missed it — pace measured on active 15-minute blocks only. Tap a store for its timeline.
             </div>
             {!storeStats && <div style={{ color: '#475569', fontWeight: 700 }}>Crunching…</div>}
-            {storeStats && storeStats.length === 0 && <div style={{ color: '#475569', fontWeight: 700 }}>No completed bags in this window.</div>}
-            {(storeStats || []).map((s) => <StoreDrilldown key={s.store_id} s={s} />)}
+            {storeStats && storeStats.stores.length === 0 && <div style={{ color: '#475569', fontWeight: 700 }}>No completed bags in this window.</div>}
+            {((storeStats && storeStats.stores) || []).map((s) => <StoreDrilldown key={s.store_id} s={s} />)}
           </div>
         </>
       )}
