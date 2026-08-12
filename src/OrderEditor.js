@@ -841,6 +841,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _isSilverScreenDp=dp=>!!dp&&(dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||''));
     const[sspSending,setSspSending]=useState(false);
     const[sspConfirm,setSspConfirm]=useState(null);// {dp,baseOrder,rows,totalPcs,deco_instructions,_resolve} — in-app confirm for the Silver Screen job (window.confirm looked broken/out of place)
+    const[sspUnlinkKey,setSspUnlinkKey]=useState(null);// deco PO key awaiting inline "unlink job?" confirmation
     // Opens the in-app confirm. Returns a promise that resolves when the rep answers — after the
     // send completes on OK, immediately on cancel — so callers chaining .finally(_afterPo) still
     // open their follow-on modal at the same point the blocking window.confirm used to give them.
@@ -859,6 +860,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return safeDecos(it).filter(d=>d&&(d.kind==='outside_deco'||d.fulfillment==='outside'||d.deco_po_id===dp.po_id)).map(d=>({sku:it.sku||'',position:d.position||'',type:d.type||d.deco_type||'',notes:d.notes||''}))});
       return new Promise(resolve=>{setSspConfirm({dp,baseOrder:cur,rows,totalPcs,deco_instructions,_resolve:resolve})});
     };
+    // Where Silver Screen sends the FINISHED goods: the order's own ship-to when set, else the
+    // customer's shipping address, else their billing address.
+    //
+    // On the label, line 1 is the SCHOOL and the attention line is the sport/program. Sub accounts
+    // hang off the school by parent_id ("Orange Lutheran" → "Orange Lutheran Arts Department"), so
+    // the school is the parent's name and the sport is what's left of the child's name once the
+    // school prefix is dropped. The deco PO deliberately does NOT go here — that reference belongs
+    // on the blanks shipment to the DECORATOR, not on the school's finished-goods delivery.
+    const _ssShipTo=()=>{
+      const _par=cust?.parent_id?(allCustomers||[]).find(c=>c&&c.id===cust.parent_id):null;
+      const _school=(_par?.name||cust?.name||'').trim();
+      const _child=(_par?(cust?.name||''):'').trim();
+      const _sport=(_child&&_school&&_child.toLowerCase().startsWith(_school.toLowerCase()))
+        ?_child.slice(_school.length).replace(/^[\s\-–—,:]+/,'').trim():_child;
+      const _attn=((o.ship_to&&o.ship_to.attention)||_sport||'').trim();
+      const _phone=cust?.phone||_par?.phone||'';
+      const _base={name:_school,attention:_attn,phone:_phone};
+      const a=(o.ship_to&&(o.ship_to.line1||o.ship_to.city))?o.ship_to:null;
+      if(a)return{..._base,name:a.name||_school,line1:a.line1||'',line2:a.line2||'',city:a.city||'',state:a.state||'',zip:a.zip||''};
+      if(cust?.shipping_address_line1||cust?.shipping_city)return{..._base,line1:cust.shipping_address_line1||'',line2:cust.shipping_address_line2||'',city:cust.shipping_city||'',state:cust.shipping_state||'',zip:cust.shipping_zip||''};
+      if(cust?.billing_address_line1||cust?.billing_city)return{..._base,line1:cust.billing_address_line1||'',line2:cust.billing_address_line2||'',city:cust.billing_city||'',state:cust.billing_state||'',zip:cust.billing_zip||''};
+      return null;
+    };
+    // Unlink a Silver Screen job from this deco PO: forget the job #/URL and put the status back
+    // to waiting if the send is what advanced it. Local only — the draft on their portal is
+    // untouched, so it still has to be deleted there (the confirm says so).
+    const _ssUnlinkJob=dp=>{
+      const stripped={...dp,status:dp.status==='ordered'?'waiting':dp.status};
+      delete stripped._silverscreen_job_id;delete stripped._silverscreen_job_url;delete stripped._silverscreen_sent_at;
+      const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?stripped:x),updated_at:new Date().toLocaleString()};
+      setO(updated);onSave(updated);setDirty(true);
+      setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);
+      setSspUnlinkKey(null);
+      nf('Unlinked job '+(dp._silverscreen_job_id||'')+' from '+(dp.po_id||'this PO')+' — delete that draft on the Silver Screen portal, then send again.');
+    };
     const _sspSendNow=async({dp,baseOrder,rows,deco_instructions})=>{
       const cur=baseOrder;
       setSspSending(true);
@@ -866,16 +902,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',
             po:{po_id:dp.po_id,deco_type:dp.deco_type,qty:dp.qty,unit_cost:dp.unit_cost,expected_date:dp.expected_date,notes:dp.notes,drop_ship:!!dp.drop_ship},
+            // Finished goods ship to the CUSTOMER, not back to NSA — their create form has no
+            // ship-to field, so send it for the job sheet (and for the field map once known).
+            ship_to:_ssShipTo(),
             items:rows,deco_instructions})});
         const j=await r.json().catch(()=>({}));
         if(!r.ok||!j.ok){nf('Silver Screen job failed: '+(j.error||('HTTP '+r.status)),'error');return}
         const updatedDp={...dp,
           status:(!dp.status||dp.status==='planned'||dp.status==='waiting')?'ordered':dp.status,
           _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString()};
+        // Whatever the send couldn't finish on their portal is a real to-do — keep it ON the PO
+        // instead of only in a toast that fades in 3.5s (the checklist is too long to read).
+        if(j.warning)updatedDp._silverscreen_todo=j.warning;else delete updatedDp._silverscreen_todo;
         const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);
         setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
         nf('🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''));
+        if(j.warning)nf('⚠️ '+j.warning,'error');// job exists but needs a manual step — don't let it pass silently
       }catch(e){nf('Silver Screen job failed: '+(e?.message||'network error'),'error')}
       finally{setSspSending(false)}
     };
@@ -9670,6 +9713,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:17,fontWeight:900,fontFamily:'monospace',color:'#7c3aed'}}>{sspConfirm.dp.po_id||'(no PO number)'}</div>
             <div style={{fontSize:12,color:'#6d28d9',marginTop:2}}>{sspConfirm.rows.length} item line{sspConfirm.rows.length!==1?'s':''} · <strong>{sspConfirm.totalPcs} pcs</strong> — creates the job on their portal with the P.O. number sent verbatim, so their invoice matches back automatically.</div>
           </div>
+          {(sspConfirm.dp._silverscreen_job_id||sspConfirm.dp._silverscreen_job_url)&&<div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:10,fontSize:12,color:'#92400e'}}>
+            ⚠️ This PO already points at job <strong>#{sspConfirm.dp._silverscreen_job_id||'(created)'}</strong>. Sending again creates a <strong>separate new draft</strong> on their portal and re-points this PO at it — delete the old draft on Silver Screen so they don't run it twice.
+          </div>}
           <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>
             {sspConfirm.rows.map((r,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',borderTop:i>0?'1px solid #f1f5f9':'none',fontSize:12,background:i%2?'#fafbfc':'white'}}>
               <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{r.sku}</span>
@@ -14206,12 +14252,52 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             {(dp.art_file_ids||[]).length>0&&<div style={{padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,marginBottom:12,fontSize:12,color:'#92400e'}}>
               <b>Art purchased on this PO:</b> {(dp.art_file_ids||[]).map(aid=>(o.art_files||[]).find(a=>a.id===aid)?.name||aid).join(', ')}
             </div>}
+            {/* What the Silver Screen send couldn't finish on their portal. Persisted on the PO so
+                it survives the toast (and a reload) until the rep actually does it and marks done.
+                The bracketed form/field detail stays tucked away — it's for fixing the field map,
+                not for the rep. */}
+            {dp._silverscreen_todo&&(()=>{const _t=String(dp._silverscreen_todo);const _bi=_t.indexOf(' [');
+              const _msg=_bi>0?_t.slice(0,_bi):_t;const _detail=_bi>0?_t.slice(_bi+1):'';
+              return<div style={{padding:'10px 12px',background:'#fffbeb',border:'1px solid #fbbf24',borderRadius:8,marginBottom:12}}>
+                <div style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+                  <span style={{fontSize:14}}>⚠️</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:800,color:'#92400e',marginBottom:2}}>Finish this job on the Silver Screen portal</div>
+                    <div style={{fontSize:12,color:'#92400e'}}>{_msg}</div>
+                    {_detail&&<details style={{marginTop:4}}><summary style={{fontSize:10,color:'#b45309',cursor:'pointer'}}>Technical detail (for fixing the integration)</summary>
+                      <div style={{fontSize:10,color:'#b45309',fontFamily:'monospace',wordBreak:'break-all',marginTop:2}}>{_detail}</div></details>}
+                  </div>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11,whiteSpace:'nowrap'}} title="I've completed these steps on the Silver Screen portal" onClick={()=>{
+                    const stripped={...dp};delete stripped._silverscreen_todo;
+                    const updated={...o,deco_pos:(o.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?stripped:x),updated_at:new Date().toLocaleString()};
+                    setO(updated);onSave(updated);setDirty(true);
+                    setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:stripped,soItems:safeItems(updated)}:p);
+                    nf('Marked done — '+(dp.po_id||'this PO')+' no longer flags unfinished Silver Screen steps');
+                  }}>✓ Done</button>
+                </div>
+              </div>})()}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
               {(()=>{// Silver Screen: create the job on their account portal with one click.
                 if(!_isSilverScreenDp(dp)||editingPo)return null;
-                if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>;
+                // Already sent: show the job chip, plus a re-send. A first attempt can land
+                // incomplete (their create form is only the order header), so the rep needs a way
+                // to submit a fresh job without hand-editing the PO — this creates a NEW draft on
+                // their portal and re-stamps this PO with it.
+                if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <span style={{display:'inline-flex',gap:6,alignItems:'center'}}>
+                  <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>
+                  <button className="btn btn-sm btn-secondary" disabled={sspSending} style={{fontSize:11}} onClick={()=>sendSilverScreenJob(dp)} title="Send this PO to Silver Screen again — creates a NEW draft job on their portal and points this PO at it (delete the old draft on their side)">{sspSending?'Sending…':'↻ Re-send'}</button>
+                  {/* Unlink: forget this job # so the PO is back to a clean, un-sent state. Two-click
+                      so it can't happen by accident — the job # isn't recoverable from here after. */}
+                  {sspUnlinkKey===dpKey
+                    ?<span style={{display:'inline-flex',gap:6,alignItems:'center',padding:'2px 8px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
+                      Unlink job {dp._silverscreen_job_id||''}? The draft stays on their portal — delete it there.
+                      <button className="btn btn-sm" style={{fontSize:11,background:'#b91c1c',color:'white',border:'none'}} onClick={()=>_ssUnlinkJob(dp)}>Unlink</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setSspUnlinkKey(null)}>Cancel</button>
+                    </span>
+                    :<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#b91c1c'}} onClick={()=>setSspUnlinkKey(dpKey)} title="Forget this job number so the PO reads as un-sent (status back to waiting) — use it when the draft on their portal was deleted or is being replaced">✕ Unlink job</button>}
+                </span>;
                 if(dp.status==='received'||dp.status==='billed')return null;
                 return <button className="btn btn-sm btn-primary" disabled={sspSending} style={{fontSize:11,background:'#475569',borderColor:'#475569'}} onClick={()=>sendSilverScreenJob(dp)} title="Create this job on the Silver Screen account portal — sends the PO number and all covered items with size breakdowns">{sspSending?'Sending…':'🖨 Send to Silver Screen'}</button>;
               })()}
