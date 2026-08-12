@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
 import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
@@ -725,6 +725,8 @@ const _esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>
 // marketing site 200-proxies to this storefront — never the raw portal origin staff happen
 // to trigger the email from.
 const PUBLIC_SITE = 'https://nationalsportsapparel.com';
+// Per-image deadline for the flyer PDF's photo/QR fetches (see _imgB64).
+const IMG_FETCH_MS = 12_000;
 const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
 // QuickChart renders a standard 8-bit PNG that email clients reliably display; the previous
 // goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
@@ -1016,8 +1018,12 @@ async function generateFlyerPdfBase64(store, items = []) {
   // the flyer rendered empty gray cards — go through image-proxy first (same pattern as
   // QuickMockBuilder), falling back to a direct fetch for hosts the proxy doesn't allow.
   const imgCache = {};
+  // Every fetch here is bounded: a supplier CDN (or a cold image-proxy) that accepts the
+  // connection and never answers used to hang this Promise.all forever, which silently
+  // stalled the launch/share email before it ever reached Brevo. onerror must settle the
+  // FileReader promise for the same reason.
   const _imgB64 = async (u) => {
-    const toB64 = async (src) => { const resp = await fetch(src); if (!resp.ok) throw new Error('img ' + resp.status); const blob = await resp.blob(); return new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); }); };
+    const toB64 = async (src) => { const resp = await fetchWithTimeout(src, {}, IMG_FETCH_MS); if (!resp.ok) throw new Error('img ' + resp.status); const blob = await resp.blob(); return new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); }); };
     try { return await toB64('/.netlify/functions/image-proxy?url=' + encodeURIComponent(u)); }
     catch(_) { try { return await toB64(u); } catch(_) { return null; } }
   };
@@ -1139,7 +1145,7 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
   y += 10;
   try {
-    const qrResp = await fetch(_qrImg(url, 200));
+    const qrResp = await fetchWithTimeout(_qrImg(url, 200), {}, IMG_FETCH_MS);
     const qrBlob = await qrResp.blob();
     const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
     doc.addImage(qrB64,'PNG',W/2-70,y,140,140,'','FAST');
@@ -1161,11 +1167,17 @@ async function generateFlyerPdfBase64(store, items = []) {
 // ever reaches Brevo, so: skip the attachment when the base64 is too big, and if a
 // with-attachment send still fails, retry once without it so the email always goes out.
 const _FLYER_ATTACH_MAX_B64 = 4_500_000; // chars ≈ 3.4MB binary, safe under the cap
+// The flyer is a nice-to-have; the LINK is the point of this email. Building the PDF
+// pulls every product photo over the network, so bound the whole build — a stall here
+// must cost the attachment, never the email. (Before this, a hung image fetch stopped
+// _sendLaunchEmail before Brevo was ever called: no email, no error, and the UI had
+// already flashed "Generating flyer PDF…" as if the send were under way.)
+const _FLYER_BUILD_MS = 45_000;
 async function _sendLaunchEmail(store, to, coachUrl) {
   const items = await loadFlyerItems(store);
   let attachment;
   try {
-    const b64 = await generateFlyerPdfBase64(store, items);
+    const b64 = await _withTimeout(generateFlyerPdfBase64(store, items), _FLYER_BUILD_MS, 'Flyer PDF build timed out');
     if (b64 && b64.length <= _FLYER_ATTACH_MAX_B64) attachment = [{ content: b64, name: `${store.slug || 'team-store'}-flyer.pdf` }];
   } catch (_) {}
   const base = { to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachUrl), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' };
@@ -1286,9 +1298,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (emailOverride || store.director_email || store.coach_contact_email || '').trim();
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     flash('Generating flyer PDF…');
-    const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
-    if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Store link emailed to ' + to + (r.attached ? ' with PDF flyer' : ' (flyer sent as link — PDF was too large to attach)'));
+    // Anything that throws on the way to Brevo has to surface: an uncaught rejection
+    // here left the rep with a stale "Generating flyer PDF…" toast and no send.
+    try {
+      const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
+      if (r && r.error) flash('Email failed: ' + r.error);
+      else flash('Store link emailed to ' + to + (r.attached ? ' with PDF flyer' : ' (link only — the PDF flyer could not be attached)'));
+    } catch (e) { flash('Email failed: ' + (e.message || e)); }
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.

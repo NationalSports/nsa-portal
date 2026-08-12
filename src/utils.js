@@ -39,6 +39,24 @@ export const authFetch=async(url,opts={})=>{
   return res;
 };
 
+// Bound a promise that might never settle. An await that never settles can't be
+// caught by the caller's try/catch — it just stops the whole flow silently — so
+// anything network-bound that a user action depends on should be raced here.
+export const _withTimeout=(promise,ms,msg)=>{
+  let t=null;
+  const timeout=new Promise((_,reject)=>{t=setTimeout(()=>reject(new Error(msg||('Timed out after '+ms+'ms'))),ms)});
+  return Promise.race([promise,timeout]).finally(()=>{if(t)clearTimeout(t)});
+};
+
+// fetch() with an abort deadline. A plain fetch has NO timeout: a host that
+// accepts the connection and then never responds hangs forever.
+export const fetchWithTimeout=async(url,opts={},ms=15000)=>{
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),ms);
+  try{return await fetch(url,{...opts,signal:ctrl.signal})}
+  finally{clearTimeout(timer)}
+};
+
 // ── Brevo Email ──
 // Public availability flag — NOT the API key. The real key lives only in the
 // server-side BREVO_API_KEY env var and is used by netlify/functions/brevo-proxy.
