@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node worker.js",
     "once": "RUN_ONCE=1 node worker.js",
+    "capture": "node capture/capture-sidecar.mjs",
+    "test:capture": "node capture/capture-sidecar.mjs --self-test",
     "test:harness": "node test/spec.mjs",
     "test:agent": "node test/run-agent.mjs",
     "mock-portal": "node test/mock-portal.mjs"

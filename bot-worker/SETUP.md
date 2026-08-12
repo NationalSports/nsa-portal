@@ -160,6 +160,29 @@ in a comment.
 - New task type (beyond `add_to_cart`): add a prompt template under `prompts/`
   and branch on `bot_payload.task_type` in `worker.js`.
 
+## Network capture (Phase 1 of the CLICK speed-up)
+
+`capture/capture-sidecar.mjs` records the portal traffic a cart run produces, so we can find out
+whether CLICK's cart operations can be driven over HTTP instead of through an LLM clicking a
+browser (see `../ADIDAS_CLICK_FAST_ORDER_ENTRY_SPEC_2026-08-12.md`).
+
+```bash
+npm run test:capture   # self-test against the bundled mock portal — no CLICK involved
+npm run capture        # starts the browser + capture, prints its CDP endpoint
+```
+
+For a real capture run: start `npm run capture`, then swap `--isolated` for
+`--cdp-endpoint http://127.0.0.1:9222` in `mcp.json` so the agent drives the browser being watched,
+run the cart task as usual, and Ctrl-C the sidecar to write `endpoints.md`.
+
+Two things it guarantees: any request that looks like order submission is **aborted in code**
+(so a capture run can't place an order), and header values plus credential-ish body fields are
+never written to disk. Output lands in `capture/captures/<timestamp>/` and is gitignored — it
+holds session material and dealer pricing.
+
+Still do the spec's cart-safety gate by hand: the CLICK cart is shared account state, so start
+from an empty cart, use the `ZZ-TEST-DISCOVERY` PO number, and clear the test lines afterwards.
+
 ## TODO / Backlog
 
 - **Backorder handling (deferred):** When a size/SKU is backordered on Adidas
