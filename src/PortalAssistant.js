@@ -81,7 +81,7 @@ const SCREEN_TARGETS = [
   // present whenever the user is on that screen. The two oe-* live inside the shared
   // order/estimate editor, so they only spotlight once a record is open (the step's
   // instruction should tell the user to open the record first).
-  { id: 'global-search', screen: '', label: 'Global search box (top bar)', desc: 'Searches orders, jobs, POs, invoices, customers; Enter opens the full results page.' },
+  { id: 'global-search', screen: '', label: 'Global search box (top bar)', desc: 'Searches orders, jobs, POs, invoices, customers, webstore orders; Enter opens the full results page.' },
   { id: 'new-estimate-btn', screen: 'estimates', label: 'New Estimate button', desc: 'Opens a blank estimate to build a new quote.' },
   { id: 'estimates-search', screen: 'estimates', label: 'Estimates search box', desc: 'Filters the estimate list by customer or id.' },
   { id: 'orders-search', screen: 'orders', label: 'Sales Orders search box', desc: 'Filters sales orders by customer, SKU, or PO#.' },
