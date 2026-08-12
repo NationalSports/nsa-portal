@@ -56,14 +56,10 @@ function attr(tag, name) {
   return m ? m[1] : null;
 }
 
-// Parse the first <form> whose action targets /orders (the new-order form) into
-// { action, fields:[{tag,type,name,value,options?}] }.
-function parseOrderForm(html) {
-  const formMatch = html.match(/<form\b[^>]*action="[^"]*\/orders[^"]*"[^>]*>([\s\S]*?)<\/form>/i)
-    || html.match(/<form\b[^>]*>([\s\S]*?)<\/form>/i);
-  if (!formMatch) return null;
-  const action = attr(formMatch[0].slice(0, formMatch[0].indexOf('>') + 1), 'action') || '/orders';
-  const body = formMatch[1];
+// Parse one whole <form>…</form> string into { action, fields:[{tag,type,name,value,options?}] }.
+function parseFormTag(formHtml) {
+  const action = attr(formHtml.slice(0, formHtml.indexOf('>') + 1), 'action') || '';
+  const body = formHtml.slice(formHtml.indexOf('>') + 1);
   const fields = [];
   for (const m of body.matchAll(/<input\b[^>]*>/gi)) {
     const t = m[0];
@@ -89,6 +85,16 @@ function parseOrderForm(html) {
     fields.push({ tag: 'select', type: 'select', name, value: selected, options });
   }
   return { action, fields };
+}
+
+// The first <form> whose action targets /orders (the new-order form), else the first form at all.
+function parseOrderForm(html) {
+  const formMatch = html.match(/<form\b[^>]*action="[^"]*\/orders[^"]*"[^>]*>[\s\S]*?<\/form>/i)
+    || html.match(/<form\b[^>]*>[\s\S]*?<\/form>/i);
+  if (!formMatch) return null;
+  const form = parseFormTag(formMatch[0]);
+  if (!form.action) form.action = '/orders';
+  return form;
 }
 
 // Log in with devise (GET /login for the CSRF token + cookie, POST credentials).
@@ -179,8 +185,13 @@ function buildJobSheet(p) {
   return lines.join('\n');
 }
 
-// Assign our payload onto the live form's fields by name pattern. Hidden fields pass
-// through untouched (CSRF, rails defaults). Returns { action, params, unmapped }.
+// Assign our payload onto the live form's fields. Hidden fields pass through untouched
+// (CSRF, rails defaults). The exact field names were observed live on 2026-08-12 (via the
+// fields-seen error): order[customer_po], order[customer_name], order[job_name],
+// order[requested_ship_date], order[firm_ship_date], select order[sales_rep_id],
+// select order[ccd_sales_rep_id]. The form has NO notes/textarea — the item list is
+// delivered to the created order's notes form afterwards (postJobSheet). The name-pattern
+// fallback below only runs when the known names are absent (portal layout change).
 function fillForm(form, payload) {
   const params = new URLSearchParams();
   const used = new Set();
@@ -188,17 +199,33 @@ function fillForm(form, payload) {
     if (f.type === 'hidden' || f.type === 'submit') { params.set(f.name, f.value || ''); used.add(f.name); }
   }
   const visible = form.fields.filter(f => !used.has(f.name) && f.type !== 'checkbox' && f.type !== 'radio');
-  const take = (re) => { const f = visible.find(x => re.test(x.name) && !used.has(x.name)); if (f) used.add(f.name); return f; };
-
   const assigned = {};
-  const poField = take(/\b(po|p_o|purchase)/i);
-  if (poField) { params.set(poField.name, payload.po.po_id); assigned.po_number = poField.name; }
-  const nameField = take(/(job|order)?\[?(name|title)\]?$/i);
   const jobName = payload.po.po_id + (payload.customer ? ' — ' + payload.customer : '') + (payload.memo ? ' ' + payload.memo : '');
-  if (nameField) { params.set(nameField.name, jobName.slice(0, 120)); assigned.job_name = nameField.name; }
-  if (payload.po.expected_date) {
-    const dueField = take(/due|need|ship.?date|date.?needed/i);
-    if (dueField) { params.set(dueField.name, payload.po.expected_date); assigned.due_date = dueField.name; }
+  // customer_po carries the PO number VERBATIM — the bill parser matches their invoice by it.
+  // The sales-rep selects keep the form's own pre-selected value (seeded by ?order[sales_rep_id]=…).
+  const KNOWN = {
+    'order[customer_po]': payload.po.po_id,
+    'order[customer_name]': (payload.customer || '').slice(0, 80),
+    'order[job_name]': jobName.slice(0, 120),
+    'order[requested_ship_date]': payload.po.expected_date || '',
+  };
+  let knownMapped = false;
+  for (const f of visible) {
+    if (KNOWN[f.name] !== undefined && KNOWN[f.name] !== '') {
+      params.set(f.name, KNOWN[f.name]); used.add(f.name); assigned[f.name] = KNOWN[f.name];
+      if (f.name === 'order[customer_po]') knownMapped = true;
+    }
+  }
+  const take = (re) => { const f = visible.find(x => re.test(x.name) && !used.has(x.name)); if (f) used.add(f.name); return f; };
+  if (!knownMapped) {
+    const poField = take(/\b(po|p_o|purchase)/i);
+    if (poField) { params.set(poField.name, payload.po.po_id); assigned.po_number = poField.name; }
+    const nameField = take(/(job|order)?\[?(name|title)\]?$/i);
+    if (nameField) { params.set(nameField.name, jobName.slice(0, 120)); assigned.job_name = nameField.name; }
+    if (payload.po.expected_date) {
+      const dueField = take(/due|need|ship.?date|date.?needed/i);
+      if (dueField) { params.set(dueField.name, payload.po.expected_date); assigned.due_date = dueField.name; }
+    }
   }
   const sheet = buildJobSheet(payload);
   const notesField = visible.find(f => f.tag === 'textarea' && !used.has(f.name))
@@ -213,7 +240,41 @@ function fillForm(form, payload) {
     params.set(f.name, f.value || '');
     unmapped.push({ name: f.name, tag: f.tag, options: f.options ? f.options.slice(0, 12) : undefined });
   }
-  return { params, assigned, unmapped, sheetIncluded: !!notesField, sheet };
+  return { params, assigned, unmapped, knownMapped, sheetIncluded: !!notesField, sheet };
+}
+
+// Deliver the job sheet AFTER order creation: the create form carries no notes field, so
+// find a form with a textarea (notes/comment) on the created order's page — following
+// lazily-loaded turbo-frames — keep its hidden defaults, put the sheet in the textarea,
+// and post it. Best-effort: returns true when a post succeeded.
+async function postJobSheet(jar, orderPath, sheet) {
+  const pages = [orderPath];
+  for (let i = 0; i < pages.length && i < 6; i++) {
+    let html;
+    try {
+      const res = await ssFetch(jar, pages[i], { headers: { Accept: 'text/html, application/xhtml+xml' } });
+      html = await res.text();
+    } catch { continue; }
+    for (const m of html.matchAll(/<turbo-frame\b[^>]*\bsrc="([^"]+)"/gi)) {
+      if (pages.length < 6 && !pages.includes(m[1])) pages.push(m[1]);
+    }
+    for (const fm of html.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/gi)) {
+      if (!/<textarea\b/i.test(fm[0])) continue;
+      const f = parseFormTag(fm[0]);
+      if (!f.action) continue;
+      const params = new URLSearchParams();
+      for (const fld of f.fields) params.set(fld.name, fld.tag === 'textarea' ? sheet : (fld.value || ''));
+      try {
+        const resp = await ssFetch(jar, f.action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+        });
+        if (resp.status < 400) return true;
+      } catch { /* try the next form */ }
+    }
+  }
+  return false;
 }
 
 exports.handler = async (event) => {
@@ -240,14 +301,13 @@ exports.handler = async (event) => {
     if (!Array.isArray(body.items) || body.items.length === 0) return { statusCode: 400, headers, body: JSON.stringify({ error: 'No items to send' }) };
 
     const filled = fillForm(form, body);
-    if (!filled.sheetIncluded) {
-      // Without a notes/textarea target the item breakdown would be silently lost —
-      // refuse rather than create a job Silver Screen can't act on. Name the fields we DID
-      // see so the failure itself says whether we parsed a search/nav form or a changed
-      // order form (a screenshot of this error is enough to fix the map).
+    if (!filled.sheetIncluded && !filled.knownMapped) {
+      // Neither the known field map nor a notes/textarea target matched — this isn't the
+      // order form we know, and the item breakdown would be silently lost. Refuse, naming
+      // the fields we DID see (a screenshot of this error is enough to fix the map).
       const seen = form.fields.filter((f) => f.type !== 'hidden' && f.type !== 'submit')
         .map((f) => f.tag + ':' + f.name).slice(0, 20).join(', ');
-      return { statusCode: 422, headers, body: JSON.stringify({ ok: false, error: 'The order form has no notes/instructions field to carry the item list. Fields seen: [' + (seen || 'none') + ']. Update the field map in silverscreen-job.js to match.', form }) };
+      return { statusCode: 422, headers, body: JSON.stringify({ ok: false, error: 'The order form matched neither the known Silver Screen field map nor a notes/instructions field to carry the item list. Fields seen: [' + (seen || 'none') + ']. Update the field map in silverscreen-job.js to match.', form }) };
     }
 
     if (body.dry_run) {
@@ -263,9 +323,16 @@ exports.handler = async (event) => {
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get('location') || '';
       const idMatch = loc.match(/\/orders\/(\d+)/);
+      // The create form had no notes field — deliver the item list to the created order's
+      // notes/comment form now. If that also finds nowhere to post, the job still exists;
+      // tell the rep so they paste the breakdown (it's on the printed PO) instead of the
+      // decorator quietly receiving a job with no items.
+      let sheetPosted = filled.sheetIncluded;
+      if (!sheetPosted && idMatch) sheetPosted = await postJobSheet(jar, '/orders/' + idMatch[1], filled.sheet);
       return {
         statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc, assigned: filled.assigned, unmapped: filled.unmapped })
+        body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc, sheet_posted: sheetPosted, assigned: filled.assigned, unmapped: filled.unmapped,
+          ...(sheetPosted ? {} : { warning: 'Job created, but the item list could not be attached to it — open the job on the Silver Screen portal and paste the item breakdown (it\'s on the printed PO).' }) })
       };
     }
 

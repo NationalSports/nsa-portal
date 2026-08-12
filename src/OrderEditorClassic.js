@@ -893,6 +893,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         setO(updated);onSave(updated);
         setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
         nf('🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''));
+        if(j.warning)nf('⚠️ '+j.warning,'error');// job exists but needs a manual step — don't let it pass silently
       }catch(e){nf('Silver Screen job failed: '+(e?.message||'network error'),'error')}
       finally{setSspSending(false)}
     };
