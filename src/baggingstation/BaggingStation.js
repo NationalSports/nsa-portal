@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
-import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader } from './bagLogic';
+import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals } from './bagLogic';
 import { buildBagLabelHtml } from './bagLabel';
 
 // Bagging Station — one-order-at-a-time webstore bagging on a tablet
@@ -189,6 +189,99 @@ function LineRow({ item, onTap, onShort }) {
   );
 }
 
+// Staging table — the batch start page: exactly how many of each item × size
+// should be on the table before bagging starts. Cells show REMAINING (the
+// number the packer cares about mid-batch); completed cells collapse to a
+// check. Live: every completed bag shrinks the counts.
+function StagingTable({ orders }) {
+  const { sizes, rows, totals } = batchItemTotals(orders);
+  const th = { padding: '10px 12px', fontSize: 15, fontWeight: 800, color: '#94a3b8', textAlign: 'center', borderBottom: '2px solid #334155', whiteSpace: 'nowrap' };
+  const td = { padding: '12px', textAlign: 'center', borderBottom: '1px solid #24324a' };
+  if (!rows.length) return <div style={{ marginTop: 30, textAlign: 'center', color: '#334155', fontSize: 20, fontWeight: 700 }}>No items in this batch.</div>;
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', margin: '14px 0' }}>
+        {[['On the table', totals.remaining, '#f1f5f9'], ['Bagged', totals.bagged, '#22c55e'], ['Short', totals.short, '#fbbf24'], ['Total', totals.total, '#94a3b8']].map(([label, n, color]) => (
+          <div key={label} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '12px 22px', textAlign: 'center' }}>
+            <div style={{ fontSize: 34, fontWeight: 800, color, lineHeight: 1 }}>{n}</div>
+            <div style={{ ...S.cap, marginTop: 6 }}>{label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ overflowX: 'auto', border: '1px solid #334155', borderRadius: 10, background: '#1e293b' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 560 }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: 'left' }}>Item</th>
+            {sizes.map((sz) => <th key={sz} style={th}>{sz}</th>)}
+            <th style={th}>Total</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              let rowTotal = 0; let rowLeft = 0;
+              const cells = sizes.map((sz) => {
+                const c = r.sizes.get(sz);
+                if (!c) return <td key={sz} style={{ ...td, color: '#334155' }}>·</td>;
+                const left = c.total - c.bagged - c.short;
+                rowTotal += c.total; rowLeft += left;
+                return (
+                  <td key={sz} style={td}>
+                    <span style={{ fontSize: 24, fontWeight: 800, color: left > 0 ? '#f1f5f9' : '#22c55e' }}>
+                      {left > 0 ? left : '✓'}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}> /{c.total}</span>
+                    {c.short > 0 && <div style={{ fontSize: 11, fontWeight: 800, color: '#fbbf24' }}>{c.short} short</div>}
+                  </td>
+                );
+              });
+              return (
+                <tr key={r.sku + r.name + r.color}>
+                  <td style={{ ...td, textAlign: 'left', minWidth: 200 }}>
+                    <div style={{ fontSize: 17, fontWeight: 800 }}>{r.name}</div>
+                    <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 700 }}>{[r.sku, r.color].filter(Boolean).join(' · ')}</div>
+                  </td>
+                  {cells}
+                  <td style={td}>
+                    <span style={{ fontSize: 24, fontWeight: 800, color: rowLeft > 0 ? '#f1f5f9' : '#22c55e' }}>{rowLeft > 0 ? rowLeft : '✓'}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}> /{rowTotal}</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Printable twin of the staging table (lay it on the physical table).
+function stagingSheetHtml(storeName, orders) {
+  const { sizes, rows, totals } = batchItemTotals(orders);
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const body = rows.map((r) => {
+    let rowTotal = 0;
+    const cells = sizes.map((sz) => {
+      const c = r.sizes.get(sz);
+      if (!c) return '<td>·</td>';
+      rowTotal += c.total;
+      return `<td><b>${c.total}</b>${c.short ? `<div class="s">${c.short} short</div>` : ''}</td>`;
+    }).join('');
+    return `<tr><td class="l"><b>${esc(r.name)}</b><div class="m">${esc([r.sku, r.color].filter(Boolean).join(' · '))}</div></td>${cells}<td><b>${rowTotal}</b></td></tr>`;
+  }).join('');
+  return `<!doctype html><html><head><title>Staging — ${esc(storeName)}</title><style>
+    body{font-family:Arial,sans-serif;margin:24px;color:#111}
+    h1{font-size:20px;margin:0 0 2px} .sub{color:#555;font-size:13px;margin-bottom:14px}
+    table{border-collapse:collapse;width:100%} th,td{border:1px solid #bbb;padding:8px 10px;text-align:center;font-size:14px}
+    td.l{text-align:left} .m{color:#666;font-size:11px} .s{color:#92400e;font-size:10px;font-weight:700}
+    th{background:#f1f5f9}
+  </style></head><body>
+    <h1>Bagging staging sheet — ${esc(storeName)}</h1>
+    <div class="sub">${totals.total} items across ${orders.length} orders. Lay out these stacks before starting.</div>
+    <table><thead><tr><th class="l">Item</th>${sizes.map((sz) => `<th>${esc(sz)}</th>`).join('')}<th>Total</th></tr></thead>
+    <tbody>${body}</tbody></table>
+  </body></html>`;
+}
+
 // Resolve list — every open short in the group with the four outcomes:
 // Found / Pulled (reopen the bag; packer still taps the item in), Backorder
 // (splits onto the child backorder order), Refunded (record-only — the money
@@ -271,7 +364,7 @@ function BaggingScreen({ stationToken, staffMode }) {
 
   // Board poll — keeps two tablets' progress in sync without realtime.
   useEffect(() => {
-    if (view !== 'board' || !group) return undefined;
+    if ((view !== 'board' && view !== 'staging') || !group) return undefined;
     pollRef.current = setInterval(() => loadBoard(group), 15000);
     return () => clearInterval(pollRef.current);
   }, [view, group, loadBoard]);
@@ -297,7 +390,9 @@ function BaggingScreen({ stationToken, staffMode }) {
     })();
   }, [api]); // runs once in practice: api only changes if the station token does
 
-  const pickGroup = async (g) => { setGroup(g); setView('board'); setOrder(null); await loadBoard(g); };
+  // Picking a batch lands on the STAGING start page first: exactly how many of
+  // each item × size belong on the table, before any bag is opened.
+  const pickGroup = async (g) => { setGroup(g); setView('staging'); setOrder(null); await loadBoard(g); };
 
   const nextOrder = async () => {
     setBusy(true);
@@ -417,6 +512,34 @@ function BaggingScreen({ stationToken, staffMode }) {
     );
   }
 
+  if (view === 'staging') {
+    const bagged = (progress && progress.bagged) || 0;
+    const total = (progress && progress.total) || 0;
+    return (
+      <div style={S.page}><style>{BS_CSS}</style><div style={{ maxWidth: 980, margin: '0 auto' }}>
+        {header}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div>
+            <div style={S.cap}>{(KIND_BADGE[group.kind] || {}).text} · Stage the table</div>
+            <div style={{ fontSize: 30, fontWeight: 800 }}>{group.store_name}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" style={S.backBtn} onClick={() => printHtml(stagingSheetHtml(group.store_name, orders))}>Print sheet</button>
+            <button type="button" style={S.backBtn} onClick={() => { setView('picker'); loadGroups(); }}>← All batches</button>
+          </div>
+        </div>
+        {msgBox}
+        <StagingTable orders={orders} />
+        <div style={{ marginTop: 16 }}>
+          <button type="button" style={S.bigBtn('#2563eb', busy)} disabled={busy}
+            onClick={() => { setView('board'); }}>
+            {bagged > 0 ? `Continue bagging (${bagged} of ${total} done) →` : 'Start bagging →'}
+          </button>
+        </div>
+      </div></div>
+    );
+  }
+
   if (view === 'board' || view === 'done') {
     const bagged = (progress && progress.bagged) || 0;
     const total = (progress && progress.total) || 0;
@@ -430,7 +553,10 @@ function BaggingScreen({ stationToken, staffMode }) {
             <div style={S.cap}>{(KIND_BADGE[group.kind] || {}).text}</div>
             <div style={{ fontSize: 30, fontWeight: 800 }}>{group.store_name}</div>
           </div>
-          <button type="button" style={S.backBtn} onClick={() => { setView('picker'); loadGroups(); }}>← All batches</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" style={S.backBtn} onClick={() => setView('staging')}>Item counts</button>
+            <button type="button" style={S.backBtn} onClick={() => { setView('picker'); loadGroups(); }}>← All batches</button>
+          </div>
         </div>
         <ProgressBar bagged={bagged} total={total} />
         {shorts > 0 && (

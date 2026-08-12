@@ -2,7 +2,7 @@
 
 import {
   claimIsStale, lineSatisfied, lineOnOrder, orderProgress, sortLinesForBag,
-  playerHeader, shortSummary, nextOrderPick, CLAIM_STALE_MS,
+  playerHeader, shortSummary, nextOrderPick, batchItemTotals, CLAIM_STALE_MS,
 } from '../baggingstation/bagLogic';
 
 const NOW = Date.parse('2026-08-12T12:00:00Z');
@@ -82,6 +82,30 @@ describe('shortSummary', () => {
     ]);
     expect(s).toHaveLength(1);
     expect(s[0].text).toBe('1× Hoodie YS');
+  });
+});
+
+describe('batchItemTotals — the staging start page', () => {
+  const orders = [
+    { webstore_order_items: [
+      { sku: 'JR1', name: 'Jersey', color: 'Navy', size: 'YM', qty: 2, bagged_qty: 1 },
+      { sku: 'JR1', name: 'Jersey', color: 'Navy', size: 'M', qty: 1, bagged_qty: 0 },
+      { sku: 'KIT', name: 'Bundle Kit', size: 'M', qty: 1, is_bundle_parent: true }, // skipped
+    ] },
+    { webstore_order_items: [
+      { sku: 'JR1', name: 'Jersey', color: 'Navy', size: 'YM', qty: 1, bagged_qty: 0, short_qty: 1, short_status: 'open' },
+      { sku: 'PT2', name: 'Pant', color: 'Black', size: 'YM', qty: 1, bagged_qty: 1 },
+      { sku: 'XX', name: 'Cancelled thing', size: 'S', qty: 5, line_status: 'cancelled' }, // skipped
+    ] },
+  ];
+  test('aggregates per product × size with bagged/short, sizes in wear order', () => {
+    const { sizes, rows, totals } = batchItemTotals(orders);
+    expect(sizes).toEqual(['YM', 'M']); // wear order, not alphabetical
+    expect(rows.map((r) => r.name)).toEqual(['Jersey', 'Pant']);
+    const jersey = rows[0];
+    expect(jersey.sizes.get('YM')).toEqual({ total: 3, bagged: 1, short: 1 });
+    expect(jersey.sizes.get('M')).toEqual({ total: 1, bagged: 0, short: 0 });
+    expect(totals).toEqual({ total: 5, bagged: 2, short: 1, remaining: 2 });
   });
 });
 

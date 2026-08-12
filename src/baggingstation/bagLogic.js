@@ -94,6 +94,40 @@ export function shortSummary(items) {
     }));
 }
 
+// Staging table for the batch start page: what should be on the table before
+// bagging starts, per product × size, with live bagged/remaining counts.
+// Rows keyed by sku+name+color; sizes collected across the batch and sorted in
+// wear order. Cancelled lines are excluded; bundle parents are skipped (their
+// children are the physical items).
+export function batchItemTotals(orders) {
+  const rows = new Map(); // key -> { sku, name, color, sizes: Map(size -> {total, bagged, short}) }
+  const sizeSet = new Set();
+  let total = 0;
+  for (const o of (orders || [])) {
+    for (const i of (o.webstore_order_items || o.items || [])) {
+      if ((i.line_status || '') === 'cancelled' || i.is_bundle_parent) continue;
+      const qty = Number(i.qty) || 0;
+      if (!qty) continue;
+      const key = `${i.sku || ''}|${i.name || ''}|${i.color || ''}`;
+      if (!rows.has(key)) rows.set(key, { sku: i.sku || '', name: i.name || i.sku || 'Item', color: i.color || '', sizes: new Map() });
+      const size = i.size || '—';
+      sizeSet.add(size);
+      const cell = rows.get(key).sizes.get(size) || { total: 0, bagged: 0, short: 0 };
+      cell.total += qty;
+      cell.bagged += Math.min(Number(i.bagged_qty) || 0, qty);
+      if (['open', 'backordered', 'refunded'].includes(i.short_status || '')) cell.short += Number(i.short_qty) || 0;
+      rows.get(key).sizes.set(size, cell);
+      total += qty;
+    }
+  }
+  // grand totals from the per-cell accumulations
+  let baggedAll = 0; let shortAll = 0;
+  for (const r of rows.values()) for (const c of r.sizes.values()) { baggedAll += c.bagged; shortAll += c.short; }
+  const sizes = [...sizeSet].sort((a, b) => sizeRank(a) - sizeRank(b) || String(a).localeCompare(String(b)));
+  const list = [...rows.values()].sort((a, b) => a.name.localeCompare(b.name) || a.color.localeCompare(b.color));
+  return { sizes, rows: list, totals: { total, bagged: baggedAll, short: shortAll, remaining: total - baggedAll - shortAll } };
+}
+
 // Client-side fallback "next order" pick (server bagging_next_order is the
 // real one): unbagged, unclaimed-or-stale, oldest first.
 export function nextOrderPick(orders, actor, nowMs) {
