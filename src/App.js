@@ -995,6 +995,21 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
 };
+// Mockups saved in a garment's numbers / names slots — the proof of the BACK. Same key scheme
+// _prodJobItemMocks reads above (sku|color|numbers / |names, plus the _<n> / _b sub-key variants),
+// counted per kind so the sheet can call out which side has no proof on file.
+const _prodJobNnMocks=(artFiles,gi)=>{
+  const _mk=gi.sku+'|'+(gi.color||'');
+  let numbers=0,names=0;
+  (artFiles||[]).forEach(a=>{const m=a?.item_mockups||{};
+    Object.keys(m).forEach(k=>{
+      if(!k.startsWith(_mk+'|'))return;
+      const n=(m[k]||[]).filter(Boolean).length;if(!n)return;
+      if(/\|numbers(_\d+)?(_b)?$/.test(k))numbers+=n;
+      else if(/\|names(_\d+)?(_b)?$/.test(k))names+=n;
+    })});
+  return{numbers,names};
+};
 // ── Dashboard art preview (READ-ONLY) ──
 // The mock images behind an "Art awaiting approval" to-do, so a rep can eyeball the proof
 // from the home page instead of opening the order. Scoping is the production board's
@@ -1190,6 +1205,18 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Mockup image(s) for this item immediately after its tables — all locations
     // (front + back arts, numbers/names) side by side
     const _giSrc=_linkSrcOf(gi);
+    // Back-proof gate. A garment running numbers or names has its own mockup slot for that side,
+    // and the sheet prints it whenever one exists — but nothing ever flagged its ABSENCE, so
+    // SO-1605's jerseys reached the floor with a roster, a front mockup, and no picture of the
+    // back at all. Say so on the sheet instead of leaving the press to guess the placement.
+    // Skipped for a garment that borrows another's mockup — the source garment carries the notice.
+    if(!_giSrc&&(itemNumDecos.length>0||itemNameDecos.length>0)){
+      const _nn=_prodJobNnMocks(allArtFiles,gi);
+      const _missNn=[];
+      if(itemNumDecos.length>0&&_nn.numbers===0)_missNn.push('numbers');
+      if(itemNameDecos.length>0&&_nn.names===0)_missNn.push('names');
+      if(_missNn.length>0)sHtml+='<div style="margin:8px 0;padding:9px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO BACK MOCKUP — no approved '+_missNn.join(' / ')+' mockup on file for '+gi.sku+(gi.color?' ('+gi.color+')':'')+'. Confirm placement and size with the artist before running.</div>';
+    }
     if(_giSrc){
       // Linked garment: reference the source garment's mockup instead of repeating it.
       sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';

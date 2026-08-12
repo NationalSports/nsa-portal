@@ -24,7 +24,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
@@ -3396,14 +3396,68 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       for(const aid of _hIds){const artF=af.find(a=>a.id===aid);if(!artF)return r.job;const st=_artStForFile(artF,r.job.deco_type);if(st!=='art_complete')worst=st}
       return worst!==r.job.art_status?{...r.job,art_status:worst}:r.job;
     };
-    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
+    const _relRaw=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
       .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
-    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
+    const _mrgRaw=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
       .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
+    // ── One garment, one job ── The frozen claims above lock the auto-builder out of a garment's
+    // OTHER decorations, so releasing (say) the chest logo leaves the back numbers to form a second
+    // job for the same physical garments: two sheets on the floor and double units in the board's
+    // total (SO-1605's 18 jerseys read 36). consolidateFrozenJobDecos folds those complementary
+    // frozen jobs back together and lets a frozen job claim the decorations still unowned on the
+    // garments it already holds — the auto-builder's own `__combined` rule, applied to frozen rows.
+    // Runs BEFORE frozenItemDecos so the newly claimed pairs are excluded from the rebuild too.
+    const _liveItemDecos=ii=>{
+      const it=safeItems(o)[ii];if(!it)return null;
+      const outTypes=outsourcedByItem[ii];
+      const out=[];
+      const decos=safeDecos(it);
+      for(let di=0;di<decos.length;di++){
+        const d=decos[di];if(!d)continue;
+        if(d.kind!=='art'&&d.kind!=='numbers'&&d.kind!=='names')continue;
+        if(d.fulfillment==='outside'||d.deco_po_id)continue;// routed outside — never in-house work
+        let method,label,artFileId=null,consolidatable=true;
+        if(d.kind==='art'){
+          const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
+          // Declared art that isn't hydrated yet — never reshape a frozen job off a half-loaded order.
+          if(d.art_file_id&&d.art_file_id!=='__tbd'&&!artF)return null;
+          method=artF?.deco_type||d.deco_type||'screen_print';
+          label=artF?.name||('Unassigned Art ('+safeStr(d.position)+')');
+          artFileId=d.art_file_id||null;
+          // Split-art shares carry their own per-size allocation and MUST keep their own job.
+          // A design still moving through art keeps its own job too: folding it into a frozen job
+          // would move its garments out from under an open art request / coach send. Once it lands
+          // on art_complete there is no in-flight workflow left to strand, and the next sync
+          // consolidates it — so this self-corrects rather than freezing the split in place.
+          consolidatable=!(d.split_group&&d.split_sizes&&Object.keys(d.split_sizes).length>0)
+            &&_artStForFile(artF,d.deco_type)==='art_complete';
+        }else if(d.kind==='numbers'){
+          method=d.num_method||'heat_transfer';label='Numbers — '+method.replace(/_/g,' ');
+        }else{
+          method=d.name_method||'heat_press';label='Names — '+method.replace(/_/g,' ');
+        }
+        if(decoIsOutsourced(outTypes,method)&&_itemFullyOutsourced(ii))continue;// whole item vendor-decorated
+        out.push({deco_idx:di,kind:d.kind,method,position:safeStr(d.position),art_file_id:artFileId,label,consolidatable});
+      }
+      return out;
+    };
+    // Decorations a NON-frozen job already took to the floor. The auto-builder rebuilds those jobs
+    // every pass, so quietly moving their decorations into a frozen job would restructure work that
+    // is staging / on press / finished. Leave them exactly where they are.
+    const _startedPairs=new Set();
+    safeJobs(o).forEach(j=>{
+      if(!j||_isRel(j)||j._merged)return;
+      if(['','draft','hold','ready'].includes(j.prod_status||''))return;
+      (j.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);
+        dis.forEach(di=>_startedPairs.add(gi.item_idx+'::'+di))});
+    });
+    const _consolidated=consolidateFrozenJobDecos([..._relRaw,..._mrgRaw],_liveItemDecos,_startedPairs).jobs;
+    const releasedJobs=_consolidated.filter(_isRel);
+    const mergedJobs=_consolidated.filter(j=>!_isRel(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -3784,7 +3838,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!_ids.length)return j;
       const _live=_ids.map(id=>af.find(a=>a.id===id)).filter(a=>a&&!a.archived&&(a.name||'').trim());
       if(_live.length!==_ids.length)return j;// some art missing/unnamed — leave the snapshot alone
-      const _nm=_live.map(a=>a.name.trim()).join(' + ');
+      // Numbers/names the job also runs ride on the label, matching the auto-builder's wording —
+      // a consolidated job that reads as the logo alone hides the back work from the board and sheet.
+      const _nm=[..._live.map(a=>a.name.trim()),...frozenJobNonArtLabels(j,_liveItemDecos)].join(' + ');
       if(_nm===j.art_name||/^art tbd/i.test(_nm))return j;
       return{...j,art_name:_nm};
     };
