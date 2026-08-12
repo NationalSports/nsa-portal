@@ -227,6 +227,11 @@ exports.handler = async (event) => {
         }
         const hourKey = (iso) => String(iso || '').slice(0, 13); // YYYY-MM-DDTHH
         const activeHours = new Set(completes.map((e) => hourKey(e.created_at))).size;
+        // Clean-bag rate: pace alone incentivizes speed over correctness (pro
+        // dashboards always pair throughput with an accuracy figure) — the
+        // closest honest proxy we have is bags completed without any short.
+        const shortOrderIds = new Set(shortEvs.map((e) => e.order_id).filter(Boolean));
+        const cleanBags = completes.filter((e) => !shortOrderIds.has(e.order_id)).length;
         const byPacker = new Map();
         completes.forEach((e) => {
           const who = String(e.actor || 'unknown').replace(/^staff:/, 'staff #').replace(/^station:/, '');
@@ -244,6 +249,7 @@ exports.handler = async (event) => {
             items_per_hour: activeHours ? +(itemsTotal / activeHours).toFixed(1) : 0,
             avg_items_per_bag: completes.length ? +(itemsTotal / completes.length).toFixed(1) : 0,
             shorts: shortEvs.length,
+            clean_rate: completes.length ? +((cleanBags / completes.length) * 100).toFixed(1) : null,
             packers: [...byPacker.entries()].map(([who, n]) => ({ who, bags: n })).sort((a, b) => b.bags - a.bags),
             top_shorts: [...bySku.values()].sort((a, b) => b.count - a.count).slice(0, 8),
             by_hour_utc: byHourOfDay,

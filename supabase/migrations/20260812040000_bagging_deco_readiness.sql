@@ -103,3 +103,32 @@ language sql stable as $$
 $$;
 revoke execute on function bagging_list_groups() from public, anon, authenticated;
 revoke execute on function bagging_order_ready(uuid) from public, anon, authenticated;
+
+-- ── Exception aging (applied as bagging_short_at) ──────────────────────────
+-- Pro pack-station convention: exceptions carry an age so problem-shelf bags
+-- don't rot. bagging_short_item stamps short_at when a short is declared
+-- (kept on re-declare, cleared when the short is zeroed).
+alter table webstore_order_items add column if not exists short_at timestamptz;
+
+create or replace function bagging_short_item(p_item_id uuid, p_short_qty int, p_note text, p_actor text)
+returns setof webstore_order_items language plpgsql as $$
+declare r webstore_order_items; v_order uuid;
+begin
+  select i.order_id into v_order from webstore_order_items i where i.id = p_item_id;
+  if v_order is null then raise exception 'NSA_BAG_NO_ITEM'; end if;
+  if not exists (select 1 from webstore_orders o where o.id = v_order and o.bagging_claimed_by = p_actor) then
+    raise exception 'NSA_BAG_NOT_CLAIMED';
+  end if;
+  update webstore_order_items i
+     set short_qty = greatest(0, least(coalesce(i.qty,0), coalesce(p_short_qty,0))),
+         short_note = coalesce(p_note, i.short_note),
+         short_status = case when coalesce(p_short_qty,0) > 0 then 'open' else null end,
+         short_at = case when coalesce(p_short_qty,0) > 0 then coalesce(i.short_at, now()) else null end,
+         short_resolved_by = null, short_resolved_at = null
+   where i.id = p_item_id
+  returning i.* into r;
+  insert into bagging_events(order_id, item_id, actor, event, qty, note)
+    values (v_order, p_item_id, p_actor, 'short', r.short_qty, p_note);
+  return next r;
+end $$;
+revoke execute on function bagging_short_item(uuid,int,text,text) from public, anon, authenticated;

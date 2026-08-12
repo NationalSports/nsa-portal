@@ -437,6 +437,7 @@ function ReportsView({ api, onBack }) {
             {tile(stats.items_per_hour, 'Items / active hr', '#60a5fa')}
             {tile(stats.avg_items_per_bag, 'Avg items / bag')}
             {tile(stats.shorts, 'Shorts', stats.shorts ? '#fbbf24' : '#22c55e')}
+            {stats.clean_rate != null && tile(stats.clean_rate + '%', 'Clean-bag rate', stats.clean_rate >= 98 ? '#22c55e' : '#fbbf24')}
           </div>
           <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, marginTop: 8 }}>
             Rates are per active hour — {stats.active_hours} hour{stats.active_hours === 1 ? '' : 's'} had bagging activity in this window.
@@ -596,6 +597,11 @@ function ResolvePanel({ orders, staffMode, onResolve, onBackorder }) {
             <span style={{ color: '#94a3b8', fontWeight: 700 }}> — {hdr.number ? '#' + hdr.number + ' ' : ''}{hdr.name}</span>
           </div>
           {i.short_note && <div style={{ color: '#94a3b8', fontSize: 14, marginTop: 4 }}>“{i.short_note}”</div>}
+          {i.short_at && (() => {
+            const hrs = Math.floor((Date.now() - Date.parse(i.short_at)) / 3600000);
+            const age = hrs < 1 ? 'under an hour' : hrs < 24 ? hrs + 'h' : Math.floor(hrs / 24) + 'd';
+            return <div style={{ color: hrs >= 24 ? '#f87171' : '#94a3b8', fontSize: 13, fontWeight: 700, marginTop: 2 }}>On the shelf {age}{hrs >= 24 ? ' — resolve today' : ''}</div>;
+          })()}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
             <button type="button" style={btn('#22c55e')} onClick={() => onResolve(i, 'found')}>Found it</button>
             <button type="button" style={btn('#60a5fa')} onClick={() => onResolve(i, 'pulled')}>Pulled from stock</button>
@@ -919,16 +925,37 @@ function BaggingScreen({ stationToken, staffMode }) {
           </button>
         )}
         {msgBox}
-        {allDone ? (
-          <div style={{ marginTop: 30, textAlign: 'center' }}>
-            <div style={{ fontSize: 44, fontWeight: 800, color: '#22c55e' }}>All {total} bags done ✓</div>
-            <div style={{ color: '#94a3b8', fontSize: 18, fontWeight: 700, marginTop: 10 }}>
-              {shorts > 0
-                ? `${shorts} short${shorts === 1 ? '' : 's'} on the resolve list — the club shipment waits on those.`
-                : 'Create the club shipment from Webstores → this store → Batches.'}
+        {allDone ? (() => {
+          // Batch close-out (pro wave-close convention): the full reconciliation
+          // — every order accounted for as packed, short, backordered, or refunded.
+          const allItems = orders.flatMap((o) => o.webstore_order_items || []);
+          const count = (st) => allItems.filter((i) => i.short_status === st).reduce((a, i) => a + (Number(i.short_qty) || 0), 0);
+          const packedUnits = allItems.reduce((a, i) => a + Math.min(Number(i.bagged_qty) || 0, Number(i.qty) || 0), 0);
+          const rows = [
+            ['Bags packed', bagged, '#22c55e'], ['Units in bags', packedUnits, '#f1f5f9'],
+            ['Open shorts', shorts, shorts ? '#fbbf24' : '#22c55e'],
+            ['Backordered units', count('backordered'), '#f472b6'],
+            ['Refunded units', count('refunded'), '#94a3b8'],
+          ];
+          return (
+            <div style={{ marginTop: 24 }}>
+              <div style={{ textAlign: 'center', fontSize: 44, fontWeight: 800, color: '#22c55e' }}>All {total} bags done ✓</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center', marginTop: 16 }}>
+                {rows.map(([label, n, color]) => (
+                  <div key={label} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '12px 22px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 30, fontWeight: 800, color, lineHeight: 1 }}>{n}</div>
+                    <div style={{ ...S.cap, marginTop: 6 }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 18, fontWeight: 700, marginTop: 16 }}>
+                {shorts > 0
+                  ? `Resolve the ${shorts} open short${shorts === 1 ? '' : 's'} — the club shipment waits on those.`
+                  : 'Batch reconciled — create the club shipment from Webstores → this store → Batches.'}
+              </div>
             </div>
-          </div>
-        ) : (
+          );
+        })() : (
           <button type="button" style={S.bigBtn('#2563eb', busy)} disabled={busy} onClick={nextOrder}>
             {busy ? 'Working…' : 'Next order →'}
           </button>
