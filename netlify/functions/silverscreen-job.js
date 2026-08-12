@@ -130,7 +130,23 @@ async function fetchOrderForm(jar) {
   const res = await ssFetch(jar, '/orders/new?order%5Bsales_rep_id%5D=' + encodeURIComponent(repId));
   if (res.status >= 300 && res.status < 400) throw new Error('Silver Screen bounced /orders/new to ' + res.headers.get('location') + ' — session not accepted.');
   const html = await res.text();
-  const form = parseOrderForm(html);
+  let form = parseOrderForm(html);
+  // Turbo apps often render the real order form inside a lazy <turbo-frame src="...">; the shell
+  // page then only carries nav/search forms with no textarea (seen live 2026-08-12: the create
+  // refused with "no notes/instructions field"). When the parsed form has no textarea, follow the
+  // frames and prefer a form that does.
+  const hasTextarea = (f) => !!f && f.fields.some((x) => x.tag === 'textarea');
+  if (!hasTextarea(form)) {
+    const frameSrcs = [...html.matchAll(/<turbo-frame\b[^>]*\bsrc="([^"]+)"/gi)].map((m) => m[1]).slice(0, 4);
+    for (const src of frameSrcs) {
+      try {
+        const fres = await ssFetch(jar, src, { headers: { Accept: 'text/html, application/xhtml+xml' } });
+        const ff = parseOrderForm(await fres.text());
+        if (hasTextarea(ff)) { form = ff; break; }
+        if (!form && ff) form = ff;
+      } catch { /* dead frame — try the next one */ }
+    }
+  }
   if (!form) throw new Error('Could not find the order form on /orders/new — the portal layout may have changed. Run action:"discover" and inspect.');
   return form;
 }
@@ -226,8 +242,12 @@ exports.handler = async (event) => {
     const filled = fillForm(form, body);
     if (!filled.sheetIncluded) {
       // Without a notes/textarea target the item breakdown would be silently lost —
-      // refuse rather than create a job Silver Screen can't act on.
-      return { statusCode: 422, headers, body: JSON.stringify({ ok: false, error: 'The order form has no notes/instructions field to carry the item list — run action:"discover" and update the field map in silverscreen-job.js.', form }) };
+      // refuse rather than create a job Silver Screen can't act on. Name the fields we DID
+      // see so the failure itself says whether we parsed a search/nav form or a changed
+      // order form (a screenshot of this error is enough to fix the map).
+      const seen = form.fields.filter((f) => f.type !== 'hidden' && f.type !== 'submit')
+        .map((f) => f.tag + ':' + f.name).slice(0, 20).join(', ');
+      return { statusCode: 422, headers, body: JSON.stringify({ ok: false, error: 'The order form has no notes/instructions field to carry the item list. Fields seen: [' + (seen || 'none') + ']. Update the field map in silverscreen-job.js to match.', form }) };
     }
 
     if (body.dry_run) {
