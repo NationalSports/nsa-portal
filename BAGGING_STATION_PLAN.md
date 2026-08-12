@@ -16,9 +16,10 @@ Decisions locked with Scott (2026-08-12):
 - **Printing**: 4×6 thermal printer at the station; label prints automatically on
   order completion ("full auto").
 - **Shortages**: flag & bag partial. Shorted orders land on a **Resolve list** that
-  must be cleared (found / pulled from elsewhere / **split onto a new backorder
-  order**) before the store's club shipment can be created. Backordered items always
-  become their own child order so they're tracked as real orders, never as notes.
+  must be cleared before the store's club shipment can be created. If the item
+  can't be found or pulled from stock, there are exactly **two options: backorder
+  (split onto a new child order) or refund** — never a lingering note on the
+  original order.
 - **Concurrency**: build for 2+ packers from day one — opening an order claims it.
 - **Batch complete**: prompt the club shipment right on the tablet.
 
@@ -130,20 +131,35 @@ or when — and shortages live in packers' heads.
 - Each batch row shows live bagging progress (`14/42 bagged · 2 short`).
 - **Resolve list** per batch: each shorted line with buttons
   **Found** (clears short, packer re-opens bag to add), **Pull from stock** (link to
-  inventory search; clears short when confirmed), **Backorder** (records
-  `backorder_eta` + note and **splits the missing qty onto a new backorder order** —
-  see "Backorder orders" below; the original line ships short and the bag label
-  note stands).
+  inventory search; clears short when confirmed), and — when the item genuinely
+  can't be filled — the only two terminal options:
+  **Backorder** (records `backorder_eta` + note and **splits the missing qty onto a
+  new backorder order** — see "Backorder orders" below; the original line ships
+  short and the bag label note stands) or
+  **Refund** (refunds the shorted qty through the **existing** refund path:
+  `refundOrder` → `stripe-payment` `refund_webstore_order` → `apply_webstore_refund`
+  RPC, idempotency key + over-refund cap intact; pre-filled with
+  `short_qty × unit_price` plus the proportional tax the existing refund
+  auto-suggest already computes, editable before confirm. On success the line is
+  marked `short_status='refunded'`. Money moves only through the existing path —
+  never through bagging RPCs — and only from the desktop Resolve list, not the
+  tablet.)
 - Club shipment creation (`webstoreToShipStation` / box-tracking entry points) is
   **blocked while the batch has unresolved shorts** — hard gate with an override
-  requiring a typed reason (logged). Backordering *is* a resolution: once every
-  short is found, pulled, or split to a backorder order, the shipment unblocks.
+  requiring a typed reason (logged). Once every short is found, pulled,
+  backordered, or refunded, the shipment unblocks.
+- OMG caveat: OMG money never touches Stripe (ingested lines land at
+  `unit_price 0`; payment lives in OMG's system), so for OMG orders **Refund** is a
+  record-keeping resolution — it marks the line refunded with a required note, and
+  the actual money is handled in OMG. The Resolve list labels the button
+  "Refunded in OMG" for those orders.
 
-### Backorder orders (decision 2026-08-12: backordered items go on a NEW order)
+### Backorder orders (decision 2026-08-12: unfillable shorts are backordered onto a NEW order, or refunded — those are the two options)
 
 A shorted item that can't be found or pulled never rides along as a note on the
-original order — it becomes its own order, so tracking it is a list of real orders,
-not tribal memory:
+original order — it either becomes its own order (below) or is refunded and closed.
+Either way, tracking it is a list of real orders and real refunds, not tribal
+memory:
 
 - **Split**: the Backorder action creates (or reuses) one child `webstore_orders`
   row per parent order — `backorder_of = parent order id`, same store, same buyer /
@@ -207,7 +223,7 @@ Follow the repo's current timestamp naming and the RPC style of
 - `bagged_qty int not null default 0` — the tap counter (≤ `qty`)
 - `short_qty int not null default 0` — packer-declared missing (distinct from the
   existing `missing_qty`, which vendor/receiving flows already write)
-- `short_note text`, `short_status text check (short_status in ('open','found','pulled','backordered'))`,
+- `short_note text`, `short_status text check (short_status in ('open','found','pulled','backordered','refunded'))`,
   `short_resolved_by text`, `short_resolved_at timestamptz`
 - `backorder_of_item uuid references webstore_order_items(id)` — set on child
   backorder lines, pointing at the parent line they fulfill
@@ -245,7 +261,10 @@ Audit trail + the data for "how long does a bag take" later.
   (max+1 within `so_id`), releases the claim. Does **not** touch `line_status`
   (see monotonic-status note below).
 - `bagging_resolve_short(p_item_id, p_resolution, p_note, p_actor)` — resolution in
-  ('found','pulled'); 'found' also resets the line so the bag can be reopened.
+  ('found','pulled','refunded'); 'found' also resets the line so the bag can be
+  reopened. 'refunded' is only called by the desktop Resolve flow **after** the
+  existing refund path has succeeded (for Stripe-paid orders) or with a required
+  note (OMG); this RPC records state, it never moves money.
 - `bagging_backorder_short(p_item_id, p_eta, p_note, p_actor)` — atomic: finds or
   creates the parent order's single child backorder order (`backorder_of`), clones
   the line onto it (`qty = short_qty`, `unit_price 0`, `backorder_of_item` set,
@@ -332,7 +351,9 @@ src/__tests__/bagLabel.test.js
    ("on order — not arrived"), untappable, and don't block leaving the order
    partially bagged; they are a *wait*, not a short.
 4. `ResolvePanel` (also embedded in desktop Batches tab) — open shorts with the
-   three resolution actions (Found / Pull from stock / Backorder → new order).
+   resolution actions (Found / Pull from stock / Backorder → new order /
+   Refund). Refund is desktop-only; the tablet shows it grayed with "resolve at
+   the desk".
 5. `BackorderQueue` — the per-store backorder card's detail: child orders with
    player, items, ETA, age, stock-arrived flag; tapping one opens `OrderBag` as
    usual. Same list renders on the desktop Batches tab and OMG portal.
@@ -388,6 +409,10 @@ PRs at step 4 if review size demands.
    Backorder split: `bagging_backorder_short` RPC + `BackorderQueue` (station and
    desktop) + the distinct "BACKORDER — completes Bag N" label variant. Test that
    the split is idempotent and parent ship-plan math excludes the moved qty.
+   Refund wiring: Resolve list → existing `refundOrder` path with the shorted-qty
+   amount pre-filled, then `bagging_resolve_short('refunded')`; OMG variant is
+   record-only with required note. Test: refund failure leaves the short open
+   (state records only after money succeeds).
 8. **Desktop integration** — Batches tab progress chip, Resolve list, ship gate,
    station link/QR. Same treatment in `OmgOrderPortal.js`: progress chip on the
    header, Resolve list, gate on `printOmgLabels` and "Move all → Shipped",
@@ -409,8 +434,10 @@ PRs at step 4 if review size demands.
 - A completed bag = printed 4×6 label with correct contents, shorts flagged.
 - Batches tab shows live `bagged/total · shorts` without refresh.
 - Club shipment for a batch with open shorts is blocked until each short is
-  found, pulled, or split onto a backorder order (or explicitly overridden with a
-  reason).
+  found, pulled, backordered, or refunded (or explicitly overridden with a reason).
+- Refunding a short moves money only through the existing
+  `refund_webstore_order`/`apply_webstore_refund` path (cap and idempotency
+  intact); a failed refund leaves the short open.
 - Backordering a short creates exactly one child order per parent (idempotent),
   visible in the Backorders queue with ETA and stock-arrived state; the parent
   batch can then ship, the moved qty can't ship twice, and when goods arrive the
