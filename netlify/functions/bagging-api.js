@@ -171,6 +171,70 @@ exports.handler = async (event) => {
         return ok({ order });
       }
 
+      case 'stats': {
+        // Reporting: computed from the bagging_events audit log over a window.
+        // "Per hour" is per ACTIVE hour (hours with at least one completed bag)
+        // so lunch breaks and overnight don't dilute the rate.
+        const days = Math.max(1, Math.min(90, Number(body.days) || 7));
+        const since = new Date(Date.now() - days * 86400000).toISOString();
+        const { data: evs, error } = await sb.from('bagging_events')
+          .select('event, actor, order_id, item_id, qty, created_at')
+          .in('event', ['complete', 'short', 'label_print'])
+          .gte('created_at', since)
+          .order('created_at', { ascending: true })
+          .limit(10000);
+        if (error) return rpcFail(error);
+        const completes = (evs || []).filter((e) => e.event === 'complete');
+        const shortEvs = (evs || []).filter((e) => e.event === 'short' && (Number(e.qty) || 0) > 0);
+        // items per completed bag (bagged units at completion time ≈ current bagged_qty)
+        const orderIds = [...new Set(completes.map((e) => e.order_id).filter(Boolean))];
+        let itemsTotal = 0;
+        const chunks = [];
+        for (let i = 0; i < orderIds.length; i += 200) chunks.push(orderIds.slice(i, i + 200));
+        for (const c of chunks) {
+          const { data: its } = await sb.from('webstore_order_items')
+            .select('order_id, qty, bagged_qty').in('order_id', c);
+          itemsTotal += (its || []).reduce((a, i) => a + Math.min(Number(i.bagged_qty) || 0, Number(i.qty) || 0), 0);
+        }
+        // top shorted products (from the short events' items)
+        const shortItemIds = [...new Set(shortEvs.map((e) => e.item_id).filter(Boolean))];
+        const bySku = new Map();
+        for (let i = 0; i < shortItemIds.length; i += 200) {
+          const { data: its } = await sb.from('webstore_order_items')
+            .select('id, sku, name, size, short_qty').in('id', shortItemIds.slice(i, i + 200));
+          (its || []).forEach((it) => {
+            const key = `${it.sku || ''}|${it.name || ''}`;
+            const cur = bySku.get(key) || { sku: it.sku || '', name: it.name || it.sku || 'Item', count: 0 };
+            cur.count += Number(it.short_qty) || 1;
+            bySku.set(key, cur);
+          });
+        }
+        const hourKey = (iso) => String(iso || '').slice(0, 13); // YYYY-MM-DDTHH
+        const activeHours = new Set(completes.map((e) => hourKey(e.created_at))).size;
+        const byPacker = new Map();
+        completes.forEach((e) => {
+          const who = String(e.actor || 'unknown').replace(/^staff:/, 'staff #').replace(/^station:/, '');
+          byPacker.set(who, (byPacker.get(who) || 0) + 1);
+        });
+        const byHourOfDay = Array(24).fill(0);
+        completes.forEach((e) => { const h = new Date(e.created_at).getUTCHours(); byHourOfDay[h] += 1; });
+        return ok({
+          stats: {
+            days,
+            bags: completes.length,
+            items: itemsTotal,
+            active_hours: activeHours,
+            bags_per_hour: activeHours ? +(completes.length / activeHours).toFixed(1) : 0,
+            items_per_hour: activeHours ? +(itemsTotal / activeHours).toFixed(1) : 0,
+            avg_items_per_bag: completes.length ? +(itemsTotal / completes.length).toFixed(1) : 0,
+            shorts: shortEvs.length,
+            packers: [...byPacker.entries()].map(([who, n]) => ({ who, bags: n })).sort((a, b) => b.bags - a.bags),
+            top_shorts: [...bySku.values()].sort((a, b) => b.count - a.count).slice(0, 8),
+            by_hour_utc: byHourOfDay,
+          },
+        });
+      }
+
       case 'log_label_print': {
         await sb.from('bagging_events').insert({
           order_id: body.order_id, actor, event: 'label_print',

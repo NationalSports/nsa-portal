@@ -128,6 +128,40 @@ export function batchItemTotals(orders) {
   return { sizes, rows: list, totals: { total, bagged: baggedAll, short: shortAll, remaining: total - baggedAll - shortAll } };
 }
 
+// Board sort modes. 'size' groups same-size orders together so the packer
+// works one stack of the staging table at a time (an order's size = the most
+// common size among its live lines); 'name' is player alphabetical for
+// find-a-specific-bag; 'oldest' matches the server's next-order pick.
+export const ORDER_SORTS = [
+  { key: 'oldest', label: 'Oldest first' },
+  { key: 'size', label: 'By size' },
+  { key: 'name', label: 'By player' },
+];
+
+export function dominantSize(items) {
+  const counts = new Map();
+  for (const i of (items || [])) {
+    if ((i.line_status || '') === 'cancelled' || i.is_bundle_parent || !i.size) continue;
+    counts.set(i.size, (counts.get(i.size) || 0) + (Number(i.qty) || 0));
+  }
+  let best = null; let n = -1;
+  for (const [sz, c] of counts) if (c > n || (c === n && sizeRank(sz) < sizeRank(best))) { best = sz; n = c; }
+  return best;
+}
+
+export function sortOrders(orders, mode) {
+  const list = [...(orders || [])];
+  const items = (o) => o.webstore_order_items || o.items || [];
+  const name = (o) => (playerHeader(o, items(o)).name || '').toLowerCase();
+  if (mode === 'size') {
+    return list.sort((a, b) =>
+      sizeRank(dominantSize(items(a))) - sizeRank(dominantSize(items(b)))
+      || name(a).localeCompare(name(b)));
+  }
+  if (mode === 'name') return list.sort((a, b) => name(a).localeCompare(name(b)));
+  return list.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+}
+
 // Client-side fallback "next order" pick (server bagging_next_order is the
 // real one): unbagged, unclaimed-or-stale, oldest first.
 export function nextOrderPick(orders, actor, nowMs) {

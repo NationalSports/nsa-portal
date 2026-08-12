@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
-import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals } from './bagLogic';
+import { orderProgress, sortLinesForBag, lineOnOrder, lineSatisfied, shortSummary, playerHeader, batchItemTotals, sortOrders, ORDER_SORTS } from './bagLogic';
 import { buildBagLabelHtml } from './bagLabel';
 
 // Bagging Station — one-order-at-a-time webstore bagging on a tablet
@@ -44,6 +44,44 @@ async function callBagApi(body, stationToken) {
   });
   const json = await res.json().catch(() => ({}));
   return { status: res.status, ...json };
+}
+
+// ── Feedback: sound + haptics ──
+// Packers shouldn't need to look up to know the tap registered: a soft click
+// per item, a rising two-tone on bag complete, a low buzz on errors. WebAudio
+// only (no assets); vibration where the tablet supports it. All wrapped in
+// try/catch — feedback must never break the flow.
+let _audioCtx = null;
+function tone(freq, ms, delay = 0, type = 'sine', gain = 0.06) {
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const t0 = _audioCtx.currentTime + delay / 1000;
+    const osc = _audioCtx.createOscillator();
+    const g = _audioCtx.createGain();
+    osc.type = type; osc.frequency.value = freq;
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + ms / 1000);
+    osc.connect(g); g.connect(_audioCtx.destination);
+    osc.start(t0); osc.stop(t0 + ms / 1000);
+  } catch { /* audio unavailable — fine */ }
+}
+const vibrate = (pattern) => { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {} };
+const fxTap = () => { tone(880, 60); vibrate(15); };
+const fxComplete = () => { tone(660, 120); tone(990, 180, 110); vibrate([30, 40, 60]); };
+const fxError = () => { tone(160, 220, 0, 'square', 0.05); vibrate([80, 50, 80]); };
+
+// Keep the tablet awake while a batch is open (screen sleep mid-bag loses the
+// packer's place and the camera/print windows). Best-effort Screen Wake Lock.
+function useWakeLock(active) {
+  useEffect(() => {
+    if (!active || !navigator.wakeLock) return undefined;
+    let lock = null; let alive = true;
+    const acquire = () => navigator.wakeLock.request('screen').then((l) => { if (alive) lock = l; else l.release(); }).catch(() => {});
+    acquire();
+    const onVis = () => { if (document.visibilityState === 'visible') acquire(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { alive = false; document.removeEventListener('visibilitychange', onVis); if (lock) lock.release().catch(() => {}); };
+  }, [active]);
 }
 
 // Human wording for the RPC guard codes (server raises NSA_BAG_*).
@@ -186,6 +224,199 @@ function LineRow({ item, onTap, onShort }) {
           onClick={(e) => { e.stopPropagation(); onShort(item); }}>
           Can&apos;t find it
         </button>
+      )}
+    </div>
+  );
+}
+
+// ── Sheet: the station's one modal pattern ──
+// Bottom-anchored dark sheet with oversized touch targets — replaces every
+// window.prompt (tiny keyboard-first dialogs are wrong for gloved thumbs on a
+// warehouse tablet). Tap the scrim or Cancel to dismiss.
+function Sheet({ title, children, onClose }) {
+  return (
+    <div role="dialog" aria-modal="true" aria-label={title}
+      style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(2,6,23,0.72)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+      onClick={onClose}>
+      <div style={{ width: '100%', maxWidth: 700, background: '#0f172a', border: '1px solid #334155', borderBottom: 'none', borderRadius: '16px 16px 0 0', padding: '20px 20px calc(20px + env(safe-area-inset-bottom))', boxShadow: '0 -24px 60px rgba(0,0,0,0.5)' }}
+        onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>{title}</div>
+          <button type="button" style={{ ...S.backBtn, fontSize: 16 }} onClick={onClose}>Cancel</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const sheetBtn = (bg) => ({ flex: 1, minHeight: 64, fontSize: 19, fontWeight: 800, background: bg, color: '#fff', border: 'none', borderRadius: 10, cursor: 'pointer' });
+const sheetInput = { width: '100%', boxSizing: 'border-box', background: '#1e293b', color: '#f1f5f9', border: '2px solid #334155', borderRadius: 8, padding: '14px 16px', fontSize: 18, fontWeight: 600, outline: 'none' };
+
+// Short sheet: qty stepper + quick reasons + free note, one confirm.
+function ShortSheet({ item, onConfirm, onClose }) {
+  const remaining = (Number(item.qty) || 0) - (Number(item.bagged_qty) || 0);
+  const [qty, setQty] = useState(remaining);
+  const [note, setNote] = useState('');
+  const chips = ['Not in the delivery', 'Damaged', 'Wrong size came in', 'Wrong color came in'];
+  return (
+    <Sheet title={`Can’t find: ${item.name || item.sku}${item.size ? ' · ' + item.size : ''}`} onClose={onClose}>
+      {remaining > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 14 }}>
+          <span style={{ ...S.cap }}>How many missing?</span>
+          <button type="button" style={{ ...sheetBtn('#1e293b'), flex: 'none', width: 64, border: '1px solid #334155' }} onClick={() => setQty(Math.max(1, qty - 1))}>−</button>
+          <span style={{ fontSize: 30, fontWeight: 800, minWidth: 40, textAlign: 'center' }}>{qty}</span>
+          <button type="button" style={{ ...sheetBtn('#1e293b'), flex: 'none', width: 64, border: '1px solid #334155' }} onClick={() => setQty(Math.min(remaining, qty + 1))}>+</button>
+          <span style={{ color: '#64748b', fontWeight: 700 }}>of {remaining}</span>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        {chips.map((c) => (
+          <button key={c} type="button" onClick={() => setNote(c)}
+            style={{ ...S.backBtn, fontSize: 15, padding: '12px 16px', borderColor: note === c ? '#d97706' : '#334155', color: note === c ? '#fbbf24' : '#94a3b8' }}>
+            {c}
+          </button>
+        ))}
+      </div>
+      <input style={sheetInput} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <button type="button" style={sheetBtn('#d97706')} onClick={() => onConfirm(qty, note || null)}>
+          Mark {qty > 1 ? qty + ' ' : ''}short &amp; keep bagging
+        </button>
+      </div>
+      <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, marginTop: 10 }}>
+        The bag label will flag it, this bag goes on the <b style={{ color: '#fbbf24' }}>problem shelf</b>, and the desk resolves it before the store ships.
+      </div>
+    </Sheet>
+  );
+}
+
+// Backorder sheet: ETA date + note.
+function BackorderSheet({ item, onConfirm, onClose }) {
+  const [eta, setEta] = useState('');
+  const [note, setNote] = useState('');
+  return (
+    <Sheet title={`Backorder: ${item.name || item.sku}${item.size ? ' · ' + item.size : ''}`} onClose={onClose}>
+      <div style={{ color: '#94a3b8', fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
+        Splits the missing {item.short_qty > 1 ? item.short_qty + ' pieces' : 'piece'} onto a new follow-up order. The batch can ship without it; the follow-up appears in the Backorders queue.
+      </div>
+      <label style={{ ...S.cap, display: 'block', marginBottom: 6 }}>Expected arrival (optional)</label>
+      <input type="date" style={{ ...sheetInput, marginBottom: 12 }} value={eta} onChange={(e) => setEta(e.target.value)} />
+      <input style={sheetInput} placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <button type="button" style={sheetBtn('#db2777')} onClick={() => onConfirm(eta || null, note || null)}>Create backorder order</button>
+      </div>
+    </Sheet>
+  );
+}
+
+// Refund-record sheet (desk only): requires a reference note; money already moved.
+function RefundSheet({ item, onConfirm, onClose }) {
+  const [note, setNote] = useState('');
+  return (
+    <Sheet title={`Record refund: ${item.name || item.sku}${item.size ? ' · ' + item.size : ''}`} onClose={onClose}>
+      <div style={{ color: '#fbbf24', fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
+        This records the resolution only. Issue the actual refund first — Webstores → Orders (Stripe), or in OMG for OMG sales.
+      </div>
+      <input style={sheetInput} placeholder="Refund reference / note (required)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+        <button type="button" style={{ ...sheetBtn(note.trim() ? '#b45309' : '#334155') }} disabled={!note.trim()} onClick={() => onConfirm(note.trim())}>
+          Record refunded
+        </button>
+      </div>
+    </Sheet>
+  );
+}
+
+// Printer setup help — the honest path to true zero-tap printing.
+function PrinterSheet({ onClose }) {
+  const li = { margin: '0 0 10px', fontSize: 15, color: '#cbd5e1', lineHeight: 1.5 };
+  return (
+    <Sheet title="Printer setup" onClose={onClose}>
+      <ol style={{ margin: 0, paddingLeft: 20 }}>
+        <li style={li}>Pair the tablet with the 4×6 thermal printer (Rollo / Zebra) at the OS level — AirPrint on iPad, Mopria/direct on Android, normal driver on Windows.</li>
+        <li style={li}>Print one label and check <b>“Remember settings”</b> with the 4×6 paper size — after that it’s one tap per label.</li>
+        <li style={li}><b>True zero-tap:</b> on a Windows/ChromeOS station, launch Chrome with <code style={{ background: '#1e293b', padding: '2px 6px', borderRadius: 4 }}>--kiosk-printing</code> — the print dialog is skipped entirely and every label goes straight to the default printer. This page’s auto-print + auto-close is built for exactly that mode.</li>
+      </ol>
+    </Sheet>
+  );
+}
+
+// Reports — the numbers that tell you where bagging time actually goes.
+// Per-hour figures use ACTIVE hours (hours with ≥1 completed bag).
+function ReportsView({ api, onBack }) {
+  const [days, setDays] = useState(7);
+  const [stats, setStats] = useState(null);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    setStats(null); setErr(null);
+    api({ action: 'stats', days }).then((r) => {
+      if (!alive) return;
+      if (r.ok) setStats(r.stats); else setErr(friendlyErr(r.error));
+    });
+    return () => { alive = false; };
+  }, [api, days]);
+  const tile = (n, label, color = '#f1f5f9') => (
+    <div key={label} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '14px 20px', textAlign: 'center', minWidth: 118, flex: 1 }}>
+      <div style={{ fontSize: 32, fontWeight: 800, color, lineHeight: 1 }}>{n}</div>
+      <div style={{ ...S.cap, marginTop: 6 }}>{label}</div>
+    </div>
+  );
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <div style={S.cap}>Reports</div>
+          <div style={{ fontSize: 30, fontWeight: 800 }}>Bagging</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {[1, 7, 30].map((d) => (
+            <button key={d} type="button" onClick={() => setDays(d)}
+              style={{ ...S.backBtn, borderColor: days === d ? '#3b82f6' : '#334155', color: days === d ? '#fff' : '#94a3b8', background: days === d ? '#1e3a5f' : 'none' }}>
+              {d === 1 ? 'Today' : d + ' days'}
+            </button>
+          ))}
+          <button type="button" style={S.backBtn} onClick={onBack}>← Back</button>
+        </div>
+      </div>
+      {err && <div style={{ marginTop: 16, color: '#f87171', fontWeight: 700 }}>{err}</div>}
+      {!stats && !err && <div style={{ marginTop: 40, textAlign: 'center', color: '#334155', fontSize: 20, fontWeight: 700 }}>Crunching…</div>}
+      {stats && (
+        <>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
+            {tile(stats.bags, 'Bags packed')}
+            {tile(stats.items, 'Items packed')}
+            {tile(stats.bags_per_hour, 'Orders / active hr', '#60a5fa')}
+            {tile(stats.items_per_hour, 'Items / active hr', '#60a5fa')}
+            {tile(stats.avg_items_per_bag, 'Avg items / bag')}
+            {tile(stats.shorts, 'Shorts', stats.shorts ? '#fbbf24' : '#22c55e')}
+          </div>
+          <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, marginTop: 8 }}>
+            Rates are per active hour — {stats.active_hours} hour{stats.active_hours === 1 ? '' : 's'} had bagging activity in this window.
+          </div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 18 }}>
+            <div style={{ flex: 1, minWidth: 280, background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 16 }}>
+              <div style={{ ...S.cap, marginBottom: 10 }}>Bags by packer</div>
+              {stats.packers.length === 0 && <div style={{ color: '#475569', fontWeight: 700 }}>No completed bags in this window.</div>}
+              {stats.packers.map((p) => (
+                <div key={p.who} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid #24324a', fontSize: 16, fontWeight: 700 }}>
+                  <span>{p.who}</span><span style={{ color: '#60a5fa' }}>{p.bags}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ flex: 1, minWidth: 280, background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 16 }}>
+              <div style={{ ...S.cap, marginBottom: 10 }}>Most-shorted products</div>
+              {stats.top_shorts.length === 0 && <div style={{ color: '#22c55e', fontWeight: 700 }}>No shorts in this window ✓</div>}
+              {stats.top_shorts.map((s) => (
+                <div key={s.sku + s.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '7px 0', borderBottom: '1px solid #24324a', fontSize: 16, fontWeight: 700 }}>
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}{s.sku ? <span style={{ color: '#64748b' }}> · {s.sku}</span> : ''}</span>
+                  <span style={{ color: '#fbbf24' }}>{s.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -339,10 +570,14 @@ function BaggingScreen({ stationToken, staffMode }) {
   const [order, setOrder] = useState(null); // current OrderBag order (with items)
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null); // {kind:'err'|'info', text}
+  const [sheet, setSheet] = useState(null); // {type:'short'|'backorder'|'refund'|'printer', item?}
+  const [sort, setSort] = useState(() => { try { return localStorage.getItem('nsa_bag_sort') || 'oldest'; } catch { return 'oldest'; } });
   const pollRef = useRef(null);
+  useWakeLock(view !== 'picker'); // screen stays on while a batch is open
 
+  const pickSort = (key) => { setSort(key); try { localStorage.setItem('nsa_bag_sort', key); } catch {} };
   const api = useCallback((body) => callBagApi(body, stationToken), [stationToken]);
-  const oops = (r) => setMsg({ kind: 'err', text: friendlyErr(r.error) });
+  const oops = (r) => { fxError(); setMsg({ kind: 'err', text: friendlyErr(r.error) }); };
 
   const loadGroups = useCallback(async () => {
     setBusy(true);
@@ -398,6 +633,18 @@ function BaggingScreen({ stationToken, staffMode }) {
 
   const nextOrder = async () => {
     setBusy(true);
+    // 'oldest' matches the server's own pick; other sorts walk the sorted board
+    // list and claim the first free order (a 409 just means another tablet got
+    // there first — move to the next).
+    if (sort !== 'oldest') {
+      const candidates = sortOrders(orders, sort).filter((o) => !o.bagged_at);
+      for (const c of candidates) {
+        const r = await api({ action: 'claim_order', order_id: c.id });
+        if (r.ok) { setBusy(false); setOrder(r.order); setView('order'); setMsg(null); return; }
+        if (!/NSA_BAG_CLAIMED/.test(r.error || '')) { setBusy(false); return oops(r); }
+      }
+      setBusy(false); await loadBoard(group); setView('done'); return;
+    }
     const r = await api({ action: 'next_order', kind: group.kind, group_id: group.group_id });
     setBusy(false);
     if (!r.ok) return oops(r);
@@ -424,41 +671,42 @@ function BaggingScreen({ stationToken, staffMode }) {
     const qty = Number(item.qty) || 0;
     const cur = Number(item.bagged_qty) || 0;
     const next = cur >= qty ? 0 : Math.min(qty, cur + 1);
+    fxTap();
     patchItem({ ...item, bagged_qty: next });
     const r = await api({ action: 'check_item', item_id: item.id, qty: next });
     if (!r.ok) { patchItem(item); return oops(r); }
     patchItem(r.item);
   };
 
-  const shortItem = async (item) => {
-    const remaining = (Number(item.qty) || 0) - (Number(item.bagged_qty) || 0);
-    const qtyStr = remaining > 1
-      ? window.prompt(`How many are missing? (1–${remaining})`, String(remaining)) : String(remaining);
-    if (qtyStr == null) return;
-    const shortQty = Math.max(1, Math.min(remaining, Number(qtyStr) || remaining));
-    const note = window.prompt('Note (optional — where did you look?)', '') || null;
+  // "Can't find it" → ShortSheet; confirm writes the short.
+  const shortItem = (item) => setSheet({ type: 'short', item });
+  const confirmShort = async (item, shortQty, note) => {
+    setSheet(null);
     const r = await api({ action: 'short_item', item_id: item.id, short_qty: shortQty, note });
     if (!r.ok) return oops(r);
     patchItem(r.item);
   };
 
-  const resolveShort = async (item, resolution) => {
-    if (resolution === 'refunded') {
-      const note = window.prompt('Refund reference / note (required — refund must already be issued):', '');
-      if (!note) return;
-      const r = await api({ action: 'resolve_short', item_id: item.id, resolution, note });
-      if (!r.ok) return oops(r);
-    } else {
+  const resolveShort = (item, resolution) => {
+    if (resolution === 'refunded') { setSheet({ type: 'refund', item }); return; }
+    (async () => {
       const r = await api({ action: 'resolve_short', item_id: item.id, resolution });
       if (!r.ok) return oops(r);
       setMsg({ kind: 'info', text: 'Short resolved — the order is back in the queue to bag the item.' });
-    }
+      await loadBoard(group);
+    })();
+  };
+  const confirmRefund = async (item, note) => {
+    setSheet(null);
+    const r = await api({ action: 'resolve_short', item_id: item.id, resolution: 'refunded', note });
+    if (!r.ok) return oops(r);
+    setMsg({ kind: 'info', text: 'Refund recorded.' });
     await loadBoard(group);
   };
 
-  const backorderShort = async (item) => {
-    const eta = window.prompt('Expected arrival date (YYYY-MM-DD, optional):', '') || null;
-    const note = window.prompt('Note (optional):', '') || null;
+  const backorderShort = (item) => setSheet({ type: 'backorder', item });
+  const confirmBackorder = async (item, eta, note) => {
+    setSheet(null);
     const r = await api({ action: 'backorder_short', item_id: item.id, eta, note });
     if (!r.ok) return oops(r);
     setMsg({ kind: 'info', text: 'Backorder order created — it will appear in the Backorders queue.' });
@@ -487,8 +735,14 @@ function BaggingScreen({ stationToken, staffMode }) {
     // Bag label prints automatically on completion ("full auto").
     const total = (progress && progress.total) || null;
     printOrderLabel({ ...completed, webstore_order_items: o.webstore_order_items });
+    fxComplete();
     const hdr = playerHeader(completed, o.webstore_order_items);
-    setMsg({ kind: 'info', text: `Bag ${completed.bag_seq || ''}${total ? ' of ' + total : ''} ✓ — ${hdr.name}${hdr.number ? ' #' + hdr.number : ''}` });
+    const hasShorts = shortSummary(o.webstore_order_items).some((s) => s.status === 'open');
+    setMsg({
+      kind: 'info',
+      text: `Bag ${completed.bag_seq || ''}${total ? ' of ' + total : ''} ✓ — ${hdr.name}${hdr.number ? ' #' + hdr.number : ''}`
+        + (hasShorts ? '  ·  ⚠ Set this bag on the PROBLEM SHELF' : ''),
+    });
     await nextOrder();
   };
 
@@ -502,6 +756,14 @@ function BaggingScreen({ stationToken, staffMode }) {
     </div>
   );
 
+  // The active bottom sheet, rendered on every view.
+  const overlay = !sheet ? null
+    : sheet.type === 'short' ? <ShortSheet item={sheet.item} onConfirm={(q, n) => confirmShort(sheet.item, q, n)} onClose={() => setSheet(null)} />
+    : sheet.type === 'backorder' ? <BackorderSheet item={sheet.item} onConfirm={(e, n) => confirmBackorder(sheet.item, e, n)} onClose={() => setSheet(null)} />
+    : sheet.type === 'refund' ? <RefundSheet item={sheet.item} onConfirm={(n) => confirmRefund(sheet.item, n)} onClose={() => setSheet(null)} />
+    : sheet.type === 'printer' ? <PrinterSheet onClose={() => setSheet(null)} />
+    : null;
+
   const msgBox = msg && (
     <div style={{
       margin: '12px 0', padding: '14px 18px', borderRadius: 6, fontSize: 18, fontWeight: 700,
@@ -512,12 +774,25 @@ function BaggingScreen({ stationToken, staffMode }) {
     }}>{msg.text}</div>
   );
 
+  if (view === 'reports') {
+    return (
+      <div style={S.page}><style>{BS_CSS}</style><div style={{ maxWidth: 980, margin: '0 auto' }}>
+        {header}
+        <ReportsView api={api} onBack={() => setView('picker')} />
+      </div>{overlay}</div>
+    );
+  }
+
   if (view === 'picker') {
     return (
       <div style={S.page}><style>{BS_CSS}</style><div style={{ maxWidth: 860, margin: '0 auto' }}>
         {header}{msgBox}
         <GroupPicker groups={groups} onPick={pickGroup} onRefresh={loadGroups} busy={busy} />
-      </div></div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 26 }}>
+          <button type="button" style={S.backBtn} onClick={() => setView('reports')}>📊 Reports</button>
+          <button type="button" style={S.backBtn} onClick={() => setSheet({ type: 'printer' })}>🖨 Printer setup</button>
+        </div>
+      </div>{overlay}</div>
     );
   }
 
@@ -545,7 +820,7 @@ function BaggingScreen({ stationToken, staffMode }) {
             {bagged > 0 ? `Continue bagging (${bagged} of ${total} done) →` : 'Start bagging →'}
           </button>
         </div>
-      </div></div>
+      </div>{overlay}</div>
     );
   }
 
@@ -589,8 +864,18 @@ function BaggingScreen({ stationToken, staffMode }) {
           </button>
         )}
         <div style={{ marginTop: 18 }}>
-          <div style={S.cap}>Orders</div>
-          {orders.map((o) => {
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={S.cap}>Orders</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {ORDER_SORTS.map((s) => (
+                <button key={s.key} type="button" onClick={() => pickSort(s.key)}
+                  style={{ ...S.backBtn, padding: '6px 12px', fontSize: 13, borderColor: sort === s.key ? '#3b82f6' : '#334155', color: sort === s.key ? '#fff' : '#94a3b8', background: sort === s.key ? '#1e3a5f' : 'none' }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {sortOrders(orders, sort).map((o) => {
             const hdr = playerHeader(o, o.webstore_order_items || []);
             const p = orderProgress(o.webstore_order_items || []);
             const claimedElsewhere = o.bagging_claimed_by && !o.bagged_at;
@@ -617,7 +902,7 @@ function BaggingScreen({ stationToken, staffMode }) {
             );
           })}
         </div>
-      </div></div>
+      </div>{overlay}</div>
     );
   }
 
@@ -634,7 +919,7 @@ function BaggingScreen({ stationToken, staffMode }) {
         </div>
         {msgBox}
         <ResolvePanel orders={orders} staffMode={!stationToken} onResolve={resolveShort} onBackorder={backorderShort} />
-      </div></div>
+      </div>{overlay}</div>
     );
   }
 
@@ -679,7 +964,7 @@ function BaggingScreen({ stationToken, staffMode }) {
           {busy ? 'Working…' : p.complete ? 'Bag done — print label' : 'Tap every item in'}
         </button>
       </div>
-    </div></div>
+    </div>{overlay}</div>
   );
 }
 

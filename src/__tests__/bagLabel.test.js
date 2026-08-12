@@ -22,7 +22,7 @@ test('label carries player, store, bag N of M, contents, and the scan QR', () =>
 test('shorted line is flagged on the item and in the shorts box', () => {
   const html = buildBagLabelHtml({ order, items, store, seqTotal: 42, origin: '' });
   expect(html).toContain('⚠ SHORT');
-  expect(html).toContain('SHORT — resolve before shipping');
+  expect(html).toContain('PROBLEM SHELF — short, resolve before shipping');
   // escaping: raw markup from item names never lands in the HTML
   expect(html).not.toContain('<Hoodie>');
   expect(html).toContain('&lt;Hoodie&gt; &amp; Co');

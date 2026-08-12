@@ -76,7 +76,7 @@ export function buildBagLabelHtml({ order, items, store, seqTotal, origin }) {
     + '<hr/>'
     + `<div class="items${liveLines.length > 8 ? ' compact' : ''}">${lines}</div>`
     + (shorts.length
-      ? `<div class="shorts">SHORT — resolve before shipping:<br/>${shorts.map((s) => esc(s.text)).join('<br/>')}</div>`
+      ? `<div class="shorts">⚠ PROBLEM SHELF — short, resolve before shipping:<br/>${shorts.map((s) => esc(s.text)).join('<br/>')}</div>`
       : '')
     + '<div class="foot">'
     + `<img src="${esc(qrImgSrc(bagScanUrl(origin, order.id)))}" alt="${esc(bagScanCode(order.id))}"/>`

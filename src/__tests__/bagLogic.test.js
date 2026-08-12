@@ -2,7 +2,7 @@
 
 import {
   claimIsStale, lineSatisfied, lineOnOrder, orderProgress, sortLinesForBag,
-  playerHeader, shortSummary, nextOrderPick, batchItemTotals, CLAIM_STALE_MS,
+  playerHeader, shortSummary, nextOrderPick, batchItemTotals, sortOrders, dominantSize, CLAIM_STALE_MS,
 } from '../baggingstation/bagLogic';
 
 const NOW = Date.parse('2026-08-12T12:00:00Z');
@@ -106,6 +106,28 @@ describe('batchItemTotals — the staging start page', () => {
     expect(jersey.sizes.get('YM')).toEqual({ total: 3, bagged: 1, short: 1 });
     expect(jersey.sizes.get('M')).toEqual({ total: 1, bagged: 0, short: 0 });
     expect(totals).toEqual({ total: 5, bagged: 2, short: 1, remaining: 2 });
+  });
+});
+
+describe('sortOrders / dominantSize — board sort modes', () => {
+  const o = (id, created, size, player) => ({
+    id, created_at: created,
+    webstore_order_items: [{ size, qty: 1, player_name: player }],
+  });
+  const orders = [
+    o('a', '2026-08-03', 'L', 'Zoe'),
+    o('b', '2026-08-01', 'YM', 'Adam'),
+    o('c', '2026-08-02', 'M', 'Mia'),
+  ];
+  test('oldest / size / name orderings', () => {
+    expect(sortOrders(orders, 'oldest').map((x) => x.id)).toEqual(['b', 'c', 'a']);
+    expect(sortOrders(orders, 'size').map((x) => x.id)).toEqual(['b', 'c', 'a']); // YM < M < L wear order
+    expect(sortOrders(orders, 'name').map((x) => x.id)).toEqual(['b', 'c', 'a']); // Adam, Mia, Zoe
+  });
+  test('dominantSize picks the highest-qty size, wear order breaking ties', () => {
+    expect(dominantSize([{ size: 'M', qty: 1 }, { size: 'YM', qty: 2 }])).toBe('YM');
+    expect(dominantSize([{ size: 'L', qty: 1 }, { size: 'YS', qty: 1 }])).toBe('YS'); // tie → earlier wear order
+    expect(dominantSize([])).toBeNull();
   });
 });
 
