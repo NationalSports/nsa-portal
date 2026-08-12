@@ -182,8 +182,10 @@ function buildJobSheet(p) {
   // Finished goods go to the CUSTOMER, not back to NSA — their create form carries no ship-to
   // field (it defaults to the third-party NSA address on the account), so state it here too.
   if (p.ship_to && (p.ship_to.line1 || p.ship_to.city)) {
-    lines.push('SHIP FINISHED GOODS TO (not NSA): ' + [p.ship_to.name, p.ship_to.line1, p.ship_to.line2,
-      [p.ship_to.city, p.ship_to.state, p.ship_to.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '));
+    lines.push('SHIP FINISHED GOODS TO (not NSA): ' + [p.ship_to.name,
+      p.ship_to.attention ? 'Attn: ' + p.ship_to.attention : '', p.ship_to.line1, p.ship_to.line2,
+      [p.ship_to.city, p.ship_to.state, p.ship_to.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
+      + ' — UPS Ground');
   }
   if (p.po.notes) lines.push('Notes: ' + p.po.notes);
   if ((p.deco_instructions || []).length) {
@@ -278,12 +280,22 @@ const SS_SIZE_ORDER = ['XS', 'SM', 'MD', 'LG', 'XL', '2XL', '3XL', '4XL', 'OTH']
 
 // Baseline params for a discovered form: hidden/submit defaults, selects at their selected
 // option, and radios/checkboxes ONLY when already checked (so the form's own choices survive).
-function baseParams(form) {
+//
+// Emitted in DOCUMENT ORDER with append, never set: Rails nested attributes repeat one name for
+// every row (their size boxes are nine × line_item[product_sizes_attributes][][quantity]), and
+// set() would collapse all nine into a single value — which is exactly how a full size breakdown
+// became one lump in the catch-all column. `overrides` is keyed by FIELD INDEX for the same
+// reason: keying by name can't address the 4th of nine identical names.
+function buildParams(form, overrides = new Map()) {
   const params = new URLSearchParams();
-  for (const f of form.fields) {
-    if (f.type === 'radio' || f.type === 'checkbox') { if (f.checked) params.set(f.name, f.value || 'on'); continue; }
-    params.set(f.name, f.value || '');
-  }
+  form.fields.forEach((f, i) => {
+    if (f.type === 'radio' || f.type === 'checkbox') {
+      if (overrides.has(i)) { const v = overrides.get(i); if (v !== null && v !== '') params.append(f.name, String(v)); return; }
+      if (f.checked) params.append(f.name, f.value || 'on');
+      return;
+    }
+    params.append(f.name, overrides.has(i) ? String(overrides.get(i)) : (f.value || ''));
+  });
   return params;
 }
 
@@ -293,6 +305,36 @@ function pick(form, re, claimed) {
     && x.type !== 'hidden' && x.type !== 'submit' && x.type !== 'radio' && x.type !== 'checkbox');
   if (f) claimed.add(f.name);
   return f;
+}
+
+// Index-addressed variant of pick: returns the field's INDEX so repeated Rails names stay
+// distinguishable (see buildParams). claimedIdx holds indices, not names.
+function pickIdx(form, re, claimedIdx) {
+  const i = form.fields.findIndex((x, ix) => !claimedIdx.has(ix) && re.test(x.name)
+    && x.type !== 'hidden' && x.type !== 'submit' && x.type !== 'radio' && x.type !== 'checkbox');
+  if (i >= 0) claimedIdx.add(i);
+  return i;
+}
+
+// Their per-size quantity inputs: nine repeats of line_item[product_sizes_attributes][][quantity]
+// (observed live). Fall back to any group of >= 9 same-named quantity-ish inputs so a rename
+// doesn't silently put every piece back in the catch-all column.
+function sizeQtyIndices(form) {
+  const direct = [];
+  form.fields.forEach((f, i) => {
+    if (f.type === 'hidden') return;
+    if (/product_sizes?_attributes/i.test(f.name) && /\[quantity\]|\[qty\]/i.test(f.name)) direct.push(i);
+  });
+  if (direct.length >= SS_SIZE_ORDER.length) return direct;
+  const byName = new Map();
+  form.fields.forEach((f, i) => {
+    if (f.type === 'hidden' || f.tag !== 'input') return;
+    if (!/quantity|qty/i.test(f.name)) return;
+    if (!byName.has(f.name)) byName.set(f.name, []);
+    byName.get(f.name).push(i);
+  });
+  for (const idxs of byName.values()) if (idxs.length >= SS_SIZE_ORDER.length) return idxs;
+  return direct;
 }
 
 // Every <form> on a page, parsed.
@@ -312,26 +354,36 @@ async function postShipTo(jar, orderPath, shipTo, diag) {
     try { const res = await ssFetch(jar, p, { headers: { Accept: 'text/html, application/xhtml+xml' } }); html = await res.text(); }
     catch { continue; }
     for (const form of allForms(html)) {
-      const claimed = new Set();
-      const a1 = pick(form, /address_?1|address_?line_?1|street/i, claimed);
-      const city = pick(form, /city/i, claimed);
-      if (!a1 || !city) continue;
-      const params = baseParams(form);
-      params.set(a1.name, shipTo.line1 || '');
-      params.set(city.name, shipTo.city || '');
-      const put = (re, val) => { const f = pick(form, re, claimed); if (f && val) params.set(f.name, val); };
+      const claimedIdx = new Set();
+      const a1 = pickIdx(form, /address_?1|address_?line_?1|street/i, claimedIdx);
+      const city = pickIdx(form, /city/i, claimedIdx);
+      if (a1 < 0 || city < 0) continue;
+      // Index-addressed like the product write: this form can carry Rails arrays (line items), and
+      // a by-name set() would collapse them.
+      const overrides = new Map([[a1, shipTo.line1 || ''], [city, shipTo.city || '']]);
+      const put = (re, val) => { const i = pickIdx(form, re, claimedIdx); if (i >= 0 && val) overrides.set(i, val); return i; };
+      // Company = the school; Attention = the sport/program (NOT the deco PO — that belongs on the
+      // blanks shipment to the decorator, not on the finished-goods label to the school). Their
+      // update requires a non-blank attention, so it falls back to the company name.
       put(/company|ship.*name/i, shipTo.name || '');
-      // Their update REQUIRES a shipping attention ("Shipping attention can't be blank" — the
-      // 422 that blocked every ship-to write), so never send it empty: fall back to the
-      // recipient/customer name, then the PO number, then Receiving.
-      put(/attention|attn/i, shipTo.attention || shipTo.name || shipTo.po_id || 'Receiving');
+      put(/attention|attn/i, shipTo.attention || shipTo.name || 'Receiving');
       put(/address_?2|address_?line_?2|suite/i, shipTo.line2 || '');
       put(/state|region|province/i, shipTo.state || '');
       put(/zip|postal/i, shipTo.zip || '');
+      put(/phone/i, shipTo.phone || '');
+      // Ship method: pick UPS Ground from their dropdown (it defaults to blank).
+      const smIdx = form.fields.findIndex((x, ix) => !claimedIdx.has(ix) && x.tag === 'select' && /ship.?(method|via)|shipping_method|carrier/i.test(x.name));
+      if (smIdx >= 0) {
+        const opts = form.fields[smIdx].options || [];
+        const want = opts.find((op) => /ups\s*ground/i.test(op.label) || /ups\s*ground/i.test(op.value))
+          || opts.find((op) => /ground/i.test(op.label));
+        if (want) { overrides.set(smIdx, want.value); claimedIdx.add(smIdx); diag.shipMethod = want.label || want.value; }
+        else diag.shipMethod = 'no UPS Ground option (' + opts.map((op) => op.label).slice(0, 8).join(', ') + ')';
+      }
       try {
         const resp = await ssFetch(jar, form.action, { method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
-          body: params.toString() });
+          body: buildParams(form, overrides).toString() });
         if (resp.status < 400) return true;
         // Carry their validation text — a bare 422 hid "duplicate PO" (their update re-validates
         // the PO number, which collides with any other draft still holding it).
@@ -377,65 +429,45 @@ async function postProducts(jar, orderPath, items, diag) {
     if (form) break;
   }
   if (!form) { diag.products = 'no product form found; tried ' + paths.slice(0, 8).join(', ') + (seen.length ? '; saw ' + seen.slice(0, 4).join(' · ') : ''); return 0; }
+  const qIdx = sizeQtyIndices(form);
   let added = 0;
   for (const it of items) {
-    const claimed = new Set();
-    const params = baseParams(form);
-    const put = (re, val) => { const f = pick(form, re, claimed); if (f && val !== '') params.set(f.name, String(val)); return !!f; };
-    // Claim the modal's header fields in ITS order (Supplier, Description, Style, Colour) and most
-    // specific first: a generic /name/ pattern would otherwise swallow a supplier_name field. How
-    // many of the four land is also the gate for positional size placement below — if these didn't
-    // match, the field order isn't understood well enough to trust positions.
-    let headerHits = 0;
-    if (put(/supplier|vendor|brand/i, 'NSA (drop ship)')) headerHits++;
-    if (put(/desc|title|product_?name/i, it.name || '')) headerHits++;
-    if (put(/style|sku|item_?number/i, it.sku || '')) headerHits++;
-    if (put(/colou?r/i, it.color || '')) headerHits++;
-    // Per-size quantity boxes: match a field whose name carries their column label.
+    const claimedIdx = new Set(qIdx);// the size boxes are spoken for — no header pattern may claim one
+    const overrides = new Map();
+    const put = (re, val) => { const i = pickIdx(form, re, claimedIdx); if (i >= 0 && val !== '') overrides.set(i, String(val)); return i >= 0; };
+    // Claim the modal's header fields in ITS order (Supplier, Description, Style, Colour), most
+    // specific first: a generic /name/ pattern would otherwise swallow a supplier_name field.
+    put(/supplier|vendor|brand/i, 'NSA (drop ship)');
+    put(/desc|title|product_?name/i, it.name || '');
+    put(/style|sku|item_?number/i, it.sku || '');
+    put(/colou?r/i, it.color || '');
+    // Per-size quantities. Their nine boxes all share ONE name
+    // (line_item[product_sizes_attributes][][quantity]) — a Rails nested-attributes array — so they
+    // are addressed by INDEX and every one of the nine is emitted in order, blanks included. The
+    // previous by-name write collapsed all nine into a single value, which is why a full breakdown
+    // arrived as one lump in the catch-all column (A520: 2 in OTH).
     const cols = {};
     for (const [sz, q] of Object.entries(it.sizes || {})) { const c = ssSizeCol(sz); cols[c] = (cols[c] || 0) + (Number(q) || 0); }
     let placed = 0;
-    const missedCols = [];
-    for (const [col, q] of Object.entries(cols)) {
-      if (!q) continue;
-      const f = form.fields.find((x) => new RegExp('(^|[^a-z0-9])' + col.toLowerCase() + '([^a-z0-9]|$)', 'i').test(x.name) && x.type !== 'hidden');
-      if (f) { params.set(f.name, String(q)); placed += q; } else missedCols.push(col + ':' + q);
-    }
-    // No per-size box matched BY NAME — their inputs are probably indexed (…[quantities][0]) rather
-    // than size-labelled, so names can never match. Their modal's boxes are a fixed nine in a known
-    // order (XS SM MD LG XL 2XL 3XL 4XL OTH, confirmed from the live UI), so fall back to POSITION:
-    // after the supplier/description/style/colour fields are claimed above, the next nine unclaimed
-    // text/number inputs are those boxes. Gated on finding at least nine, and the diag says when
-    // this path was used so the result can be checked against the portal.
-    if (!placed) {
-      const slots = form.fields.filter((x) => !claimed.has(x.name) && x.tag === 'input'
-        && (x.type === 'text' || x.type === 'number' || x.type === 'tel') && !/price|charge|total|search/i.test(x.name));
-      // Only trust positions when the header fields above were actually identified: otherwise the
-      // nine-wide window could start at Style/Colour and write quantities into text fields.
-      if (headerHits < 3) {
-        diag.sizes = 'per-size placement skipped — only ' + headerHits + ' of 4 header fields matched, so field order is not trustworthy. Product-form fields: ['
-          + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
-      } else if (slots.length >= SS_SIZE_ORDER.length) {
-        const slotWin = slots.slice(0, SS_SIZE_ORDER.length);
-        SS_SIZE_ORDER.forEach((col, i) => { const q = cols[col]; if (q) { params.set(slotWin[i].name, String(q)); placed += q; } });
-        // Informational, not a to-do: the sizes DID go in per-column. Worth reading once to confirm
-        // the mapping is right, but it isn't an unfinished step.
-        if (placed) diag.sizesInfo = 'placed BY POSITION (names carry no size labels): '
-          + SS_SIZE_ORDER.map((c, i) => c + '=' + slotWin[i].name).join(', ');
-      }
-    }
-    if (!placed) {
-      const qf = form.fields.find((x) => /qty|quantity/i.test(x.name) && x.type !== 'hidden');
-      if (qf) params.set(qf.name, String(it.qty || 0));
-      diag.sizes = 'per-size boxes not matched (' + missedCols.join(' ') + ') — total went to the catch-all column. Product-form fields: ['
+    if (qIdx.length >= SS_SIZE_ORDER.length) {
+      SS_SIZE_ORDER.forEach((col, i) => { const q = cols[col] || 0; overrides.set(qIdx[i], q > 0 ? String(q) : ''); placed += q; });
+      const spare = Object.entries(cols).filter(([c]) => !SS_SIZE_ORDER.includes(c));
+      diag.sizesInfo = 'sizes placed per column via ' + form.fields[qIdx[0]].name + ' ×' + qIdx.length
+        + ' (' + SS_SIZE_ORDER.map((c) => c + ':' + (cols[c] || 0)).filter((s) => !/:0$/.test(s)).join(' ') + ')'
+        + (spare.length ? ' — unmapped: ' + spare.map(([c, q]) => c + ':' + q).join(' ') : '');
+    } else {
+      // No per-size array found: fall back to the single quantity box (pieces right, sizes wrong)
+      // and report the field names, which is what identifies their inputs.
+      const qi = form.fields.findIndex((x) => /qty|quantity/i.test(x.name) && x.type !== 'hidden');
+      if (qi >= 0) overrides.set(qi, String(it.qty || 0));
+      diag.sizes = 'no per-size input array found (' + qIdx.length + ' quantity fields) — the total went to a single box, so sizes need entering by hand. Product-form fields: ['
         + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
-    } else if (missedCols.length && !diag.sizes) {
-      diag.sizes = 'some sizes had no matching box (' + missedCols.join(' ') + ')';
     }
+    void placed;
     try {
       const resp = await ssFetch(jar, form.action, { method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
-        body: params.toString() });
+        body: buildParams(form, overrides).toString() });
       if (resp.status < 400) added++;
       else diag.products = 'POST ' + form.action + ' → ' + resp.status;
     } catch { diag.products = 'POST ' + form.action + ' threw'; }
@@ -471,8 +503,7 @@ async function postJobSheet(jar, orderPath, sheet) {
       if (f.action && target) candidates.push({ f, target });
     }
     for (const { f, target } of candidates) {
-      const params = new URLSearchParams();
-      for (const fld of f.fields) params.set(fld.name, fld.name === target.name ? sheet : (fld.value || ''));
+      const params = buildParams(f, new Map([[f.fields.indexOf(target), sheet]]));
       try {
         const resp = await ssFetch(jar, f.action, {
           method: 'POST',
