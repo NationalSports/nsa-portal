@@ -8745,11 +8745,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setO(updated);onSave(updated);
               setPOCounter(c=>c+1);
               const _dpoMsg='🎨 '+effectiveDpoId+' created for '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+', '+totalQty+' pcs ($'+expectedCost.toFixed(2)+')';
-              if(_openBlanksModule(itemIdxs,effectiveDpoId,dv.id)){nf(_dpoMsg+' — opening the garment PO so you can see everything to order')}
-              else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');nf(_dpoMsg+' — no blanks to order, every covered item is already on an IF or PO')}
-              // Silver Screen: create their portal job for the new deco PO too. The garment PO
-              // modal may be open on top — the confirm dialog still works over it.
-              if(_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
+              const _toBlanks=()=>{
+                if(_openBlanksModule(itemIdxs,effectiveDpoId,dv.id))nf(_dpoMsg+' — opening the garment PO so you can see everything to order');
+                else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');nf(_dpoMsg+' — no blanks to order, every covered item is already on an IF or PO')}
+              };
+              // Silver Screen: still offer to build the job on their portal for this DPO — but finish
+              // that BEFORE opening the garment PO form. sendSilverScreenJob stamps the job # onto
+              // `updated`, the snapshot taken here, so a garment PO created while its request was in
+              // flight would be wiped by that save. Chains on cancel and on failure too, so the
+              // handoff always happens.
+              if(_isSilverScreenDp(newDecoPO))setTimeout(()=>{sendSilverScreenJob(newDecoPO,updated).finally(_toBlanks)},200);
+              else _toBlanks();
             }}>🎨📦 Create Deco PO + Order Blanks</button>}
           </div>
         </div></div>;
