@@ -251,6 +251,57 @@ exports.handler = async (event) => {
         });
       }
 
+      case 'stats_stores': {
+        // Per-store drill-down: how long each store's bagging actually took
+        // (first→last completed bag) and the pace in 15-minute buckets.
+        const days = Math.max(1, Math.min(90, Number(body.days) || 7));
+        const since = new Date(Date.now() - days * 86400000).toISOString();
+        const { data: evs, error } = await sb.from('bagging_events')
+          .select('order_id, created_at').eq('event', 'complete')
+          .gte('created_at', since).order('created_at', { ascending: true }).limit(10000);
+        if (error) return rpcFail(error);
+        const orderIds = [...new Set((evs || []).map((e) => e.order_id).filter(Boolean))];
+        const storeByOrder = {};
+        for (let i = 0; i < orderIds.length; i += 200) {
+          const { data: ords } = await sb.from('webstore_orders')
+            .select('id, store_id').in('id', orderIds.slice(i, i + 200));
+          (ords || []).forEach((o) => { storeByOrder[o.id] = o.store_id; });
+        }
+        const storeIds = [...new Set(Object.values(storeByOrder))];
+        const nameByStore = {};
+        if (storeIds.length) {
+          const { data: ws } = await sb.from('webstores').select('id, name').in('id', storeIds);
+          (ws || []).forEach((w) => { nameByStore[w.id] = w.name; });
+        }
+        const BUCKET = 15 * 60 * 1000;
+        const perStore = new Map();
+        for (const e of (evs || [])) {
+          const sid = storeByOrder[e.order_id];
+          if (!sid) continue;
+          const t = Date.parse(e.created_at);
+          const cur = perStore.get(sid) || { store_id: sid, store_name: nameByStore[sid] || 'Store', bags: 0, first: t, last: t, buckets: new Map() };
+          cur.bags += 1;
+          cur.first = Math.min(cur.first, t);
+          cur.last = Math.max(cur.last, t);
+          const b = Math.floor(t / BUCKET) * BUCKET;
+          cur.buckets.set(b, (cur.buckets.get(b) || 0) + 1);
+          perStore.set(sid, cur);
+        }
+        const stores = [...perStore.values()].map((s) => {
+          const activeBuckets = s.buckets.size;
+          return {
+            store_id: s.store_id, store_name: s.store_name, bags: s.bags,
+            started_at: new Date(s.first).toISOString(), finished_at: new Date(s.last).toISOString(),
+            span_minutes: Math.max(1, Math.round((s.last - s.first) / 60000)),
+            // pace over buckets that actually had bagging, so breaks don't dilute
+            bags_per_15min: activeBuckets ? +(s.bags / activeBuckets).toFixed(1) : s.bags,
+            per15: [...s.buckets.entries()].sort((a, b) => a[0] - b[0])
+              .map(([t, n]) => ({ t: new Date(t).toISOString(), n })),
+          };
+        }).sort((a, b) => b.finished_at.localeCompare(a.finished_at));
+        return ok({ stores });
+      }
+
       case 'log_label_print': {
         await sb.from('bagging_events').insert({
           order_id: body.order_id, actor, event: 'label_print',

@@ -345,16 +345,58 @@ function PrinterSheet({ onClose }) {
 
 // Reports — the numbers that tell you where bagging time actually goes.
 // Per-hour figures use ACTIVE hours (hours with ≥1 completed bag).
+// One store's drill-down row: span, pace, and the 15-minute timeline.
+function StoreDrilldown({ s }) {
+  const [open, setOpen] = useState(false);
+  const fmtT = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const fmtD = (iso) => new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const span = s.span_minutes >= 60 ? `${Math.floor(s.span_minutes / 60)}h ${s.span_minutes % 60}m` : `${s.span_minutes}m`;
+  const max = Math.max(...s.per15.map((b) => b.n), 1);
+  return (
+    <div style={{ borderBottom: '1px solid #24324a' }}>
+      <button type="button" onClick={() => setOpen(!open)}
+        style={{ width: '100%', background: 'none', border: 'none', color: '#f1f5f9', cursor: 'pointer', padding: '10px 0', textAlign: 'left' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: 16, fontWeight: 800, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {open ? '▾ ' : '▸ '}{s.store_name}
+          </span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
+            {s.bags} bags · {span} · <span style={{ color: '#60a5fa' }}>{s.bags_per_15min}/15min</span>
+          </span>
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginTop: 2 }}>
+          {fmtD(s.started_at)} {fmtT(s.started_at)} → {fmtT(s.finished_at)}
+        </div>
+      </button>
+      {open && (
+        <div style={{ padding: '2px 0 12px 16px' }}>
+          {s.per15.map((b) => (
+            <div key={b.t} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '3px 0', fontSize: 14, fontWeight: 700 }}>
+              <span style={{ color: '#94a3b8', width: 78, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{fmtT(b.t)}</span>
+              <span style={{ height: 10, width: `${Math.round((b.n / max) * 60)}%`, minWidth: 6, background: '#2563eb', borderRadius: 5 }} />
+              <span style={{ color: '#60a5fa' }}>{b.n}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReportsView({ api, onBack }) {
   const [days, setDays] = useState(7);
   const [stats, setStats] = useState(null);
+  const [storeStats, setStoreStats] = useState(null);
   const [err, setErr] = useState(null);
   useEffect(() => {
     let alive = true;
-    setStats(null); setErr(null);
+    setStats(null); setStoreStats(null); setErr(null);
     api({ action: 'stats', days }).then((r) => {
       if (!alive) return;
       if (r.ok) setStats(r.stats); else setErr(friendlyErr(r.error));
+    });
+    api({ action: 'stats_stores', days }).then((r) => {
+      if (alive && r.ok) setStoreStats(r.stores);
     });
     return () => { alive = false; };
   }, [api, days]);
@@ -416,6 +458,15 @@ function ReportsView({ api, onBack }) {
                 </div>
               ))}
             </div>
+          </div>
+          <div style={{ marginTop: 16, background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 16 }}>
+            <div style={{ ...S.cap, marginBottom: 4 }}>By store — time to bag &amp; pace</div>
+            <div style={{ color: '#64748b', fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
+              Tap a store for its 15-minute timeline. Span is first bag → last bag; pace averages the 15-minute blocks that had activity.
+            </div>
+            {!storeStats && <div style={{ color: '#475569', fontWeight: 700 }}>Crunching…</div>}
+            {storeStats && storeStats.length === 0 && <div style={{ color: '#475569', fontWeight: 700 }}>No completed bags in this window.</div>}
+            {(storeStats || []).map((s) => <StoreDrilldown key={s.store_id} s={s} />)}
           </div>
         </>
       )}
