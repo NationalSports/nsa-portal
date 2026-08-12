@@ -33,7 +33,7 @@ function labelWeightLbs(items, store, weightByPid) {
   let oz = 0; let any = false;
   for (const i of items) {
     const ov = Number(weightByPid[i.product_id]);
-    const w = weightByPid[i.product_id] != null && Number.isFinite(ov) ? ov : estimateWeightOz(i.sku || i.name);
+    const w = Number.isFinite(ov) && ov > 0 ? ov : estimateWeightOz(i.sku || i.name);
     oz += w * Math.max(0, Number(i.qty) || 0);
     any = true;
   }
@@ -78,17 +78,40 @@ async function createBagShipLabel(sb, order, items) {
   if (!validAddress(order.ship_address)) return { skipped: true, reason: 'no valid ship address' };
 
   const { data: stores } = await sb.from('webstores')
-    .select('id,name,bagging_auto_label,shipstation_tag_id,shipstation_carrier,shipstation_service,shipstation_store_id,label_weight_lbs')
+    .select('id,name,source,omg_sale_code,bagging_auto_label,shipstation_tag_id,shipstation_carrier,shipstation_service,shipstation_store_id,label_weight_lbs')
     .eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return { skipped: true, reason: 'store not found' };
   if (store.bagging_auto_label === false) return { skipped: true, reason: 'auto-label off for this store' };
+  // OMG school-delivery sales ship in bulk to the school; the ingest can still
+  // stamp ship_home from a slip's home address — never buy per-player labels
+  // for them (same rule as OmgOrderPortal's shipToSchool guard).
+  if ((store.source || '') === 'omg' && store.omg_sale_code) {
+    const { data: oss } = await sb.from('omg_stores').select('delivery_mode').eq('id', 'OMG-sale_' + store.omg_sale_code).limit(1);
+    if (oss && oss[0] && oss[0].delivery_mode === 'deliver_school') {
+      return { skipped: true, reason: 'OMG school delivery — ships in bulk, no per-player label' };
+    }
+  }
 
-  // Units still to ship per line = ordered − already shipped − short-now
-  // (same plan math as Webstores printShipLabels / OMG shipPlan).
+  // An OPEN short means the bag is on the problem shelf — nothing has decided
+  // yet whether the missing piece will be found, backordered, or refunded, so
+  // buying a label now would ship (and mark shipped) units that aren't in the
+  // box. Resolve first; the desk prints from Webstores after.
+  if ((items || []).some((i) => i.short_status === 'open' && (Number(i.short_qty) || 0) > 0)) {
+    return { skipped: true, reason: 'open short — resolve it first, then print from Webstores' };
+  }
+
+  // Units still to ship per line = ordered − already shipped − short-now.
+  // Resolved shorts live in missing_qty; max() with the live short qty keeps
+  // unresolved ones out of the parcel too (same plan math as Webstores
+  // printShipLabels / OMG shipPlan).
+  const heldQty = (i) => Math.max(
+    Number(i.missing_qty) || 0,
+    ['open', 'backordered', 'refunded'].includes(i.short_status || '') ? (Number(i.short_qty) || 0) : 0,
+  );
   const plan = (items || [])
     .filter((i) => !i.is_bundle_parent && (i.line_status || '') !== 'cancelled')
-    .map((i) => ({ ...i, qty: Math.max(0, (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0) - (Number(i.missing_qty) || 0)) }))
+    .map((i) => ({ ...i, qty: Math.max(0, (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0) - heldQty(i)) }))
     .filter((i) => i.qty > 0);
   if (!plan.length) return { skipped: true, reason: 'nothing to ship (all shipped or short)' };
 
@@ -151,7 +174,7 @@ async function createBagShipLabel(sb, order, items) {
     .filter((i) => !i.is_bundle_parent && (i.line_status || '') !== 'cancelled')
     .every((i) => {
       const shipNow = (plan.find((p) => p.id === i.id) || {}).qty || 0;
-      return (Number(i.shipped_qty) || 0) + shipNow + (Number(i.missing_qty) || 0) >= (Number(i.qty) || 0);
+      return (Number(i.shipped_qty) || 0) + shipNow + heldQty(i) >= (Number(i.qty) || 0);
     });
   await sb.from('webstore_orders').update({
     tracking_number: res.trackingNumber || null, carrier: cm.carrierCode,

@@ -32,19 +32,26 @@ const scanFromUrl = () => {
 };
 
 async function callBagApi(body, stationToken) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (stationToken) {
-    headers['x-machine-token'] = stationToken;
-  } else {
-    const { data } = await supabase.auth.getSession();
-    const jwt = data && data.session && data.session.access_token;
-    headers.Authorization = `Bearer ${jwt || ''}`;
+  // Never throws: warehouse wifi drops mid-action, and a rejected fetch would
+  // strand busy=true ("Working…" forever) and orphan optimistic taps — every
+  // caller handles {ok:false}, so network failures resolve to that shape.
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (stationToken) {
+      headers['x-machine-token'] = stationToken;
+    } else {
+      const { data } = await supabase.auth.getSession();
+      const jwt = data && data.session && data.session.access_token;
+      headers.Authorization = `Bearer ${jwt || ''}`;
+    }
+    const res = await fetch('/.netlify/functions/bagging-api', {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+    const json = await res.json().catch(() => ({}));
+    return { status: res.status, ...json };
+  } catch (e) {
+    return { status: 0, ok: false, error: 'NSA_BAG_NETWORK' };
   }
-  const res = await fetch('/.netlify/functions/bagging-api', {
-    method: 'POST', headers, body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  return { status: res.status, ...json };
 }
 
 // ── Feedback: sound + haptics ──
@@ -92,6 +99,11 @@ const friendlyErr = (msg) => {
   if (s.includes('NSA_BAG_NOT_CLAIMED')) return 'This order isn’t claimed by this station anymore — reopen it.';
   if (s.includes('NSA_BAG_INCOMPLETE')) return 'Some items aren’t bagged or shorted yet.';
   if (s.includes('NSA_BAG_NO_OPEN_SHORT')) return 'That line has no open short.';
+  if (s.includes('NSA_BAG_ALREADY_BAGGED')) return 'This bag was already completed — tap it on the board to reopen.';
+  if (s.includes('NSA_BAG_NESTED_BACKORDER')) return 'Shorts on a backorder bag are resolved or refunded at the desk — they can’t be backordered again.';
+  if (s.includes('NSA_BAG_REFUND_LOCKED')) return 'This short was already refunded — changes go through the desk refund flow.';
+  if (s.includes('NSA_BAG_BACKORDER_DONE')) return 'That piece already shipped on the follow-up order.';
+  if (s.includes('NSA_BAG_NETWORK')) return 'No connection — check the tablet’s wifi and tap again.';
   return s || 'Something went wrong';
 };
 
@@ -221,7 +233,7 @@ function LineRow({ item, onTap, onShort }) {
         fontSize: 24, fontWeight: 800, border: '2px solid ' + border,
         background: done ? 'rgba(34,197,94,0.15)' : 'transparent', color: done ? '#22c55e' : '#475569',
       }}>
-        {done ? '✓' : shorted ? '!' : ''}
+        {shorted ? '!' : done ? '✓' : ''}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 19, fontWeight: 700, textDecoration: done && !shorted ? 'line-through' : 'none', color: done && !shorted ? '#64748b' : '#f1f5f9' }}>
@@ -678,6 +690,7 @@ function BaggingScreen({ stationToken, staffMode }) {
   const [msg, setMsg] = useState(null); // {kind:'err'|'info', text}
   const [sheet, setSheet] = useState(null); // {type:'short'|'backorder'|'refund'|'printer', item?}
   const [sort, setSort] = useState(() => { try { return localStorage.getItem('nsa_bag_sort') || 'oldest'; } catch { return 'oldest'; } });
+  const [noDeco, setNoDeco] = useState(false); // blanks-only batch: no deco gate
   const pollRef = useRef(null);
   useWakeLock(view !== 'picker'); // screen stays on while a batch is open
 
@@ -701,6 +714,7 @@ function BaggingScreen({ stationToken, staffMode }) {
     if (!r.ok) return oops(r);
     setOrders(r.orders || []);
     setProgress(r.progress);
+    setNoDeco(!!r.no_deco);
   }, [api]);
 
   useEffect(() => { loadGroups(); }, [loadGroups]);
@@ -744,11 +758,12 @@ function BaggingScreen({ stationToken, staffMode }) {
     // there first — move to the next).
     if (sort !== 'oldest') {
       const candidates = sortOrders(orders, sort)
-        .filter((o) => !o.bagged_at && !orderInDeco(o, o.webstore_order_items || []));
+        .filter((o) => !o.bagged_at && (noDeco || !orderInDeco(o, o.webstore_order_items || [])));
       for (const c of candidates) {
         const r = await api({ action: 'claim_order', order_id: c.id });
         if (r.ok) { setBusy(false); setOrder(r.order); setView('order'); setMsg(null); return; }
-        if (!/NSA_BAG_CLAIMED/.test(r.error || '')) { setBusy(false); return oops(r); }
+        // claimed elsewhere or finished on a stale board — try the next one
+        if (!/NSA_BAG_(CLAIMED|ALREADY_BAGGED)/.test(r.error || '')) { setBusy(false); return oops(r); }
       }
       setBusy(false); await loadBoard(group); setView('done'); return;
     }
@@ -760,7 +775,7 @@ function BaggingScreen({ stationToken, staffMode }) {
   };
 
   const openOrder = async (o) => {
-    if (orderInDeco(o, o.webstore_order_items || [])) {
+    if (!noDeco && orderInDeco(o, o.webstore_order_items || [])) {
       fxError();
       setMsg({ kind: 'err', text: 'Still in decoration — this order can’t be bagged yet.' });
       return;
@@ -844,6 +859,9 @@ function BaggingScreen({ stationToken, staffMode }) {
     setBusy(false);
     if (!r.ok) return oops(r);
     const completed = { ...o, ...r.order };
+    // Keep the local board honest immediately — nextOrder's candidate walk
+    // must not re-claim the bag we just finished off a stale list.
+    setOrders((cur) => cur.map((x) => (x.id === o.id ? { ...x, ...r.order } : x)));
     // Bag label prints automatically on completion ("full auto").
     const total = (progress && progress.total) || null;
     printOrderLabel({ ...completed, webstore_order_items: o.webstore_order_items });
@@ -949,7 +967,10 @@ function BaggingScreen({ stationToken, staffMode }) {
     const bagged = (progress && progress.bagged) || 0;
     const total = (progress && progress.total) || 0;
     const shorts = (progress && progress.open_shorts) || 0;
-    const allDone = view === 'done' || (total > 0 && bagged >= total);
+    // Celebrate only on real completion: nextOrder also lands here when the
+    // remaining bags are merely claimed by the other tablet or still in deco.
+    const allDone = total > 0 && bagged >= total;
+    const nothingFree = view === 'done' && !allDone;
     return (
       <div style={S.page}><style>{BS_CSS}</style><div style={{ maxWidth: 860, margin: '0 auto' }}>
         {header}
@@ -1001,9 +1022,16 @@ function BaggingScreen({ stationToken, staffMode }) {
             </div>
           );
         })() : (
-          <button type="button" style={S.bigBtn('#2563eb', busy)} disabled={busy} onClick={nextOrder}>
-            {busy ? 'Working…' : 'Next order →'}
-          </button>
+          <>
+            {nothingFree && (
+              <div style={{ margin: '10px 0', padding: '12px 16px', borderRadius: 6, background: 'rgba(59,130,246,0.1)', border: '1px solid #3b82f6', color: '#93c5fd', fontSize: 16, fontWeight: 700 }}>
+                Nothing free to claim right now — the remaining bags are open on another tablet or still in decoration.
+              </div>
+            )}
+            <button type="button" style={S.bigBtn('#2563eb', busy)} disabled={busy} onClick={nextOrder}>
+              {busy ? 'Working…' : 'Next order →'}
+            </button>
+          </>
         )}
         <div style={{ marginTop: 18 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
@@ -1021,7 +1049,7 @@ function BaggingScreen({ stationToken, staffMode }) {
             const hdr = playerHeader(o, o.webstore_order_items || []);
             const p = orderProgress(o.webstore_order_items || []);
             const claimedElsewhere = o.bagging_claimed_by && !o.bagged_at;
-            const inDeco = orderInDeco(o, o.webstore_order_items || []);
+            const inDeco = !noDeco && orderInDeco(o, o.webstore_order_items || []);
             return (
               <div key={o.id} style={{ display: 'flex', gap: 8, alignItems: 'stretch', marginTop: 8 }}>
                 <button type="button" style={{ ...S.card, flex: 1, opacity: o.bagged_at ? 0.5 : inDeco ? 0.45 : 1, cursor: inDeco ? 'default' : 'pointer' }} onClick={() => openOrder(o)}>

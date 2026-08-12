@@ -149,7 +149,19 @@ exports.handler = async (event) => {
         if (error) return rpcFail(error);
         const { data: prog, error: pErr } = await sb.rpc('bagging_batch_progress', { p_kind: kind, p_group_id: String(groupId) });
         if (pErr) return rpcFail(pErr);
-        return ok({ orders: data || [], progress: (prog && prog[0]) || null });
+        // Blanks-only batch (SO with no production jobs): line_status never
+        // advances past 'pending', so tell the station to skip its deco gate —
+        // mirrors bagging_order_ready's no-jobs auto-ready.
+        let noDeco = false;
+        if (kind === 'so') {
+          const { data: jobs } = await sb.from('so_jobs').select('id').eq('so_id', groupId).limit(1);
+          noDeco = !(jobs && jobs.length);
+        }
+        // Orders whose lines were all cancelled have nothing to bag — keep
+        // them off the board (the RPCs ignore them too via bagging_order_live).
+        const orders = (data || []).filter((o) =>
+          (o.webstore_order_items || []).some((i) => !i.is_bundle_parent && (i.line_status || '') !== 'cancelled'));
+        return ok({ orders, progress: (prog && prog[0]) || null, no_deco: noDeco });
       }
 
       case 'next_order': {
@@ -262,11 +274,13 @@ exports.handler = async (event) => {
         // so lunch breaks and overnight don't dilute the rate.
         const days = Math.max(1, Math.min(90, Number(body.days) || 7));
         const since = new Date(Date.now() - days * 86400000).toISOString();
+        // Newest-first: if a heavy window overflows the 10k cap, we lose the
+        // OLDEST events, not the most recent (nothing below is order-sensitive).
         const { data: evs, error } = await sb.from('bagging_events')
           .select('event, actor, order_id, item_id, qty, created_at')
-          .in('event', ['complete', 'short', 'label_print'])
+          .in('event', ['complete', 'short'])
           .gte('created_at', since)
-          .order('created_at', { ascending: true })
+          .order('created_at', { ascending: false })
           .limit(10000);
         if (error) return rpcFail(error);
         const completes = (evs || []).filter((e) => e.event === 'complete');
@@ -333,7 +347,7 @@ exports.handler = async (event) => {
         const since = new Date(Date.now() - days * 86400000).toISOString();
         const { data: evs, error } = await sb.from('bagging_events')
           .select('order_id, created_at').eq('event', 'complete')
-          .gte('created_at', since).order('created_at', { ascending: true }).limit(10000);
+          .gte('created_at', since).order('created_at', { ascending: false }).limit(10000);
         if (error) return rpcFail(error);
         const orderIds = [...new Set((evs || []).map((e) => e.order_id).filter(Boolean))];
         const storeByOrder = {};

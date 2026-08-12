@@ -3040,7 +3040,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // carries vendor stock for the override SKUs, so reports check/show the item
   // number production will actually source.
   const gatherBatch = useCallback(async () => {
-    const open = (detail?.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
+    // !backorder_of: bagging's child orders re-produce nothing — their goods
+    // arrive via receiving; batching one would produce the shorted qty twice.
+    const open = (detail?.orders || []).filter((o) => !o.so_id && !o.backorder_of && o.status !== 'pending_payment' && o.status !== 'cancelled');
     const openIds = new Set(open.map((o) => o.id));
     const skuMap = sizeSkuMapOf(detail?.catalog);
     const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), skuMap);
@@ -3121,7 +3123,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Fresh snapshot from the DB — not the possibly-minutes-old detail state — so the
     // modal's order list includes anything placed since the page loaded and excludes
     // anything batched/cancelled/refunded elsewhere in the meantime.
-    const { data: freshOrders, error: foErr } = await supabase.from('webstore_orders').select('*').eq('store_id', sel.id).is('so_id', null);
+    const { data: freshOrders, error: foErr } = await supabase.from('webstore_orders').select('*').eq('store_id', sel.id).is('so_id', null).is('backorder_of', null);
     if (foErr) { flash('Could not load orders: ' + foErr.message); return; }
     const open = (freshOrders || []).filter(isLiveWebstoreOrder);
     if (!open.length) { flash('No unbatched orders to send'); return; }
@@ -3442,7 +3444,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).select('id');
+    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).is('backorder_of', null).select('id');
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
     else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
     else flash(`Created ${soId} · linked ${bOrders.length} orders`);

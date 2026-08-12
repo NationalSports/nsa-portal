@@ -217,10 +217,17 @@ async function sendOrderBagged(sb, order) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!brevoKey || !order.buyer_email) return;
   if (/@example\.(com|org|net)$/i.test(order.buyer_email)) return; // seeded test orders
-  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url,delivery_mode,bagged_email_enabled').eq('id', order.store_id).limit(1);
+  const { data: stores } = await sb.from('webstores').select('name,slug,source,omg_sale_code,primary_color,accent_color,logo_url,delivery_mode,bagged_email_enabled').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
   if (store.bagged_email_enabled === false) return; // per-store setting (Webstores → Settings)
+  // OMG school-delivery sales always deliver in bulk to the school, even when
+  // the ingested slip carried a home address (which stamps ship_home).
+  let schoolDelivery = false;
+  if ((store.source || '') === 'omg' && store.omg_sale_code) {
+    const { data: oss } = await sb.from('omg_stores').select('delivery_mode').eq('id', 'OMG-sale_' + store.omg_sale_code).limit(1);
+    schoolDelivery = !!(oss && oss[0] && oss[0].delivery_mode === 'deliver_school');
+  }
   const { data: items } = await sb.from('webstore_order_items')
     .select('sku,name,size,qty,bagged_qty,short_qty,short_status,backorder_eta,player_name,player_number,is_bundle_parent,line_status')
     .eq('order_id', order.id);
@@ -228,15 +235,21 @@ async function sendOrderBagged(sb, order) {
   const inBag = live.filter((i) => (Number(i.bagged_qty) || 0) > 0);
   const backordered = live.filter((i) => i.short_status === 'backordered' && (Number(i.short_qty) || 0) > 0);
   const refunded = live.filter((i) => i.short_status === 'refunded' && (Number(i.short_qty) || 0) > 0);
+  const locating = live.filter((i) => i.short_status === 'open' && (Number(i.short_qty) || 0) > 0);
   const lineRow = (i, qty) => `<tr><td style="padding:6px 0;border-bottom:1px solid #eef1f5">${esc(i.name || i.sku || 'Item')}${qty > 1 ? ` ×${qty}` : ''}<div style="font-size:12px;color:#64748b">${[i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).map(esc).join(' · ')}</div></td></tr>`;
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const link = order.status_token ? `${portal}/shop/order/${order.status_token}` : (store.slug ? `${portal}/shop/${store.slug}/order/${order.id}` : null);
   const accent = store.accent_color || '#e11d2a';
   const player = (live.find((i) => i.player_name) || {}).player_name || order.buyer_name || '';
-  const clubDelivery = order.ship_method !== 'ship_home';
+  const clubDelivery = order.ship_method !== 'ship_home' || schoolDelivery;
   const eta = backordered.map((i) => i.backorder_eta).filter(Boolean).sort()[0] || null;
   const num = order.omg_order_number || order.order_number || String(order.id || '').slice(0, 8);
-  const shortBlock = (backordered.length || refunded.length) ? `
+  const shortBlock = (backordered.length || refunded.length || locating.length) ? `
+      ${locating.length ? `<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 14px;margin-top:16px">
+        <div style="font-weight:800;margin-bottom:6px">Still locating</div>
+        <div style="font-size:13px;color:#475569;margin-bottom:6px">These pieces weren't on the shelf when we packed — we're tracking them down and will follow up:</div>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">${locating.map((i) => lineRow(i, Number(i.short_qty) || 0)).join('')}</table>
+      </div>` : ''}
       ${backordered.length ? `<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:12px 14px;margin-top:16px">
         <div style="font-weight:800;margin-bottom:6px">On its way separately</div>
         <div style="font-size:13px;color:#475569;margin-bottom:6px">These pieces weren't available when we packed — they're on a follow-up order and will ${clubDelivery ? 'be delivered' : 'ship'} as soon as they arrive${eta ? ` (expected around ${esc(eta)})` : ''}:</div>
@@ -248,11 +261,11 @@ async function sendOrderBagged(sb, order) {
         <table style="width:100%;border-collapse:collapse;font-size:14px">${refunded.map((i) => lineRow(i, Number(i.short_qty) || 0)).join('')}</table>
       </div>` : ''}` : '';
   const bodyHtml = `
-      <p style="margin:0 0 14px">Good news${order.buyer_name ? ', ' + esc(order.buyer_name) : ''}! ${player && player !== order.buyer_name ? `${esc(player)}'s` : 'Your'} order has been packed${clubDelivery ? ' and will be delivered with your club’s shipment' : ' and ships next'}.</p>
+      <p style="margin:0 0 14px">Good news${order.buyer_name ? ', ' + esc(order.buyer_name) : ''}! ${player && player !== order.buyer_name ? `${esc(player)}'s` : 'Your'} order has been packed${clubDelivery ? ` and will be delivered with your ${schoolDelivery ? 'school' : 'club'}’s shipment` : ' and ships next'}.</p>
       <table style="width:100%;border-collapse:collapse;font-size:14px">${inBag.map((i) => lineRow(i, Math.min(Number(i.bagged_qty) || 0, Number(i.qty) || 0))).join('')}</table>
       ${shortBlock}
       ${link ? `<a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">Track your order</a>` : ''}`;
-  const partial = backordered.length > 0;
+  const partial = backordered.length > 0 || locating.length > 0;
   const isFollowUp = !!order.backorder_of; // child backorder order: "the rest of your order"
   const html = emailShell({
     store, portal,
