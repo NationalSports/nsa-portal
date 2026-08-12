@@ -198,7 +198,12 @@ export default function CommissionsPage(){
         // flipped the 30%/15% rate and moved the line to a different statement month whenever
         // payment rows hadn't hydrated. A paid invoice with no payment rows falls back to the
         // invoice date (days-to-pay 0 → standard rate, statement month = invoice month).
-        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):invDate;
+        // LATEST payment by date, not the last array slot: the save path's payment-restore merge
+        // appends rows the client never loaded onto the END of the array (dbEngine _restore), so
+        // position does not track chronology — and on a partially-restored invoice the last slot
+        // could be an older payment, booking the line to the wrong statement month.
+        const _payDates=(inv.payments||[]).map(p=>parseDate(p.date)).filter(d=>d&&!isNaN(d.getTime()));
+        const paidDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
         const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
