@@ -9017,9 +9017,84 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // since those blanks must be received at Emerson before we can decorate them.
       const _poDsInHouse=poItems.map((it,vi)=>({it,vi})).filter(({it,vi})=>!poExcluded[vi]&&(it.members||[it]).some(m=>_itemInHouseDeco(m._idx)));
       const _poDsInHouseConfirm=()=>'⚠️ '+_poDsInHouse.length+' item'+(_poDsInHouse.length!==1?'s':'')+' on this drop-ship PO '+(_poDsInHouse.length!==1?'are':'is')+' decorated IN-HOUSE:\n\n'+_poDsInHouse.map(x=>'  • '+x.it.sku+' — '+x.it.name).join('\n')+'\n\nDrop ship skips the warehouse, so these blanks will never reach Emerson to be decorated.\n\nCreate the PO anyway?';
+      // Server-truth duplicate guard (SO-1751: PO 56906 + PO 56908 double-bought the same seven
+      // Adidas lines). openSizesFor subtracts only the po_lines THIS TAB knows about — a PO written
+      // in another tab, a save that hasn't flushed, or a timed-out po-line hydration leaves the form
+      // offering units the DB already has on order, and no submit-time check existed. Right before
+      // writing a PO, re-read this SO's PO lines from the DB and compare: any size where the DB
+      // shows MORE committed than this tab knows about means the form's "open" numbers are stale.
+      // Soft-fails to null (allow) on any query problem — offline/legacy behavior unchanged.
+      const _poFreshDupCheck=async(entries)=>{// entries: [{idx, sizes:{sz:qty}}]
+        if(!supabase||!o?.id||!entries?.length)return null;
+        try{
+          const idxs=[...new Set(entries.map(e=>e.idx))];
+          const{data:itemRows,error:e1}=await supabase.from('so_items').select('id,item_index').eq('so_id',o.id).in('item_index',idxs);
+          if(e1||!Array.isArray(itemRows)||itemRows.length===0)return null;
+          const byIdx={};itemRows.forEach(r=>{byIdx[r.item_index]=r.id});
+          const{data:poRows,error:e2}=await supabase.from('so_item_po_lines').select('so_item_id,po_id,sizes,cancelled').in('so_item_id',itemRows.map(r=>r.id));
+          if(e2||!Array.isArray(poRows))return null;
+          const conflicts=[];
+          entries.forEach(({idx,sizes})=>{
+            const itId=byIdx[idx];if(!itId)return;
+            const it=safeItems(o)[idx]||{};
+            const localLines=it.po_lines||[];
+            const dbLines=poRows.filter(r=>r.so_item_id===itId);
+            Object.entries(sizes||{}).forEach(([sz,q])=>{
+              if(!(safeNum(q)>0))return;
+              // DB rows keep sizes in a jsonb map alongside meta keys; a size cell is numeric.
+              const dbCommitted=dbLines.reduce((a,r)=>{const c=safeNum((r.cancelled||{})[sz]);return a+Math.max(0,safeNum((r.sizes||{})[sz])-c)},0);
+              const localCommitted=poCommitted(localLines,sz);
+              if(dbCommitted>localCommitted){
+                const pos=[...new Set(dbLines.filter(r=>safeNum((r.sizes||{})[sz])>0).map(r=>r.po_id))].filter(pid=>!localLines.some(pl=>pl&&pl.po_id===pid));
+                conflicts.push({sku:it.sku||('line '+(idx+1)),pos});
+              }
+            });
+          });
+          return conflicts.length?conflicts:null;
+        }catch(e){return null}
+      };
+      // The per-member {idx,sizes} this submit is about to order — same DOM reads as the writes.
+      const _poSubmitEntries=()=>{
+        const entries=[];
+        poItems.forEach((grp,vi)=>{if(poExcluded[vi])return;
+          _splitGroupToMembers(grp,vi).forEach(({member,sizes})=>{
+            const s={};Object.entries(sizes||{}).forEach(([sz,v])=>{if(safeNum(v)>0)s[sz]=v});
+            if(Object.keys(s).length)entries.push({idx:member._idx,sizes:s});
+          });
+        });
+        return entries;
+      };
+      const _poDupMsg=(dup)=>{
+        const bySku={};dup.forEach(c=>{bySku[c.sku]=[...new Set([...(bySku[c.sku]||[]),...c.pos])]});
+        return '⛔ Not created — the database already has blanks on order that this page doesn\'t know about: '
+          +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
+          +'. Another tab or session ordered them. Reload the page to pull in the latest POs, then order only what\'s still open.';
+      };
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>x</button></div>
         <div className="modal-body">
+          {/* Existing deco POs covering this vendor group's items — same panel as the Edit-PO page,
+              shown BEFORE the rep builds anything so the prior DPO is unmissable (SO-1751: a second
+              Silver Screen DPO was opened because the first one wasn't visible from this form). */}
+          {(()=>{
+            const _grpIdxs=new Set(poItems.flatMap(it=>(it.members||[it]).map(m=>m._idx)));
+            const relDecos=(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).some(ix=>_grpIdxs.has(ix)));
+            if(relDecos.length===0)return null;
+            return<div style={{padding:'8px 12px',background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>🎨 Decoration PO{relDecos.length>1?'s':''} on these items</div>
+              {relDecos.map(dp=>{const dt=(dp.deco_type||'').replace(/_/g,' ');const n=(dp.item_idxs||[]).filter(ix=>_grpIdxs.has(ix)).length;
+                return<div key={dp.id||dp.po_id} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'3px 0'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{dp.po_id}</span>
+                <button type="button" className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(dp.po_id||''):Promise.reject()).then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>
+                <span style={{fontSize:12,color:'#475569'}}>{dp.vendor}</span>
+                {dt&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>{dt}</span>}
+                {dp.drop_ship&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                <span style={{fontSize:11,color:'#94a3b8'}}>covers {n} item{n!==1?'s':''} here</span>
+                <span style={{flex:1}}/>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)});setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>View &rarr;</button>
+              </div>})}
+            </div>;
+          })()}
           {/* Inline Outside Decoration PO — expands INSIDE this modal so the in-progress product PO
               (uncontrolled qty/price inputs) survives, and both POs are created in one submit.
               With no open product items there's nothing to pair with, so fall back to the standalone deco form. */}
@@ -9200,14 +9275,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
-          {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
+          {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={async()=>{
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
             if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
             if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){nf(podRes.error,'error');return}
-            _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+            // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
+            _poCreatingRef.current=true;
+            const _dup=await _poFreshDupCheck(_poSubmitEntries());
+            if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+            setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
             const isDropShip=poDropShip;
             const batchItems=[];let totalCost=0;
@@ -9278,7 +9357,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // deco PO: joining an existing one would re-create a job it may already carry.
             if(podRes&&!podRes.isMerge&&_isSilverScreenDp(podRes.po))setTimeout(()=>sendSilverScreenJob(podRes.po,updated),200);
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}
-          {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
+          {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={async()=>{
           if(_poCreatingRef.current)return;
           if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
@@ -9286,7 +9365,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){nf(podRes.error,'error');return}
-          _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+          // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
+          _poCreatingRef.current=true;
+          const _dup=await _poFreshDupCheck(_poSubmitEntries());
+          if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+          setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
           // inconsistent casing/spacing across passes (e.g. "PO6639 SBBV SP" vs "PO6639 SBBV sp").
           // Matching is exact everywhere downstream, so that used to fragment one PO into several

@@ -30,7 +30,7 @@ import QuickMockBuilder from './QuickMockBuilder';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, greetLine, withGreeting, emailMoney } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
@@ -781,6 +781,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         nf('🧵 '+dp.po_id+' sent to Topstar — cost $'+svc.cost.toFixed(2)+', customer billed $'+svc.sell.toFixed(2));
       } else nf('Email to Topstar failed: '+r.error,'error');
       return r.ok;
+    };
+    // Create the job on the Silver Screen account portal for a Silver Screen deco PO
+    // (netlify/functions/silverscreen-job). Sends the covered items from the LIVE editor
+    // state (not the DB — the editor may hold unsaved edits the rep is looking at), then
+    // stamps the returned job # + URL on the PO and flips waiting/planned → ordered.
+    // The PO number goes over VERBATIM — the bill parser matches their invoice by it.
+    // baseOrder: when chained right after Create Deco PO, the closure's `o` doesn't hold
+    // the new PO yet — the caller must pass the order object it just built, or the stamp
+    // update here would map over the stale deco_pos and drop the brand-new entry on save.
+    const _isSilverScreenDp=dp=>!!dp&&(dp.deco_vendor_id==='dv_silver_screen'||/silver\s*screen/i.test(dp.vendor||''));
+    const[sspSending,setSspSending]=useState(false);
+    const sendSilverScreenJob=async(dp,baseOrder)=>{
+      if(sspSending)return;
+      const cur=baseOrder||o;
+      const soItems=safeItems(cur);
+      const rows=(dp.item_idxs||[]).map(ii=>{const it=soItems[ii];if(!it)return null;
+        const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
+        const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
+        if(qty===0)return null;
+        return{sku:it.sku||'',name:it.name||it.custom_desc||'',color:it.color||'',sizes:Object.fromEntries(sizes),qty}}).filter(Boolean);
+      if(rows.length===0){nf('No covered items with quantities — nothing to send to Silver Screen','error');return}
+      const totalPcs=rows.reduce((a,r)=>a+r.qty,0);
+      const deco_instructions=(dp.item_idxs||[]).flatMap(ii=>{const it=soItems[ii];if(!it)return[];
+        return safeDecos(it).filter(d=>d&&(d.kind==='outside_deco'||d.fulfillment==='outside'||d.deco_po_id===dp.po_id)).map(d=>({sku:it.sku||'',position:d.position||'',type:d.type||d.deco_type||'',notes:d.notes||''}))});
+      if(!window.confirm('Create this job on the Silver Screen portal?\n\n'+(dp.po_id||'(no PO number)')+' — '+rows.length+' item line'+(rows.length!==1?'s':'')+', '+totalPcs+' pcs\nP.O. number sent (verbatim): '+dp.po_id))return;
+      setSspSending(true);
+      try{
+        const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',
+            po:{po_id:dp.po_id,deco_type:dp.deco_type,qty:dp.qty,unit_cost:dp.unit_cost,expected_date:dp.expected_date,notes:dp.notes,drop_ship:!!dp.drop_ship},
+            items:rows,deco_instructions})});
+        const j=await r.json().catch(()=>({}));
+        if(!r.ok||!j.ok){nf('Silver Screen job failed: '+(j.error||('HTTP '+r.status)),'error');return}
+        const updatedDp={...dp,
+          status:(!dp.status||dp.status==='planned'||dp.status==='waiting')?'ordered':dp.status,
+          _silverscreen_job_id:j.order_id||'',_silverscreen_job_url:j.order_url||'',_silverscreen_sent_at:new Date().toLocaleString()};
+        const updated={...cur,deco_pos:(cur.deco_pos||[]).map(x=>(dp.id?x.id===dp.id:x.po_id===dp.po_id)?updatedDp:x),updated_at:new Date().toLocaleString()};
+        setO(updated);onSave(updated);
+        setPoFullPage(p=>p&&p.decoPo?{...p,decoPo:updatedDp,soItems:safeItems(updated)}:p);
+        nf('🖨 '+dp.po_id+' sent to Silver Screen'+(j.order_id?' — job #'+j.order_id:''));
+      }catch(e){nf('Silver Screen job failed: '+(e?.message||'network error'),'error')}
+      finally{setSspSending(false)}
     };
     const[poVendorSearch,setPoVendorSearch]=useState({});// {idx: query} — searchable vendor assign for unlinked items
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
@@ -8620,6 +8662,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               nf(_dpoMode==='dtf'
                 ?'🖨️ '+effectivePoId+' '+(preexistingPO?'applied':'created')+' — DTF purchase from '+decoVendor+(artIds.length?' — '+artIds.length+' art folder'+(artIds.length!==1?'s':'')+' marked DTF Purchased':'')+' ($'+expectedCost.toFixed(2)+')'
                 :'🎨 '+effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+decoVendor+' — '+(itemIdxs.length>0?itemIdxs.length+' item'+(itemIdxs.length!==1?'s':''):'in-house, qty '+totalQty)+' ($'+expectedCost.toFixed(2)+')');
+              // Silver Screen: offer to create the job on their portal right away (skip
+              // preexisting POs — already in their system — and DTF purchases, which have
+              // no items to send). Deferred so the modal closes before the confirm dialog.
+              if(!preexistingPO&&_dpoMode!=='dtf'&&_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
             }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>}
             {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
               if(_poCreatingRef.current)return;
@@ -8652,8 +8698,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setO(updated);onSave(updated);
               setPOCounter(c=>c+1);
               const _dpoMsg='🎨 '+effectiveDpoId+' created for '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+', '+totalQty+' pcs ($'+expectedCost.toFixed(2)+')';
-              if(_openBlanksModule(itemIdxs,effectiveDpoId,dv.id)){nf(_dpoMsg+' — opening the garment PO so you can see everything to order')}
-              else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');nf(_dpoMsg+' — no blanks to order, every covered item is already on an IF or PO')}
+              const _toBlanks=()=>{
+                if(_openBlanksModule(itemIdxs,effectiveDpoId,dv.id))nf(_dpoMsg+' — opening the garment PO so you can see everything to order');
+                else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');nf(_dpoMsg+' — no blanks to order, every covered item is already on an IF or PO')}
+              };
+              // Silver Screen: still offer to build the job on their portal for this DPO — but finish
+              // that BEFORE opening the garment PO form. sendSilverScreenJob stamps the job # onto
+              // `updated`, the snapshot taken here, so a garment PO created while its request was in
+              // flight would be wiped by that save. Chains on cancel and on failure too, so the
+              // handoff always happens.
+              if(_isSilverScreenDp(newDecoPO))setTimeout(()=>{sendSilverScreenJob(newDecoPO,updated).finally(_toBlanks)},200);
+              else _toBlanks();
             }}>🎨📦 Create Deco PO + Order Blanks</button>}
           </div>
         </div></div>;
@@ -8915,9 +8970,84 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // since those blanks must be received at Emerson before we can decorate them.
       const _poDsInHouse=poItems.map((it,vi)=>({it,vi})).filter(({it,vi})=>!poExcluded[vi]&&(it.members||[it]).some(m=>_itemInHouseDeco(m._idx)));
       const _poDsInHouseConfirm=()=>'⚠️ '+_poDsInHouse.length+' item'+(_poDsInHouse.length!==1?'s':'')+' on this drop-ship PO '+(_poDsInHouse.length!==1?'are':'is')+' decorated IN-HOUSE:\n\n'+_poDsInHouse.map(x=>'  • '+x.it.sku+' — '+x.it.name).join('\n')+'\n\nDrop ship skips the warehouse, so these blanks will never reach Emerson to be decorated.\n\nCreate the PO anyway?';
+      // Server-truth duplicate guard (SO-1751: PO 56906 + PO 56908 double-bought the same seven
+      // Adidas lines). openSizesFor subtracts only the po_lines THIS TAB knows about — a PO written
+      // in another tab, a save that hasn't flushed, or a timed-out po-line hydration leaves the form
+      // offering units the DB already has on order, and no submit-time check existed. Right before
+      // writing a PO, re-read this SO's PO lines from the DB and compare: any size where the DB
+      // shows MORE committed than this tab knows about means the form's "open" numbers are stale.
+      // Soft-fails to null (allow) on any query problem — offline/legacy behavior unchanged.
+      const _poFreshDupCheck=async(entries)=>{// entries: [{idx, sizes:{sz:qty}}]
+        if(!supabase||!o?.id||!entries?.length)return null;
+        try{
+          const idxs=[...new Set(entries.map(e=>e.idx))];
+          const{data:itemRows,error:e1}=await supabase.from('so_items').select('id,item_index').eq('so_id',o.id).in('item_index',idxs);
+          if(e1||!Array.isArray(itemRows)||itemRows.length===0)return null;
+          const byIdx={};itemRows.forEach(r=>{byIdx[r.item_index]=r.id});
+          const{data:poRows,error:e2}=await supabase.from('so_item_po_lines').select('so_item_id,po_id,sizes,cancelled').in('so_item_id',itemRows.map(r=>r.id));
+          if(e2||!Array.isArray(poRows))return null;
+          const conflicts=[];
+          entries.forEach(({idx,sizes})=>{
+            const itId=byIdx[idx];if(!itId)return;
+            const it=safeItems(o)[idx]||{};
+            const localLines=it.po_lines||[];
+            const dbLines=poRows.filter(r=>r.so_item_id===itId);
+            Object.entries(sizes||{}).forEach(([sz,q])=>{
+              if(!(safeNum(q)>0))return;
+              // DB rows keep sizes in a jsonb map alongside meta keys; a size cell is numeric.
+              const dbCommitted=dbLines.reduce((a,r)=>{const c=safeNum((r.cancelled||{})[sz]);return a+Math.max(0,safeNum((r.sizes||{})[sz])-c)},0);
+              const localCommitted=poCommitted(localLines,sz);
+              if(dbCommitted>localCommitted){
+                const pos=[...new Set(dbLines.filter(r=>safeNum((r.sizes||{})[sz])>0).map(r=>r.po_id))].filter(pid=>!localLines.some(pl=>pl&&pl.po_id===pid));
+                conflicts.push({sku:it.sku||('line '+(idx+1)),pos});
+              }
+            });
+          });
+          return conflicts.length?conflicts:null;
+        }catch(e){return null}
+      };
+      // The per-member {idx,sizes} this submit is about to order — same DOM reads as the writes.
+      const _poSubmitEntries=()=>{
+        const entries=[];
+        poItems.forEach((grp,vi)=>{if(poExcluded[vi])return;
+          _splitGroupToMembers(grp,vi).forEach(({member,sizes})=>{
+            const s={};Object.entries(sizes||{}).forEach(([sz,v])=>{if(safeNum(v)>0)s[sz]=v});
+            if(Object.keys(s).length)entries.push({idx:member._idx,sizes:s});
+          });
+        });
+        return entries;
+      };
+      const _poDupMsg=(dup)=>{
+        const bySku={};dup.forEach(c=>{bySku[c.sku]=[...new Set([...(bySku[c.sku]||[]),...c.pos])]});
+        return '⛔ Not created — the database already has blanks on order that this page doesn\'t know about: '
+          +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
+          +'. Another tab or session ordered them. Reload the page to pull in the latest POs, then order only what\'s still open.';
+      };
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>x</button></div>
         <div className="modal-body">
+          {/* Existing deco POs covering this vendor group's items — same panel as the Edit-PO page,
+              shown BEFORE the rep builds anything so the prior DPO is unmissable (SO-1751: a second
+              Silver Screen DPO was opened because the first one wasn't visible from this form). */}
+          {(()=>{
+            const _grpIdxs=new Set(poItems.flatMap(it=>(it.members||[it]).map(m=>m._idx)));
+            const relDecos=(o.deco_pos||[]).filter(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).some(ix=>_grpIdxs.has(ix)));
+            if(relDecos.length===0)return null;
+            return<div style={{padding:'8px 12px',background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>🎨 Decoration PO{relDecos.length>1?'s':''} on these items</div>
+              {relDecos.map(dp=>{const dt=(dp.deco_type||'').replace(/_/g,' ');const n=(dp.item_idxs||[]).filter(ix=>_grpIdxs.has(ix)).length;
+                return<div key={dp.id||dp.po_id} style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'3px 0'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{dp.po_id}</span>
+                <button type="button" className="btn btn-sm btn-secondary" title="Copy deco PO number" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{(navigator.clipboard?navigator.clipboard.writeText(dp.po_id||''):Promise.reject()).then(()=>nf('Copied '+(dp.po_id||'PO number'))).catch(()=>nf('Copy failed','error'))}}>📋 Copy</button>
+                <span style={{fontSize:12,color:'#475569'}}>{dp.vendor}</span>
+                {dt&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>{dt}</span>}
+                {dp.drop_ship&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                <span style={{fontSize:11,color:'#94a3b8'}}>covers {n} item{n!==1?'s':''} here</span>
+                <span style={{flex:1}}/>
+                <button type="button" className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)});setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>View &rarr;</button>
+              </div>})}
+            </div>;
+          })()}
           {/* Inline Outside Decoration PO — expands INSIDE this modal so the in-progress product PO
               (uncontrolled qty/price inputs) survives, and both POs are created in one submit.
               With no open product items there's nothing to pair with, so fall back to the standalone deco form. */}
@@ -9098,14 +9228,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
-          {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
+          {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={async()=>{
             if(_poCreatingRef.current)return;
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
             if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
             if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){nf(podRes.error,'error');return}
-            _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+            // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
+            _poCreatingRef.current=true;
+            const _dup=await _poFreshDupCheck(_poSubmitEntries());
+            if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+            setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
             const isDropShip=poDropShip;
             const batchItems=[];let totalCost=0;
@@ -9171,8 +9305,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(BATCH_NOTIFY_VENDORS.includes(batchKey)&&batchConfig.threshold>0&&newBatchTotal>=batchConfig.threshold){
               setBatchReadyPopup({vendorKey:batchKey,groupKey:batchGroupKey,vendorName:batchConfig.name+(batchDecoName?' → '+batchDecoName:''),total:newBatchTotal,threshold:batchConfig.threshold,batchPOs:[...pendingBatches,bp],count:pendingBatches.length+1});
             }
+            // Silver Screen: an inline deco PO for them prompts to build the job on their portal, the
+            // same as creating the deco PO from the standalone form — one flow, two ways in. Only a NEW
+            // deco PO: joining an existing one would re-create a job it may already carry.
+            if(podRes&&!podRes.isMerge&&_isSilverScreenDp(podRes.po))setTimeout(()=>sendSilverScreenJob(podRes.po,updated),200);
           }}><Icon name="package" size={14}/> Add to Batch ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}
-          {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={()=>{
+          {poItems.length>0&&(preexistingPO||!batchConfig?.batchOnly)&&<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={async()=>{
           if(_poCreatingRef.current)return;
           if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
@@ -9180,7 +9318,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){nf(podRes.error,'error');return}
-          _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+          // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
+          _poCreatingRef.current=true;
+          const _dup=await _poFreshDupCheck(_poSubmitEntries());
+          if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
+          setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
           // inconsistent casing/spacing across passes (e.g. "PO6639 SBBV SP" vs "PO6639 SBBV sp").
           // Matching is exact everywhere downstream, so that used to fragment one PO into several
@@ -9260,65 +9402,75 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(counterBump>0)setPOCounter(c=>c+counterBump);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
           setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
-          if(newPoLines.length>0&&!preexistingPO){
-            // Marry-up with the deco flow: blanks drop-shipping to a decorator — via the inline
-            // deco PO created in this same submit, or an existing drop-ship deco PO that already
-            // covers these items (line-item outside-deco flow) — open the vendor API order box
-            // prefilled with the decorator ship-to + DPO number, exactly like the
-            // "Create Deco PO + Order Blanks" button. Otherwise keep opening the Edit-PO modal.
-            // Full-coverage rule: the deco PO must cover EVERY item on this product PO — a
-            // partial match would ship items never meant for that decorator to its address.
-            // Partially-covered POs keep today's behavior (Edit-PO modal, pick ship-to yourself).
-            const _newIdxs=[...new Set(newPoLines.map(l=>l.lineIdx))];
-            const _covers=dp=>dp&&dp.deco_vendor_id&&_newIdxs.length>0&&_newIdxs.every(ix=>(dp.item_idxs||[]).includes(ix));
-            const _linkDeco=isDropShip?((podRes&&_covers(podRes.po)?podRes.po:null)||(o.deco_pos||[]).find(_covers)||null):null;
-            const _linkVk=_linkDeco?_apiVendorKey(vn):null;
-            if(_linkVk&&apiPayloadItems.length>0){
-              nf('🎨 Linked to '+(_linkDeco.po_id||'deco PO')+' — opening '+vn+' API order shipping to '+(_linkDeco.vendor||'decorator'));
-              // SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — passing only the
-              // deco id silently shipped the blanks to the NSA warehouse. Resolve the decorator's
-              // address here (same as buildApiOrderFromPO / the batch-ready S&S path) against
-              // `updated`, not `o`: the deco PO created in this same submit isn't on `o` yet, so the
-              // DPO number on the attention line would come back blank.
-              const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
-              setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
-                batchPOs:[{so_id:o.id,items:apiPayloadItems}],
-                shipToDecoId:_linkDeco.deco_vendor_id,
-                initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,''),
-                ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
-            }else{
-              // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
-              // was only offered when a decorator was linked, so direct drop-ships were placed
-              // off-portal and captured no vendor keys (0/26 in July) — the root cause of S&S
-              // bills matching by guesswork instead of by their own numbers. Offer the same
-              // modal with the PO's chosen ship-to prefilled. The modal opens in TEST mode and
-              // shows the address — the human reviews before anything goes live. An incomplete
-              // address falls back to today's Edit-PO flow.
-              const _dsVk=isDropShip?_apiVendorKey(vn):null;
-              const _dsShipTo=(()=>{
-                if(_dsVk!=='sss'||!apiPayloadItems.length)return null;
-                let s=null;
-                if(poShipTo==='custom'&&poShipCustom.line1){s={companyName:poShipCustom.name||cust?.name||'',address1:poShipCustom.line1,city:poShipCustom.city,region:poShipCustom.state,postalCode:poShipCustom.zip}}
-                else{
-                  const m=/_alt_(\d+)$/.exec(String(poShipTo));
-                  if(m){const alts=(cust?.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));const ab=alts[parseInt(m[1],10)];
-                    if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
-                  else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
-                }
-                if(s&&poAttention.trim())s.attentionTo=poAttention.trim();
-                return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
-              })();
-              if(_dsShipTo){
-                nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
-                setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+          // Follow-on modal for the just-created product PO (vendor API order box, else Edit-PO).
+          const _afterPo=()=>{
+            if(newPoLines.length>0&&!preexistingPO){
+              // Marry-up with the deco flow: blanks drop-shipping to a decorator — via the inline
+              // deco PO created in this same submit, or an existing drop-ship deco PO that already
+              // covers these items (line-item outside-deco flow) — open the vendor API order box
+              // prefilled with the decorator ship-to + DPO number, exactly like the
+              // "Create Deco PO + Order Blanks" button. Otherwise keep opening the Edit-PO modal.
+              // Full-coverage rule: the deco PO must cover EVERY item on this product PO — a
+              // partial match would ship items never meant for that decorator to its address.
+              // Partially-covered POs keep today's behavior (Edit-PO modal, pick ship-to yourself).
+              const _newIdxs=[...new Set(newPoLines.map(l=>l.lineIdx))];
+              const _covers=dp=>dp&&dp.deco_vendor_id&&_newIdxs.length>0&&_newIdxs.every(ix=>(dp.item_idxs||[]).includes(ix));
+              const _linkDeco=isDropShip?((podRes&&_covers(podRes.po)?podRes.po:null)||(o.deco_pos||[]).find(_covers)||null):null;
+              const _linkVk=_linkDeco?_apiVendorKey(vn):null;
+              if(_linkVk&&apiPayloadItems.length>0){
+                nf('🎨 Linked to '+(_linkDeco.po_id||'deco PO')+' — opening '+vn+' API order shipping to '+(_linkDeco.vendor||'decorator'));
+                // SSOrderModal takes a PRE-RESOLVED shipTo and ignores shipToDecoId — passing only the
+                // deco id silently shipped the blanks to the NSA warehouse. Resolve the decorator's
+                // address here (same as buildApiOrderFromPO / the batch-ready S&S path) against
+                // `updated`, not `o`: the deco PO created in this same submit isn't on `o` yet, so the
+                // DPO number on the attention line would come back blank.
+                const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
+                setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
+                  batchPOs:[{so_id:o.id,items:apiPayloadItems}],
+                  shipToDecoId:_linkDeco.deco_vendor_id,
+                  initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,''),
+                  ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
               }else{
-                // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
-                const first=newPoLines[0];
-                const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
-                setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+                // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
+                // was only offered when a decorator was linked, so direct drop-ships were placed
+                // off-portal and captured no vendor keys (0/26 in July) — the root cause of S&S
+                // bills matching by guesswork instead of by their own numbers. Offer the same
+                // modal with the PO's chosen ship-to prefilled. The modal opens in TEST mode and
+                // shows the address — the human reviews before anything goes live. An incomplete
+                // address falls back to today's Edit-PO flow.
+                const _dsVk=isDropShip?_apiVendorKey(vn):null;
+                const _dsShipTo=(()=>{
+                  if(_dsVk!=='sss'||!apiPayloadItems.length)return null;
+                  let s=null;
+                  if(poShipTo==='custom'&&poShipCustom.line1){s={companyName:poShipCustom.name||cust?.name||'',address1:poShipCustom.line1,city:poShipCustom.city,region:poShipCustom.state,postalCode:poShipCustom.zip}}
+                  else{
+                    const m=/_alt_(\d+)$/.exec(String(poShipTo));
+                    if(m){const alts=(cust?.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));const ab=alts[parseInt(m[1],10)];
+                      if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
+                    else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
+                  }
+                  if(s&&poAttention.trim())s.attentionTo=poAttention.trim();
+                  return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
+                })();
+                if(_dsShipTo){
+                  nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
+                  setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+                }else{
+                  // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
+                  const first=newPoLines[0];
+                  const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
+                  setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+                }
               }
             }
-          }
+          };
+          // Silver Screen: an inline deco PO for them prompts to build the job on their portal, the same
+          // as creating the deco PO from the standalone form — one flow, two ways in. Only a NEW deco PO:
+          // joining an existing one would re-create a job it may already carry. Runs BEFORE the follow-on
+          // modal for the same reason as "+ Order Blanks": the job stamp saves onto `updated`, so an API
+          // order submitted while the request was in flight would be mapped away by it.
+          if(podRes&&!podRes.isMerge&&_isSilverScreenDp(podRes.po))setTimeout(()=>{sendSilverScreenJob(podRes.po,updated).finally(_afterPo)},200);
+          else _afterPo();
         }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}</div>
       </div></div>})()}
 
@@ -13738,6 +13890,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:20,flexWrap:'wrap'}}>
               {!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>setDecoEditPo({decoPoId:dpKey,po_id:dp.po_id||'',vendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?dp.vendor:'Other',customVendor:dp.vendor&&_vendorOpts.includes(dp.vendor)?'':(dp.vendor||''),deco_type:dp.deco_type||'embroidery',status:dp.status||'waiting',expected_date:dp.expected_date||'',unit_cost:dp.unit_cost!=null?String(dp.unit_cost):'',drop_ship:true,notes:dp.notes||''})}>✎ Edit PO</button>}
               {isTopstar&&dp.status==='planned'&&!editingPo&&<button className="btn btn-sm btn-primary" style={{fontSize:11,background:'#0891b2',borderColor:'#0891b2'}} onClick={()=>sendTopstarPO(dp)} title="Email this digitizing/vector PO to Topstar now and mark it ordered">🧵 Send to Topstar</button>}
+              {(()=>{// Silver Screen: create the job on their account portal with one click.
+                if(!_isSilverScreenDp(dp)||editingPo)return null;
+                if(dp._silverscreen_job_id||dp._silverscreen_job_url)return <a href={dp._silverscreen_job_url||undefined} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:11,background:'#dcfce7',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700,textDecoration:'none'}} title={'Job created on the Silver Screen portal'+(dp._silverscreen_sent_at?' — '+dp._silverscreen_sent_at:'')}>✓ SS Job {dp._silverscreen_job_id||'created'}</a>;
+                if(dp.status==='received'||dp.status==='billed')return null;
+                return <button className="btn btn-sm btn-primary" disabled={sspSending} style={{fontSize:11,background:'#475569',borderColor:'#475569'}} onClick={()=>sendSilverScreenJob(dp)} title="Create this job on the Silver Screen account portal — sends the PO number and all covered items with size breakdowns">{sspSending?'Sending…':'🖨 Send to Silver Screen'}</button>;
+              })()}
               <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>printDoc(_makeDecoPoDocOpts())}>🖨️ Print</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{
                 try{await downloadDoc(_makeDecoPoDocOpts(),_decoPdfFilename);nf('📥 Downloaded '+dp.po_id+'.pdf')}
