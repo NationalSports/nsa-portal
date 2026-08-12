@@ -13780,7 +13780,7 @@ export default function App(){
       {vendorGroups.length===0&&submittedBatches.length===0&&<div className="card"><div className="empty" style={{padding:40}}>
         <div style={{fontSize:32,marginBottom:8}}>📦</div>
         <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>No batch POs queued</div>
-        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
+        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Champro, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
       </div></div>}
       {vendorGroups.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 2px 10px'}}><span style={{fontSize:13,fontWeight:800,color:'#0f172a',textTransform:'uppercase',letterSpacing:0.5}}>Ready to Order</span><span style={{fontSize:11,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:999}}>{vendorGroups.length} vendor{vendorGroups.length!==1?'s':''}</span></div>}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12,alignItems:'start',marginBottom:16}}>
@@ -19052,7 +19052,7 @@ export default function App(){
               sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).filter(po=>!po.drop_ship).forEach(po=>{
                 const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
-                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
+                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||vend.find(v=>v.id===it.vendor_id)?.name||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
               })})});
               invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled').forEach(po=>{
                 const units=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
@@ -21429,8 +21429,9 @@ export default function App(){
           <div className="modal-header" style={{background:'#eef2ff'}}><h2>📋 New Stock PO</h2><button className="modal-close" onClick={()=>setShowStockPO(null)}>×</button></div>
           <div className="modal-body">
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
-              <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
-                <option value="">Select vendor...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+              <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=vend.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
+                {/* Every DB vendor, not just the v1–v8 D_V seed — a stock PO for A4/Champro/etc. was unpickable. */}
+                <option value="">Select vendor...</option>{vend.filter(v=>v.is_active!==false).slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
               <div><label className="form-label">Memo</label><input className="form-input" value={showStockPO.memo||''} onChange={e=>setShowStockPO(x=>({...x,memo:e.target.value}))} placeholder="Restock reason..."/></div>
             </div>
             <label className="form-label">Items</label>
@@ -21464,7 +21465,7 @@ export default function App(){
                 if(_rpcN!=null&&_rpcN<invPOCounter)console.warn('[next_counter] inv_po_counter behind local ('+_rpcN+' < '+invPOCounter+') — using local counter');
                 const _n=(_rpcN!=null&&_rpcN>=invPOCounter)?_rpcN:invPOCounter;
                 const poNum='PO '+_n+' NSA';
-                const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
+                const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||vend.find(v=>v.id===showStockPO.vendor_id)?.name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
                   items:validItems.map(it=>({product_id:it.product_id||null,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||Object.keys(it.sizes||{}),sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
                   status:'ordered',created_at:new Date().toLocaleString(),expected_date:'',memo:showStockPO.memo||'',
                   created_by:cu?.name||'Warehouse',received_at:null,received_by:null,_qb_synced:false};
@@ -35277,7 +35278,7 @@ export default function App(){
   // (unit_sell = cost/(1-margin)) or the default markup, or retail when no cost is on file.
   // Shared by add-to-open-estimate and start-estimate-from-words so the pricing stays identical.
   function _assistantLine(p,margin_pct,markup){
-    const nsa=Number(p.nsa_cost)||0;
+    const nsa=p.is_clearance&&p.clearance_cost!=null?(Number(p.clearance_cost)||0):(Number(p.nsa_cost)||0);// clearance rep cost, same as the editor's add paths
     const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
     let unit_sell,applied=false;
     if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
@@ -35285,7 +35286,7 @@ export default function App(){
     else{unit_sell=Number(p.retail_price)||0;}
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
-    return {line:{product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true},applied,noCost:(m!=null&&nsa<=0)};
+    return {line:{product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false},applied,noCost:(m!=null&&nsa<=0)};
   }
   // Start a NEW draft estimate for a customer, optionally pre-filled with resolved items. Builds
   // the whole draft at once (no window-event timing) and opens it unsaved for review — mirrors
@@ -35323,7 +35324,7 @@ export default function App(){
     try{const res=await _searchProductsServer(desc,{},0,5);products=(res&&res.products)||[];}catch(e){products=[];}
     if(!products.length)return {error:'not_found',description:desc};
     const p=products[0];
-    const nsa=Number(p.nsa_cost)||0;
+    const nsa=p.is_clearance&&p.clearance_cost!=null?(Number(p.clearance_cost)||0):(Number(p.nsa_cost)||0);// clearance rep cost, same as the editor's add paths
     const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
     let unit_sell,applied=false;
     if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
@@ -35331,7 +35332,7 @@ export default function App(){
     else{unit_sell=Number(p.retail_price)||0;}
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
-    const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true};
+    const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false};
     window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
     return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
   }

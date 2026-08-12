@@ -130,7 +130,36 @@ Set \`po_entered: true\` only after confirming the exact value.`
   const poVerify = p.po_number
     ? `"Customer PO #" shows exactly "${p.po_number}".`
     : `"Customer PO #" is blank; no PO was invented.`;
+  // A task is a RESUME when any earlier pass already ran it: a stored result
+  // (needs_input round-trip, or a timed-out pass whose result was merged into
+  // bot_payload) or a prior bot comment in the thread. Resumed passes must
+  // audit the existing cart instead of re-adding everything — clicking "ADD
+  // ALL TO CART" on an already-filled cart duplicates rows and corrupts
+  // quantities, which then burns the whole run reconciling cells.
+  const priorPass = !!(p.result || task?.bot_payload?.result
+    || (conversation || []).some((c) => c.user_id === botMemberId));
+  const resumeMode = priorPass
+    ? `THIS IS A RESUME — a previous pass already worked on this cart (its report and any
+human answers are in the Conversation section). Do NOT redo the task from scratch:
+- Open the ACTIVE cart now, before any searching.
+- **SKIP Steps 1–2 for SKUs already in the cart. NEVER click "ADD ALL TO CART" on a
+  cart that already has rows** — re-adding duplicates rows and corrupts quantities.
+- Audit each existing row against the order: right sizes, right quantities, right
+  variant columns. Fix ONLY the cells that are wrong; leave correct cells untouched.
+- Search-and-add ONLY the SKUs missing from the cart (individually, from their
+  product pages).
+- Apply whatever the human's latest answer changed — usually that means touching
+  ONE SKU, not rebuilding the cart.
+- Verify the PO number and delivery address are still correct; re-enter only if wrong.`
+    : `This should be a fresh cart run, but VERIFY that before adding anything: open the
+ACTIVE cart via the cart icon. If it's empty (or only has items unrelated to this
+order), proceed to Step 1 normally — note any unrelated leftovers in \`issues\` and
+leave them alone. If it ALREADY contains rows for this order's SKUs (a previous pass
+may have partially filled it), treat this as a resume: do NOT re-add those SKUs and
+do NOT click "ADD ALL TO CART" — audit and fix the existing rows in place, and only
+search-and-add the SKUs that are missing.`;
   return tpl
+    .replaceAll('{{RESUME_MODE}}', resumeMode)
     .replaceAll('{{CONVERSATION}}', convo)
     .replaceAll('{{VENDOR_NAME}}', p.vendor_name || target)
     .replaceAll('{{TARGET}}', target)

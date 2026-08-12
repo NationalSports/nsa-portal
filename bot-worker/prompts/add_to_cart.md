@@ -52,6 +52,9 @@ Adding items is the EASY part; past runs died of slowness before ever entering
 the PO, address, or sizes. Add everything in one shot, then spend your time on
 the cart. Do the steps IN THIS ORDER:
 
+## Step 0 — Open the cart FIRST and audit what's already there
+{{RESUME_MODE}}
+
 ## Step 1 — Search ALL SKUs at once
 Type EVERY SKU into the search box, space-separated, then press Enter:
 ```
@@ -130,19 +133,39 @@ delivery-date strategy the rep chose for this order:
 If nothing is backordered (everything in stock):
 {{DELIVERY_DATE}}
 
+**Set delivery dates BEFORE quantities.** Apply the delivery-date strategy /
+date change FIRST, before typing any quantity — the portal CLEARS entered
+quantities when a delivery date changes. Never change a date after quantities
+are in; if you're forced to, expect every cell to wipe and re-enter them all.
+
 **Then enter quantities** for every SKU you are NOT skipping — type each qty
 into the size cell matching the EXACT column header. CRITICAL: the columns do
 NOT start at XS; they run **2XS, XS, S, M, L, XL, ...**. Read the header above
 a cell before typing.
+- **Map before you type.** For each product row, first READ its column headers
+  left-to-right and state the mapping in ONE plain-text line, e.g.
+  `JW6602 columns: 2XS XS S M L XL 2XL 3XL → entering XS=4 S=8 M=4 L=3 XL=3 2XL=1`.
+  Only then type. This is what prevents the whole row landing one column off.
+- **Variant columns:** some products repeat the size run per variant (inseam
+  lengths like 3" / 5", tall/regular). The order names which variant it wants
+  (e.g. `M 5"`). Enter under THAT variant's columns and leave the other
+  variant's columns empty — sizes under the wrong variant are wrong sizes.
 - Example "XS:2 S:11 M:8 L:2": put 2 under **XS** (the 2nd column, not 2XS),
   11 under **S**, 8 under **M**, 2 under **L**; leave all other columns blank.
+- **Clear strays, keep correct cells.** If a cell you did NOT order shows a
+  pre-filled quantity (from add-all, or a previous pass), CLEAR it to 0/empty.
+  If a cell you DID order already shows the correct value, LEAVE IT — do not
+  retype it.
 - Enter ONE product row at a time. A multi-cell fill can silently miss a cell.
 - **A size cell only SAVES when focus leaves it.** After typing the LAST cell
   of each row — and especially the last cell overall — press Tab or click a
   neutral spot on the page so it commits. A value that is typed but never
   blurred looks correct on screen yet is silently lost.
-- If you changed the delivery date AFTER entering quantities, re-check the
-  rows — a date change can clear cells; re-enter anything that vanished.
+- **Check each row as you finish it:** after blurring the row's last cell,
+  re-read that row's cells from the current page and confirm every value sits
+  under the intended header (right size, right variant) before moving to the
+  next product. Catching a shifted row here costs seconds; catching it at the
+  final reload costs a whole re-entry pass.
 
 **Mandatory read-back:** after ALL rows are entered and blurred, RELOAD the
 cart page (navigate to it again), then check every needed size cell's value

@@ -55,6 +55,12 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
+// Rep cost for a catalog product landing on an order line. Clearance items carry the
+// reduced clearance_cost as the line cost (nsa_cost stays full value on the product row
+// for accounting — see the Inventory → Clearance tab). Mirrored from OrderEditor.js per
+// this file's re-sync rule — classic users must get the same money-path fixes.
+const catalogRepCost=(p)=>(p&&p.is_clearance&&p.clearance_cost!=null)?safeNum(p.clearance_cost):safeNum(p?.nsa_cost);
+
 // Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
 // Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
 // (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
@@ -691,26 +697,79 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // ── Atomic PO-number reservation ──────────────────────────────────────────
     // poCounter above seeds from max+1 over the orders THIS tab has loaded, so two sessions (or one
     // stale tab) could mint the same numbers — PO 3521/3522 were double-issued on 2026-06-30 (CMSF +
-    // OLuST) and PO 3476 on 6/29 (CMSF + EBV). reserve_po_block() atomically claims a 50-number block
-    // from a DB sequence (INCREMENT BY 50: nextval = block start, so concurrent sessions can never
-    // overlap) the first time a PO form opens, and re-arms when the block nears exhaustion. If the RPC
-    // is unavailable (offline, migration not applied yet), the legacy max+1 seed stays in effect.
-    const _poBlockRef=useRef({start:0,reserving:false});
-    const _reservePoBlock=useCallback(async()=>{
-      if(!supabase||_poBlockRef.current.reserving)return;
-      _poBlockRef.current.reserving=true;
+    // OLuST) and PO 3476 on 6/29 (CMSF + EBV). Numbers now come one at a time from a DB sequence:
+    // nextval is atomic, so two reps clicking Create at the same instant can never receive the same
+    // number (the differing alpha tag is not what keeps them apart).
+    //
+    // A drawn number is HELD for this form — reopening reuses it instead of drawing another — so the
+    // only way to spend a number without creating a PO is to open the form and abandon it outright.
+    // The form still DISPLAYS the held number because reps quote it to the vendor before clicking
+    // Create; that is what the po_number_claims breadcrumb below exists to catch.
+    //
+    // Was: reserve_po_block() claimed 50 numbers per form open and the client minted one or two from
+    // it. Measured 2026-08-11 across so_item_po_lines + the deco_pos arrays: 1,527 numbers used out
+    // of a 55,608-wide span — 54,081 (97.25%) burned. Hence one draw per PO.
+    const _poHeldRef=useRef({n:0,drawing:false,n2:0,drawing2:false});
+    // Second held number, for the deco PO that can ride along inside the product-PO modal. Its number
+    // is DISPLAYED in that form too, so it must exist at render — it's drawn the moment the rep opens
+    // the inline deco panel (a deliberate act), not on every product PO.
+    const[poHeld2,setPoHeld2]=useState(0);
+    // Draw `cnt` numbers. Each is its own nextval, so they are unique but NOT assumed consecutive —
+    // that is exactly what keeps concurrent sessions disjoint.
+    const _drawPoNumbers=useCallback(async(cnt)=>{
+      if(!supabase||!(cnt>0))return[];
+      try{
+        const{data,error}=await supabase.rpc('reserve_po_numbers',{cnt});
+        if(!error&&Array.isArray(data)){
+          const ns=data.map(Number).filter(n=>Number.isFinite(n)&&n>0);
+          if(ns.length===cnt)return ns;
+        }
+      }catch(e){}
+      // Fallback when reserve_po_numbers isn't deployed yet (or we're offline): take a legacy block.
+      // reserve_po_block still reserves a genuine 50 on the server, so its first `cnt` stay safe.
       try{
         const{data,error}=await supabase.rpc('reserve_po_block');
         const start=Number(data);
-        if(!error&&Number.isFinite(start)&&start>0){
-          _poBlockRef.current.start=start;
-          setPOCounter(c=>Math.max(c,start));
-        }else{_poBlockRef.current.reserving=false}
-      }catch{_poBlockRef.current.reserving=false}
+        if(!error&&Number.isFinite(start)&&start>0)return Array.from({length:cnt},(_,i)=>start+i);
+      }catch(e){}
+      return[];
     },[supabase]);
-    useEffect(()=>{if(showPO!=null)_reservePoBlock()},[showPO,_reservePoBlock]);
-    // Block nearly spent (>40 of 50 used) — claim a fresh one so the next mints stay collision-free.
-    useEffect(()=>{const b=_poBlockRef.current;if(b.start&&poCounter-b.start>40){b.start=0;b.reserving=false;_reservePoBlock()}},[poCounter,_reservePoBlock]);
+    // Hold one number for this form; reopening reuses it rather than drawing another.
+    const _holdPoNumber=useCallback(async()=>{
+      if(_poHeldRef.current.n||_poHeldRef.current.drawing)return;
+      _poHeldRef.current.drawing=true;
+      const ns=await _drawPoNumbers(1);
+      _poHeldRef.current.drawing=false;
+      // The drawn number is AUTHORITATIVE — deliberately not Math.max(c, drawn). The local max+1 seed
+      // can sit above the sequence (it counts numbers other tabs minted inside old 50-blocks), and
+      // taking the max there would put an unreserved number on a PO while the sequence hands the real
+      // one to someone else. The migration setvals the sequence above every number ever issued so
+      // this can only ever move forward.
+      if(ns.length){_poHeldRef.current.n=ns[0];setPOCounter(ns[0])}
+    },[_drawPoNumbers]);
+    useEffect(()=>{if(showPO!=null)_holdPoNumber()},[showPO,_holdPoNumber]);
+    const _holdPoNumber2=useCallback(async()=>{
+      if(_poHeldRef.current.n2||_poHeldRef.current.drawing2)return;
+      _poHeldRef.current.drawing2=true;
+      const ns=await _drawPoNumbers(1);
+      _poHeldRef.current.drawing2=false;
+      if(ns.length){_poHeldRef.current.n2=ns[0];setPoHeld2(ns[0])}
+    },[_drawPoNumbers]);
+    // Only clear a hold whose number actually landed on a PO. Applying a PREEXISTING PO writes the
+    // rep's own number, so the held one stays held for the next form rather than being thrown away.
+    const _consumeHeldPoNumber=useCallback((usedPrimary=true,usedSecond=false)=>{
+      if(usedPrimary){_poHeldRef.current.n=0;setPOCounter(c=>c+1)}
+      if(usedSecond){_poHeldRef.current.n2=0;setPoHeld2(0)}
+    },[]);
+    // A few clicks mint a SECOND number alongside the held one (the NSA blanks PO). That extra number
+    // is drawn here, at create time, rather than assumed to be poCounter+1 — nothing reserved
+    // poCounter+1, and another session may hold it.
+    // (Currently uncalled: the 🎨📦 blanks writer that minted the extra number was replaced by a
+    // handoff to the garment PO module, which holds its own number. Kept for the next such path.)
+    const _drawExtraPoNumber=useCallback(async()=>{
+      const ns=await _drawPoNumbers(1);
+      return ns[0]||0;
+    },[_drawPoNumbers]);
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
@@ -828,6 +887,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[decoSearch,setDecoSearch]=useState('');// query for Outside Decoration PO decorator search
     const[decoSel,setDecoSel]=useState('');// selected decorator name
     const[poDecoInline,setPoDecoInline]=useState(null);// {vendor} — inline Deco PO panel inside the vendor PO modal, created in the same save as the product PO
+    // Opening the inline deco panel is what commits us to a second number — draw it here, not at
+    // product-PO open, so a plain product PO never spends one it doesn't use.
+    useEffect(()=>{if(poDecoInline)_holdPoNumber2()},[poDecoInline,_holdPoNumber2]);
     const[pickDecoFor,setPickDecoFor]=useState(null);// item idx awaiting a decorator pick when first flagged Outside
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
@@ -2093,14 +2155,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // pricingGroup ('lockerroom') selects a reduced tier schedule.
   const auDisc=(isFw,pricingGroup)=>{const base=auTierDisc(cust?.adidas_ua_tier||'B',pricingGroup);return isFw?Math.max(0,base-0.05):base};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
-  const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+  const addP=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));
     // Footwear: vendor catalogs often list whole sizes only (e.g. 5–17), which makes a
     // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
     // grid is usable out of the box; trust the catalog only when it already carries half
     // sizes (a curated run). Staff can +Size for outliers either way.
     const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
     const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
   // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
   // the items' new positions in the same update — otherwise a reorder leaves them pointing at the
@@ -2187,8 +2249,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const canRecost=!cur.is_custom&&!committed;
     const isLive=isSSItem(next)||isSanMarItem(next)||isMomentecItem(next)||isRichardsonItem(next);
     if(canRecost){
-      const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&safeNum(p.nsa_cost)>0);
-      if(cp&&Math.abs(safeNum(cp.nsa_cost)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=safeNum(cp.nsa_cost);
+      const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&catalogRepCost(p)>0);
+      if(cp&&Math.abs(catalogRepCost(cp)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=catalogRepCost(cp);
     }
     setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?next:it),updated_at:new Date().toLocaleString()}));setDirty(true);
     if(cur.sku){delete vendorInvCache.current[cur.sku];delete vendorInvFetching.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
@@ -2196,16 +2258,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
-  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
+  const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
     const _srcQty=Object.keys(safeSizes(it)).filter(sz=>safeNum(safeSizes(it)[sz])>0);
     clone.available_sizes=orderLineSizes((Array.isArray(p.available_sizes)&&p.available_sizes.length)?p.available_sizes:srcSizes,_srcQty);
-    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));
     // The clone carried the OLD SKU's per-size maps — rebuild them from the new product (or clear
     // them) so cost/sell don't stay pinned to the swapped-out item's sizes.
-    if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
+    if(!au&&!_clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
     // Style swaps clone to a NEW sku, so the source garment's mock can't be re-keyed (the
     // source line may stay). Link the new garment to the source's mock instead — same-color
     // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
@@ -2293,7 +2355,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // onto the Gildan 5000 and double-committed against its batch PO). Same hydration gate as Create PO.
     if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's existing IFs/POs haven't finished loading. Reload the page before changing the SKU so an unseen pick or PO can't ride onto the new garment.",'error');return}
     const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';
-    const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
+    const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));
     setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
@@ -2302,7 +2364,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       _restampMt(next);
       next.product_id=p.id;next.sku=p.sku;next.name=nameWithBrand(p.name,p.brand);next.brand=p.brand;
       next.vendor_id=p.vendor_id||null;next.pricing_group=p.pricing_group||null;next.color=p.color;
-      next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
+      next.nsa_cost=catalogRepCost(p);next.retail_price=p.retail_price;next.unit_sell=sell;next._is_clearance=p.is_clearance||false;
       next.available_sizes=(p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes,Object.keys(safeSizes(x)).filter(sz=>safeNum(safeSizes(x)[sz])>0)):['S','M','L','XL','2XL'];
       // Drop quantities for sizes the new SKU doesn't carry, so an orphaned size from the old
       // SKU (e.g. OSFA) can't linger hidden in the grid and inflate the line total.
@@ -5481,7 +5543,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {allFp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
-          <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}
+          {p.is_clearance&&p.clearance_cost!=null&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}
+          <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${catalogRepCost(p).toFixed(2)}</span></div>)}
           {/* S&S Live Search Results */}
           {pS.length>=2&&(ssSearching||ssResults.length>0)&&<>
             <div style={{padding:'6px 12px',background:'#f5f3ff',borderTop:'2px solid #ddd6fe',borderBottom:'1px solid #ede9fe',display:'flex',alignItems:'center',gap:6}}>
@@ -5924,7 +5987,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (sku?(products.find(pr=>pr.sku===sku)||products.find(pr=>pr.sku.toLowerCase()===sku.toLowerCase())):null);
               const brand=catMatch?.brand||p.brand||'';
               const au=isAU(brand);
-              const cost=catMatch?.nsa_cost||p.vendor_price||0;
+              const cost=(catMatch?catalogRepCost(catMatch):0)||p.vendor_price||0;
               const retail=catMatch?.retail_price||p.vendor_retail||0;
               const isFw=(catMatch?.category||'').toLowerCase()==='footwear';
               const sell=au
@@ -5946,6 +6009,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 sizes:p.sizes||{},
                 decorations:[],
                 is_custom:!catMatch&&!p.vendor_source,
+                _is_clearance:catMatch?.is_clearance||false,
                 vendor_source:p.vendor_source||null,
                 pick_lines:[],
                 po_lines:[],
@@ -6271,11 +6335,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
             {artApply.rows.map(r=>{const it=items[r.ii];if(!it)return null;
               const qty=it.total_qty||Object.values(it.sizes||{}).reduce((s,b)=>s+(+b||0),0)||it.est_qty||0;
-              const label=(it.color?it.color+' ':'')+(it.sku||it.name||('Item '+(r.ii+1)));
+              const desc=safeStr(it.name).trim();
+              const label=(it.color?it.color+' ':'')+(it.sku||desc||('Item '+(r.ii+1)));
               return<div key={r.ii} style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',padding:'8px 10px',borderRadius:6,border:'1px solid '+(r.already?'#bbf7d0':r.checked?'#c7d2fe':'#e2e8f0'),background:r.already?'#f0fdf4':r.checked?'#f5f3ff':'white',opacity:r.already?0.8:1}}>
                 <label style={{display:'flex',alignItems:'center',gap:8,flex:1,minWidth:180,cursor:r.already?'default':'pointer'}}>
                   <input type="checkbox" checked={r.already||r.checked} disabled={r.already} onChange={e=>upRow(r.ii,{checked:e.target.checked})}/>
-                  <span style={{fontSize:12.5,fontWeight:600}}>{label}<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}> · {qty} pc{qty===1?'':'s'}</span></span>
+                  <span style={{display:'flex',flexDirection:'column',gap:1,minWidth:0}}>
+                    <span style={{fontSize:12.5,fontWeight:600}}>{label}<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}> · {qty} pc{qty===1?'':'s'}</span></span>
+                    {/* Style number alone doesn't tell you what the garment is — show the description too */}
+                    {desc&&it.sku&&<span style={{fontSize:10.5,color:'#64748b',fontWeight:400,lineHeight:1.3}}>{desc}</span>}
+                  </span>
                 </label>
                 {r.already?<span style={{fontSize:10.5,fontWeight:700,color:'#166534'}}>✓ already applied</span>:<>
                   <div style={{display:'flex',flexDirection:'column',gap:1}}>
@@ -6872,7 +6941,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const billedUnitCost=skuTotalCost>0&&skuBilledQty>0?Math.round(skuTotalCost/skuBilledQty*100)/100:null;
           const catalogCost=safeNum(it.nsa_cost);
           const catProduct=products.find(x=>x.id===it.product_id)||(it.sku?products.find(x=>(x.sku||'').toLowerCase()===(it.sku||'').toLowerCase()):null);
-          costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
+          costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:vendorList.find(v=>v.id===it.vendor_id)?.name||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received'),
@@ -8657,7 +8726,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               }):null;
               const updated={...o,...(_purchasedArt?{art_files:_purchasedArt}:{}),...(_updJobs?{jobs:_updJobs}:{}),deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              if(!preexistingPO)setPOCounter(c=>c+1);
+              if(!preexistingPO)_consumeHeldPoNumber();
               setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');
               nf(_dpoMode==='dtf'
                 ?'🖨️ '+effectivePoId+' '+(preexistingPO?'applied':'created')+' — DTF purchase from '+decoVendor+(artIds.length?' — '+artIds.length+' art folder'+(artIds.length!==1?'s':'')+' marked DTF Purchased':'')+' ($'+expectedCost.toFixed(2)+')'
@@ -8667,7 +8736,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // no items to send). Deferred so the modal closes before the confirm dialog.
               if(!preexistingPO&&_dpoMode!=='dtf'&&_isSilverScreenDp(newDecoPO))setTimeout(()=>sendSilverScreenJob(newDecoPO,updated),200);
             }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>}
-            {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={()=>{
+            {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={async()=>{
               if(_poCreatingRef.current)return;
               const effectiveDpoId=autoPoId;
               const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
@@ -8693,10 +8762,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // NSA 56451 for the same 23 pcs), it forced every item onto one vendor's PO even when
               // the selection spanned vendors, and the rep never saw what was being ordered. The New
               // PO form shows every open size per vendor, and its submit already opens the vendor's
-              // API order box with the decorator ship-to + DPO number prefilled.
+              // API order box with the decorator ship-to + DPO number prefilled — and draws its own
+              // PO number, so this path no longer needs the second draw main added for its blanks.
               const updated={...o,deco_pos:[...(o.deco_pos||[]),newDecoPO],updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              setPOCounter(c=>c+1);
+              _consumeHeldPoNumber();
               const _dpoMsg='🎨 '+effectiveDpoId+' created for '+decoVendor+' — '+itemIdxs.length+' item'+(itemIdxs.length!==1?'s':'')+', '+totalQty+' pcs ($'+expectedCost.toFixed(2)+')';
               const _toBlanks=()=>{
                 if(_openBlanksModule(itemIdxs,effectiveDpoId,dv.id))nf(_dpoMsg+' — opening the garment PO so you can see everything to order');
@@ -8762,7 +8832,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const updated={...o,items:[...safeItems(o),lineItem],deco_pos:[...(o.deco_pos||[]),decoPO],updated_at:new Date().toLocaleString()};
               // Persist the PO BEFORE the network email — a slow/failed send (or a background poll firing
               // during the await) must not be able to drop the optimistic deco_pos record.
-              setO(updated);onSave(updated);setPOCounter(c=>c+1);
+              setO(updated);onSave(updated);_consumeHeldPoNumber();
               if(planOnly){
                 setShowPO(null);setTopstarImgs([]);setTopstarNotes('');setTopstarService('dst');setTopstarSending(false);
                 nf('🧵 '+tsPoIdFinal+' planned — $'+svc.cost.toFixed(2)+' cost & $'+svc.sell.toFixed(2)+' customer charge will carry to the sales order. Send to Topstar when ready to order.');
@@ -8794,7 +8864,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>;
       }
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
-      const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
+      // Resolve the name from the DB-loaded vendors FIRST (D_V is only the v1–v8 seed): batch
+      // eligibility below matches on this name, so falling back to the raw id made every vendor
+      // outside the seed (A4 ns_23, Champro ns_49) silently non-batchable.
+      const vItems=vendorMap[showPO]||[];const vn=vendorList.find(v=>v.id===showPO)?.name||D_V.find(v=>v.id===showPO)?.name||showPO;
       const autoPoId='PO '+poCounter+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const poId=preexistingPO?preexistingPOId:autoPoId;
       const batchKey=Object.keys(BATCH_VENDORS).find(k=>{const bvName=BATCH_VENDORS[k].name.toLowerCase();const vnL=vn.toLowerCase();return vnL===bvName||vnL.includes(k)||showPO.toLowerCase().includes(k)});
@@ -8884,7 +8957,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // unchecked — the rep picks exactly what's headed to the decorator (Select All for everything).
       const _podSizedItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
-      const podPoId='DPO '+(preexistingPO?poCounter:poCounter+1)+(poAlphaSuffix?' '+poAlphaSuffix:'');
+      // poCounter+1 is only a pre-draw placeholder — nothing reserves it, so it must never be what
+      // actually lands on a PO. The real number is the second hold, drawn when the panel opened.
+      const podPoId='DPO '+(preexistingPO?poCounter:(poHeld2||poCounter+1))+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
       // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
       // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
@@ -9294,9 +9369,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
             // Single save carries both the queued product PO lines and the inline deco PO (no modal-hop, no race).
             // podRes.decoPos is the whole array — a new deco PO appended, or the joined one merged in
-            // place. Joining consumes no PO number, so only a NEW deco PO bumps the counter twice.
+            // place. Joining an existing DPO consumes no PO number, so only a NEW deco PO releases the
+            // second held number.
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
-            setO(updated);onSave(updated);setPOCounter(c=>c+((podRes&&!podRes.isMerge)?2:1));
+            setO(updated);onSave(updated);_consumeHeldPoNumber(true,!!podRes&&!podRes.isMerge);
             setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
@@ -9396,10 +9472,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // not-yet-saved order (see _dbPersistNewPoLine). Skipped for preexisting POs, which merge into
           // already-persisted lines rather than creating a first-flush-vulnerable new one.
           if(!preexistingPO)newPoLines.forEach(({lineIdx,poIdx})=>{const _pl=updatedItems[lineIdx]&&updatedItems[lineIdx].po_lines&&updatedItems[lineIdx].po_lines[poIdx];if(_pl&&_pl.po_id)_dbPersistNewPoLine(o.id,lineIdx,_pl);});
-          // Product PO consumes a counter number unless preexisting; the inline deco PO always consumes one.
-          // Joining an existing deco PO consumes no PO number, so it doesn't bump the counter.
-          const counterBump=(preexistingPO?0:1)+((podRes&&!podRes.isMerge)?1:0);
-          if(counterBump>0)setPOCounter(c=>c+counterBump);
+          // Product PO consumes the held number unless preexisting; a NEW inline deco PO consumes
+          // the second. Joining an existing DPO consumes nothing — the second hold stays held.
+          _consumeHeldPoNumber(!preexistingPO,!!podRes&&!podRes.isMerge);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
           setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Follow-on modal for the just-created product PO (vendor API order box, else Edit-PO).
@@ -12607,7 +12682,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);
           const openQty=szKeysP.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
           const costTotal=qty*(po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost));
-          const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;
+          const vk=it.vendor_id||it.brand;const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const pst=openQty<=0&&rcvdQty>0?'received':rcvdQty>0?'partial':'waiting';
           const shipDates=(po.shipments||[]).map(s=>s.date);
           const existing=allPoIds.find(x=>x.id===po.po_id);
@@ -14121,7 +14196,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const poStatus=isDropShipFP?(totalBilledFP>=totalOrdered&&totalOrdered>0?'shipped':totalBilledFP>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
       const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
       const poTotal=totalOrdered*unitCost;
-      const vendorName=po.deco_vendor||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
+      const vendorName=po.deco_vendor||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
       // API placement — any line on this PO carrying api_order_id means it was submitted
