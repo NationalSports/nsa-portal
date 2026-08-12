@@ -8,8 +8,10 @@ Shortages are flagged inline and gate the club shipment until resolved.
 Decisions locked with Scott (2026-08-12):
 
 - **v1 scope**: batch stores with deliver-to-club (`webstores.org_type='team'`,
-  `delivery_mode='deliver_club'`). At-once ship-home orders (teamshop / club stores /
-  ship_home) are Phase 2.
+  `delivery_mode='deliver_club'`) **plus OMG deliver-to-school stores** (same
+  tap-and-bag flow, no per-order shipping label — see "OMG store tie-in" below).
+  At-once ship-home orders (teamshop / club stores / ship_home webstores / ship_home
+  OMG) are Phase 2.
 - **Check-off**: tap, big touch targets. Barcode scan-to-verify is Phase 2.
 - **Printing**: 4×6 thermal printer at the station; label prints automatically on
   order completion ("full auto").
@@ -29,6 +31,70 @@ Decisions locked with Scott (2026-08-12):
 | Tablet kiosk precedent | `/floor-station` (`src/floorstation/FloorStation.js` + pure `floorLogic.js` + `src/__tests__/floorStation.test.js`), routed in `src/index.js` via `src/lib/hostRouting.js`, station auth via sign-in or `?token=` |
 | 4×6 label printing | `printQrLabel` / `barcodeSvg` in `src/utils.js`; box labels in `src/boxTracking.js`; per-order packing slips `buildPackingLists` (`src/Webstores.js:153`) |
 | Shipment plumbing | `webstore_shipments`, box tracking (`supabase/migrations/00185_box_tracking.sql`), ShipStation via `netlify/functions/shipstation-proxy.js` (Phase 2) |
+
+## OMG store tie-in
+
+OMG sales already ride the same rails, so the station serves them with a widened
+queue — but four specifics matter (mapped 2026-08-12 from `src/OmgOrderPortal.js`,
+`netlify/functions/omg-packing-slip-ingest.js`, `netlify/functions/_shared.js`,
+`supabase_migration_034_omg_order_tracking.sql`):
+
+1. **Shadow-webstore model.** Each OMG sale is a `webstores` row with `source='omg'`
+   + `omg_sale_code` (status 'archived', so it never shows publicly), and each parent
+   order from the packing-slip ingest is a normal `webstore_orders` row with
+   `omg_order_number` + `webstore_order_items` lines (sku/size/qty/player fields —
+   the same per-bag grain). So the station's claim/check/short/complete RPCs work on
+   OMG orders **unchanged**.
+2. **Different batch key and delivery-mode column.** Native batches group by
+   `webstore_orders.so_id`; OMG shadow orders typically have `so_id` null and are
+   found via `webstores.source='omg'` + `omg_sale_code` (the SO carries
+   `omg_store_id`, see `src/App.js:235`). And the delivery mode lives on
+   `omg_stores.delivery_mode` ('ship_home'|'deliver_school'), not
+   `webstores.delivery_mode`. → The plan generalizes to a **bag group**:
+   `so_id` for native batches, `store_id` (shadow webstore) for OMG sales. Queue
+   predicate, `bag_seq`, and `bagging_batch_progress` are all keyed on the bag group,
+   and the BatchPicker unions native `deliver_club` batches with OMG
+   `deliver_school` stores.
+3. **Ingest must not clobber bagging progress.** Re-importing a packing slip is
+   normal and idempotent: `syncOrderItems` (`netlify/functions/_shared.js:338`)
+   merges lines by `(sku, size)`, updates only `ITEM_CONTENT_KEYS`
+   (name/color/qty/unit_price/player_name/image_url), deliberately preserves
+   `line_status`/`shipped_qty`/`missing_qty`, and deletes leftover rows only when
+   they have no fulfillment progress. Two required changes ride along with the
+   migration: (a) the new `bagged_qty`/`short_*` columns must join the preserved
+   set (they're not content keys, so updates already skip them — add a regression
+   test proving it), and (b) the leftover-delete guard at `_shared.js:383-391` must
+   also treat `bagged_qty > 0` or an open short as "has progress" so a re-parse
+   can't delete a line that's physically in a bag.
+4. **The station coexists with the auto-stage sync, it doesn't fight it.**
+   `pushOmgStatusSync` (`src/App.js:229-242`) advances `line_status` to 'bagging'
+   the moment production jobs finish — before anyone has bagged anything. That's
+   fine under this plan's rule that bagging RPCs never write `line_status`:
+   `line_status='bagging'` keeps meaning "ready to bag / being bagged" and
+   `bagged_at` records the actual human act. Similarly the OMG portal's manual
+   "Move all" / per-order stage buttons keep working; the station adds truth
+   underneath rather than a competing writer.
+
+Two OMG-specific payoffs come free:
+
+- **Deliver-to-school today just stops after packing lists** — label UI is
+  suppressed and there is no shipment/box record at all (`src/OmgOrderPortal.js:839`,
+  `:913`). The station's batch-complete → shipment prompt (box tracking) fills that
+  exact gap: the school delivery finally gets a contents record.
+- **OMG "ready to bag" is per-line automatic**: `_applyWebstoreStageSync`
+  (`src/App.js:195-227`) holds un-received SKU|sizes at `on_order` while received
+  ones advance, so the station's order screen can gray out not-yet-arrived lines
+  ("on order — 2 more expected") instead of forcing an immediate short. "Can't find
+  it" stays for the genuinely-missing case; an `on_order` line is a *wait*, not a
+  short. An order with `on_order` lines can still be partially bagged and revisited
+  (the QR on the label reopens it).
+
+Ship gate mapping for OMG: the gate blocks `printOmgLabels` (ship_home) and the
+"Move all → Shipped" bulk action (deliver_school) while the sale has open shorts —
+same rule, OMG entry points. OMG lines have `missing_qty` set manually by staff
+today (`setItemMissing`, `src/OmgOrderPortal.js:367`); the station's `short_qty`
+stays a separate packer-declared signal, and the OMG portal's "· N short" chips
+should show both.
 
 Gap being filled: no human-driven bagging record exists. `line_status='bagging'` is
 inferred from production jobs; `so_jobs.packed_at` is per-decoration-job, not
@@ -99,7 +165,9 @@ Follow the repo's current timestamp naming and the RPC style of
 - `bagging_claimed_at timestamptz` — claims older than 15 min are treated as stale and
   reclaimable (no cron needed; staleness computed at read time)
 - `bagged_at timestamptz`, `bagged_by text`
-- `bag_seq int` — "Bag 15 of 42", assigned at completion within the batch
+- `bag_seq int` — "Bag 15 of 42", assigned at completion within the **bag group**
+  (native batch = orders sharing `so_id`; OMG sale = orders sharing the shadow
+  `store_id`)
 
 `webstore_order_items`:
 - `bagged_qty int not null default 0` — the tap counter (≤ `qty`)
@@ -138,10 +206,12 @@ Audit trail + the data for "how long does a bag take" later.
   (see monotonic-status note below).
 - `bagging_resolve_short(p_item_id, p_resolution, p_note, p_actor)` — resolution in
   ('found','pulled','accepted'); 'found' also resets the line so the bag can be reopened.
-- `bagging_next_order(p_so_id, p_actor)` — server picks + claims the next unbagged,
-  unclaimed order in one call (avoids two tablets racing "Next").
-- `bagging_batch_progress(p_so_id)` — counts for the progress bar and Batches tab
-  (total / bagged / claimed / open shorts).
+- `bagging_next_order(p_group_kind, p_group_id, p_actor)` — server picks + claims the
+  next unbagged, unclaimed order in one call (avoids two tablets racing "Next").
+  `p_group_kind` in ('so','store'): 'so' matches `webstore_orders.so_id` (native
+  batch), 'store' matches `webstore_orders.store_id` (OMG shadow store).
+- `bagging_batch_progress(p_group_kind, p_group_id)` — counts for the progress bar
+  and Batches tab (total / bagged / claimed / open shorts).
 
 Status interplay — **do not** write `line_status` from bagging RPCs in v1. The
 monotonic trigger chain (`00037_webstore_status_monotonic`, `00213_line_status_from_jobs`)
@@ -152,9 +222,10 @@ after v1 ships (listed under Later).
 
 ### Ship gate
 
-`bagging_open_shorts(p_so_id) returns int` — used client-side in `Webstores.js` to
-disable/guard `webstoreToShipStation`, `printShipLabels`, and the box-tracking club
-shipment entry point for that batch. Override path: confirm dialog requiring a typed
+`bagging_open_shorts(p_group_kind, p_group_id) returns int` — used client-side in
+`Webstores.js` to disable/guard `webstoreToShipStation`, `printShipLabels`, and the
+box-tracking club shipment entry point for that batch, and in `OmgOrderPortal.js` to
+guard `printOmgLabels` and the "Move all → Shipped" bulk action. Override path: confirm dialog requiring a typed
 reason → logged to `bagging_events` as `resolve`/`note`. (Client-side gate is
 acceptable v1: these actions are staff-only surfaces.)
 
@@ -193,9 +264,13 @@ src/__tests__/bagLabel.test.js
 
 ### Screens (inside BaggingStation.js)
 
-1. `BatchPicker` — query batches: `sales_orders` joined to `webstore_orders`
-   (`so_id`), filtered to stores `org_type='team'` with `delivery_mode='deliver_club'`
-   and progress < 100%; each card shows store, label, progress via
+1. `BatchPicker` — a union of two queries, one card list:
+   - Native batches: `sales_orders` joined to `webstore_orders` (`so_id`), stores
+     `org_type='team'` with `delivery_mode='deliver_club'`, progress < 100%.
+   - OMG sales: `webstores` with `source='omg'` joined to `omg_stores` on
+     `omg_sale_code` where `omg_stores.delivery_mode='deliver_school'`, having
+     unbagged orders.
+   Each card shows store, label, kind badge (Club batch / OMG school), progress via
    `bagging_batch_progress`.
 2. `BatchBoard` — Next-order button (`bagging_next_order`), search box, progress bar.
    Subscribe to Supabase realtime on `webstore_orders` (`so_id=eq.<id>`) so two tablets'
@@ -203,6 +278,9 @@ src/__tests__/bagLabel.test.js
 3. `OrderBag` — the check-off screen. Optimistic UI: tap flips the row instantly,
    RPC confirms; on RPC failure revert + toast. All rows resolved → call
    `bagging_complete_order`, print label, show confirmation for ~2.5 s, auto-load next.
+   OMG-specific: lines still at `line_status='on_order'` render grayed
+   ("on order — not arrived"), untappable, and don't block leaving the order
+   partially bagged; they are a *wait*, not a short.
 4. `ResolvePanel` (also embedded in desktop Batches tab) — open shorts with the three
    resolution actions.
 
@@ -237,25 +315,34 @@ Each step leaves the app working; ship as one PR with commits per step, or split
 PRs at step 4 if review size demands.
 
 1. **Migration** — columns, `bagging_events`, all RPCs, grants. Test RPCs directly
-   with SQL (claim race: two concurrent claims → exactly one wins).
-2. **`bagLogic.js` + tests** — pure logic first, incl. extracting the shared size-order
+   with SQL (claim race: two concurrent claims → exactly one wins; both group kinds).
+2. **Ingest guard** — `netlify/functions/_shared.js`: keep `bagged_qty`/`short_*`
+   out of the update set (they aren't `ITEM_CONTENT_KEYS`, so assert it with a test)
+   and extend the leftover-delete guard (`syncOrderItems`, lines ~383-391) so
+   `bagged_qty > 0` or `short_status='open'` counts as fulfillment progress. Test:
+   re-ingest the same packing slip over a part-bagged order → progress intact.
+3. **`bagLogic.js` + tests** — pure logic first, incl. extracting the shared size-order
    ranking out of `floorLogic.js` (import from a shared module; update floorLogic
    imports; run `src/__tests__/floorStation.test.js` to prove no regression).
-3. **`bagLabel.js` + tests** — snapshot-style tests: contents, short flag, QR payload,
+4. **`bagLabel.js` + tests** — snapshot-style tests: contents, short flag, QR payload,
    bag N of M.
-4. **Station shell** — routing (`hostRouting.js`, `index.js`), auth reuse, `BatchPicker`.
+5. **Station shell** — routing (`hostRouting.js`, `index.js`), auth reuse, `BatchPicker`.
    Verify `/floor-station` still routes.
-5. **`BatchBoard` + `OrderBag`** — the core loop: next → claim → tap → complete →
+6. **`BatchBoard` + `OrderBag`** — the core loop: next → claim → tap → complete →
    print → next. Realtime progress. Optimistic writes with revert.
-6. **Shortage flow** — "Can't find it" prompt, amber rows, label short flag,
+7. **Shortage flow** — "Can't find it" prompt, amber rows, label short flag,
    `ResolvePanel` on the tablet's batch-complete screen.
-7. **Desktop integration** — Batches tab progress chip, Resolve list, ship gate,
-   station link/QR.
-8. **Batch-complete → club shipment prompt** — wire to the existing box-tracking flow.
-9. **Polish + hardware pass** — wake lock, stale-claim UX ("Claimed by Front Tablet
+8. **Desktop integration** — Batches tab progress chip, Resolve list, ship gate,
+   station link/QR. Same treatment in `OmgOrderPortal.js`: progress chip on the
+   header, Resolve list, gate on `printOmgLabels` and "Move all → Shipped",
+   grayed `on_order` handling verified against a live OMG sale.
+9. **Batch-complete → shipment prompt** — wire to the existing box-tracking flow;
+   for OMG deliver-to-school sales this creates the school delivery's first-ever
+   contents record.
+10. **Polish + hardware pass** — wake lock, stale-claim UX ("Claimed by Front Tablet
    3 min ago — take over?"), print CSS verified on the actual Rollo/Zebra, empty
    states, offline toast.
-10. **Test sweep** — `npm test` green; manual script: two browsers as two stations on
+11. **Test sweep** — `npm test` green; manual script: two browsers as two stations on
     one batch (claim collision, live progress), short → resolve → reopen → reprint,
     ship gate block + override.
 
@@ -267,13 +354,21 @@ PRs at step 4 if review size demands.
 - Batches tab shows live `bagged/total · shorts` without refresh.
 - Club shipment for a batch with open shorts is blocked until each short is
   found / pulled / accepted (or explicitly overridden with a reason).
+- An OMG deliver-to-school sale appears in the BatchPicker, bags exactly like a club
+  batch (with `on_order` lines grayed, not shorted), and its "Move all → Shipped" /
+  label actions respect the same short gate.
+- Re-ingesting an OMG packing slip over a part-bagged order changes no `bagged_qty`,
+  `short_*`, or bag labels (regression test on `syncOrderItems`).
 - `npm test` passes; no changes to `line_status` trigger behavior.
 
 ## Phase 2 (explicitly out of v1)
 
 - **At-once ship-home orders**: a second queue (converted teamshop/club-store orders,
-  `ship_method` home); completion buys the ShipStation label via the existing
-  `createWebstoreLabel` path and marks shipped — packer never touches a desktop.
+  `ship_method` home, plus OMG `ship_home` sales); completion buys the ShipStation
+  label via the existing paths (`createWebstoreLabel` for native,
+  `printOmgLabels`/`ssPayload` for OMG — which already handles `shipped_qty`,
+  short-aware ship plans, and webhook cost reconciliation) and marks shipped —
+  packer never touches a desktop.
 - **Scan-to-verify**: reuse `BarcodeScanner` (`src/CoachPortal.js:2498`) to scan garment
   UPC/size tags where they survive decoration; tap remains the fallback.
 - **Silent printing** via print relay/PrintNode if the AirPrint dialog is friction.
