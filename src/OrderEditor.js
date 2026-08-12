@@ -5132,10 +5132,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const promoDecoSell=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;
             const eq=dp._nq!=null?dp._nq:(deco.reversible?qty*2:qty);const decoTotal=eq*promoDecoSell;
             // COST combines across manually-linked jobs sharing this screen (costArtQty); sell is untouched.
-            // Line display: show the outside-vendor estimate when soft-routed to a priced vendor, else the
-            // in-house reference cost (a deco already on a Deco PO keeps showing the in-house ref, not $0 —
-            // its real cost lives on the PO; header totals/margin use the strict decoCostResolved accounting).
-            const _est=outsideDecoEstAt(o,idx,deco,qty,af,cq,decoVendors,decoVendorPricing,outsourcedByItemCost);const _outsideEst=_est>0?deco.vendor:null;
+            // Line display: show the outside-vendor estimate whenever the deco is routed to a priced vendor —
+            // INCLUDING when a Deco PO already covers it (ignorePoCoverage). Falling back to the in-house ref
+            // there made one screen read two different per-piece costs across lines of the same run, decided
+            // only by which items the PO's item_idxs listed (SO-1791). Header totals/margin still use the
+            // strict decoCostResolved accounting, where the PO's bill is the cost of record.
+            const _est=outsideDecoEstAt(o,idx,deco,qty,af,cq,decoVendors,decoVendorPricing,outsourcedByItemCost,{ignorePoCoverage:true});const _outsideEst=_est>0?deco.vendor:null;
             const decoCostTotal=_est>0?_est:decoCostAt(deco,qty,af,cq,costArtQty);const decoUnitCost=eq>0?decoCostTotal/eq:dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
             const decoCardStyle={padding:'9px 12px',marginBottom:8,borderRadius:7,background:'#F9FAFC',border:'1px solid #E2E6EF',borderLeft:'3px solid '+(deco.kind==='art'?'#192853':deco.kind==='numbers'?'#1E7A46':deco.kind==='names'?'#B45309':deco.kind==='outside_deco'?'#6D28D9':deco.kind==='twill'?'#0d9488':'#9aa0ad')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';

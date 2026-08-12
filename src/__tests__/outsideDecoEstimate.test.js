@@ -107,6 +107,42 @@ describe('decoCostResolved — in-house vs outside routing', () => {
   });
 });
 
+// The deco ROW displays a per-piece cost. When a Deco PO covered the line, the estimate returned 0 and
+// the row fell back to the in-house matrix — so one screen read two different per-piece costs across
+// lines of the same run, decided only by which items the PO's item_idxs listed (SO-1791: $2.50/pc on the
+// PO-listed lines, $1.94/pc on a line it missed). ignorePoCoverage is the display-only escape hatch.
+describe('outsideDecoEstAt — ignorePoCoverage (display) vs PO suppression (cost walks)', () => {
+  const estDisplay = (o) => {
+    const d = o.items[0].decorations[0];
+    return outsideDecoEstAt(o, 0, d, 48, o.art_files, 48, VENDORS, PRICING, outsourcedDecoTypes(o), { ignorePoCoverage: true });
+  };
+  const poCovered = () => mkOrder({}, { deco_pos: [{ deco_type: 'screen_print', item_idxs: [0], qty: 48, unit_cost: 1.17 }] });
+
+  test('PO-covered line still reports the vendor rate for display (3.66/ea × 48)', () => {
+    expect(estDisplay(poCovered())).toBeCloseTo(175.68, 2);
+  });
+  test('an explicit deco_po_id link is also ignored for display', () => {
+    expect(estDisplay(mkOrder({ deco_po_id: 'DPO 1' }))).toBeCloseTo(175.68, 2);
+  });
+  test('a PO-covered line and an uncovered one report the SAME per-piece rate — the alignment guarantee', () => {
+    expect(estDisplay(poCovered())).toBeCloseTo(estDisplay(mkOrder()), 2);
+  });
+  test('display rate is NOT the in-house matrix rate (that fallback was the bug)', () => {
+    const o = poCovered();
+    expect(estDisplay(o)).not.toBeCloseTo(decoCostAt(o.items[0].decorations[0], 48, o.art_files, 48, null), 2);
+  });
+  test('the flag is opt-in: without it a PO-covered line still returns 0', () => {
+    expect(estAt(poCovered())).toBe(0);
+  });
+  test('cost walks never pass it, so a PO-covered order still costs the PO once', () => {
+    const m = calcOrderMargin(poCovered(), null, VENDORS, PRICING);
+    expect(m.cost).toBeCloseTo(864 + 48 * 1.17, 2); // garment + PO only; no estimate added
+  });
+  test('the flag cannot resurrect a deco that is not outside-routed at all', () => {
+    expect(estDisplay(mkOrder({ fulfillment: undefined }))).toBe(0);
+  });
+});
+
 describe('calcOrderMargin — outside estimate flows into cost only when pricing is supplied', () => {
   test('with vendor pricing: cost = garment (18×48=864) + Silver Screen deco (175.68)', () => {
     const m = calcOrderMargin(mkOrder(), null, VENDORS, PRICING);
