@@ -134,6 +134,27 @@ describe('checkSizesRequired — a sized item must carry a size', () => {
     const r = await checkout.checkSizesRequired(sbErr, store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
     expect(r).toBeNull();
   });
+  // An empty catalog scale used to read as "one-size" here, so a sizeless line for one of
+  // the ~1,100 empty-scale CLICK styles sailed through and became an unfulfillable order
+  // line. The storefront now derives those sizes from stock (storeInventory's scaleOf);
+  // this guard has to see the same product as sized.
+  test('rejects a sizeless line when the scale is empty but warehouse stock has sizes', async () => {
+    const row = viewRow({ available_sizes: [], sizes_offered: null, size_stock: { S: 21, M: 102, L: 57 } });
+    const r = await checkout.checkSizesRequired(sb(row), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toMatch(/choose a size/i);
+  });
+  test('rejects a sizeless line when only vendor (drop-ship) stock carries the sizes', async () => {
+    const row = viewRow({ available_sizes: [], sizes_offered: null, vendor_size_stock: { M: 4, L: 9 } });
+    const r = await checkout.checkSizesRequired(sb(row), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toMatch(/choose a size/i);
+  });
+  test('still allows a one-size item whose stock map is keyed by its single label', async () => {
+    // A real OSFA cap has a scale, so it never reaches the derived path — but an empty
+    // scale with a genuinely empty stock map must stay addable without a size.
+    const row = viewRow({ available_sizes: [], sizes_offered: [], size_stock: {}, vendor_size_stock: null });
+    const r = await checkout.checkSizesRequired(sb(row), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
+    expect(r).toBeNull();
+  });
   test('ignores bundle lines (their component sizes are checked in priceCart)', async () => {
     const r = await checkout.checkSizesRequired(sb(viewRow()), store, [{ kind: 'bundle', components: [] }]);
     expect(r).toBeNull();

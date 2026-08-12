@@ -2,12 +2,12 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
 import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
-import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
+import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
@@ -725,6 +725,8 @@ const _esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>
 // marketing site 200-proxies to this storefront — never the raw portal origin staff happen
 // to trigger the email from.
 const PUBLIC_SITE = 'https://nationalsportsapparel.com';
+// Per-image deadline for the flyer PDF's photo/QR fetches (see _imgB64).
+const IMG_FETCH_MS = 12_000;
 const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
 // QuickChart renders a standard 8-bit PNG that email clients reliably display; the previous
 // goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
@@ -1016,8 +1018,12 @@ async function generateFlyerPdfBase64(store, items = []) {
   // the flyer rendered empty gray cards — go through image-proxy first (same pattern as
   // QuickMockBuilder), falling back to a direct fetch for hosts the proxy doesn't allow.
   const imgCache = {};
+  // Every fetch here is bounded: a supplier CDN (or a cold image-proxy) that accepts the
+  // connection and never answers used to hang this Promise.all forever, which silently
+  // stalled the launch/share email before it ever reached Brevo. onerror must settle the
+  // FileReader promise for the same reason.
   const _imgB64 = async (u) => {
-    const toB64 = async (src) => { const resp = await fetch(src); if (!resp.ok) throw new Error('img ' + resp.status); const blob = await resp.blob(); return new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); }); };
+    const toB64 = async (src) => { const resp = await fetchWithTimeout(src, {}, IMG_FETCH_MS); if (!resp.ok) throw new Error('img ' + resp.status); const blob = await resp.blob(); return new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(blob); }); };
     try { return await toB64('/.netlify/functions/image-proxy?url=' + encodeURIComponent(u)); }
     catch(_) { try { return await toB64(u); } catch(_) { return null; } }
   };
@@ -1139,10 +1145,10 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.text('SCAN TO SHOP', W/2, y, {align:'center'});
   y += 10;
   try {
-    const qrResp = await fetch(_qrImg(url, 200));
+    const qrResp = await fetchWithTimeout(_qrImg(url, 200), {}, IMG_FETCH_MS);
     const qrBlob = await qrResp.blob();
     const qrB64 = await new Promise((resolve)=>{ const r=new FileReader(); r.onloadend=()=>resolve(r.result); r.readAsDataURL(qrBlob); });
-    doc.addImage(qrB64,'PNG',W/2-70,y,140,140);
+    doc.addImage(qrB64,'PNG',W/2-70,y,140,140,'','FAST');
   } catch(_){ /* skip if network fails */ }
   y += 150;
   doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,116,139);
@@ -1154,6 +1160,31 @@ async function generateFlyerPdfBase64(store, items = []) {
   doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(160,160,160);
   doc.text("California's Largest Independent Team Dealer  ·  Since 2009", W/2, H-13, {align:'center'});
   return doc.output('datauristring').split(',')[1];
+}
+
+// Send the "store is live" email to one recipient, flyer PDF attached when it fits.
+// Netlify's function payload cap (~6MB) rejects an oversized flyer BEFORE the request
+// ever reaches Brevo, so: skip the attachment when the base64 is too big, and if a
+// with-attachment send still fails, retry once without it so the email always goes out.
+const _FLYER_ATTACH_MAX_B64 = 4_500_000; // chars ≈ 3.4MB binary, safe under the cap
+// The flyer is a nice-to-have; the LINK is the point of this email. Building the PDF
+// pulls every product photo over the network, so bound the whole build — a stall here
+// must cost the attachment, never the email. (Before this, a hung image fetch stopped
+// _sendLaunchEmail before Brevo was ever called: no email, no error, and the UI had
+// already flashed "Generating flyer PDF…" as if the send were under way.)
+const _FLYER_BUILD_MS = 45_000;
+async function _sendLaunchEmail(store, to, coachUrl) {
+  const items = await loadFlyerItems(store);
+  let attachment;
+  try {
+    const b64 = await _withTimeout(generateFlyerPdfBase64(store, items), _FLYER_BUILD_MS, 'Flyer PDF build timed out');
+    if (b64 && b64.length <= _FLYER_ATTACH_MAX_B64) attachment = [{ content: b64, name: `${store.slug || 'team-store'}-flyer.pdf` }];
+  } catch (_) {}
+  const base = { to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachUrl), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com' };
+  let r = await sendBrevoEmail(attachment ? { ...base, attachment } : base);
+  let attached = !!attachment;
+  if (r && r.error && attachment) { r = await sendBrevoEmail(base); attached = false; }
+  return { ...(r || {}), attached };
 }
 
 // Load a store's catalog shaped for the flyer/PDF: resolves each item's display
@@ -1267,12 +1298,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (emailOverride || store.director_email || store.coach_contact_email || '').trim();
     if (!to) { flash("Add a coach/director email in the store's Settings first"); return; }
     flash('Generating flyer PDF…');
-    const items = await loadFlyerItems(store);
-    let attachment;
-    try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
-    const r = await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
-    if (r && r.error) flash('Email failed: ' + r.error);
-    else flash('Store link emailed to ' + to + (attachment ? ' with PDF flyer' : ''));
+    // Anything that throws on the way to Brevo has to surface: an uncaught rejection
+    // here left the rep with a stale "Generating flyer PDF…" toast and no send.
+    try {
+      const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
+      if (r && r.error) flash('Email failed: ' + r.error);
+      else flash('Store link emailed to ' + to + (r.attached ? ' with PDF flyer' : ' (link only — the PDF flyer could not be attached)'));
+    } catch (e) { flash('Email failed: ' + (e.message || e)); }
   }, [coachPortalUrl, flash]);
 
   // Open the print-ready flyer in its own tab.
@@ -1552,11 +1584,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const to = (store.coach_contact_email || store.director_email || '').trim();
     if (!to) { flash('Launched (no coach/director email on file to notify).'); return; }
     try {
-      const items = await loadFlyerItems(store);
-      let attachment;
-      try { const b64 = await generateFlyerPdfBase64(store, items); attachment = [{ content: b64, name: `${store.slug||'team-store'}-flyer.pdf` }]; } catch(_) {}
-      await sendBrevoEmail({ to: [{ email: to, name: store.director_name || '' }], subject: `Your team store is live: ${store.name}`, htmlContent: launchEmailHtml(store, coachPortalUrl(store)), senderName: 'National Sports Apparel', senderEmail: 'noreply@nationalsportsapparel.com', ...(attachment ? { attachment } : {}) });
-      flash('Launched — family flyer emailed' + (attachment ? ' with PDF attachment' : '') + '.');
+      const r = await _sendLaunchEmail(store, to, coachPortalUrl(store));
+      // Surface a failed send — this used to ignore the result and claim the email
+      // went out even when it never reached Brevo.
+      if (r && r.error) flash('Launched — but the coach email FAILED: ' + r.error);
+      else flash('Launched — family flyer emailed' + (r.attached ? ' with PDF attachment' : '') + '.');
     } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
   }, [coachPortalUrl, flash]);
 
@@ -7205,7 +7237,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _stk = stockByWp[item.id] || {};
   const _rawQty = (sz) => (Number((_stk.size_stock || {})[sz]) || 0) + (Number((_stk.vendor_size_stock || {})[sz]) || 0);
   const _rawSoon = (sz) => sizeEtaSoon(_stk.vendor_size_eta, sz);
-  const _scaleSizes = foldScale(availableSizes);
+  // Falls back to the sizes implied by stock when the catalog row's available_sizes is
+  // empty (see scaleOf) — otherwise the Sizes tab opened with NO chips for the ~1,100
+  // empty-scale styles, and reps hand-typed sizes to fill the gap (which is where the
+  // stray "OSFA"/"XS" sizes_offered values on live stores came from).
+  const _scaleSizes = scaleOf(availableSizes, _stk.size_stock, _stk.vendor_size_stock, _stk.vendor_size_eta);
   const _sizeQty = (sz) => foldedQty(sz, _rawQty);
   const _sellableSizes = _scaleSizes.filter((sz) => _sizeQty(sz) > 0 || foldedSoon(sz, _rawSoon));
   const allSizes = _sellableSizes.length ? _sellableSizes : _scaleSizes;
@@ -8265,6 +8301,17 @@ async function buildStyleRows(matched) {
 const rowItemIn = (r, existingPids) => [...r.picked].some((id) => !existingPids.has(id));
 const rowItemAvail = (r, existingPids) => r.colors.some((c) => !existingPids.has(c.id));
 const rowsTotalPicked = (rows, existingPids) => rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+// The colors an item comes back with when it's (re)checked: its saved/palette defaults (or
+// every color when it has none), minus anything already in the store. When ALL of those
+// defaults are already in the store that set comes back empty — and since a row counts as
+// "included" only while it has an addable color picked, the checkbox would snap straight
+// back off and the item could never be brought in again. Fall back to whatever colorways
+// are still addable so checking an item always does something.
+const rowDefaultPick = (r, existingPids) => {
+  const addable = r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id);
+  const base = [...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id));
+  return new Set(base.length ? base : addable);
+};
 // Build the apply plan applyTemplateColors expects (colors already in store are re-filtered there).
 const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
 
@@ -8274,15 +8321,19 @@ const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colo
 function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtra }) {
   const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
   const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
-  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() } : r));
   return (
     <>
       {rows.map((r, ri) => { const included = rowItemIn(r, existingPids); const avail = rowItemAvail(r, existingPids); return (
         <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0, flexWrap: 'wrap' }}>
             <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
-            {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            {/* Deselecting an item hides its swatches, leaving only the small checkbox to click.
+                The image + name toggle it too, so a greyed-out row is easy to bring back. */}
+            <div onClick={() => avail && toggleItem(ri, !included)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: avail ? 'pointer' : 'default' }}>
+              {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            </div>
             {included && renderRowExtra && renderRowExtra(r, ri, included)}
             {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
             {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
@@ -8337,7 +8388,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), teamHexes = [], on
     })();
     return () => { cancelled = true; };
   }, [tpl, teamKey]);
-  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() })));
   const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
   const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
   const totalPicked = rowsTotalPicked(rows, existingPids);
@@ -9406,7 +9457,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
   const setMeta = (ri, patch) => setRows((rs) => rs.map((r, i) => (i === ri ? { ...r, meta: { ...r.meta, ...patch } } : r)));
   const totalPicked = rowsTotalPicked(rows, existingPids);
   const stylesIn = rows.filter((r) => rowItemIn(r, existingPids)).length;
-  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? rowDefaultPick(r, existingPids) : new Set() })));
 
   const doImport = async () => {
     if (!totalPicked || !onApplyColors) return;
@@ -10796,7 +10847,7 @@ async function _vectorizeFile(file) {
   } finally { revoke(); }
 }
 function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
-  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '' });
+  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '', cwId: null });
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
   const [name, setName] = useState('');
@@ -10824,6 +10875,35 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
     setProds((p) => [...p, ...fs.filter((f) => !_isWebArtFile(f)).map(mk)]);
   };
   const drop = (fn) => (arr, i) => fn(arr.filter((_, j) => j !== i));
+  // A web logo IS a color way, so naming one builds its card below instead of making the rep
+  // enter the same list twice. The row remembers the card it made (cwId) — re-typing renames
+  // that card rather than piling up duplicates, a card already named the same is adopted, and
+  // clearing the name drops the card only while it holds no ink colors worth keeping.
+  const _hasInk = (cw) => (cw.inks || []).some((x) => x && x.trim());
+  const _sameName = (cw, t) => (cw.garment_color || '').trim().toLowerCase() === t.toLowerCase();
+  const setWebLabel = (i, label) => {
+    const t = label.trim();
+    const owned = colorWays.find((c) => c.id === webs[i].cwId) || null;
+    // A card two logos share isn't this row's to rename — unlink and let the rules below re-home it.
+    const mine = owned && webs.some((w, j) => j !== i && w.cwId === owned.id) ? null : owned;
+    const twin = t ? colorWays.find((c) => c !== mine && _sameName(c, t)) : null;
+    let cwId = mine ? mine.id : null, next = colorWays;
+    if (twin) { cwId = twin.id; if (mine && !_hasInk(mine)) next = colorWays.filter((c) => c !== mine); }
+    else if (mine) {
+      if (!t && !_hasInk(mine)) { cwId = null; next = colorWays.filter((c) => c !== mine); }
+      else next = colorWays.map((c) => (c === mine ? { ...c, garment_color: label } : c));
+    } else if (t) {
+      cwId = 'cw' + Date.now() + '-' + i;
+      next = [...colorWays, { id: cwId, garment_color: label, inks: [''] }];
+    }
+    if (next !== colorWays) setColorWays(next);
+    setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label, cwId } : x)));
+  };
+  // Backstop for a logo left on its filename suggestion — it still lands with a color way.
+  const withCwsFor = (cws, labels) => labels.reduce((acc, l) => {
+    const t = String(l || '').trim();
+    return !t || acc.some((c) => _sameName(c, t)) ? acc : [...acc, { id: 'cw' + Date.now() + '-x' + acc.length, garment_color: t, inks: [''] }];
+  }, cws);
   // Swap a web row's file in place (after knock-out-white / vectorize), revoking the stale
   // preview so the new cutout is what gets uploaded on Create.
   const replaceWeb = (i, newFile) => setWebs((arr) => arr.map((x, j) => {
@@ -10850,11 +10930,12 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
   const browseLink = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, padding: 0, textDecoration: 'underline' };
   const create = () => {
     if (busy || (!webs.length && !prods.length)) return;
+    const finalWebs = webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') }));
     onCreate({
       name: name.trim() || suggested,
       decoType,
-      colorWays,
-      webs: webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') })),
+      colorWays: withCwsFor(colorWays, finalWebs.map((w) => w.label)),
+      webs: finalWebs,
       prods: prods.map((p) => ({ file: p.file })),
     });
   };
@@ -10895,7 +10976,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
                       <div title="Transparent areas show as a checker" style={{ width: 34, height: 34, borderRadius: 6, background: w.preview ? 'repeating-conic-gradient(#cbd5e1 0 25%, #f8fafc 0 50%) 50% / 10px 10px' : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
                       <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{w.file.name}</span>
                       {i === 0 && <span style={{ fontSize: 10.5, fontWeight: 800, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }} title="Also used as the default cutout for all garments">Default</span>}
-                      <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way (e.g. White garments)" />
+                      <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebLabel(i, e.target.value)} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way — its card appears below, ready for ink colors" />
                       <button onClick={() => !busy && drop(setWebs)(webs, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
                     </div>
                     {_isWebArtFile(w.file) && <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 42, flexWrap: 'wrap' }}>

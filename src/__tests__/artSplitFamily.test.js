@@ -10,7 +10,7 @@
  * shuffled — see isOpenSplitSlice in businessLogic.
  */
 const {
-  jobArtKey, splitFamilyRoot, artFamilyKey, consolidateArtFamilies, artFamilyIds,
+  jobArtKey, splitFamilyRoot, artFamilyKey, consolidateArtFamilies, artFamilyIds, artFamilyIdsIn,
 } = require('../lib/artSplitFamily');
 const { allocateJobFulfillment, isOpenSplitSlice } = require('../businessLogic');
 
@@ -133,6 +133,32 @@ describe('artFamilyIds — what an art action writes to', () => {
   });
   test('a plain card writes to itself only', () => {
     expect(artFamilyIds({ id: 'A' })).toEqual(['A']);
+  });
+});
+
+// The dashboard's inline Approve / Request-changes bar works off a raw buildJobs(so) list, which
+// carries no _famIds marker — this is how it resolves the same family the art board would.
+describe('artFamilyIdsIn — family lookup in a raw (unconsolidated) job list', () => {
+  test('a split family resolves to every slice, from any member', () => {
+    const jobs = [job('A'), job('A-S1', { split_from: 'A' }), job('A-S2', { split_from: 'A' }), job('B', { art_file_id: 'af9' })];
+    expect(artFamilyIdsIn(jobs, 'A').sort()).toEqual(['A', 'A-S1', 'A-S2']);
+    expect(artFamilyIdsIn(jobs, 'A-S2').sort()).toEqual(['A', 'A-S1', 'A-S2']);
+  });
+  test('an unsplit job resolves to itself', () => {
+    expect(artFamilyIdsIn([job('A'), job('B', { art_file_id: 'af9' })], 'A')).toEqual(['A']);
+  });
+  test('a slice re-pointed at different artwork is NOT the same work', () => {
+    const jobs = [job('A'), job('A-S1', { split_from: 'A', art_file_id: 'af-other' })];
+    expect(artFamilyIdsIn(jobs, 'A')).toEqual(['A']);
+    expect(artFamilyIdsIn(jobs, 'A-S1')).toEqual(['A-S1']);
+  });
+  test('jobs on other orders never join the family', () => {
+    const jobs = [job('A'), { ...job('A'), soId: 'SO-2' }];
+    expect(artFamilyIdsIn(jobs, 'A')).toEqual(['A']);
+  });
+  test('an unknown job id writes only to itself', () => {
+    expect(artFamilyIdsIn([job('A')], 'ZZ')).toEqual(['ZZ']);
+    expect(artFamilyIdsIn([job('A')], undefined)).toEqual([]);
   });
 });
 

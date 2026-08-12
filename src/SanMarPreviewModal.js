@@ -68,6 +68,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
   const [selectedDecoId, setSelectedDecoId] = useState(() => shipToDecoId || activeDecoVendors[0]?.id || '');
   const [dpoNumber, setDpoNumber] = useState(initialDpoNumber || '');
+  // Attention-line value from the DPO field: ALWAYS "DPO ..." — the prefix is what lets the
+  // decorator's receiving desk match the box to their job. Idempotent so a field already holding
+  // the full "DPO 1042 XYZ" (the callers now pass po_id verbatim) doesn't get double-prefixed.
+  const dpoAttn = (v) => { const t = String(v || '').trim(); return t ? (/^dpo\b/i.test(t) ? t : 'DPO ' + t) : ''; };
   const [inlineAddr, setInlineAddr] = useState({ address_line1: '', address_line2: '', city: '', state: '', zip: '' });
 
   // Keep selectedDecoId in sync if decoVendors loads after mount
@@ -96,7 +100,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
       const state = selectedDeco.state || inlineAddr.state || '';
       const zip = selectedDeco.zip || inlineAddr.zip || '';
       effectiveShip = {
-        attentionTo: dpoNumber.trim() ? 'DPO ' + dpoNumber.trim() : (selectedDeco.contact_name || 'Receiving'),
+        attentionTo: dpoAttn(dpoNumber) || (selectedDeco.contact_name || 'Receiving'),
         companyName: selectedDeco.name,
         address1: a1,
         address2: a2,
@@ -393,9 +397,9 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>DPO # <span style={{ fontWeight: 400, color: '#94a3b8' }}>(goes in attention line — optional)</span></label>
-                      <input className="form-input" style={{ fontSize: 12, width: 160 }} placeholder="e.g. 1042" value={dpoNumber} onChange={e => setDpoNumber(e.target.value)} />
+                      <input className="form-input" style={{ fontSize: 12, width: 160 }} placeholder="e.g. DPO 1042" value={dpoNumber} onChange={e => setDpoNumber(e.target.value)} />
                     </div>
-                    {dpoNumber.trim() && <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>Attn: <strong>DPO {dpoNumber.trim()}</strong></div>}
+                    {dpoNumber.trim() && <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>Attn: <strong>{dpoAttn(dpoNumber)}</strong></div>}
                   </div>
                 </div>
               ) : (
@@ -439,14 +443,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                           <input
                             className="form-input"
                             style={{ fontSize: 12, width: 140 }}
-                            placeholder="e.g. 1042"
+                            placeholder="e.g. DPO 1042"
                             value={dpoNumber}
                             onChange={e => setDpoNumber(e.target.value)}
                           />
                         </div>
                         {dpoNumber.trim() && (
                           <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>
-                            Attn: <strong>DPO {dpoNumber.trim()}</strong>
+                            Attn: <strong>{dpoAttn(dpoNumber)}</strong>
                           </div>
                         )}
                       </div>

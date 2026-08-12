@@ -393,11 +393,30 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     if(c.id&&c.billing_address_line1&&(c.billing_address_line1!==c.shipping_address_line1||c.billing_city!==c.shipping_city||c.billing_state!==c.shipping_state||c.billing_zip!==c.shipping_zip)){
       const alts=c.alt_billing_addresses||[];const hasBill=alts.some(a=>a.type==='billing');
       if(!hasBill){c.alt_billing_addresses=[{type:'billing',label:'Billing',street:c.billing_address_line1||'',city:c.billing_city||'',state:c.billing_state||'',zip:c.billing_zip||''},...alts]}}
-    setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''});_initRef.current=isOpen?JSON.stringify(c):null},[customer,isOpen]); // eslint-disable-line
+    setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''});setInherited([]);_initRef.current=isOpen?JSON.stringify(c):null},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const[valMsg,setValMsg]=useState('');
   const[logoUp,setLogoUp]=useState(false);
+  const[inherited,setInherited]=useState([]);
+  // When a new customer is assigned a parent, inherit shipping, tax, pricing/discounts,
+  // pantone/thread colors and logo — but only into fields still empty/at defaults, so
+  // anything already typed is never clobbered. Existing customers are left untouched.
+  const inheritFromParent=(pid)=>{if(f.id)return;const p=(parents||[]).find(c=>c.id===pid)||(allCustomers||[]).find(c=>c.id===pid);if(!p)return;
+    const n={...f,parent_id:pid};const got=[];const emp=v=>v==null||v==='';
+    if(emp(n.shipping_address_line1)&&emp(n.shipping_city)&&(p.shipping_address_line1||p.shipping_city)){['shipping_attention','shipping_address_line1','shipping_city','shipping_state','shipping_zip'].forEach(k=>{if(p[k])n[k]=p[k]});got.push('shipping')}
+    if(!(n.tax_rate>0)&&!n.tax_exempt&&(p.tax_exempt||p.tax_rate>0)){if(p.tax_exempt){n.tax_exempt=true;n.tax_rate=0}else{n.tax_rate=p.tax_rate}got.push('tax')}
+    let pr=false;
+    if((n.adidas_ua_tier||'B')==='B'&&p.adidas_ua_tier&&p.adidas_ua_tier!=='B'){n.adidas_ua_tier=p.adidas_ua_tier;pr=true}
+    if((n.catalog_markup||1.65)===1.65&&p.catalog_markup&&p.catalog_markup!==1.65){n.catalog_markup=p.catalog_markup;pr=true}
+    if(!(n.uniform_discount_percent>0)&&p.uniform_discount_percent>0){n.uniform_discount_percent=p.uniform_discount_percent;pr=true}
+    if(pr)got.push('pricing');
+    let col=false;
+    if(!(n.pantone_colors||[]).length&&(p.pantone_colors||[]).length){n.pantone_colors=p.pantone_colors.map(c=>({...c}));col=true}
+    if(!(n.thread_colors||[]).length&&(p.thread_colors||[]).length){n.thread_colors=p.thread_colors.map(c=>({...c}));col=true}
+    if(col)got.push('colors');
+    if(emp(n.logo_url)&&p.logo_url){n.logo_url=p.logo_url;got.push('logo')}
+    setInherited(got);if(got.length)setF(n)};
   const pickLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=async()=>{const file=inp.files&&inp.files[0];if(!file)return;setLogoUp(true);try{const url=await cloudUpload(file,'nsa-school-logos');sv('logo_url',url)}catch(e){setValMsg('Logo upload failed: '+e.message)}finally{setLogoUp(false)}};inp.click()};
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;
     // Alpha tag must be unique — it's the portal URL identifier.
@@ -416,7 +435,8 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
   <div className="modal-header"><h2>{customer?.id?'Edit':'New'} Customer</h2><button className="modal-close" onClick={safeClose}>x</button></div>
   <div className="modal-body">
     <div style={{display:'flex',gap:8,marginBottom:16}}>{['parent','sub'].map(t=><button key={t} className={`btn btn-sm ${ct===t?'btn-primary':'btn-secondary'}`} onClick={()=>{setCt(t);if(t==='parent')sv('parent_id',null)}}>{t==='parent'?'Parent':'Sub'}</button>)}</div>
-    {ct==='sub'&&<div style={{marginBottom:12}}><label className="form-label">Parent *</label><SearchSelect options={parents.map(p=>({value:p.id,label:`${p.name} (${p.alpha_tag})`}))} value={f.parent_id} onChange={v=>sv('parent_id',v)} placeholder="Search parent..."/></div>}
+    {ct==='sub'&&<div style={{marginBottom:12}}><label className="form-label">Parent *</label><SearchSelect options={parents.map(p=>({value:p.id,label:`${p.name} (${p.alpha_tag})`}))} value={f.parent_id} onChange={v=>{sv('parent_id',v);inheritFromParent(v)}} placeholder="Search parent..."/>
+      {!f.id&&inherited.length>0&&<div style={{fontSize:10,color:'#6d28d9',marginTop:4}}>Inherited {inherited.join(', ')} from parent — edit below to override.</div>}</div>}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr 1.4fr',gap:12}}><div><label className="form-label">Name *</label><input className="form-input" value={f.name} onChange={e=>sv('name',e.target.value)} style={err.n?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Alpha Tag *</label><input className="form-input" value={f.alpha_tag||''} onChange={e=>sv('alpha_tag',e.target.value)} onBlur={e=>{const t=e.target.value.trim();if(t!==e.target.value)sv('alpha_tag',t)}} style={err.a?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>

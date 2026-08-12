@@ -167,6 +167,12 @@ export const decoCostAt=(d,q,af,localCq,combinedQty)=>{
 // same rules as the Deco PO builder. Mirrors decoCostAt (eq × per-piece, priced at the cq tier).
 // Returns 0 when it does not apply — not outside, no vendor, no matching price row, or an actual PO
 // already covers it (that PO's cost is summed separately, so this stays 0 to avoid double-counting).
+//
+// opts.ignorePoCoverage skips ONLY that PO-coverage bail-out, so a caller can read the vendor's rate
+// for a row that a Deco PO already covers. Cost WALKS must never pass it (they'd double-count the
+// PO's bill); DISPLAY callers must, because the fallback when this returns 0 is the in-house matrix —
+// which made the very same print read the in-house rate on the lines a PO's item_idxs happened to
+// list and the vendor rate on the lines it didn't (SO-1791: $2.50/pc vs $1.94/pc for one screen).
 const _ssFleece=g=>/fleece|hood|sweat|crew|jogger/i.test(g||'');
 const _ssMesh=g=>/\bmesh\b/i.test(g||'');
 const _artInkCount=(a,d)=>{
@@ -174,10 +180,11 @@ const _artInkCount=(a,d)=>{
   if(a&&a.ink_colors){const n=a.ink_colors.split('\n').filter(l=>l.trim()).length;if(n>0)return n}
   return safeNum(d&&d.tbd_colors)||1;
 };
-export const outsideDecoEstAt=(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem)=>{
+export const outsideDecoEstAt=(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem,opts)=>{
   if(!d||d.kind!=='art'||d.fulfillment!=='outside'||!d.vendor)return 0;
   const dt=decoConcreteType(o,d);if(!dt)return 0;
-  if(decoIsOutsourced(outByItem&&outByItem[ii],dt)||d.deco_po_id)return 0; // on an actual Deco PO → counted there
+  // on an actual Deco PO → counted there (unless the caller only wants the vendor rate to display)
+  if(!(opts&&opts.ignorePoCoverage)&&(decoIsOutsourced(outByItem&&outByItem[ii],dt)||d.deco_po_id))return 0;
   const _dv=(decoVendors||[]).find(v=>v&&v.name===d.vendor);const vid=_dv&&_dv.id;if(!vid)return 0;
   const a=(af||[]).find(f=>f&&f.id===d.art_file_id);
   const it=(o&&Array.isArray(o.items)?o.items[ii]:null)||{};

@@ -221,6 +221,36 @@ const _searchProductsServer=async(query,filters={},page=0,pageSize=50)=>{
   }catch(e){console.warn('[DB] search_products RPC error:',e.message);return null}
 };
 
+// ─── Server-side transaction-item search (imported NetSuite archive) ───
+// The products catalog only covers what we currently stock. Items that exist only on past
+// transactions — pre-portal NetSuite lines, dropped styles, one-off charge codes — live in
+// customer_invoice_lines and are invisible to _searchProductsServer. search_txn_items groups
+// that archive by item code so global search can offer them; in_catalog flags the ones the
+// Products section already returns so the caller can drop the duplicate.
+const _searchTxnItemsServer=async(query,limit=20)=>{
+  if(!supabase)return null;
+  const q=(query||'').trim();
+  if(!q)return[];
+  try{
+    const{data,error}=await supabase.rpc('search_txn_items',{p_query:q,p_limit:limit});
+    if(error){console.warn('[DB] search_txn_items RPC failed:',error.message);return null}
+    return data||[];
+  }catch(e){console.warn('[DB] search_txn_items RPC error:',e.message);return null}
+};
+
+// ─── One item code's full archive history (raw lines; caller groups them into documents) ───
+// Capped server-side at 5000 rows — the busiest charge codes carry 17k+ lines.
+const _fetchTxnItemHistory=async(item,limit=1500)=>{
+  if(!supabase)return null;
+  const it=(item||'').trim();
+  if(!it)return[];
+  try{
+    const{data,error}=await supabase.rpc('txn_item_history',{p_item:it,p_limit:limit});
+    if(error){console.warn('[DB] txn_item_history RPC failed:',error.message);return null}
+    return data||[];
+  }catch(e){console.warn('[DB] txn_item_history RPC error:',e.message);return null}
+};
+
 // ─── Server-side customer search (paginated, leverages DB trigram indexes) ───
 const _searchCustomersServer=async(query,repId,page=0,pageSize=50)=>{
   if(!supabase)return null;
@@ -426,6 +456,18 @@ const _dbLoad = async (opts={}) => {
       // _saveAppStateCAS. version is undefined until the migration lands — treated as 0.
       if(!r.id.startsWith('_pimg_'))_appStateVersions[r.id]={v:r.version||0,s:r.value};});
     // ─── Reconstruct nested objects ───
+    // deco_pos is read as `(o.deco_pos||[]).forEach(...)` at ~100 call sites. The `||[]` only covers
+    // null/undefined, so a row whose jsonb holds an OBJECT sails through and throws "forEach is not a
+    // function" — and because global search and the dashboards scan every SO, one malformed row
+    // white-screens the whole portal (SO-TEST-BAG carried `{}`, crashing global search 2026-08-12).
+    // Normalise on the way in so a bad row degrades to "no deco POs" instead of taking the app down.
+    // Returns {} — not {deco_pos:[]} — when the column is absent/null so the save path keeps omitting
+    // the column rather than writing an empty array over the DB's deco POs.
+    const _decoPosGuard=(row)=>{
+      if(row?.deco_pos==null||Array.isArray(row.deco_pos))return{};
+      console.warn('[DB]',row.id,'has a non-array deco_pos ('+typeof row.deco_pos+') — treating it as empty');
+      return{deco_pos:[]};
+    };
     // Product image backups from app_state (reliable fallback when image columns are missing)
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
@@ -457,7 +499,7 @@ const _dbLoad = async (opts={}) => {
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
       const _estItemsHydrated=!_lastLoadTimedOut.has('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
-      return{...est,items,art_files,_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...est,items,art_files,..._decoPosGuard(est),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -522,7 +564,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
       const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -2290,6 +2332,7 @@ const _dbSaveInvoiceInner = async (inv) => {
     // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
     // was never aware of, so only a payment the client loaded and then deleted is actually removed.
     let _payments=payments;
+    let _dbPayRows=[];
     {
       const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
       if(_dbPayErr){
@@ -2297,6 +2340,7 @@ const _dbSaveInvoiceInner = async (inv) => {
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing payments. Please reload the page.','error');
         _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments SELECT errored: '+_dbPayErr.message);_persistFailedIds();return false;
       }
+      _dbPayRows=_dbPays||[];
       if(_dbPays&&_dbPays.length){
         const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
         const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
@@ -2313,12 +2357,31 @@ const _dbSaveInvoiceInner = async (inv) => {
     }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
     if(_payments?.length){
-      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
+      // cc_fee is coerced: the column is NOT NULL, and an undefined here would make PostgREST
+      // reject the whole batch rather than default it.
+      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0}));
       const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
       if(payErr){
-        // Fallback: DELETE+INSERT if upsert constraint doesn't exist
-        await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
-        await supabase.from('invoice_payments').insert(payRows);
+        // FAIL CLOSED (2026-08-12, INV-1053). The old fallback here deleted every payment row on the
+        // invoice and then re-inserted the SAME payload that had just failed — so a schema or
+        // constraint error (this table was missing the cc_fee column the payload always carried, and
+        // the unique index the upsert targets) destroyed the invoice's payment history and swallowed
+        // both errors. Not one payment recorded through the portal ever reached the DB, and with no
+        // payment rows CommissionsPage falls back to the INVOICE date — quietly paying reps their
+        // commission in the wrong month.
+        //
+        // A payment is a financial record and its date decides a rep's statement month: never delete
+        // on a failed write. Try a plain insert of the rows the DB does not already hold, and if that
+        // fails too, fail the save so the retry loop keeps the payment instead of dropping it.
+        const _known=new Set(_dbPayRows.map(r=>String(r.ref)));
+        const _missing=payRows.filter(r=>!_known.has(String(r.ref)));
+        const{error:insErr}=_missing.length?await supabase.from('invoice_payments').insert(_missing):{error:null};
+        if(insErr){
+          console.error('[DB] invoice_payments write failed for',inv.id,'— upsert:',payErr.message,'/ insert:',insErr.message);
+          if(_dbNotify)_dbNotify('Payment NOT saved on '+inv.id+' — the payment record failed to write, so this invoice would commission in the wrong month. Retrying; reload if it persists.','error');
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments: '+payErr.message+' | insert fallback: '+insErr.message);_persistFailedIds();return false;
+        }
+        console.warn('[DB] invoice_payments upsert failed for',inv.id,'—',payErr.message,'; inserted',_missing.length,'new payment(s) instead (existing rows left intact)');
       }else{
         // Delete payments beyond current set
         const{data:existingPays}=await supabase.from('invoice_payments').select('id,ref').eq('invoice_id',inv.id);
@@ -2780,9 +2843,20 @@ const _dbSaveProductInner = async (p) => {
   try{
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
-      is_active:p.is_active!==false,is_archived:p.is_archived||false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+      is_active:p.is_active!==false,is_archived:p.is_archived||false,_colors:p._colors||null,
       is_clearance:p.is_clearance||false,clearance_cost:p.clearance_cost!=null?p.clearance_cost:null,bin:p.bin||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
+    // available_sizes is written ONLY when we actually have a scale to write. This used to be
+    // `available_sizes:p.available_sizes||[]` in the row literal — and because this is a FULL-ROW
+    // upsert, any caller handing us a product object without the field silently erased the
+    // catalog's size scale (the column defaults to '[]'). The "Update Catalog → $cost" button on
+    // the bill-reconcile tab is one such caller: it builds {id,sku,name,vendor_id,brand,color,
+    // image_url,nsa_cost} with no sizes, and when the product isn't in local state there's nothing
+    // to merge over. That is how ~1,100 catalog rows ended up with available_sizes = [] — which
+    // then showed on the webstores as products with NO size buttons at all.
+    // Omitting the key leaves the stored value untouched on conflict; a brand-new row still gets
+    // the column default. An empty scale is never a meaningful edit, so nothing legitimate is lost.
+    if(Array.isArray(p.available_sizes)&&p.available_sizes.length)row.available_sizes=p.available_sizes;
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
       // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
@@ -3248,6 +3322,8 @@ export {
   scheduleEmailSend,
   API_CATALOG_VENDOR_IDS,
   _searchProductsServer,
+  _searchTxnItemsServer,
+  _fetchTxnItemHistory,
   _searchCustomersServer,
   _sbSignIn,
   _sbSignUp,

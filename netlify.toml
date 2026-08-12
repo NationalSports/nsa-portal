@@ -71,6 +71,13 @@
 [functions."vectorizer-proxy"]
   timeout = 26
 
+# Silver Screen portal job creation — logs into portal.silverscreenprinting.com and
+# creates the order for a deco PO ("Send to Silver Screen" button on the Deco PO page).
+# Needs the full synchronous budget for the login + form round-trips. Env:
+# SILVERSCREEN_USERNAME, SILVERSCREEN_PASSWORD, SILVERSCREEN_SALES_REP_ID.
+[functions."silverscreen-job"]
+  timeout = 26
+
 [functions."pdf-generator"]
   timeout = 26
 

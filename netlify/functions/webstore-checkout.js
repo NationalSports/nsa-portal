@@ -205,14 +205,20 @@ async function checkSizesRequired(sb, store, lines) {
   if (!noSize.length) return null;
   const ids = [...new Set(noSize.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,name,available_sizes,sizes_offered')
+    .select('webstore_product_id,name,available_sizes,sizes_offered,size_stock,vendor_size_stock,vendor_size_eta')
     .eq('store_id', store.id).in('webstore_product_id', ids);
   if (error) return null;
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
   const nonEmpty = (a) => Array.isArray(a) && a.filter((x) => x != null && String(x).trim()).length > 0;
+  // A product whose catalog scale is empty but which carries per-size stock is still a
+  // SIZED product — the storefront now derives its size buttons from that stock (see
+  // Storefront's scaleOf). Without this the guard read those items as one-size and let a
+  // sizeless, unfulfillable line through.
+  const hasSizeKeys = (p) => [p.size_stock, p.vendor_size_stock, p.vendor_size_eta]
+    .some((m) => m && typeof m === 'object' && Object.keys(m).length > 0);
   for (const l of noSize) {
     const p = byId[l.wp.id];
-    if (p && (nonEmpty(p.available_sizes) || nonEmpty(p.sizes_offered))) {
+    if (p && (nonEmpty(p.available_sizes) || nonEmpty(p.sizes_offered) || hasSizeKeys(p))) {
       return `Please choose a size for ${p.name || 'an item in your cart'} — it may have sold out in your size. Please re-add it and try again.`;
     }
   }
