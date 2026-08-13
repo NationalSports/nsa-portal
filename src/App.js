@@ -3434,8 +3434,13 @@ export default function App(){
       // omitted (stale/un-hydrated in-memory state), so nothing was actually lost. Record it for audit but never
       // email — on a bulk/background re-save this fires once per SO and would otherwise flood the admin inbox with
       // false "Items lost" alarms (the 2026-06-30 storm: ~340 emails across as many SOs, every SO's data intact).
-      if(kind==='po_restored'||kind==='picks_restored'){
-        logChange('data_restored','SO',soId,'Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)');
+      // item_restored belongs here for the same reason: the save layer re-added an ITEM the payload had
+      // dropped while the DB still held PO line(s) for it. Nothing is lost — falling through to the
+      // generic branch below would log it as "Items removed" and email a 🚨 alarm for a successful save.
+      if(kind==='po_restored'||kind==='picks_restored'||kind==='item_restored'){
+        logChange('data_restored','SO',soId,kind==='item_restored'
+          ?('Auto-restored '+(restored!=null?restored+' ':'')+'item(s) with purchase-order line(s) the save had dropped (stale state — no data lost)'+(reason?' — '+reason:''))
+          :('Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)'));
         return;
       }
       // verify_fail: a post-insert read-back came back short or errored. The insert-first save keeps the OLD
@@ -3508,12 +3513,25 @@ export default function App(){
     const apply=s=>{
       if(!s||s.id!==soId||!Array.isArray(s.items)||!s.items.length)return s;
       const out=s.items.slice();let applied=0;
+      const _norm=c=>String(c||'').trim().toLowerCase();
+      const _same=(it,r)=>!!it&&!(r.sku&&it.sku&&it.sku!==r.sku)&&!(r.color&&it.color&&_norm(it.color)!==_norm(r.color));
       for(const r of restores){
+        // kind 'item': the save guard rebuilt a whole item that had vanished from the payload while
+        // the DB still held PO line(s) for it. It is appended at the tail (r.idx === items.length at
+        // revive time), so re-add it here or the editor drops it again on the very next save and the
+        // guard has to revive it forever. Its po/pick lines arrive as their own entries below, which
+        // the JSON dedup then skips because the revived object already carries them.
+        if(r.kind==='item'){
+          if(_same(out[r.idx],r))continue;// already present (raced save / second sync pass)
+          if(out[r.idx]||r.idx!==out.length||!r.item)return s;// state moved on — bail untouched
+          // Copy rather than sharing the object: r.item is the very object still sitting in the save's
+          // payload array, and the engine mutates payload items in place on later saves.
+          out.push({...r.item});applied++;continue;
+        }
         const it=out[r.idx];
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
         // moved on mid-save and r.idx now points at another garment — bail untouched.
-        const _norm=c=>String(c||'').trim().toLowerCase();
-        if(!it||(r.sku&&it.sku&&it.sku!==r.sku)||(r.color&&it.color&&_norm(it.color)!==_norm(r.color)))return s;
+        if(!_same(it,r))return s;
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);

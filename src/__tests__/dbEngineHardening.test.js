@@ -431,3 +431,154 @@ describe('_dbSaveInvoiceInner — payment write failures never destroy payment r
     expect(payDeletes.length).toBe(0);
   });
 });
+
+// ── Fix 6: PO-restore no longer dead-ends on a missing item (SO-1951, 2026-08-13) ───────────
+// A queued/stale save payload whose item list no longer contains an item that still holds PO
+// line(s) in the DB used to hard-block ("Save blocked — purchase order data could not be safely
+// preserved"), leaving the tab unable to ever save that order. The guard now rebuilds the missing
+// item from its DB row — with its decorations — and appends it, so the PO is preserved AND the
+// rep's other edits land. It must still fail closed when the item cannot be rebuilt.
+describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix 6)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  // DB holds two items; the stale payload keeps the first and replaces the second with a brand
+  // new garment (a new sku|color key, so the pure-deletion guard abstains and we reach the PO pass).
+  const dbItems = () => [
+    { id: 'oi-1', item_index: 0, sku: 'K540', color: 'Black', product_id: null },
+    { id: 'oi-2', item_index: 1, sku: 'LST550', color: 'Black', product_id: null },
+  ];
+  const poRow = () => ({
+    id: 'po-row-1', so_item_id: 'oi-2', po_id: 'PO 57028 BAH', vendor: 'SanMar',
+    status: 'waiting', sizes: { L: 22, M: 20, unit_cost: 7.35 },
+    received: {}, billed: {}, shipments: [], tracking_numbers: [],
+  });
+  const stalePayload = () => ({
+    id: 'SO-REVIVE-1',
+    memo: 'stale tab edit',
+    _decosHydrated: true, // keep the deco guards out of the way; this test is about the PO pass
+    items: [
+      { sku: 'K540', color: 'Black' },
+      { sku: 'NEWSKU', color: 'Green' },
+    ],
+  });
+
+  test('rebuilds the vanished item, keeps its PO line, and lets the save succeed', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null }, error: null }, // existingSO select
+        { error: null },                                                    // sales_orders upsert
+      ],
+      so_items: [
+        { data: dbItems(), error: null },                                   // old-items read
+        { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null },  // insert: 3 rows back
+      ],
+      so_art_files: [{ data: [], error: null }],
+      so_item_po_lines: [
+        { data: [poRow()], error: null },                    // PO-restore read
+        { data: [{ po_id: 'PO 57028 BAH' }], error: null },  // duplicate-PO guard read
+        { data: [{ po_id: 'PO 57028 BAH' }], error: null },  // over-commit guard read
+        { error: null },                                     // PO-line insert
+        { count: 1, error: null },                           // insert verification count
+      ],
+      so_item_pick_lines: [
+        { data: [], error: null }, // pick-restore read
+        { data: [], error: null }, // over-commit guard read
+      ],
+      so_item_decorations: [
+        { data: [], error: null }, // decoration read for the rebuilt item
+      ],
+    };
+
+    const { _dbSaveSO, _dbSaveFailedIds } = require('../lib/dbEngine');
+    const so = stalePayload();
+    const result = await _dbSaveSO(so);
+
+    // The save goes through instead of dead-ending.
+    expect(result).toBe(true);
+    expect(_dbSaveFailedIds.has('SO-REVIVE-1')).toBe(false);
+
+    // The vanished LST550 is back in the inserted item rows, appended after the payload's own two.
+    const itemInserts = __mockState.calls.filter(c => c.table === 'so_items' && c.method === 'insert');
+    expect(itemInserts.length).toBe(1);
+    const rows = itemInserts[0].args[0];
+    expect(rows.length).toBe(3);
+    expect(rows[2].sku).toBe('LST550');
+    expect(rows[2].color).toBe('Black');
+    expect(rows[2].item_index).toBe(2);
+
+    // ...and its PO line rides along, attached to the rebuilt item's new id.
+    const poInserts = __mockState.calls.filter(c => c.table === 'so_item_po_lines' && c.method === 'insert');
+    expect(poInserts.length).toBe(1);
+    const poRows = poInserts[0].args[0];
+    expect(poRows.length).toBe(1);
+    expect(poRows[0].po_id).toBe('PO 57028 BAH');
+    expect(poRows[0].so_item_id).toBe('n3');
+    expect(poRows[0].sizes.L).toBe(22);
+    expect(poRows[0].sizes.unit_cost).toBe(7.35);
+  });
+
+  test('the rebuilt item is pushed back into live state so the next save does not drop it again', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
+        { error: null },
+      ],
+      so_items: [
+        { data: dbItems(), error: null },
+        { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null },
+      ],
+      so_art_files: [{ data: [], error: null }],
+      so_item_po_lines: [
+        { data: [poRow()], error: null },
+        { data: [{ po_id: 'PO 57028 BAH' }], error: null },
+        { data: [{ po_id: 'PO 57028 BAH' }], error: null },
+        { error: null },
+        { count: 1, error: null },
+      ],
+      so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+      so_item_decorations: [{ data: [], error: null }],
+    };
+
+    const { _dbSaveSO, _setRestoredLinesSync } = require('../lib/dbEngine');
+    const synced = [];
+    _setRestoredLinesSync((soId, restores) => { synced.push({ soId, restores }); });
+
+    await _dbSaveSO(stalePayload());
+    _setRestoredLinesSync(null);
+
+    expect(synced.length).toBe(1);
+    const itemRestores = synced[0].restores.filter(r => r.kind === 'item');
+    expect(itemRestores.length).toBe(1);
+    expect(itemRestores[0].sku).toBe('LST550');
+    expect(itemRestores[0].idx).toBe(2);
+    // The synced object carries the PO line, so the editor's copy is whole.
+    expect(itemRestores[0].item.po_lines.map(l => l.po_id)).toEqual(['PO 57028 BAH']);
+  });
+
+  test('fails closed — a decoration read error still blocks rather than rebuilding a bare item', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
+        { error: null },
+      ],
+      so_items: [{ data: dbItems(), error: null }],
+      so_art_files: [{ data: [], error: null }],
+      so_item_po_lines: [{ data: [poRow()], error: null }],
+      so_item_decorations: [{ data: null, error: { message: 'decoration read timed out' } }],
+    };
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO(stalePayload());
+
+    expect(result).toBe(false);
+    // Nothing was written: no item insert, so no chance of losing the PO's item.
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
+  });
+});
