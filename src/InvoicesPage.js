@@ -4,13 +4,13 @@
 // behavior-identical to the old closure call.
 import React from 'react';
 import { useAppData } from './AppContext';
-import { D_V, PRINT_CSS } from './constants';
+import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
 import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
-import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms } from './App';
+import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 
 // Fires its `run` callback exactly once, when it mounts. Used to auto-trigger the
 // invoice PDF download when an invoice is opened from an email "Download" deep-link
@@ -24,6 +24,11 @@ function AutoRunOnce({run}){
 
 export default function InvoicesPage(){
   const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+
+    // Packing slip builder — what's actually going in the box for this invoice. Local to the
+    // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
+    // up over a different invoice.
+    const [packSlip,setPackSlip]=React.useState(null);
 
     // Invoices usually go to a coach plus a billing/AP contact, so the greeting names whoever
     // is checked ("Hi Cam and Hillary,"). Only the greeting line is swapped — edits below it stay.
@@ -161,15 +166,20 @@ export default function InvoicesPage(){
       const overdue=dd!==null&&dd<0&&inv.status!=='paid';
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
 
+      // Bill-to / ship-to / PO as they print. Hoisted out of buildInvDocOpts so the packing slip
+      // addresses the delivery exactly the way the invoice does (override → SO ship-to → customer).
+      const docBillToName=inv.billing_name||ic?.name||'—';
+      const docBillToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+      const docBillAddr=docBillToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+      const docShipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
+      const docShipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+      const docShipAddr=docShipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
+      const docPoNum=inv.po_number||inv._po_number||so?.po_number;
+
       const buildInvDocOpts=()=>{
         const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const billToName=inv.billing_name||ic?.name||'—';
-        const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-        const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-        const shipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
-        const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-        const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
-        const poNum=inv.po_number||inv._po_number||so?.po_number;
+        // Local aliases so the document body below reads (and prints) exactly as it always has.
+        const billToName=docBillToName,billAddr=docBillAddr,shipToName=docShipToName,shipAddr=docShipAddr,poNum=docPoNum;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',date:inv.date,
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
@@ -197,6 +207,53 @@ export default function InvoicesPage(){
         const billToName=inv.billing_name||ic?.name||'';
         await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
       };
+      // ── Packing slip ──
+      // Units on one picked line: sized lines are driven by their size boxes, unsized ones by a
+      // plain quantity, so the slip totals whatever the picker actually shows.
+      const packLineUnits=(l)=>l.hasSizes?Object.values(l.sizes||{}).reduce((a,v)=>a+safeNum(v),0):safeNum(l.qty);
+      // Seed the picker from this invoice's lines. The invoice only carries a total qty per line,
+      // so the size breakdown comes off the matching sales-order line — that's what lets a rep
+      // send a slip for a partial delivery ("6 of the 12, sizes M and L"). Lines with no SO match
+      // (hand-added, or a NetSuite import) fall back to a single editable quantity.
+      const openPackSlip=()=>{
+        const soItems=so?safeItems(so):[];
+        const soIdxByLine=matchInvoiceLinesToSo(lineItems,soItems);
+        const lines=lineItems.map((li,i)=>{
+          const soIt=soIdxByLine[i]>=0?soItems[soIdxByLine[i]]:null;
+          const soSizes=soIt?safeSizes(soIt):{};
+          const sizes={};orderedSizeKeys(Object.keys(soSizes)).forEach(sz=>{const v=safeNum(soSizes[sz]);if(v>0)sizes[sz]=v});
+          const hasSizes=Object.keys(sizes).length>0;
+          return{include:true,hasSizes,sizes,
+            sku:li._sku||soIt?.sku||'',
+            name:soIt?.name||li._name||li.desc||'',
+            color:soIt?.color||li._color||'',
+            isFootwear:!!soIt?.is_footwear,
+            qty:safeNum(li.qty),invQty:safeNum(li.qty)};
+        });
+        setPackSlip({invId:inv.id,shipDate:new Date().toLocaleDateString(),notes:'',lines});
+      };
+      const buildPackSlipOpts=(ps)=>{
+        const sel=(ps.lines||[]).filter(l=>l.include&&packLineUnits(l)>0);
+        const rows=sel.map(l=>{
+          const szStr=l.hasSizes?orderedSizeKeys(Object.keys(l.sizes)).filter(sz=>safeNum(l.sizes[sz])>0).map(sz=>safeNum(l.sizes[sz])+(l.isFootwear?'/':' ')+sz).join(', '):'';
+          return{cells:[{value:l.sku||'',style:'font-family:monospace;font-weight:700'},{value:l.name||''},{value:l.color||'—'},{value:szStr||'—',style:'font-size:11px'},{value:packLineUnits(l),style:'text-align:center;font-weight:700'}]};
+        });
+        const units=sel.reduce((a,l)=>a+packLineUnits(l),0);
+        return{title:docShipToName,docNum:inv.id,docType:'PACKING SLIP',showPricing:false,
+          headerRight:'<div class="ta" style="font-size:20px">'+units+' Total Units</div><div class="ts">Invoice '+inv.id+'</div>',
+          infoBoxes:[
+            ...(docShipAddr?[{label:'Ship To',value:docShipToName,sub:docShipAddr}]:[{label:'Ship To',value:docShipToName}]),
+            {label:'Ship Date',value:ps.shipDate||new Date().toLocaleDateString()},
+            {label:'Invoice',value:inv.id,sub:so?'SO: '+so.id:''},
+            // Labelled the way the warehouse packing lists label it, so a school matching the
+            // shipment against its own paperwork sees the same words on either slip.
+            ...(docPoNum?[{label:'School PO #',value:'<span style="font-family:monospace;font-weight:700">'+docPoNum+'</span>'}]:[]),
+          ],
+          tables:[{title:'Items in this Delivery',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+          notes:(ps.notes||'').trim()||'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+          footer:'NO PRICING — Packing Slip',companyInfo:companyInfo};
+      };
+
       // Auto-download when opened from an email "Download" deep-link (?inv=<id>&dl=1):
       // reuse the exact client PDF path as the button, gated by the portal's own
       // session (same as the "Open →" links). One-shot — the flag is stripped from
@@ -332,6 +389,9 @@ export default function InvoicesPage(){
               onClick={async()=>{
                 try{await downloadInvoicePdf();}catch(err){console.warn('PDF download failed:',err)}
               }}>📥 Download PDF</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} disabled={lineItems.length===0}
+              title="Build a no-pricing packing slip — pick the items and sizes actually going in this delivery"
+              onClick={openPackSlip}>📦 Packing Slip</button>
             </>}
             {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
               onClick={()=>{const purl='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag);navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
@@ -677,6 +737,79 @@ export default function InvoicesPage(){
               </table>
             </div>
           </div>})()}
+
+        {/* ═══ PACKING SLIP MODAL ═══ */}
+        {/* Keyed to this invoice so a slip left open never renders over a different one. */}
+        {packSlip&&packSlip.invId===inv.id&&(()=>{
+          const psLines=packSlip.lines||[];
+          const totalUnits=psLines.filter(l=>l.include).reduce((a,l)=>a+packLineUnits(l),0);
+          const upLine=(i,patch)=>setPackSlip(s=>({...s,lines:s.lines.map((l,x)=>x===i?{...l,...patch}:l)}));
+          const upSize=(i,sz,v)=>setPackSlip(s=>({...s,lines:s.lines.map((l,x)=>x===i?{...l,sizes:{...l.sizes,[sz]:Math.max(0,safeNum(v))}}:l)}));
+          const setAll=(on)=>setPackSlip(s=>({...s,lines:s.lines.map(l=>({...l,include:on}))}));
+          return<div className="modal-overlay" onClick={()=>setPackSlip(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+            <div className="modal-header" style={{background:'#166534',color:'white'}}><h2 style={{color:'white'}}>📦 Packing Slip — {inv.id}</h2><button className="modal-close" style={{color:'white'}} onClick={()=>setPackSlip(null)}>×</button></div>
+            <div className="modal-body" style={{overflow:'auto',flex:1}}>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Pick what's actually going out in this delivery — uncheck a line, or drop the quantities to ship part of it. The slip prints with <strong>no pricing</strong>.</div>
+              <div style={{display:'flex',gap:12,alignItems:'flex-end',marginBottom:12}}>
+                <div style={{width:180}}>
+                  <label className="form-label">Ship Date</label>
+                  <input className="form-input" value={packSlip.shipDate} onChange={e=>setPackSlip(s=>({...s,shipDate:e.target.value}))}/>
+                </div>
+                <div style={{flex:1}}>
+                  <label className="form-label">Ship To</label>
+                  <div style={{fontSize:12,color:'#475569'}}><strong>{docShipToName}</strong></div>
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setAll(true)}>All</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setAll(false)}>None</button>
+                </div>
+              </div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+                {psLines.map((l,i)=>{
+                  const units=packLineUnits(l);
+                  return<div key={i} style={{padding:'10px 14px',borderBottom:i<psLines.length-1?'1px solid #f1f5f9':'none',background:l.include?'#f0fdf4':'#f8fafc'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10}}>
+                      <input type="checkbox" checked={l.include} onChange={e=>upLine(i,{include:e.target.checked})} style={{accentColor:'#166534',width:16,height:16,cursor:'pointer'}}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:600,fontSize:12}}>{l.sku?<span style={{fontFamily:'monospace',color:'#475569',marginRight:6}}>{l.sku}</span>:null}{l.name}{l.color?' — '+l.color:''}</div>
+                        <div style={{fontSize:11,color:'#94a3b8'}}>Invoiced qty: {l.invQty}{l.hasSizes?'':' · no size breakdown on the sales order'}</div>
+                      </div>
+                      {l.hasSizes
+                        ?<div style={{fontSize:12,fontWeight:700,color:units>0?'#166534':'#94a3b8'}}>{units} shipping</div>
+                        :<div style={{display:'flex',alignItems:'center',gap:6}}>
+                          <span style={{fontSize:11,color:'#64748b'}}>Qty</span>
+                          <input className="form-input" type="number" min="0" value={l.qty} disabled={!l.include}
+                            onChange={e=>upLine(i,{qty:Math.max(0,safeNum(e.target.value))})} style={{width:70,padding:'3px 6px',fontSize:12,textAlign:'center'}}/>
+                        </div>}
+                    </div>
+                    {l.hasSizes&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,paddingLeft:26}}>
+                      {orderedSizeKeys(Object.keys(l.sizes)).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                        <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>{sz}</div>
+                        <input className="form-input" type="number" min="0" value={l.sizes[sz]} disabled={!l.include}
+                          onChange={e=>upSize(i,sz,e.target.value)} style={{width:52,padding:'3px 4px',fontSize:12,textAlign:'center'}}/>
+                      </div>)}
+                    </div>}
+                  </div>})}
+                {psLines.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:12}}>No line items on this invoice</div>}
+              </div>
+              <div style={{marginTop:12}}>
+                <label className="form-label">Notes on the slip</label>
+                <textarea className="form-input" rows={2} value={packSlip.notes} placeholder="Leave blank for the standard inspect-on-receipt note"
+                  onChange={e=>setPackSlip(s=>({...s,notes:e.target.value}))} style={{fontSize:12}}/>
+              </div>
+            </div>
+            <div className="modal-footer" style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#166534',marginRight:'auto'}}>{totalUnits} unit{totalUnits===1?'':'s'} on this slip</div>
+              <button className="btn btn-secondary" onClick={()=>setPackSlip(null)}>Cancel</button>
+              <button className="btn btn-secondary" disabled={totalUnits===0}
+                onClick={()=>{printDoc(buildPackSlipOpts(packSlip));setPackSlip(null)}}>Print</button>
+              <button className="btn btn-primary" style={{background:'#166534'}} disabled={totalUnits===0}
+                onClick={async()=>{
+                  try{await downloadDoc(buildPackSlipOpts(packSlip),'Packing-Slip-'+inv.id);setPackSlip(null)}
+                  catch(err){console.warn('Packing slip PDF failed:',err);nf('Could not generate the packing slip PDF','error')}
+                }}>📥 Download PDF</button>
+            </div>
+          </div></div>})()}
 
         {/* ═══ SPLIT INVOICE MODAL ═══ */}
         {splitModal&&(()=>{
