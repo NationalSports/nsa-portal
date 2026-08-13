@@ -27,7 +27,7 @@
 
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,7 +35,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SELF_TEST = process.argv.includes('--self-test');
 const CDP_PORT = Number(process.env.CAPTURE_CDP_PORT || 9222);
 const MOCK_PORT = 4601;
-const CHROMIUM = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
+// Browser binary: an explicit CHROMIUM_PATH wins, then a preinstalled Linux CI browser if it
+// happens to exist, else undefined so Playwright uses its own bundled Chromium (the normal case on
+// the macOS worker box — hardcoding the Linux path made this unrunnable there).
+const CHROMIUM = process.env.CHROMIUM_PATH
+  || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined);
 
 // Anything that could commit an order. Evaluated against the full URL, case-insensitive.
 const DENY = /checkout|place_?order|submit_?order|\/submit\b|payment|purchase|confirm_?order/i;
@@ -148,9 +152,13 @@ function writeSummary() {
 }
 
 const browser = await chromium.launch({
-  executablePath: CHROMIUM,
+  ...(CHROMIUM ? { executablePath: CHROMIUM } : {}),
   headless: SELF_TEST,// a real run stays headed so a human can clear SSO/MFA
   args: ['--remote-debugging-port=' + CDP_PORT],
+}).catch((e) => {
+  console.error('[capture] could not launch Chromium: ' + e.message);
+  console.error('[capture] if Playwright has no browser installed, run:  npx playwright install chromium');
+  process.exit(1);
 });
 const cdp = await chromium.connectOverCDP('http://127.0.0.1:' + CDP_PORT);
 for (const ctx of cdp.contexts()) {
