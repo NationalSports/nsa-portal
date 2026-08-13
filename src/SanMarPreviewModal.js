@@ -8,7 +8,7 @@
 // exact color+size match and never guesses, so an unmatched line stays blocked and
 // the rep falls back to manual ordering rather than risk shipping the wrong item.
 import React, { useEffect, useMemo, useState } from 'react';
-import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
+import { buildSanMarPOPayload, buildSanMarPOSoap, buildSanMarLineItems, SANMAR_PO_ENDPOINTS } from './sanmarPO';
 import { sanmarSubmitPO, sanmarResolvePartIds, sanmarGetWarehouseStock } from './vendorApis';
 import WarehouseChips, {
   rankWarehouses, pickConsolidatedWarehouse, warehouseKey, warehouseCity,
@@ -117,18 +117,28 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     return effectiveShip;
   }, [shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
 
+  // Base lines (no network) — built WITHOUT the ship-to, and memoized separately from the
+  // payload below. Lines don't vary by destination, but folding them into a ship-dependent
+  // memo re-fired the partId resolver on every keystroke in the address editor AND the
+  // inline deco-address fields (owner 2026-08-13: the same chain in SSOrderModal blanked
+  // every matched SKU when the ship-to was edited).
+  const baseLines = useMemo(() => buildSanMarLineItems(batchPOs).lines, [batchPOs]);
+
+  // The payload still tracks the ship-to (that's the point of editing it) and still builds
+  // its own copy of the lines, so its _warnings stay populated. Rebuilding it per keystroke
+  // is pure CPU — what mattered is that the resolver chain above no longer hangs off it.
   const base = useMemo(() => {
     const effectiveShip = shipOverride || autoShip;
     const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: effectiveShip });
-    return { payload: p, baseLines: p.PO.lineItems, totals: p._summary, effectiveShip };
+    return { payload: p, totals: p._summary, effectiveShip };
   }, [batchPOs, poNumber, autoShip, shipOverride]);
 
   const ship = base.effectiveShip;
 
   // Lines still missing a partId after the base build — these need a live lookup.
   const missing = useMemo(
-    () => base.baseLines.filter(l => !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
-    [base.baseLines]
+    () => baseLines.filter(l => !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
+    [baseLines]
   );
 
   useEffect(() => {
@@ -136,7 +146,9 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     if (!missing.length) { setResolving(false); return; }
     setResolving(true); setResolveErr('');
     sanmarResolvePartIds(missing)
-      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedParts(resolved || {}); setCandidates(candidates || {}); })
+      // Merge, never replace: sanmarResolvePartIds swallows per-style API failures and
+      // returns an empty map, so a degraded re-run must not wipe partIds already matched.
+      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedParts(prev => ({ ...prev, ...(resolved || {}) })); setCandidates(prev => ({ ...prev, ...(candidates || {}) })); })
       .catch(e => { if (!cancelled) setResolveErr(e.message || 'Part ID lookup failed'); })
       .finally(() => { if (!cancelled) setResolving(false); });
     return () => { cancelled = true; };
@@ -145,8 +157,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // Overlay resolved partIds onto the lines, then recompute warnings + the payload
   // that will actually be submitted.
   const lines = useMemo(
-    () => base.baseLines.map(l => (l.partId ? l : { ...l, partId: resolvedParts[l.lineNumber] || '' })),
-    [base.baseLines, resolvedParts]
+    () => baseLines.map(l => (l.partId ? l : { ...l, partId: resolvedParts[l.lineNumber] || '' })),
+    [baseLines, resolvedParts]
   );
   const warnings = useMemo(
     () => lines.filter(l => !l.partId).map(l => `Line ${l.lineNumber} (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) is missing a SanMar partId / Unique_Key`),
