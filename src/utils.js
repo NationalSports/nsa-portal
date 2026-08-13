@@ -374,6 +374,15 @@ export const _brevoSmsSender='NSA';
 export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ── Document/print helpers ──
+// School (customer) PO number for a packing slip's info row. Takes one order or a list —
+// a multi-SO slip shows every distinct PO so the school can match the shipment against its
+// own paperwork. Returns [] when no PO was entered, so it spreads straight into infoBoxes.
+export const schoolPOBoxes=(orders)=>{
+  const list=(Array.isArray(orders)?orders:[orders]).filter(Boolean);
+  const nums=[...new Set(list.map(o=>String(o.po_number||'').trim()).filter(Boolean))];
+  if(!nums.length)return[];
+  return[{label:'School PO #',value:'<span style="font-family:monospace;font-weight:700">'+nums.join(', ')+'</span>'}];
+};
 export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo,appendixHtml,repeatInfoHeader,_runHeaderCss})=>{
   const _NSA={..._NSA_CONST,...(companyInfo||{})};
   let h='';

@@ -28,7 +28,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
+import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
@@ -11857,6 +11857,7 @@ export default function App(){
         {label:'Ship To',value:c?.name||'—',sub:shipAddrSub},
         {label:'Ship Date',value:(shipment?.ship_date)||new Date().toLocaleDateString(),sub:carrier||undefined},
         {label:'Sales Order',value:so.id},
+        ...schoolPOBoxes(so),
         ...(shipment?.tracking_number?[{label:'Tracking',value:shipment.tracking_number}]:[]),
         ...(so.memo?[{label:'Memo',value:so.memo}]:[]),
       ],
@@ -18841,6 +18842,7 @@ export default function App(){
         infoBoxes:[
           {label:'Ship To',value:grp.cName,sub:shipAddrSub},
           {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
+          ...schoolPOBoxes(soIds.map(id=>grp.soMap[id])),
         ],
         tables:[{
           title:'Items in this Shipment',
@@ -20384,6 +20386,7 @@ export default function App(){
                       infoBoxes:[
                         {label:'Ship To',value:shipModal.grp.cName,sub:boxAddrSub},
                         {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'ups').toUpperCase()},
+                        ...schoolPOBoxes(Object.values(shipModal.soMap||shipModal.grp.soMap||{})),
                         ...(box.tracking_number?[{label:'Tracking',value:box.tracking_number}]:[]),
                       ],
                       tables:[{
