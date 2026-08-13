@@ -5,7 +5,7 @@
 import React from 'react';
 import { useAppData } from './AppContext';
 import { D_V, PRINT_CSS } from './constants';
-import { supabase, _dbSaveInvoice } from './lib/dbEngine';
+import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo } from './components';
@@ -31,6 +31,24 @@ export default function InvoicesPage(){
       return[...Object.entries(si.checked||{}).filter(([,v])=>v).map(([k])=>k),...(si.customEmails||[])].join('|')},[invSendModalDirect]);
     React.useEffect(()=>{if(!_siToKey)return;
       setInvSendModalDirect(s=>s?{...s,msg:withGreeting(s.msg,greetLine(_siToKey.split('|'),s.sendContacts))}:s)},[_siToKey,setInvSendModalDirect]);
+
+    // NetSuite-imported (_hist) invoices load header-only — their lines live in
+    // customer_invoice_lines. Fetch them when one is opened so the detail page shows the real
+    // items instead of "No line items recorded" (same lazy load the coach-portal view does).
+    React.useEffect(()=>{
+      const iv=viewInvoice;
+      if(!iv||!iv._hist||!iv.netsuite_internal_id||iv.line_items?.length)return;
+      let cancelled=false;
+      (async()=>{
+        const rows=await _fetchHistInvoiceLines(iv.netsuite_internal_id);
+        if(cancelled||!rows||!rows.length)return;
+        // This table renders `desc`; the NetSuite line carries the item code and its description
+        // separately, so join them the way the printed invoice reads.
+        const line_items=rows.map(l=>({...l,desc:[l.sku,l.name].filter(Boolean).join(' ')}));
+        setViewInvoice(prev=>prev&&prev.netsuite_internal_id===iv.netsuite_internal_id?{...prev,line_items}:prev);
+      })();
+      return()=>{cancelled=true};
+    },[viewInvoice,setViewInvoice]);
 
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
@@ -91,7 +109,10 @@ export default function InvoicesPage(){
 
     // ═══ INVOICE DETAIL PAGE ═══
     if(viewInvoice){
-      const inv=invs.find(i=>i.id===viewInvoice.id)||viewInvoice;
+      // A NetSuite (_hist) invoice is keyed by its document number, which can collide with a row in
+      // the portal `invoices` table — never let that row stand in for it here (INV62383 rendered as
+      // $0 with no lines because a header-only shell had been minted under the same number).
+      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||viewInvoice);
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
       // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
@@ -252,6 +273,10 @@ export default function InvoicesPage(){
             {inv.status==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&ic&&!ic.tax_exempt&&<button className="btn btn-sm" style={{background:'#1e40af',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>fileTaxCloud(inv)} title="Report this paid invoice to TaxCloud for state filing (1 manual call)">File to TaxCloud</button>}
             {inv.tc_reported&&<span style={{fontSize:12,padding:'6px 10px',color:'#166534',fontWeight:600}}>✓ Filed to TaxCloud{inv.tc_tax?' ($'+Number(inv.tc_tax).toLocaleString()+')':''}</span>}
+            {inv._hist&&<span style={{fontSize:12,padding:'6px 10px',color:'#475569',fontWeight:600}} title="Imported from NetSuite — line items and totals live there, so this record is read-only in the portal">NetSuite invoice — read-only</span>}
+            {/* Portal-only actions. A NetSuite invoice carries no line items here, so editing it
+                writes an empty shell, and printing/sending it would show the customer a $0 document. */}
+            {!inv._hist&&<>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
@@ -307,6 +332,7 @@ export default function InvoicesPage(){
               onClick={async()=>{
                 try{await downloadInvoicePdf();}catch(err){console.warn('PDF download failed:',err)}
               }}>📥 Download PDF</button>
+            </>}
             {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
               onClick={()=>{const purl='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag);navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
