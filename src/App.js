@@ -3508,7 +3508,9 @@ export default function App(){
         if(r.kind==='item'){
           if(_same(out[r.idx],r))continue;// already present (raced save / second sync pass)
           if(out[r.idx]||r.idx!==out.length||!r.item)return s;// state moved on — bail untouched
-          out.push(r.item);applied++;continue;
+          // Copy rather than sharing the object: r.item is the very object still sitting in the save's
+          // payload array, and the engine mutates payload items in place on later saves.
+          out.push({...r.item});applied++;continue;
         }
         const it=out[r.idx];
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state

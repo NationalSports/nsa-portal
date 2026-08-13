@@ -1642,16 +1642,24 @@ const _dbSaveSOInner = async (so) => {
         // Pick lines need no special handling: the pick-restore pass below re-attaches them once the item
         // is back in `items`. Fails closed — if the decoration read errors we block as before rather than
         // re-inserting the item without its decorations.
-        const _revivedByOldId=new Map();let _reviveReadFailed=false;
+        // Memo key is the item_index, not the row id: an interrupted save swap can leave two DB rows for
+        // the SAME line (the duplicates the loader's item_index dedup collapses), and both carry PO rows.
+        // A sku'd line is safe either way — once the first is revived _matchRestoreItem finds it for the
+        // second — but a custom, sku-less line can't be matched, so keying on the row id would revive it
+        // twice and duplicate the garment on the order.
+        const _revivedByKey=new Map(),_revivedLabels=[];let _reviveReadFailed=false;
+        const _reviveKey=oi=>oi.item_index!=null?('ix:'+oi.item_index):('id:'+oi.id);
         const _reviveItem=async oi=>{
-          if(_revivedByOldId.has(oi.id))return _revivedByOldId.get(oi.id);
+          const _k=_reviveKey(oi);
+          if(_revivedByKey.has(_k))return _revivedByKey.get(_k);
           if(_reviveReadFailed)return -1;
           const{data:_decoRows,error:_decoErr}=await supabase.from('so_item_decorations').select('*').eq('so_item_id',oi.id);
           if(_decoErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— decoration read failed:',_decoErr.message);return -1}
           const decorations=(_decoRows||[]).slice().sort((a,b)=>(a.deco_index||0)-(b.deco_index||0)).map(d=>{const{id:_di,so_item_id:_ds,deco_index:_dx,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
           const{id:_oid,so_id:_osid,item_index:_oidx,...itemRest}=oi;
           const revived={...itemRest,decorations,po_lines:[],pick_lines:[]};
-          const idx=items.length;items.push(revived);_revivedByOldId.set(oi.id,idx);_revived++;
+          const idx=items.length;items.push(revived);_revivedByKey.set(_k,idx);_revived++;
+          _revivedLabels.push([revived.sku,revived.color].filter(Boolean).join(' ')||('item '+oi.id));
           _restoredLines.push({idx,sku:revived.sku||null,color:revived.color||null,kind:'item',item:revived});
           return idx;
         };
@@ -1699,7 +1707,7 @@ const _dbSaveSOInner = async (so) => {
           _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po',line:recovered});
         }
         if(_revived){
-          const _revLbl=[..._revivedByOldId.keys()].map(id=>{const r=_oldById.get(id);return[r?.sku,r?.color].filter(Boolean).join(' ')||('item '+id)}).join(', ');
+          const _revLbl=_revivedLabels.join(', ');
           console.warn('[DB] Restored',_revived,'item(s) to',so.id,'that vanished from this save while still holding PO line(s):',_revLbl);
           if(_dataLossAlert)_dataLossAlert({kind:'item_restored',soId:so.id,restored:_revived,reason:'item(s) missing from save payload but still carrying DB PO line(s), re-added with their decorations: '+_revLbl});
         }
@@ -1710,7 +1718,10 @@ const _dbSaveSOInner = async (so) => {
           // the normal outcome now, so reaching here means the DB read itself is unhealthy: a reload
           // is genuinely the right advice, and the retry loop must not spin on it.
           console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items'+(_reviveReadFailed?' (item rebuild unavailable — decoration read failed)':'')+(_histBlocked?' ('+_histBlocked+' with billed/received history on removed item(s))':''));
-          if(_dbNotify)_dbNotify(_histBlocked?'Save blocked — an item with billed/received PO history is missing from this order. Please reload the page; to remove it, clear its billing/receiving first.':'Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
+          // The billed/received wording only fits a genuine history conflict. When we got here because the
+          // rebuild's decoration read failed, "clear its billing/receiving first" is wrong advice — the rep
+          // has nothing to clear — so use the generic message, which still points at the right action (reload).
+          if(_dbNotify)_dbNotify(_histBlocked&&!_reviveReadFailed?'Save blocked — an item with billed/received PO history is missing from this order. Please reload the page; to remove it, clear its billing/receiving first.':'Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'+(_histBlocked?' ('+_histBlocked+' billed/received on removed item(s))':'')});
           // TERMINAL for auto-retry: the unmatched PO line lives on an item this tab's copy doesn't
           // have, so retrying the identical payload re-fails deterministically. Route to the conflict
