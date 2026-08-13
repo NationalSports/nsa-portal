@@ -268,6 +268,30 @@ export const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormDa
 export const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 export const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 export const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
+
+/**
+ * Collapse re-uploaded copies of the same mockup.
+ *
+ * A re-uploaded proof lands under a fresh URL but keeps its original filename, so a slot ends up
+ * holding the same image two or three times (SO-1605's backpack: `5159512|Black|names` carries two
+ * copies of "Coronado FC · SO-1605 · heat press · Other-01.jpg").
+ *
+ * MUST be applied PER SLOT, never across a garment's whole mockup set. Filenames are auto-generated
+ * from customer + SO + method + POSITION, so two decorations at the same position — the backpack's
+ * patch and its names, both "Other" — produce byte-identical filenames for genuinely different
+ * proofs. Deduping across slots would silently drop one of them.
+ */
+export const dedupeMockDupes = (arr) => {
+  const out = []; const seen = new Set();
+  (Array.isArray(arr)?arr:[]).forEach((f) => {
+    if (!f) return;
+    const nm = String(fileDisplayName(f) || '').trim().toLowerCase();
+    if (nm) { if (seen.has(nm)) return; seen.add(nm); }
+    out.push(f);
+  });
+  return out;
+};
+
 export const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 export const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;if(u&&typeof u==='string'&&/(?:assetly|assets)\.ordermygear\.com\//.test(u))return true;return false};

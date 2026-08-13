@@ -48,7 +48,8 @@
     "test:e2e": "npx playwright test",
     "test:e2e:report": "npx playwright test --reporter=html",
     "test:e2e:loop": "node scripts/run-e2e-loop.js",
-    "check:schema-drift": "node scripts/check-schema-drift.js"
+    "check:schema-drift": "node scripts/check-schema-drift.js",
+    "lint:undef": "NODE_ENV=production eslint --no-eslintrc -c .eslintrc.undef.json 'src/**/*.js'"
   },
   "browserslist": {
     "production": [
