@@ -646,6 +646,27 @@ export const mockSlotKeys = (base, decos) => {
 };
 
 /**
+ * How many mockups a garment has in its numbers / names slots — the proof of the BACK.
+ * Keys follow mockSlotKeys: `sku|color|numbers` / `|names`, plus the `_<n>` / `_b` variants.
+ * Counted per kind so a surface can say WHICH side has no proof on file.
+ */
+export const nnMockCounts = (artFiles, sku, color) => {
+  const base = mockLinkKeyOf(sku, color);
+  let numbers = 0; let names = 0;
+  safeArr(artFiles).forEach((a) => {
+    const m = safeObj(a?.item_mockups);
+    Object.keys(m).forEach((k) => {
+      if (!k.startsWith(base + '|')) return;
+      const n = safeArr(m[k]).filter(Boolean).length;
+      if (!n) return;
+      if (/\|numbers(_\d+)?(_b)?$/.test(k)) numbers += n;
+      else if (/\|names(_\d+)?(_b)?$/.test(k)) names += n;
+    });
+  });
+  return { numbers, names };
+};
+
+/**
  * The mockup files one slot should DISPLAY.
  *
  * Slot keys are positional: the first art decoration on a garment owns the bare `sku|color` key

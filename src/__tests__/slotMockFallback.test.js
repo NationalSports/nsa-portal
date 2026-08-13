@@ -79,3 +79,59 @@ describe('slotMockFiles — the fallback must not leak between slots', () => {
     expect(slotMockFiles({ key: 'k', kind: 'art', primary: false }, [], 'X', 'Y')).toEqual([]);
   });
 });
+
+// ── Re-uploaded copies ────────────────────────────────────────────────────────────────────────
+import { nnMockCounts } from '../safeHelpers';
+import { dedupeMockDupes } from '../utils';
+
+describe('dedupeMockDupes — SO-1605’s backpack rendered three identical boxes', () => {
+  // Real shape: the patch slot holds one proof, the names slot holds the SAME proof twice (a
+  // re-upload lands under a fresh URL but keeps its filename). Three boxes, one picture.
+  const PATCH_SLOT = [{ url: 'a1', name: 'Coronado FC · SO-1605 · heat press · Other-01.jpg' }];
+  const NAMES_SLOT = [
+    { url: 'b1', name: 'Coronado FC · SO-1605 · heat press · Other-01.jpg' },
+    { url: 'b2', name: 'Coronado FC · SO-1605 · heat press · Other-01.jpg' },
+  ];
+
+  test('a slot collapses its own re-uploads', () => {
+    expect(dedupeMockDupes(NAMES_SLOT).map((f) => f.url)).toEqual(['b1']);
+  });
+
+  test('per-slot deduping leaves the patch and the names proof as two boxes, not one or three', () => {
+    const shown = [...dedupeMockDupes(PATCH_SLOT), ...dedupeMockDupes(NAMES_SLOT)];
+    expect(shown.map((f) => f.url)).toEqual(['a1', 'b1']);
+  });
+
+  test('deduping ACROSS slots would wrongly drop the back proof', () => {
+    // Filenames are generated from the position, and the backpack's patch and names are both
+    // "Other" — so a global collapse loses a genuinely different proof. Guard against a future
+    // refactor moving the dedupe up a level.
+    expect(dedupeMockDupes([...PATCH_SLOT, ...NAMES_SLOT])).toHaveLength(1);
+  });
+
+  test('files with no resolvable name are left alone', () => {
+    expect(dedupeMockDupes([{ url: 'x' }, { url: 'y' }])).toHaveLength(2);
+  });
+});
+
+describe('nnMockCounts — which side has no proof on file', () => {
+  const backpack = [{ id: 'af-bp', item_mockups: { '5159512|Black': [{ url: 'a' }], '5159512|Black|names': [{ url: 'b' }] } }];
+  const jersey = [{ id: 'af-j', item_mockups: { 'JJ0055|Dark Green/White': [{ url: 'front' }] } }];
+
+  test('SO-1605 backpack: the names proof is on file', () => {
+    expect(nnMockCounts(backpack, '5159512', 'Black')).toEqual({ numbers: 0, names: 1 });
+  });
+
+  test('SO-1605 jersey: a front mock, no back proof at all', () => {
+    expect(nnMockCounts(jersey, 'JJ0055', 'Dark Green/White')).toEqual({ numbers: 0, names: 0 });
+  });
+
+  test('the base art key is never miscounted as a back proof', () => {
+    expect(nnMockCounts(backpack, '5159512', 'Black').numbers).toBe(0);
+  });
+
+  test('reversible and repeated slot variants count', () => {
+    const rev = [{ id: 'a', item_mockups: { 'X|Y|numbers': [{ url: '1' }], 'X|Y|numbers_b': [{ url: '2' }], 'X|Y|names_1': [{ url: '3' }] } }];
+    expect(nnMockCounts(rev, 'X', 'Y')).toEqual({ numbers: 2, names: 1 });
+  });
+});
