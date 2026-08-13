@@ -1,0 +1,12 @@
+{
+  "root": true,
+  "noInlineConfig": true,
+  "parser": "@babel/eslint-parser",
+  "parserOptions": {
+    "requireConfigFile": false,
+    "babelOptions": { "presets": ["babel-preset-react-app"] },
+    "ecmaVersion": 2022, "sourceType": "module", "ecmaFeatures": { "jsx": true }
+  },
+  "env": { "browser": true, "es2022": true, "node": true, "jest": true },
+  "rules": { "no-undef": "error" }
+}
