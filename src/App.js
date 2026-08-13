@@ -1745,7 +1745,7 @@ function dP(d,q,artFiles,cq){
 export { dP, rQ, parseDate, _decoUnitCostComb };
 // InvoicesPage additionally shares these (RowLink/_buildTabHref are the deep-link row
 // helpers; the brevo pair and the invoice-PDF builder move with a later comms/pdf pass).
-export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms };
+export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms };
 // Exported for its unit test — the dashboard's inline art preview resolves what a rep sees
 // before opening the order, so its scoping (mock vs. raw design art) is worth pinning down.
 export { dashArtShots };
@@ -1757,6 +1757,22 @@ export { dashArtShots };
 // stays self-consistent; each caller multiplies by its own eq/qty. Manual links only; sell is
 // never combined (customer price / invoices stay per-order unless the rep edits sell).
 const _decoUnitCostComb=(d,q,af,localCq,comb)=>{const cc=(d&&d.kind==='art'&&d.art_file_id&&comb&&comb[d.art_file_id]>localCq)?comb[d.art_file_id]:localCq;return safeNum(dP(d,q,af,cc).cost)};
+
+// Match each invoice line back to its SO item so callers can re-attach whatever only the SO
+// knows — the size breakdown, decoration/number detail. Try the stored line key first, then
+// SKU, then a description prefix (mirrors the on-screen invoice view); matched SO items are
+// consumed so duplicate SKUs map 1:1. Returns one SO index per line (-1 when unmatched).
+function matchInvoiceLinesToSo(lineItems, soItems){
+  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
+  const usedSo=new Set();
+  return (lineItems||[]).map(li=>{
+    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
+    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
+    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
+    if(i>=0){usedSo.add(i);return i}
+    return -1;
+  });
+}
 
 // Build the line-item rows for an invoice PDF/print document. The invoice's own stored
 // line_items are the source of truth for price/qty so any per-line edits or overrides
@@ -1770,7 +1786,6 @@ function buildInvoicePdfRows(inv, so, fmt){
   const soArt=so?safeArt(so):[];
   const soItems=so?safeItems(so):[];
   const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
-  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
   let lineItems=(inv&&inv.line_items)||[];
   if(!lineItems.length&&so){
     lineItems=soItems.map((it,idx)=>{
@@ -1779,21 +1794,11 @@ function buildInvoicePdfRows(inv, so, fmt){
       return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)};
     }).filter(Boolean);
   }
-  // Match each invoice line back to its SO item so we can re-attach the size breakdown and
-  // decoration/number detail. Try the stored line key first, then SKU, then a description prefix
-  // (mirrors the on-screen invoice view); consume matched SO items so duplicate SKUs map 1:1.
-  const usedSo=new Set();
-  const matchSoIdx=(li)=>{
-    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
-    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
-    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
-    if(i>=0){usedSo.add(i);return i}
-    return -1;
-  };
+  const soIdxByLine=matchInvoiceLinesToSo(lineItems,soItems);
   const rows=[];let subtotal=0;
-  lineItems.forEach(li=>{
+  lineItems.forEach((li,liIdx)=>{
     const qty=safeNum(li.qty);subtotal+=safeNum(li.amount);
-    const soIdx=matchSoIdx(li);const soIt=soIdx>=0?soItems[soIdx]:null;
+    const soIdx=soIdxByLine[liIdx];const soIt=soIdx>=0?soItems[soIdx]:null;
     const sku=li._sku||soIt?.sku||'';
     const nm=soIt?.name||li._name;const color=soIt?.color||li._color;
     let itemName=nm?(nm+(color?' - '+color:'')):(li.desc||'');
