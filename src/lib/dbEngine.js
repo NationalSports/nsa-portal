@@ -251,6 +251,24 @@ const _fetchTxnItemHistory=async(item,limit=1500)=>{
   }catch(e){console.warn('[DB] txn_item_history RPC error:',e.message);return null}
 };
 
+// ─── Line items for one NetSuite-imported (_hist) invoice ───
+// hist invoices load header-only: their lines live in customer_invoice_lines, which is far too
+// large to pull with the rest of the app state. Every screen that renders a hist invoice's items
+// fetches them on open through here. Returns [] when the invoice has no lines on file, so a caller
+// can tell "none recorded" from a failed fetch (null).
+const _fetchHistInvoiceLines=async(netsuiteInternalId)=>{
+  if(!supabase||!netsuiteInternalId)return null;
+  try{
+    const{data,error}=await supabase
+      .from('customer_invoice_lines')
+      .select('line_seq,item,description,line_memo,quantity,rate,amount')
+      .eq('netsuite_internal_id',netsuiteInternalId)
+      .order('line_seq',{ascending:true});
+    if(error){console.warn('[DB] customer_invoice_lines fetch failed:',error.message);return null}
+    return(data||[]).map(l=>({sku:l.item||'',name:l.line_memo||l.description||'',qty:l.quantity,rate:l.rate,amount:l.amount}));
+  }catch(e){console.warn('[DB] customer_invoice_lines fetch error:',e.message);return null}
+};
+
 // ─── Server-side customer search (paginated, leverages DB trigram indexes) ───
 const _searchCustomersServer=async(query,repId,page=0,pageSize=50)=>{
   if(!supabase)return null;
@@ -2235,6 +2253,19 @@ const _invCols=['id','customer_id','so_id','date','due_date','total','paid','mem
 const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','po_number','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
+  // NETSUITE GUARD (2026-08-12, INV62383). hist_invoices are read-only NetSuite records, keyed by
+  // their DOCUMENT NUMBER ("INV62383") rather than a portal id ("INV-62383"). Writing one here
+  // mints a SECOND invoice under that number in the portal table — header-only, $0, no lines —
+  // which then shadows the real record everywhere the UI looks an invoice up by id: the detail
+  // page's `invs.find(...)` renders the empty shell, and deleteInvoice — which checks histInvs
+  // first — would delete the NetSuite row while the shell survives. Three such rows (INV62383,
+  // INV63316, INV63043) were minted by the invoice detail page's Edit Invoice modal, which had no
+  // idea the invoice it was editing was a NetSuite one. Refuse the write so no path can mint more.
+  if(inv&&(inv._hist||inv.netsuite_internal_id)){
+    console.warn('[DB] Refusing to write NetSuite invoice',inv.id,'into the portal invoices table — it is read-only here.');
+    if(_dbNotify)_dbNotify(inv.id+' is a NetSuite invoice — it can only be edited in NetSuite.','error');
+    return false;
+  }
   return _dbSavingGuard(async()=>{try{
     // Optimistic concurrency (00180) — same _checkVersion auto-heal the SO/estimate/customer saves
     // use: a numeric return means another session saved after our copy loaded; adopt the server
@@ -3324,6 +3355,7 @@ export {
   _searchProductsServer,
   _searchTxnItemsServer,
   _fetchTxnItemHistory,
+  _fetchHistInvoiceLines,
   _searchCustomersServer,
   _sbSignIn,
   _sbSignUp,

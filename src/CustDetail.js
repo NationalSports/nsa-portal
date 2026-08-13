@@ -13,6 +13,7 @@ import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
+import { _fetchHistInvoiceLines } from './lib/dbEngine';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -123,16 +124,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     if(!inv||!inv._hist||!supabase||!inv.netsuite_internal_id||inv.line_items?.length)return;
     let cancelled=false;
     (async()=>{
-      try{
-        const{data,error}=await supabase
-          .from('customer_invoice_lines')
-          .select('line_seq,item,description,line_memo,quantity,rate,amount')
-          .eq('netsuite_internal_id',inv.netsuite_internal_id)
-          .order('line_seq',{ascending:true});
-        if(cancelled||error||!data||!data.length)return;
-        const line_items=data.map(l=>({sku:l.item||'',name:l.line_memo||l.description||'',qty:l.quantity,rate:l.rate,amount:l.amount}));
-        setPortalInvView(prev=>prev&&prev.netsuite_internal_id===inv.netsuite_internal_id?{...prev,line_items}:prev);
-      }catch{/* non-fatal — leave the invoice without line detail */}
+      const line_items=await _fetchHistInvoiceLines(inv.netsuite_internal_id);
+      if(cancelled||!line_items||!line_items.length)return;// non-fatal — leave the invoice without line detail
+      setPortalInvView(prev=>prev&&prev.netsuite_internal_id===inv.netsuite_internal_id?{...prev,line_items}:prev);
     })();
     return()=>{cancelled=true};
   },[portalInvView]);
