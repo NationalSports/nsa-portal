@@ -7,7 +7,7 @@
 // items added any way. Credentials (logonId/password) are injected server-side by
 // momentec-proxy and never appear in this payload.
 import React, { useEffect, useMemo, useState } from 'react';
-import { buildMomentecOrderPayload } from './momentecOrder';
+import { buildMomentecOrderPayload, buildMomentecOrderLines } from './momentecOrder';
 import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails } from './vendorApis';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
 import { NSA, NSA_WAREHOUSE } from './constants';
@@ -55,8 +55,11 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   }, [shipOverride, autoShip]);
   const env = live ? 'prod' : 'stage';
 
-  // Base lines (no network) — sku comes from the stamped _mt_skus when present.
-  const baseLines = useMemo(() => buildMomentecOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
+  // Base lines (no network) — sku comes from the stamped _mt_skus when present. Built
+  // WITHOUT the ship-to: lines don't vary by destination, and rebuilding them per address
+  // keystroke re-fired the SKU resolver below on every character (see SSOrderModal — the
+  // same chain there blanked already-matched SKUs when the ship-to was edited).
+  const baseLines = useMemo(() => buildMomentecOrderLines(batchPOs).lines, [batchPOs]);
   const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
 
   // Resolve any line without a stamped SKU live from /v2/Style.
@@ -65,7 +68,8 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
     if (!missing.length) { setResolving(false); return; }
     setResolving(true); setResolveErr('');
     momentecResolveSkus(missing)
-      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(resolved || {}); setCandidates(candidates || {}); })
+      // Merge, never replace: a degraded re-run must not wipe SKUs that already matched.
+      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(prev => ({ ...prev, ...(resolved || {}) })); setCandidates(prev => ({ ...prev, ...(candidates || {}) })); })
       .catch(e => { if (!cancelled) setResolveErr(e.message || 'SKU lookup failed'); })
       .finally(() => { if (!cancelled) setResolving(false); });
     return () => { cancelled = true; };

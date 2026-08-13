@@ -3,7 +3,7 @@
 // creates and cancels (nothing ships), so it's safe to validate before going live.
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useState } from 'react';
-import { buildSSOrderPayload } from './ssOrder';
+import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
@@ -54,8 +54,12 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // display only; a lookup failure just leaves the column blank, never blocks.
   const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
 
-  // Base lines (no network) — flatten the batch.
-  const baseLines = useMemo(() => buildSSOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
+  // Base lines (no network) — flatten the batch. Deliberately built WITHOUT the ship-to:
+  // lines don't vary by destination, and rebuilding them per address keystroke re-fired the
+  // SKU resolver below on every character (owner 2026-08-13: editing the ship-to blanked
+  // every already-matched SKU, because the burst of lookups tripped S&S's rate limit and
+  // ssResolveSkus reports a failed lookup as "no match").
+  const baseLines = useMemo(() => buildSSOrderLines(batchPOs).lines, [batchPOs]);
   const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
 
   useEffect(() => {
@@ -63,7 +67,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     if (!missing.length) { setResolving(false); return; }
     setResolving(true); setResolveErr('');
     ssResolveSkus(missing)
-      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(resolved || {}); setCandidates(candidates || {}); })
+      // Merge, never replace: ssResolveSkus swallows per-style API failures and returns an
+      // empty map, so a degraded re-run must not wipe SKUs that already matched.
+      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(prev => ({ ...prev, ...(resolved || {}) })); setCandidates(prev => ({ ...prev, ...(candidates || {}) })); })
       .catch(e => { if (!cancelled) setResolveErr(e.message || 'SKU lookup failed'); })
       .finally(() => { if (!cancelled) setResolving(false); });
     return () => { cancelled = true; };
