@@ -2213,26 +2213,66 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       options: opts, active: true, sort_order: base++, ...(groupId ? { variant_group_id: groupId } : {}) });
     const groups = new Map();
     for (const p of list) { const k = String(p.name || p.sku || p.id).trim().toLowerCase(); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
-    let added = 0;
+    // Fold into the card this store ALREADY carries for the same style, the way addSingle
+    // does. Grouping used to be batch-local, so a style whose colors arrived in two trips
+    // through the picker (or one color at a time) left the later ones as their own cards
+    // and the storefront listed one garment three times — while the art tab, which groups
+    // by name, showed it once. Keyed by styleKey() so adidas "… ROYBLU/WHITE" siblings
+    // match too; the explicit "copy to a new item" action still forces a separate card.
+    const _cat = detail?.catalog || [];
+    const _stock = detail?.stockByWp || {};
+    const _styleOf = (nm) => styleKey(String(nm || '')).trim().toUpperCase();
+    const _twinByStyle = new Map();  // styleKey -> the store's lowest-sorted row for that style
+    for (const c of _cat) {
+      if (c.kind === 'bundle') continue;
+      const k = _styleOf(_stock[c.id]?.name || c.display_name || c.sku);
+      if (!k) continue;
+      const cur = _twinByStyle.get(k);
+      if (!cur || (c.sort_order || 0) < (cur.sort_order || 0)) _twinByStyle.set(k, c);
+    }
+    const _groupByStyle = new Map(); // styleKey -> group id resolved during this run
+    const _soloByStyle = new Map();  // styleKey -> row inserted this run that is still standalone
+    let added = 0, cards = 0;
     for (const cols of groups.values()) {
+      const _sk = _styleOf(cols[0].name || cols[0].sku);
+      let groupId = _sk ? _groupByStyle.get(_sk) || null : null;
+      if (!groupId && _sk) {
+        const twin = _twinByStyle.get(_sk);
+        // Promote a previously-standalone twin so both rows share its id as the group key.
+        if (twin) { groupId = twin.variant_group_id || twin.id; if (!twin.variant_group_id) await supabase.from('webstore_products').update({ variant_group_id: twin.id }).eq('id', twin.id); }
+      }
+      if (groupId) {
+        const solo = _soloByStyle.get(_sk);
+        const [rA, rB] = await Promise.all([
+          solo ? supabase.from('webstore_products').update({ variant_group_id: groupId }).eq('id', solo) : Promise.resolve({}),
+          supabase.from('webstore_products').insert(cols.map((p) => mk(p, groupId))),
+        ]);
+        const bad = rA.error || rB.error;
+        if (bad) { flash('Error: ' + bad.message); continue; }
+        _soloByStyle.delete(_sk);
+        added += cols.length;
+        continue;
+      }
+      // First card for this style — create it, then remember it so another batch group of
+      // the same style (adidas bake the color into the name) folds in instead of starting a
+      // second card.
       const [primary, ...rest] = cols;
+      const { data: pr, error: e1 } = await supabase.from('webstore_products').insert(mk(primary, null)).select('id').single();
+      if (e1 || !pr) { flash('Error: ' + (e1?.message || 'insert failed')); continue; }
+      added += 1; cards += 1;
+      if (_sk) { _groupByStyle.set(_sk, pr.id); _soloByStyle.set(_sk, pr.id); }
       if (rest.length) {
-        const { data: pr, error: e1 } = await supabase.from('webstore_products').insert(mk(primary, null)).select('id').single();
-        if (e1 || !pr) { flash('Error: ' + (e1?.message || 'insert failed')); continue; }
         const [r1, r2] = await Promise.all([
           supabase.from('webstore_products').update({ variant_group_id: pr.id }).eq('id', pr.id),
           supabase.from('webstore_products').insert(rest.map((p) => mk(p, pr.id))),
         ]);
         const bad = r1.error || r2.error;
         if (bad) { flash('Error: ' + bad.message); continue; }
-        added += 1 + rest.length;
-      } else {
-        const { error: e0 } = await supabase.from('webstore_products').insert(mk(primary, null));
-        if (e0) { flash('Error: ' + e0.message); continue; }
-        added += 1;
+        _soloByStyle.delete(_sk);
+        added += rest.length;
       }
     }
-    if (added) { flash(`Added ${added} item${added === 1 ? '' : 's'} (${groups.size} card${groups.size === 1 ? '' : 's'})`); loadDetail(sel); }
+    if (added) { flash(`Added ${added} item${added === 1 ? '' : 's'} (${cards} new card${cards === 1 ? '' : 's'})`); loadDetail(sel); }
   }, [sel, detail, wsSettings, flash, loadDetail]);
 
   // Add a fit/gender variant (Adult/Women's/Youth) as an option ON one card. Like
