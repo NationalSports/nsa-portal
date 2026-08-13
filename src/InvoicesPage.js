@@ -245,7 +245,9 @@ export default function InvoicesPage(){
             ...(docShipAddr?[{label:'Ship To',value:docShipToName,sub:docShipAddr}]:[{label:'Ship To',value:docShipToName}]),
             {label:'Ship Date',value:ps.shipDate||new Date().toLocaleDateString()},
             {label:'Invoice',value:inv.id,sub:so?'SO: '+so.id:''},
-            ...(docPoNum?[{label:'PO Number',value:docPoNum}]:[]),
+            // Labelled the way the warehouse packing lists label it, so a school matching the
+            // shipment against its own paperwork sees the same words on either slip.
+            ...(docPoNum?[{label:'School PO #',value:'<span style="font-family:monospace;font-weight:700">'+docPoNum+'</span>'}]:[]),
           ],
           tables:[{title:'Items in this Delivery',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
           notes:(ps.notes||'').trim()||'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
