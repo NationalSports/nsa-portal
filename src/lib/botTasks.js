@@ -83,6 +83,47 @@ export function resolveShipToClient(soId, allOrders, customers) {
   };
 }
 
+// Which record a decorator's address actually comes from: its own saved address,
+// falling back to its linked Vendor record. Returns { dv, lv, src } or null when
+// neither carries one. Shared so the resolver below and the modals' decorator
+// picker can never disagree about which address a decorator has.
+export function decoAddressSource({ decoId, decoVendors, vendors }) {
+  if (!decoId) return null;
+  const dv = (decoVendors || []).find((d) => d.id === decoId);
+  if (!dv) return null;
+  const lv = dv.vendor_id ? (vendors || []).find((v) => v.id === dv.vendor_id) : null;
+  const src = (dv.address_line1 || dv.city) ? dv : (lv && (lv.address_line1 || lv.city) ? lv : null);
+  return src ? { dv, lv, src } : null;
+}
+
+// Every decorator that has a usable address, in the vendor-modal ship-to shape —
+// the option list behind "Fill from a decorator" in the modals' address editor.
+// Carries no attention line: the caller's own (a PO reference, say) is preserved
+// when a rep picks a decorator, since the picker only fills the address itself.
+export function decoShipToPresets({ decoVendors, vendors }) {
+  return (decoVendors || [])
+    .filter((dv) => dv.is_active !== false)
+    .map((dv) => {
+      const found = decoAddressSource({ decoId: dv.id, decoVendors, vendors });
+      if (!found) return null;
+      const { lv, src } = found;
+      return {
+        id: dv.id,
+        label: dv.name || lv?.name || '',
+        address: {
+          companyName: dv.name || lv?.name || '',
+          address1: src.address_line1 || '',
+          address2: src.address_line2 || '',
+          city: src.city || '',
+          region: src.state || '',
+          postalCode: src.zip || '',
+          country: 'US',
+        },
+      };
+    })
+    .filter((p) => p && p.label);
+}
+
 // Decorator-bound blanks (batch ship_to_deco_id): the delivery address is the
 // DECORATOR's, and the attention line must reference the deco PO (DPO number)
 // so the decorator can match the incoming blanks to their job — same convention
@@ -92,12 +133,9 @@ export function resolveShipToClient(soId, allOrders, customers) {
 // the batch's item rows). Returns {name, attention, line1, city, state, zip}
 // or null when no usable address exists.
 export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, itemIdxs = null }) {
-  if (!decoId) return null;
-  const dv = (decoVendors || []).find((d) => d.id === decoId);
-  if (!dv) return null;
-  const lv = dv.vendor_id ? (vendors || []).find((v) => v.id === dv.vendor_id) : null;
-  const src = (dv.address_line1 || dv.city) ? dv : (lv && (lv.address_line1 || lv.city) ? lv : null);
-  if (!src) return null;
+  const found = decoAddressSource({ decoId, decoVendors, vendors });
+  if (!found) return null;
+  const { dv, lv, src } = found;
   const dps = ((so && so.deco_pos) || []).filter((dp) => dp.deco_vendor_id === decoId);
   const dp = (itemIdxs && itemIdxs.length
     ? dps.find((d) => (d.item_idxs || []).some((ix) => itemIdxs.includes(ix)))

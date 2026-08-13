@@ -74,6 +74,58 @@ test('editing the ship-to does not re-run the SKU lookup, and the matched SKU su
   expect(screen.queryByText(/has no matched S&S SKU/)).toBeNull();
 });
 
+describe('decorator address picker', () => {
+  const { decoShipToPresets } = require('../lib/botTasks');
+
+  const DECOS = [
+    { id: 'd1', name: 'Silver Screen', address_line1: '1717 S Chestnut Ave.', address_line2: 'Suite 4', city: 'Fresno', state: 'CA', zip: '93702' },
+    { id: 'd2', name: 'Linked Deco', vendor_id: 'v9' },              // address lives on the vendor record
+    { id: 'd3', name: 'Addressless', vendor_id: 'v-none' },          // nothing usable → not offered
+    { id: 'd4', name: 'Retired Deco', address_line1: '9 Old Rd', city: 'Reno', state: 'NV', zip: '89502', is_active: false },
+  ];
+  const VENDORS = [{ id: 'v9', name: 'Vendor Nine', address_line1: '55 Vendor Way', city: 'Clovis', state: 'CA', zip: '93611' }];
+  const presets = () => decoShipToPresets({ decoVendors: DECOS, vendors: VENDORS });
+
+  test('offers active decorators that have an address, falling back to the linked vendor record', () => {
+    expect(presets().map(p => p.id)).toEqual(['d1', 'd2']);
+    expect(presets()[0].address).toMatchObject({
+      companyName: 'Silver Screen', address1: '1717 S Chestnut Ave.', address2: 'Suite 4',
+      city: 'Fresno', region: 'CA', postalCode: '93702',
+    });
+    // d2 keeps the decorator's name but takes the vendor record's address.
+    expect(presets()[1].address).toMatchObject({ companyName: 'Linked Deco', address1: '55 Vendor Way', city: 'Clovis' });
+  });
+
+  test('picking one fills the address, keeps the attention line, and does not re-run the lookup', async () => {
+    render(
+      <SSOrderModal poNumber="PO 57060 FPUSW" batchPOs={batchOf([NAVY_S])} shipTo={SHIP_TO}
+        shipPresets={presets()} onClose={() => {}} />
+    );
+    expect(await screen.findByText(SKU)).toBeTruthy();
+    expect(ssResolveSkus).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('✏️ Edit address'));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'd1' } });
+
+    await waitFor(() => expect(screen.getByDisplayValue('1717 S Chestnut Ave.')).toBeTruthy());
+    expect(screen.getByDisplayValue('Silver Screen')).toBeTruthy();
+    expect(screen.getByDisplayValue('Suite 4')).toBeTruthy();
+    expect(screen.getByDisplayValue('Fresno')).toBeTruthy();
+    expect(screen.getByDisplayValue('93702')).toBeTruthy();
+    // The caller's attention line (a PO reference) must survive the fill.
+    expect(screen.getByDisplayValue('PO6712 // PO6713 FPUMS')).toBeTruthy();
+    expect(ssResolveSkus).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(SKU)).toBeTruthy();
+  });
+
+  test('no picker when there are no decorator addresses to offer', async () => {
+    render(<SSOrderModal poNumber="PO 57060 FPUSW" batchPOs={batchOf([NAVY_S])} shipTo={SHIP_TO} onClose={() => {}} />);
+    expect(await screen.findByText(SKU)).toBeTruthy();
+    fireEvent.click(screen.getByText('✏️ Edit address'));
+    expect(screen.queryByRole('combobox')).toBeNull();
+  });
+});
+
 test('a degraded re-run that resolves nothing does not blank SKUs already matched', async () => {
   const { rerender } = renderModal(batchOf([NAVY_S]));
   expect(await screen.findByText(SKU)).toBeTruthy();

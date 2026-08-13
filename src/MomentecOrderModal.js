@@ -28,7 +28,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'Momentec', shipTo, shipWarning = '', onClose, onSubmitted }) {
+export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'Momentec', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   const [live, setLive] = useState(false);  // false = stage/sandbox, true = prod
@@ -258,6 +258,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
             disabled={done || submitting}
             shipVia="Ground"
             autoLabel={shipTo ? 'selected' : 'warehouse'}
+            presets={shipPresets}
           />
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>

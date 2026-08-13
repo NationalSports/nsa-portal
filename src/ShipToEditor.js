@@ -36,6 +36,7 @@ export default function ShipToEditor({
   disabled = false,
   shipVia = '',         // e.g. 'UPS Ground' — appended to the summary line
   autoLabel = 'auto-selected',
+  presets = [],         // [{ id, label, address }] — saved destinations to fill from
 }) {
   const [open, setOpen] = useState(false);
   const ship = override || auto || {};
@@ -94,6 +95,24 @@ export default function ShipToEditor({
 
       {open && (
         <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + (edited ? '#ddd6fe' : '#e2e8f0'), display: 'grid', gap: 6, maxWidth: 520 }}>
+          {/* Fill from a saved decorator rather than retyping it. Only the address is
+              filled — the attention line is left alone, since it usually carries the PO
+              reference the rep already set. */}
+          {presets.length > 0 && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={lbl}>Fill from a decorator</span>
+              <select
+                className="form-select" style={inp} value=""
+                onChange={e => {
+                  const p = presets.find(x => String(x.id) === e.target.value);
+                  if (p) onChange({ ...ship, ...p.address, attentionTo: ship.attentionTo || '' });
+                }}
+              >
+                <option value="">— pick a decorator —</option>
+                {presets.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </select>
+            </label>
+          )}
           <div style={fieldRow}>
             <label style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={lbl}>Company *</span>
