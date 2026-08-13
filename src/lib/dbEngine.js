@@ -1626,8 +1626,36 @@ const _dbSaveSOInner = async (so) => {
           const sz=r.sizes||{};
           return(typeof sz._bill_cost==='number'&&sz._bill_cost>0)||(Array.isArray(sz._bill_details)&&sz._bill_details.length>0);
         };
-        let _restored=0,_unrestorable=0,_histBlocked=0;
-        _dbPoRows.forEach(row=>{
+        let _restored=0,_unrestorable=0,_histBlocked=0,_revived=0;
+        // Bring back an ITEM that vanished from this payload while the DB still holds PO line(s) for it.
+        // The editor refuses to delete an item carrying PO(s) (OrderEditor rmI), so such an item going
+        // missing is lost/stale client state, not a deliberate removal. Blocking (what this used to do)
+        // preserved the PO but left the rep with an order that tab could never save again: the toast
+        // re-fired on every page and the only escape was discarding the edit (SO-1951, 2026-08-13).
+        // Rebuilding the item from its DB row — with its decorations — preserves the PO *and* lets the
+        // rep's other edits land. Appended at the TAIL rather than spliced at its old position so that no
+        // OTHER item's index moves — jobs address items positionally (so_jobs.items[].item_idx), and
+        // shifting the payload's own lines would re-point every job after the insert. The revived item
+        // itself does land on a new index, so a DB job that pointed at its old one is not re-linked; that
+        // is unavoidable once a payload's item list has diverged from the DB's, and it is strictly less
+        // damage than the alternatives (blocking forever, or attaching the PO to the wrong garment).
+        // Pick lines need no special handling: the pick-restore pass below re-attaches them once the item
+        // is back in `items`. Fails closed — if the decoration read errors we block as before rather than
+        // re-inserting the item without its decorations.
+        const _revivedByOldId=new Map();let _reviveReadFailed=false;
+        const _reviveItem=async oi=>{
+          if(_revivedByOldId.has(oi.id))return _revivedByOldId.get(oi.id);
+          if(_reviveReadFailed)return -1;
+          const{data:_decoRows,error:_decoErr}=await supabase.from('so_item_decorations').select('*').eq('so_item_id',oi.id);
+          if(_decoErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— decoration read failed:',_decoErr.message);return -1}
+          const decorations=(_decoRows||[]).slice().sort((a,b)=>(a.deco_index||0)-(b.deco_index||0)).map(d=>{const{id:_di,so_item_id:_ds,deco_index:_dx,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
+          const{id:_oid,so_id:_osid,item_index:_oidx,...itemRest}=oi;
+          const revived={...itemRest,decorations,po_lines:[],pick_lines:[]};
+          const idx=items.length;items.push(revived);_revivedByOldId.set(oi.id,idx);_revived++;
+          _restoredLines.push({idx,sku:revived.sku||null,color:revived.color||null,kind:'item',item:revived});
+          return idx;
+        };
+        for(const row of _dbPoRows){
           const poId=row.po_id;
           // A placed vendor/API order writes ONE row per item, all sharing this po_id and carrying
           // api_order_id (inside the row's sizes jsonb). The skips below key on po_id alone, so if a client
@@ -1639,38 +1667,49 @@ const _dbSaveSOInner = async (so) => {
           const oi=_oldById.get(row.so_item_id);
           // Match by original position first, falling back to SKU(+color) across all items so a
           // removed/reordered sibling line doesn't make this row unmatchable and block the save.
-          const _ti=oi?_matchRestoreItem(oi,items):-1;
-          const ci=_ti>=0?items[_ti]:null;
+          let _ti=oi?_matchRestoreItem(oi,items):-1;
+          let ci=_ti>=0?items[_ti]:null;
+          // Last resort when no current item can take this row: rebuild the row's own item (above).
+          // Only called on the paths that would otherwise count _unrestorable and block the save.
+          const _revive=async()=>{if(!oi)return false;const i=await _reviveItem(oi);if(i<0)return false;_ti=i;ci=items[i];return true};
           if(_isApiOrder&&_clientPoIds.has(poId)){
             // Partial loss of a placed order: the client still holds this po_id on at least one item, so this is
             // NOT a whole-PO removal. Preserve this item's row unless the matched item already carries a line for
             // this po_id (in which case that item re-saves its own copy).
-            if(ci&&(ci.po_lines||[]).some(p=>p.po_id===poId))return;
-            if(!ci){_unrestorable++;return;}
+            if(ci&&(ci.po_lines||[]).some(p=>p.po_id===poId))continue;
+            if(!ci&&!(await _revive())){_unrestorable++;continue;}
           }else{
             // Client still holds this PO somewhere — it will re-save its own (possibly edited) copy. Skip to avoid dupes.
             // EXCEPTION: when this row's ITEM is gone from the payload (ci null) and the line has billed/received/
             // shipment history, do NOT honor the drop — the item's disappearance would silently destroy money records.
             // Deliberate line-level removals on a surviving item (PO edit modal) still pass: ci exists there.
-            if(_clientPoIds.has(poId)){if(ci||!_poRowHasHistory(row))return;_histBlocked++;_unrestorable++;return;}
+            if(_clientPoIds.has(poId)){if(ci||!_poRowHasHistory(row))continue;if(!(await _revive())){_histBlocked++;_unrestorable++;continue;}}
             // Deliberately deleted: the client loaded this PO cleanly and chose to drop it. Honor the deletion.
             // (For an API order this branch is reached only when the client holds NONE of its lines — a genuine
             // whole-PO removal — so an intentional full deletion is still honored.) Same exception as above: a
             // vanished item may not take billed/received history down with it.
-            if(_posHydrated&&_knownPoIds.has(poId)){if(ci||!_poRowHasHistory(row))return;_histBlocked++;_unrestorable++;return;}
+            else if(_posHydrated&&_knownPoIds.has(poId)){if(ci||!_poRowHasHistory(row))continue;if(!(await _revive())){_histBlocked++;_unrestorable++;continue;}}
             // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
-            if(!ci){_unrestorable++;return;}
+            else if(!ci&&!(await _revive())){_unrestorable++;continue;}
           }
           const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
           if(recovered._billed&&!recovered.billed){recovered.billed=recovered._billed;delete recovered._billed;}
           if(recovered._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=recovered._tracking_numbers;delete recovered._tracking_numbers;}
           ci.po_lines=[...(ci.po_lines||[]),recovered];_restored++;
           _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po',line:recovered});
-        });
+        }
+        if(_revived){
+          const _revLbl=[..._revivedByOldId.keys()].map(id=>{const r=_oldById.get(id);return[r?.sku,r?.color].filter(Boolean).join(' ')||('item '+id)}).join(', ');
+          console.warn('[DB] Restored',_revived,'item(s) to',so.id,'that vanished from this save while still holding PO line(s):',_revLbl);
+          if(_dataLossAlert)_dataLossAlert({kind:'item_restored',soId:so.id,restored:_revived,reason:'item(s) missing from save payload but still carrying DB PO line(s), re-added with their decorations: '+_revLbl});
+        }
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
         if(_unrestorable){
-          // An undeleted PO couldn't be matched to a current item — block rather than silently lose it.
-          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items'+(_histBlocked?' ('+_histBlocked+' with billed/received history on removed item(s))':''));
+          // An undeleted PO couldn't be matched to a current item AND its item couldn't be rebuilt
+          // (the decoration read failed) — block rather than silently lose it. Reviving the item is
+          // the normal outcome now, so reaching here means the DB read itself is unhealthy: a reload
+          // is genuinely the right advice, and the retry loop must not spin on it.
+          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items'+(_reviveReadFailed?' (item rebuild unavailable — decoration read failed)':'')+(_histBlocked?' ('+_histBlocked+' with billed/received history on removed item(s))':''));
           if(_dbNotify)_dbNotify(_histBlocked?'Save blocked — an item with billed/received PO history is missing from this order. Please reload the page; to remove it, clear its billing/receiving first.':'Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'+(_histBlocked?' ('+_histBlocked+' billed/received on removed item(s))':'')});
           // TERMINAL for auto-retry: the unmatched PO line lives on an item this tab's copy doesn't
@@ -1774,6 +1813,11 @@ const _dbSaveSOInner = async (so) => {
     // patches this save's payload: the editor never learns about the lines, drops them again on its
     // next save, and the guard re-restores forever — turning into a hard block as soon as the
     // line-item structure shifts (the SO-1132 failure).
+    // Revived items are re-read from `items` here rather than trusting the object captured at revive
+    // time: the duplicate-PO guard above replaces items[i] wholesale, so the captured reference can
+    // still hold a line that guard dropped. (The over-commit guard runs after this sync and so is not
+    // reflected — the same pre-existing limitation the 'po'/'pick' entries have.)
+    if(_restoredLines.length)_restoredLines.forEach(r=>{if(r.kind==='item'&&items&&items[r.idx])r.item=items[r.idx]});
     if(_restoredLines.length&&_restoredLinesSync){try{_restoredLinesSync(so.id,_restoredLines)}catch(e){console.warn('[DB] restored-line state sync failed:',e)}}
     // Cross-type over-commit guard (SO-1514, so_items 228531): one re-save persisted BOTH a carried-over
     // batch-PO line (all 26 units, already API-ordered) AND a freshly generated pick line for the same
