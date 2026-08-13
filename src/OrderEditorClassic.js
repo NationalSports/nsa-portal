@@ -30,7 +30,7 @@ import QuickMockBuilder from './QuickMockBuilder';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
-import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
+import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, schoolPOBoxes, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles, authFetch, greetLine, withGreeting, emailMoney } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
@@ -4456,6 +4456,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {label:'Ship To',value:cust?.name||'—',sub:shipAddrSub},
                   {label:'Ship Date',value:new Date().toLocaleDateString()},
                   {label:'Sales Order',value:o.id},
+                  // Read the live input like the save path does, so a PO typed just before
+                  // printing still lands on the slip.
+                  ...schoolPOBoxes({...o,po_number:poInputRef.current?.value??o.po_number}),
                   ...(o.memo?[{label:'Memo',value:o.memo}]:[]),
                 ],
                 tables:[{title:'Items in this Shipment',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows:packRows}],
