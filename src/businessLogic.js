@@ -133,6 +133,116 @@ const billLineNeed = (it, line, sz) => {
   return Math.max(0, safeNum(safeSizes(it)[sz]) - poCommitted(others, sz));
 };
 
+// ── Reducing a size the POs / picks already cover ──
+// A rep who ordered the wrong size has to be able to take it back off the order even after the
+// goods landed and the vendor billed us — otherwise the order can never be made right (SO-1845:
+// 3 XL ordered by mistake, received and billed, and the size grid refused every reduction).
+// Those units stay bought: the po_line keeps its ordered / received / billed history untouched,
+// so the SO keeps carrying their cost (garmentCost walks po_lines, not sizes) until a vendor
+// credit or a return brings the money back. That is the whole point of the write-off — the
+// order eats the cost knowingly instead of silently losing it.
+//
+// PICKED units are never absorbable: they are physically pulled from stock into this order, and
+// the way to undo that is to return the pick to inventory, not to zero the size.
+//
+// Both order editors carry hand-synced copies of the size grid, so the arithmetic lives here —
+// one place to test, one place to fix.
+//
+// NOTE for anything added below: use Object.assign, never object spread ({...x}), in this file.
+// This module exports through `module.exports`, and the object-spread transform turns it into an
+// ES module in the production build — at which point webpack sees NO named exports and every
+// `import { … } from './businessLogic'` in the app fails to compile. Jest never sees it.
+const _pulledForSize = (it, sz) => safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
+// Per-line adjustability for one size: open (not received/billed) units on normal blanks lines.
+// Batch-queued and outside-deco lines stay locked — they're managed elsewhere.
+const _poLineSizeInfo = (pl, sz) => {
+  const ord = safeNum(pl[sz]) - safeNum((pl.cancelled || {})[sz]);
+  const locked = Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz]));
+  const frozen = pl.status === 'queued' || pl.po_type === 'outside_deco';
+  return { ord, locked, adj: frozen ? 0 : Math.max(0, ord - locked), frozen };
+};
+const _poLineSizeKeys = (pl) => Object.keys(pl).filter(k => !k.startsWith('_') && !_PO_LINE_META.has(k) && typeof pl[k] === 'number');
+const _recalcPoLineStatus = (pl) => {
+  const szK = _poLineSizeKeys(pl);
+  const totR = szK.reduce((a, s2) => a + safeNum((pl.received || {})[s2]), 0);
+  const totOp = szK.reduce((a, s2) => a + Math.max(0, safeNum(pl[s2]) - safeNum((pl.received || {})[s2]) - safeNum((pl.cancelled || {})[s2])), 0);
+  if (totR > 0) pl.status = totOp <= 0 ? 'received' : 'partial';
+  return pl;
+};
+// Plan for setting item.sizes[sz] = n. Never mutates the item.
+//   'plain'   nothing committed stands in the way — just write the number
+//   'blocked' n is below the picked floor — return the pick to stock first
+//   'cut'     open, unreceived PO units have to come down too — confirm, then apply po_lines
+//   'absorb'  n is below what a PO already received/billed/queued — confirm the write-off,
+//             then apply po_lines (open units trimmed, received units left in place)
+function planSizeCut(item, sz, n, opts) {
+  const picked = _pulledForSize(item, sz);
+  const lines = safePOs(item);
+  const poQty = poCommitted(lines, sz);
+  const committed = picked + poQty;
+  const plan = { kind: 'plain', sz, n, picked, poQty, committed, floor: 0, lockedPo: 0, cut: 0, absorb: 0, poIds: [], absorbPoIds: [], po_lines: null };
+  if (!(committed > 0 && n < committed)) return plan;
+  const infos = lines.map(pl => _poLineSizeInfo(pl, sz));
+  const adjustable = infos.reduce((a, x) => a + x.adj, 0);
+  const floor = committed - adjustable;
+  plan.floor = floor;
+  plan.lockedPo = Math.max(0, floor - picked);
+  if (n < picked) return Object.assign({}, plan, { kind: 'blocked' });
+  plan.cut = Math.min(adjustable, committed - n);
+  plan.absorb = Math.max(0, floor - n);
+  plan.kind = plan.absorb > 0 ? 'absorb' : 'cut';
+  plan.poIds = [...new Set(lines.filter((pl, pi) => infos[pi].adj > 0).map(pl => pl.po_id || 'PO'))];
+  plan.absorbPoIds = [...new Set(lines.filter((pl, pi) => infos[pi].locked > 0).map(pl => pl.po_id || 'PO'))];
+  // Trim the open units, newest line first — a rebalance should come off the order that is
+  // still open, not the one already in the warehouse.
+  let newPls = lines.map(pl => Object.assign({}, pl));
+  let remaining = plan.cut;
+  for (let pi = newPls.length - 1; pi >= 0 && remaining > 0; pi--) {
+    const { adj } = _poLineSizeInfo(newPls[pi], sz); if (adj <= 0) continue;
+    const take = Math.min(adj, remaining); remaining -= take;
+    const pl = newPls[pi];
+    const newOrd = safeNum(pl[sz]) - take;
+    if (newOrd > 0) pl[sz] = newOrd;
+    else { delete pl[sz]; if (pl.cancelled && pl.cancelled[sz] != null) { const c = Object.assign({}, pl.cancelled); delete c[sz]; pl.cancelled = c } }
+    _recalcPoLineStatus(pl);
+  }
+  // Stamp the write-off on the lines actually holding the stranded units, so months later the
+  // answer to "why is there cost here with nothing to sell?" is on the record. `_absorbed` is
+  // underscore-prefixed, so every size-key walk (garmentCost, receiving, the save mapper) skips
+  // it, and it round-trips through so_item_po_lines.sizes with no schema change.
+  if (plan.absorb > 0) {
+    let left = plan.absorb;
+    const stamp = { at: (opts && opts.at) || new Date().toISOString(), by: (opts && opts.by) || '' };
+    for (let pi = newPls.length - 1; pi >= 0 && left > 0; pi--) {
+      const { locked } = _poLineSizeInfo(newPls[pi], sz); if (locked <= 0) continue;
+      const take = Math.min(locked, left); left -= take;
+      newPls[pi]._absorbed = (newPls[pi]._absorbed || []).concat([Object.assign({ sz, qty: take }, stamp)]);
+    }
+  }
+  // Drop lines left with no size buckets and no receiving/billing history
+  plan.po_lines = newPls.filter(pl => {
+    if (_poLineSizeKeys(pl).length > 0) return true;
+    return Object.values(pl.received || {}).some(v => v > 0) || Object.values(pl.billed || {}).some(v => v > 0);
+  });
+  return plan;
+}
+// Units a PO already received or billed for a size the SO line no longer sells — what an absorb
+// leaves behind (also catches a plain vendor over-ship). Derived from both sides rather than read
+// from a stored flag, so it stays true after any later edit to the size or to the PO.
+function absorbedSizes(item) {
+  const lines = safePOs(item);
+  const sizes = safeSizes(item);
+  const keys = new Set();
+  lines.forEach(pl => { Object.keys(pl.received || {}).forEach(k => keys.add(k)); Object.keys(pl.billed || {}).forEach(k => keys.add(k)) });
+  const out = {};
+  keys.forEach(sz => {
+    const locked = lines.reduce((a, pl) => a + Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz])), 0);
+    const over = locked - safeNum(sizes[sz]);
+    if (over > 0) out[sz] = over;
+  });
+  return out;
+}
+
 // ── Booking Order Helpers ──
 function isBookingOrder(ord) {
   return ord?.order_type === 'booking';
@@ -1304,7 +1414,14 @@ const _catalogUnitAvg = (it, sq) => {
 function garmentCost(it) {
   const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
   const q = sq > 0 ? sq : safeNum(it.est_qty);
-  if (!q) return { cost: 0, poQty: 0, q: 0 };
+  // A line with no quantity left normally costs nothing — EXCEPT when a PO already received or
+  // billed units against it. That is the write-off an absorb leaves behind (planSizeCut): the
+  // goods were bought, so the order keeps carrying them until a credit or a return, and the walk
+  // below prices them off the po_lines. Without this the cost silently vanished the moment the
+  // last size was zeroed, which is exactly the loss the absorb is supposed to make visible.
+  const _lockedUnits = safePOs(it).reduce((a, pl) => a + [...new Set([...Object.keys(pl.received || {}), ...Object.keys(pl.billed || {})])]
+    .reduce((b, sz) => b + Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz])), 0), 0);
+  if (!q && !_lockedUnits) return { cost: 0, poQty: 0, q: 0 };
   let poQty = 0, poCost = 0;
   safePOs(it).forEach(pl => {
     if (!pl) return;
@@ -1352,6 +1469,8 @@ module.exports = {
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
   poCommitted, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  // Size reductions that run into POs / picks
+  planSizeCut, absorbedSizes,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
