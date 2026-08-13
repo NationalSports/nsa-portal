@@ -8,7 +8,7 @@ import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, botProgress } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -2409,6 +2409,10 @@ export default function App(){
   // Deco vendor management
   const[decoVendors,setDecoVendors]=useState([]);const[decoVendorPricing,setDecoVendorPricing]=useState([]);
   const decoVendorNames=useMemo(()=>decoVendors.filter(v=>v.is_active!==false).map(v=>v.name),[decoVendors]);
+  // Active decorators with a usable address, for the vendor order modals' "Fill from a
+  // decorator" picker. Memoized: the modals memoize their lines off props, so a fresh
+  // array each render would re-fire their SKU lookups.
+  const _decoShipPresets=useMemo(()=>decoShipToPresets({decoVendors,vendors:vend}),[decoVendors,vend]);
   // Issue logging system
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[quoteRequests,setQuoteRequests]=useState([]);
@@ -14364,8 +14368,8 @@ export default function App(){
       </div></div>
       </>}
       {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vend.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setSanMarPreview(null)}/>}
-      {ssOrder&&<SSOrderModal {...ssOrder} onLearnSkus={_learnSsOrderSkus} onClose={()=>setSSOrder(null)}/>}
-      {momentecOrder&&<MomentecOrderModal {...momentecOrder} onClose={()=>setMomentecOrder(null)}/>}
+      {ssOrder&&<SSOrderModal {...ssOrder} shipPresets={_decoShipPresets} onLearnSkus={_learnSsOrderSkus} onClose={()=>setSSOrder(null)}/>}
+      {momentecOrder&&<MomentecOrderModal {...momentecOrder} shipPresets={_decoShipPresets} onClose={()=>setMomentecOrder(null)}/>}
     </>);
   };
 
