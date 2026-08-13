@@ -21,7 +21,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors } from './lib/syncJobsMatch';
@@ -961,6 +961,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[prodSheetBusy,setProdSheetBusy]=useState(false);// generating the production-sheet PDF download
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[poAddModal,setPoAddModal]=useState(null);// {sz,n,add,poId,onAdd,onLeave} — growing an already-ordered size: add the extra units to its PO, or leave it open to order
+  const[absorbModal,setAbsorbModal]=useState(null);// planSizeCut 'absorb' plan + onConfirm — taking already-received units off the order, whose cost stays behind
+  const[absorbAck,setAbsorbAck]=useState(false);// the write-off checkbox: re-armed every time the modal opens
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   // Only prefill the art-request modal with an ACTIVE artist id. A stale id (e.g. a deactivated
   // duplicate team-member record) would silently ride along on the new request and land the job on
@@ -2710,38 +2712,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return pl;
     };
     if(n<committed&&committed>0){
-      // Reducing into PO-committed territory: instead of hard-blocking, offer to lower the
-      // still-open PO quantities along with the item. Picked, received, billed, queued and
-      // deco units remain a hard floor.
-      const lines=item.po_lines||[];
-      const infos=lines.map(_lineInfo);
-      const adjustable=infos.reduce((a,x)=>a+x.adj,0);
-      const floor=committed-adjustable;
-      if(n<floor){
-        const lockedPo=floor-pickedQty;
-        nf('Cannot reduce '+sz+' below '+floor+' ('+pickedQty+' picked'+(lockedPo>0?' + '+lockedPo+' received/billed/queued on PO':'')+')','error');return;
-      }
-      const cut=committed-n;
-      const cutIds=[...new Set(lines.filter((pl,pi)=>infos[pi].adj>0).map(pl=>pl.po_id||'PO'))];
-      if(!window.confirm(sz+': reducing to '+n+' also lowers '+cutIds.join(', ')+' by '+cut+' unit'+(cut!==1?'s':'')+' (open units, nothing received). Update the PO'+(cutIds.length>1?'s':'')+' too?'))return;
-      let remaining=cut;
-      let newPls=lines.map(pl=>({...pl}));
-      for(let pi=newPls.length-1;pi>=0&&remaining>0;pi--){
-        const{adj}=_lineInfo(newPls[pi]);if(adj<=0)continue;
-        const take=Math.min(adj,remaining);remaining-=take;
-        const pl=newPls[pi];
-        const newOrd=(pl[sz]||0)-take;
-        if(newOrd>0)pl[sz]=newOrd;
-        else{delete pl[sz];if(pl.cancelled&&pl.cancelled[sz]!=null){const c={...pl.cancelled};delete c[sz];pl.cancelled=c}}
-        _recalcLineStatus(pl);
-      }
-      // Drop lines left with no size buckets and no receiving/billing history
-      newPls=newPls.filter(pl=>{
-        const szK=Object.keys(pl).filter(k=>!k.startsWith('_')&&!_PO_SZ_META.has(k)&&typeof pl[k]==='number');
-        if(szK.length>0)return true;
-        return Object.values(pl.received||{}).some(v2=>v2>0)||Object.values(pl.billed||{}).some(v2=>v2>0);
-      });
-      _applySizes(newPls,sz+' reduced to '+n+' — '+cutIds.join(', ')+' lowered to match');
+      // Reducing into committed territory. Open PO units come down with the item. Units a PO has
+      // already received or billed can come off the order too — the rep who ordered the wrong size
+      // has to be able to fix the order — but they were bought, so the write-off is explicit and
+      // their cost stays on the SO (see planSizeCut / the absorb modal below). Picked units remain
+      // a hard floor: they're physically pulled into this order, so the fix is to return the pick.
+      const plan=planSizeCut(item,sz,n,{by:cu?.name||''});
+      if(plan.kind==='blocked'){nf('Cannot reduce '+sz+' below '+plan.picked+' — those units are already pulled for this order. Return the pick to stock first.','error');return}
+      if(plan.kind==='absorb'){setAbsorbAck(false);setAbsorbModal({...plan,itemIdx:i,itemLabel:(item.sku||item.name||'this item')+(item.color?' '+item.color:''),
+        onConfirm:()=>{setAbsorbModal(null);_applySizes(plan.po_lines,sz+' reduced to '+n+' — '+plan.absorb+' received unit'+(plan.absorb!==1?'s':'')+' written off to this order')}});return}
+      if(!window.confirm(sz+': reducing to '+n+' also lowers '+plan.poIds.join(', ')+' by '+plan.cut+' unit'+(plan.cut!==1?'s':'')+' (open units, nothing received). Update the PO'+(plan.poIds.length>1?'s':'')+' too?'))return;
+      _applySizes(plan.po_lines,sz+' reduced to '+n+' — '+plan.poIds.join(', ')+' lowered to match');
       return;
     }
     if(n>cur&&poQty>=cur&&poQty>0){
@@ -4078,6 +4059,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>
     </div></div>;})()}
+    {/* Absorb write-off — taking already-received/billed units off the order. The goods are bought,
+        so this only moves them off what we SELL; the PO keeps its receiving history and the SO keeps
+        the cost (garmentCost walks po_lines) until a vendor credit or a return brings it back. */}
+    {absorbModal&&(()=>{const d=absorbModal;const u=d.absorb+' unit'+(d.absorb!==1?'s':'');const poTxt=d.absorbPoIds.join(', ')||'the PO';
+      return<div className="modal-overlay" onClick={()=>setAbsorbModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
+      <div className="modal-header"><h2 style={{margin:0,fontSize:16}}>Remove {d.absorb} received {d.sz}?</h2><button className="modal-close" onClick={()=>setAbsorbModal(null)}>×</button></div>
+      <div className="modal-body" style={{padding:16}}>
+        <div style={{fontSize:13,color:'#475569',marginBottom:12}}>{d.itemLabel} — {d.sz} down to <strong>{d.n}</strong>. {u} on <strong>{poTxt}</strong> {d.absorb!==1?'have':'has'} already been received or billed{d.cut>0?', and '+d.cut+' still-open unit'+(d.cut!==1?'s come':' comes')+' off the PO':''}.</div>
+        <div style={{fontSize:12,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,padding:'10px 12px',marginBottom:12}}>
+          The {u} stay on the PO and their cost stays on this order. Send the goods back for a vendor credit, or the order eats the cost — it will show as margin lost on this SO until a credit is applied.
+        </div>
+        <label style={{display:'flex',gap:8,alignItems:'flex-start',fontSize:12,color:'#334155',cursor:'pointer',marginBottom:14}}>
+          <input type="checkbox" checked={absorbAck} onChange={e=>setAbsorbAck(e.target.checked)} style={{marginTop:2,width:16,height:16,cursor:'pointer',flexShrink:0}}/>
+          <span>I confirm {d.absorb!==1?'these':'this'} {d.sz} will be returned for credit, or the cost is accepted on this order.</span>
+        </label>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          <button className="btn" disabled={!absorbAck} style={{fontSize:13,fontWeight:700,background:absorbAck?'#dc2626':'#e2e8f0',color:absorbAck?'white':'#94a3b8',border:'none',padding:'10px 14px',borderRadius:8,cursor:absorbAck?'pointer':'not-allowed'}} onClick={()=>{if(absorbAck)d.onConfirm()}}>Remove {d.sz} from the order</button>
+          <button className="btn btn-secondary" style={{fontSize:13,fontWeight:700,padding:'10px 14px',borderRadius:8}} onClick={()=>setAbsorbModal(null)}>Cancel — leave {d.sz} as is</button>
+        </div>
+      </div>
+    </div></div>;})()}
     {showUniformBuilder&&<React.Suspense fallback={<div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',background:'#f7f8fb',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder coachDiscountPercent={cust?.uniform_discount_percent||0} existingArtwork={safeArt(o)} onExit={()=>setShowUniformBuilder(false)}/></React.Suspense>}
     {editMockJob&&(()=>{
       const j2=safeJobs(o).find(jj=>jj.id===editMockJob.id)||editMockJob;
@@ -5202,6 +5204,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {isDS&&<span className="oe-eb" style={{fontSize:9,padding:'3px 8px',borderRadius:4,marginLeft:2,background:'#EDE9FE',color:'#6D28D9',border:'1px solid #DDD6FE'}}>Drop Ship</span>}
             </div>})}
         </div>}
+        {/* WRITTEN-OFF UNITS — a PO received/billed more than the line still sells (an absorbed
+            wrong-size order, or a vendor over-ship). Their cost is still on this SO, so say so
+            here rather than leaving an unexplained margin hole on the Costs tab. */}
+        {isSO&&(()=>{const ab=absorbedSizes(item);const szList=Object.entries(ab);if(!szList.length)return null;
+          const tot=szList.reduce((a,[,v])=>a+v,0);
+          const who=safePOs(item).flatMap(pl=>pl._absorbed||[]).filter(a=>a&&a.by).slice(-1)[0];
+          return<div style={{padding:'6px 18px',borderBottom:'1px solid #f1f5f9'}}>
+            <span style={{fontSize:10,fontWeight:700,padding:'4px 10px',borderRadius:20,background:'#FDECEC',color:'#962C32',border:'1px solid #F5C2C2'}}
+              title={'These units were received or billed on a PO but are no longer sold on this order. Their cost stays on the SO until a vendor credit is applied.'+(who?'\nWritten off by '+who.by+(who.at?' on '+new Date(who.at).toLocaleDateString():''):'')}>
+              ⚠ {tot} received unit{tot!==1?'s':''} off the order — {szList.map(([sz,v])=>v+' '+sz).join(', ')} · cost stays on this SO
+            </span>
+          </div>})()}
         {/* BATCH PO QUEUE INDICATORS */}
         {isSO&&(()=>{
           // Match by item_idx OR sku+color. We saw cases where a batch entry's
