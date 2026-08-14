@@ -3096,7 +3096,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // carries vendor stock for the override SKUs, so reports check/show the item
   // number production will actually source.
   const gatherBatch = useCallback(async () => {
-    const open = (detail?.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
+    // !backorder_of: bagging's child orders re-produce nothing — their goods
+    // arrive via receiving; batching one would produce the shorted qty twice.
+    const open = (detail?.orders || []).filter((o) => !o.so_id && !o.backorder_of && o.status !== 'pending_payment' && o.status !== 'cancelled');
     const openIds = new Set(open.map((o) => o.id));
     const skuMap = sizeSkuMapOf(detail?.catalog);
     const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), skuMap);
@@ -3177,7 +3179,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Fresh snapshot from the DB — not the possibly-minutes-old detail state — so the
     // modal's order list includes anything placed since the page loaded and excludes
     // anything batched/cancelled/refunded elsewhere in the meantime.
-    const { data: freshOrders, error: foErr } = await supabase.from('webstore_orders').select('*').eq('store_id', sel.id).is('so_id', null);
+    const { data: freshOrders, error: foErr } = await supabase.from('webstore_orders').select('*').eq('store_id', sel.id).is('so_id', null).is('backorder_of', null);
     if (foErr) { flash('Could not load orders: ' + foErr.message); return; }
     const open = (freshOrders || []).filter(isLiveWebstoreOrder);
     if (!open.length) { flash('No unbatched orders to send'); return; }
@@ -3498,7 +3500,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).select('id');
+    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).is('backorder_of', null).select('id');
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
     else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
     else flash(`Created ${soId} · linked ${bOrders.length} orders`);
@@ -4529,6 +4531,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                 <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 8, marginTop: 4 }}>Links</div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
+                                  <a className="btn btn-sm btn-secondary" href="/bagging-station" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }} title="Tablet bagging: pick this store's batch there">Bagging Station ↗</a>
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
                                   {onChangeCloseDate && editCloseId !== s.id && (
@@ -4879,6 +4882,7 @@ const BLANK = {
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'deliver_club',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
+  bagged_email_enabled: true, bagging_auto_label: true,
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
@@ -5217,6 +5221,17 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <Row label="Label carrier"><select className="form-select" value={f.shipstation_carrier || 'ups'} onChange={(e) => set('shipstation_carrier', e.target.value)}>{['ups', 'fedex', 'usps'].map((c) => <option key={c} value={c}>{c.toUpperCase()}</option>)}</select></Row>
           <Row label="Service code (optional)"><input className="form-input" value={f.shipstation_service || ''} onChange={(e) => set('shipstation_service', e.target.value)} placeholder="fedex_ground" /></Row>
           <Row label="Weight per order (lbs)"><input className="form-input" type="number" step="0.1" value={f.label_weight_lbs} onChange={(e) => set('label_weight_lbs', e.target.value)} /></Row>
+        </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Bagging Station</div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={f.bagged_email_enabled !== false} onChange={(e) => set('bagged_email_enabled', e.target.checked)} />
+            Email the buyer when their order is bagged (includes any missing/backordered pieces)
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+            <input type="checkbox" checked={f.bagging_auto_label !== false} onChange={(e) => set('bagging_auto_label', e.target.checked)} />
+            Auto-create the shipping label when a ship-to-home order's bag completes
+          </label>
         </div>
       </Section>
 
@@ -12421,7 +12436,25 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   const imageByPid = {};
   Object.values(productStock || {}).forEach((s) => { if (s.product_id && s.image_front_url) imageByPid[s.product_id] = s.image_front_url; });
   (catalog || []).forEach((c) => { if (c.product_id && c.image_url) imageByPid[c.product_id] = c.image_url; });
+  // Bagging Station ship gate (BAGGING_STATION_PLAN.md): a batch with open
+  // packer-declared shorts must not ship until each short is found, pulled,
+  // backordered, or refunded (resolved at /bagging-station). Override requires
+  // a typed reason. Terminal resolutions also stamp missing_qty, so the ship
+  // plan below already excludes that qty even after an override.
+  const openBagShorts = (soId) => {
+    const ids = new Set(orders.filter((o) => o.so_id === soId).map((o) => o.id));
+    return orderItems.filter((i) => ids.has(i.order_id) && i.short_status === 'open').length;
+  };
+  const bagShortGate = (soId) => {
+    const n = openBagShorts(soId);
+    if (!n) return true;
+    const reason = window.prompt(`${n} open bagging short${n === 1 ? '' : 's'} on this batch — resolve them at the Bagging Station (found / pulled / backorder / refund) before shipping.\n\nTo ship anyway, type a reason:`, '');
+    if (!reason || !reason.trim()) return false;
+    console.warn('[bagging] ship gate overridden for', soId, '—', reason.trim());
+    return true;
+  };
   const sendToShipStation = async (soId) => {
+    if (!bagShortGate(soId)) return;
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Sending ${groups.length}…` }));
@@ -12437,6 +12470,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     setSsMsg((m) => ({ ...m, [soId]: `Sent ${ok} to ShipStation${fail ? `, ${fail} failed` : ''}. Bulk-print labels in ShipStation.` }));
   };
   const printShipLabels = async (soId) => {
+    if (!bagShortGate(soId)) return;
     const groups = homeGroups(soId);
     if (!groups.length) { setSsMsg((m) => ({ ...m, [soId]: 'No ship-to-home orders with addresses.' })); return; }
     setSsMsg((m) => ({ ...m, [soId]: `Creating ${groups.length} labels…` }));

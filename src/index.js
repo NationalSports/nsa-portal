@@ -7,7 +7,7 @@ import {
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
-import { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
+import { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -86,6 +86,12 @@ const TeamShopQueue = React.lazy(() => import('./teamshopqueue/TeamShopQueue'));
 // sign-in or ?token= station mode; see src/floorstation/FloorStation.js.
 // Matched by path like /teamshop-queue, predicate in src/lib/hostRouting.js.
 const FloorStation = React.lazy(() => import('./floorstation/FloorStation'));
+// Bagging Station (one-order-at-a-time webstore bagging with tap check-off,
+// 4×6 bag labels, shorts/backorders — BAGGING_STATION_PLAN.md). Staff sign-in
+// or ?token= station mode, same as Floor Station; see
+// src/baggingstation/BaggingStation.js. Matched by path, predicate in
+// src/lib/hostRouting.js.
+const BaggingStation = React.lazy(() => import('./baggingstation/BaggingStation'));
 // Top Star digitizing vendor portal (queue of embroidery jobs sent out for
 // digitizing + DST upload + mark-complete) — a single outside vendor, static-token
 // auth (netlify/functions/vendor-digitizing.js), no staff sign-in involved. Matched
@@ -94,6 +100,7 @@ const VendorDigitizing = React.lazy(() => import('./vendorportal/VendorDigitizin
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
 const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/' || isProductionHQPath(_path);
 const isFloorStation = isFloorStationPath(_path);
+const isBaggingStation = isBaggingStationPath(_path);
 const isVendorDigitizing = isVendorDigitizingPath(_path);
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
@@ -265,6 +272,8 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopQueue /></React.Suspense>
         : isFloorStation
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><FloorStation /></React.Suspense>
+        : isBaggingStation
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><BaggingStation /></React.Suspense>
         : isVendorDigitizing
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><VendorDigitizing /></React.Suspense>
         : isTeamShop

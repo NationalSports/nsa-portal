@@ -57,7 +57,9 @@ export const previewImageFor = (files) =>
 // wear order (YXS..5XL); anything unrecognized sorts last, alphabetically, so a
 // custom/one-size cell never disappears.
 const SIZE_ORDER = ['YXS', 'YS', 'YM', 'YL', 'YXL', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', 'XXXL', '4XL', '5XL', 'OS', 'OSFA'];
-const sizeRank = (sz) => {
+// Exported for the Bagging Station's line sort (src/baggingstation/bagLogic.js)
+// — one size-order implementation, not another hand-synced copy.
+export const sizeRank = (sz) => {
   const i = SIZE_ORDER.indexOf(String(sz || '').toUpperCase());
   return i === -1 ? SIZE_ORDER.length : i;
 };

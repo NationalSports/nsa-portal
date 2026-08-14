@@ -33,6 +33,14 @@ function isFloorStationPath(pathname) {
   return path === '/floor-station' || path === '/floor-station/';
 }
 
+// Should this visit load the Bagging Station chunk
+// (src/baggingstation/BaggingStation.js)? Path-exact on any host, with or
+// without a trailing slash — same shape as isFloorStationPath.
+function isBaggingStationPath(pathname) {
+  const path = String(pathname || '');
+  return path === '/bagging-station' || path === '/bagging-station/';
+}
+
 // Should this visit load the Top Star digitizing vendor portal chunk
 // (src/vendorportal/VendorDigitizing.js)? Path-exact on any host, with or without
 // a trailing slash — same shape as isFloorStationPath.
@@ -50,4 +58,4 @@ function isProductionHQPath(pathname) {
   return path === '/production' || path === '/production/';
 }
 
-module.exports = { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath };
+module.exports = { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isVendorDigitizingPath, isProductionHQPath };
