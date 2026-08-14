@@ -12,8 +12,14 @@
 -- colorway. SKUs are unique in `products`, so those four rows follow the sheet's own youth-jersey
 -- convention and take a -N / -W colour suffix.
 --
--- Sizes are recorded exactly as the sheet labels them (its "2X" column normalized to 2XL, the
--- backpack's single count to OSFA).
+-- Sizes: the sheet's "2X" column is 2XL and the backpack's single count is OSFA. The YOUTH rows
+-- (JD7373 jerseys, KB4028 shorts, JY5390 jacket, JY5395 pant, JF2887 GK jersey, JF2872 GK shorts)
+-- are keyed YXS/YS/YM/YL/YXL, NOT the bare XS..XL the sheet prints in its columns. That matters:
+-- the roster stores youth sizes Y-prefixed (SZ_YOUTH in RosterOrders.js), resolveSizeGroup routes
+-- a Y size to product_youth_id, and getStock then does an EXACT-match lookup into
+-- product_inventory. Bare XS..XL on a youth row misses every one of those lookups, so a coach sees
+-- a red out-of-stock dot on a full bin — 692 units' worth here. Womens rows stay on the adult
+-- scale, which is what the app uses for them.
 --
 -- Pricing: every garment here is a Locker Room custom adidas item, so each carries
 -- pricing_group='lockerroom' — the flag auTierDisc reads to price the reduced Locker Room tier
@@ -40,11 +46,11 @@ INSERT INTO products (
   id, sku, name, brand, color, category, vendor_id, pricing_group,
   nsa_cost, retail_price, available_sizes, inventory_source, is_active, is_archived, updated_at
 ) VALUES
-  ('p-exp-JD7373-EXP-W','JD7373-EXP-W','Encinitas Express — Youth Jersey','Adidas','White','Jersey','v1','lockerroom',20.62,50,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JD7373-EXP-N','JD7373-EXP-N','Encinitas Express — Youth Jersey','Adidas','Navy','Jersey','v1','lockerroom',20.62,50,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB4028-EXP','KB4028-EXP','Encinitas Express — Youth Shorts','Adidas','Navy','Shorts','v1','lockerroom',14.43,35,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JY5390-EXP','JY5390-EXP','Encinitas Express — Youth Jacket','Adidas','Navy','Outerwear','v1','lockerroom',24.75,60,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JY5395-EXP','JY5395-EXP','Encinitas Express — Youth Pant','Adidas','Navy','Pants','v1','lockerroom',22.68,55,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7373-EXP-W','JD7373-EXP-W','Encinitas Express — Youth Jersey','Adidas','White','Jersey','v1','lockerroom',20.62,50,'["YXS","YS","YM","YL","YXL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7373-EXP-N','JD7373-EXP-N','Encinitas Express — Youth Jersey','Adidas','Navy','Jersey','v1','lockerroom',20.62,50,'["YXS","YS","YM","YL","YXL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB4028-EXP','KB4028-EXP','Encinitas Express — Youth Shorts','Adidas','Navy','Shorts','v1','lockerroom',14.43,35,'["YXS","YS","YM","YL","YXL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JY5390-EXP','JY5390-EXP','Encinitas Express — Youth Jacket','Adidas','Navy','Outerwear','v1','lockerroom',24.75,60,'["YM","YL","YXL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JY5395-EXP','JY5395-EXP','Encinitas Express — Youth Pant','Adidas','Navy','Pants','v1','lockerroom',22.68,55,'["YXS","YS","YM","YL","YXL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JD7371-EXP-W','JD7371-EXP-W','Encinitas Express — Adult Jersey','Adidas','White','Jersey','v1','lockerroom',22.68,55,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JD7371-EXP-N','JD7371-EXP-N','Encinitas Express — Adult Jersey','Adidas','Navy','Jersey','v1','lockerroom',22.68,55,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-KB4029-EXP','KB4029-EXP','Encinitas Express — Adult Shorts','Adidas','Navy','Shorts','v1','lockerroom',16.50,40,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
@@ -55,11 +61,11 @@ INSERT INTO products (
   ('p-exp-KB4032-EXP','KB4032-EXP','Encinitas Express — Womens Shorts','Adidas','Navy','Shorts','v1','lockerroom',16.50,40,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-KB4037-EXP','KB4037-EXP','Encinitas Express — Womens Jacket','Adidas','Navy','Outerwear','v1','lockerroom',26.81,65,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JY5389-EXP','JY5389-EXP','Encinitas Express — Womens Pant','Adidas','Navy','Pants','v1','lockerroom',24.75,60,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JF2887-EXP','JF2887-EXP','Encinitas Express — Youth GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',28.87,70,'["XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JF2887-EXP','JF2887-EXP','Encinitas Express — Youth GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',28.87,70,'["YXL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JF2881-EXP','JF2881-EXP','Encinitas Express — Adult GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',30.93,75,'["S","M","L"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JF2871-EXP','JF2871-EXP','Encinitas Express — Womens GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',30.93,75,'["S","M","L"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JJ4162-EXP','JJ4162-EXP','Encinitas Express — Womens GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JF2872-EXP','JF2872-EXP','Encinitas Express — Youth GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["S","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JF2872-EXP','JF2872-EXP','Encinitas Express — Youth GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["YS","YL","YXL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-JP0179-EXP','JP0179-EXP','Encinitas Express — Adult GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-KB3914-EXP','KB3914-EXP','Encinitas Express — Adult All Weather Jacket','Adidas','Navy','Outerwear','v1','lockerroom',35.06,85,'["L","XL","2XL"]'::jsonb,'manual',true,false,now()),
   ('p-exp-5159406-EXP','5159406-EXP','Encinitas Express — Stadium 4 Backpack','Adidas','Navy','Bags','v1777312659133',NULL,24.38,65,'["OSFA"]'::jsonb,'manual',true,false,now())
@@ -84,13 +90,13 @@ ON CONFLICT (id) DO UPDATE SET
 -- row and no counts — nothing was counted, which is not the same as a counted zero.
 INSERT INTO product_inventory (product_id, size, quantity) VALUES
   -- Youth Jersey, Navy — 330
-  ('p-exp-JD7373-EXP-N','XS',12), ('p-exp-JD7373-EXP-N','S',55), ('p-exp-JD7373-EXP-N','M',112), ('p-exp-JD7373-EXP-N','L',108), ('p-exp-JD7373-EXP-N','XL',43),
+  ('p-exp-JD7373-EXP-N','YXS',12), ('p-exp-JD7373-EXP-N','YS',55), ('p-exp-JD7373-EXP-N','YM',112), ('p-exp-JD7373-EXP-N','YL',108), ('p-exp-JD7373-EXP-N','YXL',43),
   -- Youth Shorts, Navy — 130
-  ('p-exp-KB4028-EXP','XS',4), ('p-exp-KB4028-EXP','S',44), ('p-exp-KB4028-EXP','M',50), ('p-exp-KB4028-EXP','L',3), ('p-exp-KB4028-EXP','XL',29),
+  ('p-exp-KB4028-EXP','YXS',4), ('p-exp-KB4028-EXP','YS',44), ('p-exp-KB4028-EXP','YM',50), ('p-exp-KB4028-EXP','YL',3), ('p-exp-KB4028-EXP','YXL',29),
   -- Youth Jacket, Navy — 95
-  ('p-exp-JY5390-EXP','M',12), ('p-exp-JY5390-EXP','L',55), ('p-exp-JY5390-EXP','XL',28),
+  ('p-exp-JY5390-EXP','YM',12), ('p-exp-JY5390-EXP','YL',55), ('p-exp-JY5390-EXP','YXL',28),
   -- Youth Pant, Navy — 115
-  ('p-exp-JY5395-EXP','XS',13), ('p-exp-JY5395-EXP','S',21), ('p-exp-JY5395-EXP','M',36), ('p-exp-JY5395-EXP','L',30), ('p-exp-JY5395-EXP','XL',15),
+  ('p-exp-JY5395-EXP','YXS',13), ('p-exp-JY5395-EXP','YS',21), ('p-exp-JY5395-EXP','YM',36), ('p-exp-JY5395-EXP','YL',30), ('p-exp-JY5395-EXP','YXL',15),
   -- Adult Jersey, White — 208
   ('p-exp-JD7371-EXP-W','S',93), ('p-exp-JD7371-EXP-W','M',64), ('p-exp-JD7371-EXP-W','L',47), ('p-exp-JD7371-EXP-W','XL',4),
   -- Adult Jersey, Navy — 198
@@ -112,11 +118,11 @@ INSERT INTO product_inventory (product_id, size, quantity) VALUES
   -- Womens Pant, Navy — 13
   ('p-exp-JY5389-EXP','S',3), ('p-exp-JY5389-EXP','M',5), ('p-exp-JY5389-EXP','L',2), ('p-exp-JY5389-EXP','XL',3),
   -- Red goalkeeper kit — 91
-  ('p-exp-JF2887-EXP','XL',2),
+  ('p-exp-JF2887-EXP','YXL',2),
   ('p-exp-JF2881-EXP','S',7), ('p-exp-JF2881-EXP','M',3), ('p-exp-JF2881-EXP','L',5),
   ('p-exp-JF2871-EXP','S',7), ('p-exp-JF2871-EXP','M',7), ('p-exp-JF2871-EXP','L',3),
   ('p-exp-JJ4162-EXP','S',4), ('p-exp-JJ4162-EXP','M',4), ('p-exp-JJ4162-EXP','L',5), ('p-exp-JJ4162-EXP','XL',2),
-  ('p-exp-JF2872-EXP','S',3), ('p-exp-JF2872-EXP','L',16), ('p-exp-JF2872-EXP','XL',1),
+  ('p-exp-JF2872-EXP','YS',3), ('p-exp-JF2872-EXP','YL',16), ('p-exp-JF2872-EXP','YXL',1),
   ('p-exp-JP0179-EXP','S',4), ('p-exp-JP0179-EXP','M',8), ('p-exp-JP0179-EXP','L',8), ('p-exp-JP0179-EXP','XL',2),
   -- Adult All Weather Jacket, Navy — 5
   ('p-exp-KB3914-EXP','L',3), ('p-exp-KB3914-EXP','XL',1), ('p-exp-KB3914-EXP','2XL',1),
@@ -163,19 +169,22 @@ COMMIT;
 -- jacket -> KB4042 / JY5390, pants -> KE9910 / JY5395; product_womens_id was empty on all five.
 --
 -- NOT re-pointed, and why:
---   keeper_jersey  — kit specifies JD7376 / JD7375 (Competition 25 GK); the club's GK stock is
---                    JF2881 / JF2887 / JF2871, a different article. Needs a human call.
---   keeper_shorts  — kit points at the field shorts KB4029 / KB4028; the club holds red GK shorts
---                    JP0179 / JF2872 / JJ4162. Same question.
---   socks, backpack, training_shirt, game_day_shirt — the club holds no stock of those articles
---                    (its backpack is a Stadium 4, the kit's is a Striker 3 JK5227).
+-- The keeper slots and the backpack are included: the articles the kit carried before (JD7376 /
+-- JD7375 keeper, the field shorts standing in for keeper shorts, Striker 3 JK5227 backpack) were
+-- placeholders, and the club's own SKUs are the real ones.
+--
+-- NOT re-pointed: socks, keeper_socks, training_shirt, game_day_shirt — the club's sheet has no
+-- stock for those articles at all, so they stay on the catalog rows they had.
 UPDATE roster_order_sessions s SET kit_items = r.items, updated_at = now() FROM (
   WITH m(slot,pid,yid,wid) AS (VALUES
     ('jersey_white','p-exp-JD7371-EXP-W','p-exp-JD7373-EXP-W','p-exp-JD7370-EXP-W'),
     ('jersey_navy', 'p-exp-JD7371-EXP-N','p-exp-JD7373-EXP-N','p-exp-JD7370-EXP-N'),
     ('shorts',      'p-exp-KB4029-EXP',  'p-exp-KB4028-EXP',  'p-exp-KB4032-EXP'),
     ('jacket',      'p-exp-KB4042-EXP',  'p-exp-JY5390-EXP',  'p-exp-KB4037-EXP'),
-    ('pants',       'p-exp-KE9910-EXP',  'p-exp-JY5395-EXP',  'p-exp-JY5389-EXP'))
+    ('pants',       'p-exp-KE9910-EXP',  'p-exp-JY5395-EXP',  'p-exp-JY5389-EXP'),
+    ('keeper_jersey','p-exp-JF2881-EXP', 'p-exp-JF2887-EXP',  'p-exp-JF2871-EXP'),
+    ('keeper_shorts','p-exp-JP0179-EXP', 'p-exp-JF2872-EXP',  'p-exp-JJ4162-EXP'),
+    ('backpack',    'p-exp-5159406-EXP', '',                  ''))
   SELECT x.id, jsonb_agg(CASE WHEN m.slot IS NOT NULL
                               THEN e.i || jsonb_build_object('product_id',m.pid,'product_youth_id',m.yid,'product_womens_id',m.wid)
                               ELSE e.i END ORDER BY e.ord) AS items
@@ -192,7 +201,10 @@ UPDATE roster_kit_templates t SET items = r.items FROM (
     ('jersey_navy', 'p-exp-JD7371-EXP-N','p-exp-JD7373-EXP-N','p-exp-JD7370-EXP-N'),
     ('shorts',      'p-exp-KB4029-EXP',  'p-exp-KB4028-EXP',  'p-exp-KB4032-EXP'),
     ('jacket',      'p-exp-KB4042-EXP',  'p-exp-JY5390-EXP',  'p-exp-KB4037-EXP'),
-    ('pants',       'p-exp-KE9910-EXP',  'p-exp-JY5395-EXP',  'p-exp-JY5389-EXP'))
+    ('pants',       'p-exp-KE9910-EXP',  'p-exp-JY5395-EXP',  'p-exp-JY5389-EXP'),
+    ('keeper_jersey','p-exp-JF2881-EXP', 'p-exp-JF2887-EXP',  'p-exp-JF2871-EXP'),
+    ('keeper_shorts','p-exp-JP0179-EXP', 'p-exp-JF2872-EXP',  'p-exp-JJ4162-EXP'),
+    ('backpack',    'p-exp-5159406-EXP', '',                  ''))
   SELECT x.id, jsonb_agg(CASE WHEN m.slot IS NOT NULL
                               THEN e.i || jsonb_build_object('product_id',m.pid,'product_youth_id',m.yid,'product_womens_id',m.wid)
                               ELSE e.i END ORDER BY e.ord) AS items
