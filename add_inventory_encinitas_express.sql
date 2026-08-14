@@ -143,3 +143,62 @@ COMMIT;
 -- Verify: 23 catalog rows, 1,656 units on hand across 22 SKUs.
 -- select count(*) from products where id like 'p-exp-%';
 -- select sum(quantity) from product_inventory where product_id like 'p-exp-%';
+
+-- 4. Link the club's stock to their roster ---------------------------------
+-- Coaches already see per-size availability in the roster editor: TeamRosterEditor (the component
+-- CoachPortal renders via RosterOrdersCoach) calls useKitInventory, which reads product_inventory
+-- by the kit item's product_id / product_youth_id / product_womens_id. product_inventory is
+-- anon-readable, so the coach portal can see it without a sign-in. Until now those ids pointed at
+-- the shared "…Custom" articles, so the dots showed a made-to-order row's vendor stock rather than
+-- the club's own goods.
+--
+-- Re-point the five slots whose articles match the club's stock exactly. Sizes already entered are
+-- keyed by kit_slot (roster_player_sizes.kit_slot), not by product, so none are disturbed — this
+-- session had 375 of them at the time of the change. Both the session's own kit_items and the
+-- club's item catalog are updated: a session's kit_items wins over the template, so the live
+-- session needs its own copy, and the template carries it into future sessions.
+--
+-- Original mapping, for revert: jersey_white + jersey_navy both -> JD7371 / JD7373 (the base rows
+-- are colorless, so the two colorways were indistinguishable), shorts -> KB4029 / KB4028,
+-- jacket -> KB4042 / JY5390, pants -> KE9910 / JY5395; product_womens_id was empty on all five.
+--
+-- NOT re-pointed, and why:
+--   keeper_jersey  — kit specifies JD7376 / JD7375 (Competition 25 GK); the club's GK stock is
+--                    JF2881 / JF2887 / JF2871, a different article. Needs a human call.
+--   keeper_shorts  — kit points at the field shorts KB4029 / KB4028; the club holds red GK shorts
+--                    JP0179 / JF2872 / JJ4162. Same question.
+--   socks, backpack, training_shirt, game_day_shirt — the club holds no stock of those articles
+--                    (its backpack is a Stadium 4, the kit's is a Striker 3 JK5227).
+UPDATE roster_order_sessions s SET kit_items = r.items, updated_at = now() FROM (
+  WITH m(slot,pid,yid,wid) AS (VALUES
+    ('jersey_white','p-exp-JD7371-EXP-W','p-exp-JD7373-EXP-W','p-exp-JD7370-EXP-W'),
+    ('jersey_navy', 'p-exp-JD7371-EXP-N','p-exp-JD7373-EXP-N','p-exp-JD7370-EXP-N'),
+    ('shorts',      'p-exp-KB4029-EXP',  'p-exp-KB4028-EXP',  'p-exp-KB4032-EXP'),
+    ('jacket',      'p-exp-KB4042-EXP',  'p-exp-JY5390-EXP',  'p-exp-KB4037-EXP'),
+    ('pants',       'p-exp-KE9910-EXP',  'p-exp-JY5395-EXP',  'p-exp-JY5389-EXP'))
+  SELECT x.id, jsonb_agg(CASE WHEN m.slot IS NOT NULL
+                              THEN e.i || jsonb_build_object('product_id',m.pid,'product_youth_id',m.yid,'product_womens_id',m.wid)
+                              ELSE e.i END ORDER BY e.ord) AS items
+    FROM roster_order_sessions x
+    CROSS JOIN LATERAL jsonb_array_elements(x.kit_items) WITH ORDINALITY AS e(i,ord)
+    LEFT JOIN m ON m.slot = e.i->>'slot'
+   WHERE x.customer_id = 'c-ns-3978'
+   GROUP BY x.id) r
+ WHERE s.id = r.id;
+
+UPDATE roster_kit_templates t SET items = r.items FROM (
+  WITH m(slot,pid,yid,wid) AS (VALUES
+    ('jersey_white','p-exp-JD7371-EXP-W','p-exp-JD7373-EXP-W','p-exp-JD7370-EXP-W'),
+    ('jersey_navy', 'p-exp-JD7371-EXP-N','p-exp-JD7373-EXP-N','p-exp-JD7370-EXP-N'),
+    ('shorts',      'p-exp-KB4029-EXP',  'p-exp-KB4028-EXP',  'p-exp-KB4032-EXP'),
+    ('jacket',      'p-exp-KB4042-EXP',  'p-exp-JY5390-EXP',  'p-exp-KB4037-EXP'),
+    ('pants',       'p-exp-KE9910-EXP',  'p-exp-JY5395-EXP',  'p-exp-JY5389-EXP'))
+  SELECT x.id, jsonb_agg(CASE WHEN m.slot IS NOT NULL
+                              THEN e.i || jsonb_build_object('product_id',m.pid,'product_youth_id',m.yid,'product_womens_id',m.wid)
+                              ELSE e.i END ORDER BY e.ord) AS items
+    FROM roster_kit_templates x
+    CROSS JOIN LATERAL jsonb_array_elements(x.items) WITH ORDINALITY AS e(i,ord)
+    LEFT JOIN m ON m.slot = e.i->>'slot'
+   WHERE x.customer_id = 'c-ns-3978' AND x.is_catalog
+   GROUP BY x.id) r
+ WHERE t.id = r.id;
