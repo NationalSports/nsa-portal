@@ -20,17 +20,21 @@ const {
 } = rel;
 
 // ── Pure: art readiness ─────────────────────────────────────────────────────
-describe('artRecordProdReady (isJobReady art half)', () => {
-  test('prod_files_attached=true is ready', () => {
-    expect(artRecordProdReady({ prod_files_attached: true })).toBe(true);
+describe('artRecordProdReady (tightened 00219 predicate — automation gate)', () => {
+  test('approved + prod_files_attached=true is ready; unapproved attached is NOT', () => {
+    expect(artRecordProdReady({ status: 'approved', prod_files_attached: true })).toBe(true);
+    expect(artRecordProdReady({ prod_files_attached: true })).toBe(false);
+    expect(artRecordProdReady({ status: 'waiting_for_art', prod_files_attached: true })).toBe(false);
   });
-  test('non-empty prod_files is ready', () => {
-    expect(artRecordProdReady({ prod_files: ['seps.pdf'] })).toBe(true);
+  test('non-empty prod_files alone is NOT ready (the loose arm 00219 removed — a stray mock PDF must not release)', () => {
+    expect(artRecordProdReady({ status: 'approved', prod_files: ['seps.pdf'] })).toBe(false);
   });
-  test('embroidery with a .dst among files/prod_files is ready; non-emb .dst is NOT', () => {
-    expect(artRecordProdReady({ deco_type: 'embroidery', files: ['logo.dst'] })).toBe(true);
-    expect(artRecordProdReady({ deco_type: 'embroidery', prod_files: [{ name: 'L.DST' }] })).toBe(true);
-    expect(artRecordProdReady({ deco_type: 'screen_print', files: ['logo.dst'] })).toBe(false);
+  test('approved embroidery with a live .dst among files/prod_files is ready; non-emb/stale/unapproved .dst is NOT', () => {
+    expect(artRecordProdReady({ status: 'approved', deco_type: 'embroidery', files: ['logo.dst'] })).toBe(true);
+    expect(artRecordProdReady({ status: 'approved', deco_type: 'embroidery', prod_files: [{ name: 'L.DST' }] })).toBe(true);
+    expect(artRecordProdReady({ status: 'approved', deco_type: 'screen_print', files: ['logo.dst'] })).toBe(false);
+    expect(artRecordProdReady({ status: 'approved', deco_type: 'embroidery', files: [{ name: 'old.dst', stale: true }] })).toBe(false);
+    expect(artRecordProdReady({ deco_type: 'embroidery', files: ['logo.dst'] })).toBe(false);
   });
   test('approved but no production files is NOT ready; null is NOT ready', () => {
     expect(artRecordProdReady({ status: 'approved' })).toBe(false);
@@ -89,7 +93,7 @@ describe('jobFulfillment', () => {
 
 test('jobReleasable requires BOTH gates', () => {
   const job = { art_status: 'art_complete', _art_ids: ['a'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
-  const artOk = () => ({ prod_files_attached: true });
+  const artOk = () => ({ status: 'approved', prod_files_attached: true });
   const ctxFull = { itemForIndex: () => ({ id: 1, sizes: { S: 2 } }), pulledFor: () => 2, receivedFor: () => 0 };
   const ctxShort = { itemForIndex: () => ({ id: 1, sizes: { S: 2 } }), pulledFor: () => 1, receivedFor: () => 0 };
   expect(jobReleasable(job, artOk, ctxFull).ready).toBe(true);
@@ -115,7 +119,7 @@ describe('jobDtfReady / DTF prints release gate', () => {
 
   test('jobReleasable holds a DTF job whose prints are needed/ordered, frees it when received', () => {
     const base = { art_status: 'art_complete', _art_ids: ['a'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
-    const artOk = () => ({ prod_files_attached: true });
+    const artOk = () => ({ status: 'approved', prod_files_attached: true });
     const ctxFull = { itemForIndex: () => ({ id: 1, sizes: { S: 2 } }), pulledFor: () => 2, receivedFor: () => 0 };
     // garments + art ready, but prints on order → held with reason dtf_prints
     expect(jobReleasable({ ...base, dtf_prints_status: 'ordered' }, artOk, ctxFull)).toMatchObject({ ready: false, reason: 'dtf_prints' });
@@ -240,7 +244,9 @@ describe('runRelease', () => {
   test("scope 'all' also releases a staff-finished art_complete job", async () => {
     const admin = makeAdmin(baseTables({
       teamshop_settings: { data: [{ auto_release_enabled: true, auto_release_scope: 'all' }], error: null },
-      so_art_files: { data: [{ so_id: 'SO-1', id: 'art-2', prod_files: ['seps.pdf'], deco_type: 'screen_print' }], error: null },
+      // Tightened gate (00219 parity): staff art must be approved with prod files
+      // explicitly attached — a bare prod_files entry no longer releases.
+      so_art_files: { data: [{ so_id: 'SO-1', id: 'art-2', status: 'approved', prod_files_attached: true, deco_type: 'screen_print' }], error: null },
     }));
     const s = await runRelease(admin, 'schedule');
     expect(s.candidates).toBe(2);

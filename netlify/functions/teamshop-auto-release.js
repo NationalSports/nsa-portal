@@ -13,8 +13,12 @@
 // pointed at. It re-derives both halves of businessLogic.isJobReady server-side:
 //
 //   ART GATE — art_status='art_complete' AND every referenced art record that we can
-//   find is production-ready (isJobReady's art half: prod_files_attached OR prod_files
-//   non-empty OR embroidery .dst among files/prod_files). Missing records are skipped,
+//   find is production-ready per the TIGHTENED 00219 birth predicate (constants.js
+//   artProdFilesConfirmed): status='approved' AND (explicit prod_files_attached=true,
+//   OR embroidery with a live .dst among files/prod_files). The looser "any file in
+//   prod_files" arm was removed here to match — a stray mock-up PDF must not let the
+//   sweep release a job whose seps stage the client UI still shows as open (the same
+//   false-positive class 00219 fixed at birth). Missing records are skipped,
 //   exactly like isJobReady (`if (!af) continue`). The art record is looked up in a
 //   POOL of BOTH so_art_files (staff-attached art for the SO) AND the SO customer's
 //   customers.art_files — because trio #1's auto-arted jobs reference customers.art_files
@@ -68,14 +72,19 @@ function hasDst(files) {
   });
 }
 
-// isJobReady's art half for ONE art record (so_art_files row OR customers.art_files
-// entry — same field names on both). Returns true/false; caller skips a null record.
+// Art half of the release re-check, for ONE art record (so_art_files row OR
+// customers.art_files entry — same field names on both). Mirrors the tightened 00219
+// SQL birth predicate: status='approved' AND (explicit prod_files_attached=true, OR
+// embroidery with a live (non-stale) .dst) — the strictest of the copies. This is
+// an AUTOMATION gate — deliberately stricter than the client's manual-release
+// artProdFilesReady; a declined job just waits for a staff release.
 function artRecordProdReady(af) {
   if (!af) return false;
+  if ((af.status || '') !== 'approved') return false;
   if (af.prod_files_attached === true) return true;
-  if (Array.isArray(af.prod_files) && af.prod_files.length > 0) return true;
-  if ((af.deco_type || '') === 'embroidery' && hasDst([...(af.files || []), ...(af.prod_files || [])])) return true;
-  return false;
+  const live = [...(af.files || []), ...(af.prod_files || [])]
+    .filter((f) => !(f && typeof f === 'object' && f.stale));
+  return (af.deco_type || '') === 'embroidery' && hasDst(live);
 }
 
 // Server-side referenced art ids: the job's stored _art_ids ∪ art_file_id. (Unlike
