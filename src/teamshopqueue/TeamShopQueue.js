@@ -2311,6 +2311,124 @@ function AutoPoSection() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Backorders — open (qty_needed > 0) rows from the auto-PO needs ledger, i.e.
+// every backordered teamshop/club (so_item, size) whose garments weren't in
+// house stock at conversion. The backorder-ready-sweep (00236, every 30 min)
+// stamps how many units house stock now covers (FIFO by order age), refreshes
+// the vendor expected date, and emails the decoration team on increases; this
+// section is the live view of that ledger plus a "check stock now" button.
+// Release itself stays in Production & Pull — this is visibility, not a queue.
+function BackorderSection() {
+  const [state, setState] = useState({ loading: true, enabled: true, rows: [], error: null });
+  const [busy, setBusy] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 5000); };
+
+  const callFn = useCallback(async (payload) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data && data.session && data.session.access_token;
+    const res = await fetch('/.netlify/functions/backorder-ready-sweep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json().catch(() => ({}));
+    return { status: res.status, ...json };
+  }, []);
+
+  const load = useCallback(() => {
+    callFn({ action: 'list' })
+      .then((r) => {
+        if (r.error) { setState({ loading: false, enabled: true, rows: [], error: r.error }); return; }
+        setState({ loading: false, enabled: r.enabled !== false, rows: r.rows || [], error: null });
+      })
+      .catch((e) => setState({ loading: false, enabled: true, rows: [], error: e.message || String(e) }));
+  }, [callFn]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const runNow = () => {
+    setBusy('run');
+    callFn({ action: 'run' }).then((r) => {
+      setBusy(null);
+      if (r.error) { showToast('Stock check failed: ' + r.error); return; }
+      showToast(r.alerted ? ('Stock covers ' + r.alerted + ' backordered line' + (r.alerted === 1 ? '' : 's') + ' — decoration team notified') : 'Checked — no new arrivals cover open backorders');
+      load();
+    });
+  };
+
+  if (state.loading) return <div style={{ fontSize: 13, color: '#64748b', padding: 20 }}>Loading backorders…</div>;
+
+  const badge = (r) => {
+    if ((r.ready_qty || 0) >= r.qty_needed) return <span style={{ background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>ALL IN</span>;
+    if ((r.ready_qty || 0) > 0) return <span style={{ background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>PARTIAL {r.ready_qty}/{r.qty_needed}</span>;
+    return <span style={{ background: '#e2e8f0', color: '#475569', padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>AWAITING</span>;
+  };
+
+  const cell = { padding: '6px 10px', borderBottom: '1px solid #e2e8f0', fontSize: 13 };
+  return (
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <h1 style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: 0 }}>Backorders</h1>
+        {state.enabled && (
+          <button
+            type="button"
+            aria-label="backorder-check-now"
+            disabled={busy === 'run'}
+            onClick={runNow}
+            style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          >
+            {busy === 'run' ? 'Checking…' : 'Check stock now'}
+          </button>
+        )}
+      </div>
+      {toast && <div style={{ background: '#0f172a', color: '#fff', padding: '8px 14px', borderRadius: 6, fontSize: 13, marginBottom: 12 }}>{toast}</div>}
+      {!state.enabled && (
+        <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+          Backorder tracking is not enabled yet — apply migrations 00202/00236.
+        </div>
+      )}
+      {state.error && <div style={{ background: '#fee2e2', color: '#991b1b', padding: '10px 14px', borderRadius: 6, fontSize: 13, marginBottom: 12 }}>{state.error}</div>}
+      {state.enabled && !state.error && !state.rows.length && (
+        <div style={{ fontSize: 13, color: '#64748b' }}>No open backorders — every converted order's garments were in stock or have shipped.</div>
+      )}
+      {state.rows.length > 0 && (
+        <table style={{ borderCollapse: 'collapse', width: '100%', background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
+          <thead>
+            <tr style={{ background: '#f8fafc' }}>
+              <th style={{ ...cell, textAlign: 'left' }}>Store / SO</th>
+              <th style={{ ...cell, textAlign: 'left' }}>SKU</th>
+              <th style={{ ...cell, textAlign: 'left' }}>Size</th>
+              <th style={{ ...cell, textAlign: 'right' }}>Short</th>
+              <th style={{ ...cell, textAlign: 'left' }}>Status</th>
+              <th style={{ ...cell, textAlign: 'left' }}>PO</th>
+              <th style={{ ...cell, textAlign: 'left' }}>Expected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {state.rows.map((r) => (
+              <tr key={r.id}>
+                <td style={cell}>
+                  <div style={{ fontWeight: 600 }}>{r.store_name || '—'}</div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>{r.so_id}</div>
+                </td>
+                <td style={cell}>{r.sku || r.product_id || '—'}</td>
+                <td style={cell}>{r.size}</td>
+                <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }}>{r.qty_needed}</td>
+                <td style={cell}>{badge(r)}</td>
+                <td style={cell}>{r.po_number ? (r.po_number + (r.po_status ? ' · ' + r.po_status : '')) : (r.skip_reason === 'no_vendor_mapping' ? 'manual order' : '—')}</td>
+                <td style={cell}>{r.expected_date || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Pipeline tab — order-centric view. Every teamshop/club order (fetchPipeline)
 // as a row with Paid → Converted → Art → Goods → Floor → Shipped stage chips,
 // plus the stuck-state panels folded in as ACTIONS: awaiting-conversion
@@ -2452,8 +2570,12 @@ function PipelineTab() {
         <PoReviewSection />
       </div>
 
-      <div>
+      <div style={{ marginBottom: 24 }}>
         <AutoPoSection />
+      </div>
+
+      <div>
+        <BackorderSection />
       </div>
     </div>
   );

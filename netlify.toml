@@ -278,6 +278,18 @@
 # See netlify/functions/teamshop-auto-po.js.
 [functions."teamshop-auto-po"]
   schedule = "25 * * * *"
+
+# Backorder ready sweep (00236) — every 30 min. Over the auto-PO needs ledger
+# (teamshop/club backorders): stamps how many backordered units house stock now
+# covers (FIFO by order age), refreshes vendor expected dates, and emails the
+# decoration team when coverage increases — even partially — so backordered
+# orders get decorated and shipped fast. Notify-only: release still goes through
+# the 00205 gate (auto-release sweep / Production HQ scan). Staff POST
+# { action:'list' } feeds the Backorders tab; { action:'run' } forces a pass.
+# See netlify/functions/backorder-ready-sweep.js.
+[functions."backorder-ready-sweep"]
+  schedule = "10,40 * * * *"
+
 [functions."gmail-ai-sync"]
   schedule = "*/5 * * * *"
   timeout = 26

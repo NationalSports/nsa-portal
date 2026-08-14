@@ -754,8 +754,14 @@ async function finalize(sb, body) {
   // stripe-webhook fallback below picks it up if this never lands.
   if (order.order_source === 'club' && !order.so_id) {
     try {
-      const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
+      const { data: convData, error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
       if (convErr) console.error('[webstore-checkout] club conversion failed (order stays paid; stripe-webhook will retry):', convErr.message);
+      else if (convData && convData.so_id) {
+        // Best-effort auto-PO generation (00202, club-enabled) — idempotent
+        // (client_ref + needs-row marker); a failure never fails the checkout,
+        // and the Auto POs tab sweep catches it up.
+        await require('./teamshop-auto-po').generateForSoSafe(sb, convData.so_id, 'webstore-checkout', 'webstore-checkout');
+      }
     } catch (e) {
       console.error('[webstore-checkout] club conversion error:', e.message);
     }

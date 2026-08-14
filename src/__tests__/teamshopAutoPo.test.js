@@ -281,7 +281,7 @@ describe('generateForSo', () => {
     expect(upsert.payload[0].skip_reason).toBe('in_stock');
   });
 
-  test('non-teamshop SO is refused', async () => {
+  test('non-teamshop/club SO is refused', async () => {
     const sb = fakeSb({
       'teamshop_auto_po_needs.select': [{ data: [], error: null }],
       'webstore_orders.select': [{ data: [], error: null }],
@@ -289,6 +289,26 @@ describe('generateForSo', () => {
     const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
     expect(r.ok).toBe(false);
     expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
+  });
+
+  test('a plain team-store webstore SO is refused (only teamshop/club convert)', async () => {
+    const sb = fakeSb({
+      'teamshop_auto_po_needs.select': [{ data: [], error: null }],
+      'webstore_orders.select': [{ data: [{ id: 'ord-2', order_source: 'storefront' }], error: null }],
+    });
+    const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
+    expect(r.ok).toBe(false);
+    expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
+  });
+
+  test('CLUB order generates POs exactly like teamshop (backorders become vendor orders)', async () => {
+    const sb = fakeSb(freshScript({
+      'webstore_orders.select': [{ data: [{ id: 'ord-1', order_source: 'club' }], error: null }],
+    }));
+    const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
+    expect(r.ok).toBe(true);
+    const rpcCalls = sb.calls.filter((c) => c.op === 'rpc' && c.table === 'create_purchase_order');
+    expect(rpcCalls.length).toBe(2);
   });
 
   test('unreadable warehouse stock fails safe: everything needs ordering, and the result says so', async () => {

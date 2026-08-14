@@ -279,12 +279,14 @@ async function generateForSo(admin, soId, actor) {
     return { ok: true, replayed: true, so_id: so, po_ids: [...new Set(probe.data.map((r) => r.po_id).filter(Boolean))] };
   }
 
-  // Team Shop guard: only SOs born from a teamshop webstore order.
+  // Source guard: only SOs born from a teamshop or club webstore order (club
+  // joined the engine so backordered club items auto-turn into vendor POs —
+  // same needs ledger, same client_ref idempotency).
   const ordRes = await admin.from('webstore_orders')
     .select('id,order_source').eq('so_id', so).limit(1);
   if (ordRes.error) return { ok: false, error: ordRes.error.message };
   const ord = ordRes.data && ordRes.data[0];
-  if (!ord || ord.order_source !== 'teamshop') return { ok: false, error: 'Not a converted Team Shop order.' };
+  if (!ord || !['teamshop', 'club'].includes(ord.order_source)) return { ok: false, error: 'Not a converted Team Shop / club store order.' };
 
   const itemsRes = await admin.from('so_items')
     .select('id,item_index,product_id,sku,sizes,is_custom').eq('so_id', so).order('item_index');
@@ -519,11 +521,12 @@ async function dismissUnmapped(admin, body, staff) {
   return ok({ ok: true, need: upd.data[0] });
 }
 
-// Catch-up: evaluate every converted Team Shop order that has no evaluation
-// yet (covers conversions from before this shipped, or hook failures).
+// Catch-up: evaluate every converted Team Shop / club order that has no
+// evaluation yet (covers conversions from before this shipped, hook failures,
+// and club orders converted before club joined the engine).
 async function sweep(admin, actor) {
   const ordersRes = await admin.from('webstore_orders')
-    .select('id,so_id').eq('order_source', 'teamshop').eq('status', 'batched')
+    .select('id,so_id').in('order_source', ['teamshop', 'club']).eq('status', 'batched')
     .not('so_id', 'is', null)
     .order('created_at', { ascending: false })
     .limit(200);

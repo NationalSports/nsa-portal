@@ -136,10 +136,14 @@ exports.handler = async (event) => {
             .select('id,order_source,so_id,status').eq('stripe_pi_id', pi.id).limit(1);
           const _cso = _cs && _cs[0];
           if (_cso && _cso.order_source === 'club' && !_cso.so_id && _cso.status === 'paid') {
-            const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: _cso.id });
+            const { data: convData, error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: _cso.id });
             if (convErr) {
               console.error('[stripe-webhook] club conversion failed (Stripe will retry; RPC is so_id-replay idempotent):', convErr.message);
               hardFailure = true;
+            } else if (convData && convData.so_id) {
+              // Best-effort auto-PO generation (00202, club-enabled) — same
+              // posture as the teamshop branch above.
+              await require('./teamshop-auto-po').generateForSoSafe(sb, convData.so_id, 'stripe-webhook', 'stripe-webhook');
             }
           }
         } catch (e) {
