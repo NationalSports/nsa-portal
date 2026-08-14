@@ -629,8 +629,13 @@ async function placeOrder(sb, body) {
         currency: 'usd',
         automatic_payment_methods: { enabled: true },
         receipt_email: order.buyer_email || undefined,
-        metadata: { webstore_order_id: order.id, store_slug: store.slug, source: 'nsa_webstore' },
-        description: `${store.name} webstore — order ${order.id}`,
+        metadata: { webstore_order_id: order.id, webstore_order_number: order.order_number != null ? String(order.order_number) : '', store_slug: store.slug, source: 'nsa_webstore' },
+        // The description is what Stripe prints on the buyer's receipt and the card
+        // statement, so it has to be the human order number they see everywhere else
+        // (portal, confirmation email, support). The raw UUID meant nobody — buyer or
+        // rep — could match a receipt to an order. order_number is a sequence default,
+        // so it's on the row the insert/RPC just returned.
+        description: `${store.name} webstore — order ${order.order_number != null ? '#' + order.order_number : order.id}`,
       }, { idempotencyKey: 'wsorder_' + order.id });
     } catch (e) {
       await rollback();

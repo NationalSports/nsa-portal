@@ -2480,16 +2480,29 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   // Edit the catalog product's vendor (who a PO is cut to) and/or SKU. SKU also syncs onto
   // this product's webstore rows so stock & vendor lookups (matched by sku) stay aligned.
+  // Returns true only when the write actually landed, so the caller can keep its
+  // "last saved" baseline honest and put the field back if the DB refused.
   const updateProductMeta = useCallback(async (productId, fields) => {
-    if (!productId || !fields) return;
+    if (!productId || !fields) return false;
     const clean = {};
     if (fields.vendor_id !== undefined) clean.vendor_id = fields.vendor_id || null;
     if (fields.sku !== undefined) clean.sku = (fields.sku || '').trim().toUpperCase() || null;
-    if (!Object.keys(clean).length) return;
-    const { error } = await supabase.from('products').update(clean).eq('id', productId);
-    if (error) { flash('Error: ' + error.message); return; }
+    if (!Object.keys(clean).length) return false;
+    // .select() so a silent 0-row update (RLS blocked this login, or the product row
+    // is gone) is caught. Without it PostgREST returns no error and no rows, and the
+    // editor flashed "Product updated" over a change that never reached the database.
+    const { data: _hit, error } = await supabase.from('products').update(clean).eq('id', productId).select('id');
+    if (error) {
+      // products.sku carries a UNIQUE index — the raw Postgres text is unreadable.
+      flash(/duplicate|unique/i.test(error.message || '') && clean.sku
+        ? `SKU ${clean.sku} is already used by another product — pick a different one.`
+        : 'Error: ' + error.message);
+      return false;
+    }
+    if (!_hit || _hit.length === 0) { flash('Not saved — your login doesn’t have edit access. Ask an admin to add you as a team member.'); return false; }
     if (fields.sku !== undefined && clean.sku) await supabase.from('webstore_products').update({ sku: clean.sku }).eq('product_id', productId);
     flash('Product updated'); loadDetail(sel);
+    return true;
   }, [sel, flash, loadDetail]);
 
   const updateCatalogItem = useCallback(async (id, fields) => {
@@ -5790,9 +5803,19 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // product_id -> stock (warehouse + Adidas) for the batch health check.
   const productStock = {};
   Object.values(stockByWp).forEach((s) => { if (s.product_id) productStock[s.product_id] = s; });
-  // product_id -> available sizes, for the order editor's size dropdown.
+  // product_id -> offered sizes, for the order editor's size dropdown. The storefront
+  // view's available_sizes is the master product's scale — it doesn't know about sizes
+  // the rep added or removed on this store item (that's sizes_offered on the catalog
+  // row). Reading the scale alone hid rep-added sizes (3XL, youth, OSFA…) from the
+  // dropdown and still offered sizes the rep had taken off the store.
   const availSizes = {};
-  Object.values(stockByWp).forEach((s) => { if (s.product_id && Array.isArray(s.available_sizes)) availSizes[s.product_id] = s.available_sizes; });
+  catalog.forEach((c) => {
+    if (!c.product_id) return;
+    const st = stockByWp[c.id];
+    const scale = (st && Array.isArray(st.available_sizes)) ? st.available_sizes : [];
+    const offered = (Array.isArray(c.sizes_offered) && c.sizes_offered.length) ? c.sizes_offered : scale;
+    if (offered.length) availSizes[c.product_id] = [...new Set(offered)].sort((a, b) => sizeRank(a) - sizeRank(b));
+  });
 
   // ── Quick Mock Builder inputs (store items as garments, the team's library art —
   // own + parent — as layers; saves route back to each art's owning customer) ──
@@ -7178,8 +7201,26 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.product_id]);
-  const saveVendor = (vid) => { setVendorId(vid); if (vid !== _initVendorId.current) { _initVendorId.current = vid; onUpdateProductMeta(item.product_id, { vendor_id: vid || null }); } };
-  const saveSku = () => { const s = (skuEdit || '').trim().toUpperCase(); if (s && s !== (_initSku.current || '').toUpperCase()) { _initSku.current = s; onUpdateProductMeta(item.product_id, { sku: s }); } };
+  // Both of these persist the moment the field settles, so they must only advance their
+  // "last saved" baseline once the DB confirms the write. Advancing it up front (the old
+  // behavior) meant a rejected write — duplicate SKU, or a login without edit access —
+  // was never retried on the next blur, and the input kept showing a value the database
+  // had never accepted. On failure, put the field back to what's actually stored.
+  const saveVendor = async (vid) => {
+    setVendorId(vid);
+    if (vid === _initVendorId.current) return;
+    const prev = _initVendorId.current;
+    const ok = await onUpdateProductMeta(item.product_id, { vendor_id: vid || null });
+    if (ok) { _initVendorId.current = vid; return; }
+    setVendorId(prev); setVendorText(vendorList.find((v) => v.id === prev)?.name || '');
+  };
+  const saveSku = async () => {
+    const s = (skuEdit || '').trim().toUpperCase();
+    if (!s || s === (_initSku.current || '').toUpperCase()) return;
+    const ok = await onUpdateProductMeta(item.product_id, { sku: s });
+    if (ok) { _initSku.current = s; setSkuEdit(s); return; }
+    setSkuEdit(_initSku.current || '');
+  };
   const [image, setImage] = useState(item.image_url || null);
   const [backImage, setBackImage] = useState(item.image_back_url || null);
   const [decorations, setDecorations] = useState(Array.isArray(item.decorations) ? item.decorations : []);
@@ -7466,6 +7507,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
   const save = async () => {
+    // SKU + vendor live on the catalog product and persist on their own when the field
+    // settles. Flush a still-typed SKU here too, so "Save changes" saves everything the
+    // rep can see on the card — not just the webstore_products fields below.
+    if (!isBundle && item.product_id && onUpdateProductMeta) await saveSku();
     const cleanOptions = cleanItemOptions(options);
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
@@ -13164,7 +13209,11 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, onSav
           <div style={sectionLabel}>Items</div>
           <div style={{ background: '#f8fafc', borderRadius: 8, overflow: 'hidden', marginBottom: 14 }}>
             {rows.map((r, idx) => {
-              const sizes = availSizes[r.product_id] || [];
+              // Always include the size this line was actually bought in, even if the rep
+              // has since taken it off the store — otherwise the dropdown renders blank
+              // and saving any other edit on the row would silently clear the size.
+              const offered = availSizes[r.product_id] || [];
+              const sizes = (r.size && !offered.includes(r.size)) ? [...offered, r.size] : offered;
               // Product name up top, color + SKU beneath — same convention as the
               // expanded order row. The SKU alone wasn't enough to tell items apart.
               const sub = [r.color, r.name && r.name !== r.sku ? r.sku : null].filter(Boolean).join(' · ');
