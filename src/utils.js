@@ -64,7 +64,37 @@ export const fetchWithTimeout=async(url,opts={},ms=15000)=>{
 // the bundle. UI gates ("Sends directly" badges, mailto fallbacks) read this flag.
 // Defaults on; set REACT_APP_BREVO_ENABLED=false to force mailto fallback.
 export const _brevoKey = (process.env.REACT_APP_BREVO_ENABLED || 'true') !== 'false';
+// Two paths, one function. /api/mail-send is a rewrite onto brevo-proxy declared in
+// public/_redirects; the vendor path is the function's own URL. Sends go out on the
+// neutral path FIRST because ad blockers, privacy extensions and network filters match
+// "brevo" (an email-marketing vendor) anywhere in a request URL and abort it inside the
+// browser — the rep only ever saw "Email send failed: Failed to fetch" and nothing ever
+// reached the server. The vendor path stays as the fallback: a deploy that predates the
+// rewrite answers /api/mail-send with the SPA shell (the `/* -> /index.html` catch-all),
+// so a 200 that isn't JSON means "alias not deployed here", not "the send failed".
+const _mailProxy = '/api/mail-send';
 const _brevoProxy = '/.netlify/functions/brevo-proxy';
+// Netlify rejects a function request body over ~6 MB at the edge and tears down the
+// upload mid-flight, which the browser also surfaces as a bare "Failed to fetch". Check
+// the payload before firing so an oversized attachment gets an actionable message.
+const _MAIL_MAX_BYTES = 5 * 1024 * 1024;
+
+// fetch() against the mail proxy, neutral path first, vendor path as fallback. Resolves
+// {res} for any genuine response, or {netErr} when fetch itself threw on both paths
+// (blocked by an extension, offline, connection reset). `query` is appended to the path.
+export const mailProxyFetch=async(query,opts)=>{
+  let netErr=null;
+  for(const base of [_mailProxy,_brevoProxy]){
+    try{
+      const res=await authFetch(base+(query||''),opts);
+      const ct=(res.headers&&res.headers.get&&res.headers.get('content-type'))||'';
+      // SPA shell instead of the function — this deploy has no /api rewrite yet.
+      if(base===_mailProxy&&res.ok&&!/json/i.test(ct))continue;
+      return{res};
+    }catch(e){netErr=e}
+  }
+  return{netErr:netErr||new Error('Failed to fetch')};
+};
 
 // Returns an absolute URL for the company logo so it renders inside external
 // email clients (Gmail, Apple Mail, etc.) which won't follow relative paths.
@@ -133,14 +163,20 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
     if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}
     if(attachment&&attachment.length>0)payload.attachment=attachment;
-    const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
-    body:JSON.stringify(payload)});
-    const d=await r.json();
+    const body=JSON.stringify(payload);
+    const bytes=(typeof Blob!=='undefined')?new Blob([body]).size:body.length;
+    if(bytes>_MAIL_MAX_BYTES)return{ok:false,error:'This email is too large to send ('+(bytes/1048576).toFixed(1)+' MB; the limit is 5 MB). The document PDF is attached automatically, so a large photo or PDF you added is usually the cause — remove or shrink it and send again.'};
+    const{res:r,netErr}=await mailProxyFetch('',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},body});
+    // fetch() itself threw on both paths: the request never left the browser (or died on
+    // the wire). Name the usual cause instead of surfacing a bare "Failed to fetch".
+    if(netErr)return{ok:false,error:'Could not reach the mail server — the request was blocked before it left your browser. This is almost always an ad blocker, privacy extension, or network/DNS filter. Try again with extensions disabled (or in an incognito window), or on a different network. ('+(netErr.message||'network error')+')'};
+    const d=await r.json().catch(()=>({}));// 413s and gateway errors come back with no JSON body
     if(!r.ok){
       // authFetch already retried once with a hard session refresh; a 401 that
       // survives that means the user's session is genuinely gone (signed out
       // elsewhere, revoked, etc.) rather than just a stale-token blip.
       if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
+      if(r.status===413)return{ok:false,error:'This email is too large to send. Remove or shrink the attachments and send again.'};
       return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
     }
     return{ok:true,messageId:d.messageId}}
