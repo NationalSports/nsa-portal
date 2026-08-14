@@ -183,6 +183,35 @@ holds session material and dealer pricing.
 Still do the spec's cart-safety gate by hand: the CLICK cart is shared account state, so start
 from an empty cart, use the `ZZ-TEST-DISCOVERY` PO number, and clear the test lines afterwards.
 
+## Fast cart fill (Phase 2)
+
+`click/fill-cart.mjs` fills a CLICK cart over the portal's own JSON API instead of having an LLM
+click through it. Playwright still does the login (Salesforce SSO behind Akamai), then the
+mechanical work is five HTTP calls — including **one** request for the whole size grid, the stage
+that took 4m11s of an 8m40s browser run.
+
+```bash
+npm run test:click                          # client tests against a fake CLICK API
+npm run click:fill -- --po "PO 57073 SFVB" --dry-run   # map sizes, write nothing
+npm run click:fill -- --po "PO 57073 SFVB"             # fill the cart, then verify by reading it back
+```
+
+Lines come from the same `so_item_po_lines` rows the worker uses, or from `--lines file.json`.
+Sizes are mapped to adidas **technical codes** (210/230/250/270…) read from each article's own grid;
+a label that can't be mapped is reported, never dropped, so 15 pcs can't quietly become 14. After
+writing, the cart is read back and diffed against the PO — mismatches are printed and the exit code
+is non-zero.
+
+It stops at a filled cart: there is no submit call in `click/` at all. Human review and submission
+are unchanged.
+
+Optional env (defaults are NSA's captured values): `CLICK_ACCOUNT`, `CLICK_SALES_ORG`,
+`CLICK_SOLD_TO`, `CLICK_API_HOST`.
+
+**Not yet covered:** setting a non-default ship-to (the captured run didn't change the address, so
+that endpoint is still unidentified) — do that part by hand for now, or capture a run that changes
+it and the call will be obvious.
+
 ## TODO / Backlog
 
 - **Backorder handling (deferred):** When a size/SKU is backordered on Adidas
