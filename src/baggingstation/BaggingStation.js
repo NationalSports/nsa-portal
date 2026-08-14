@@ -235,15 +235,27 @@ function LineRow({ item, onTap, onShort }) {
       }}>
         {shorted ? '!' : done ? '✓' : ''}
       </div>
+      {item.image_url && (
+        // Mockup thumbnail: same SKU/color can carry different logos — the
+        // picture is the fastest way to grab the right pile off the table.
+        <img src={item.image_url} alt="" loading="lazy"
+          style={{ width: 56, height: 56, objectFit: 'contain', borderRadius: 6, background: '#fff', flexShrink: 0, opacity: done && !shorted ? 0.5 : 1 }}
+          onError={(e) => { e.target.style.display = 'none'; }} />
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 19, fontWeight: 700, textDecoration: done && !shorted ? 'line-through' : 'none', color: done && !shorted ? '#64748b' : '#f1f5f9' }}>
           {item.name || item.sku}
         </div>
         <div style={{ fontSize: 14, color: '#94a3b8', fontWeight: 700, marginTop: 2 }}>
           {item.color ? item.color + ' · ' : ''}{item.variant_label ? item.variant_label + ' · ' : ''}
+          {(item.player_name || '').trim() ? (item.player_name || '').trim() + ' · ' : ''}
           {onOrder ? 'ON ORDER — not arrived' : shorted ? `SHORT ${item.short_qty}` + (item.short_status !== 'open' ? ' (' + item.short_status + ')' : '') : ''}
         </div>
       </div>
+      {String(item.player_number || '').trim() && (
+        // Jersey number: verify against the shirt in hand before it goes in.
+        <span style={{ fontSize: 20, fontWeight: 800, background: '#f1f5f9', color: '#0f172a', borderRadius: 6, padding: '4px 10px', flexShrink: 0 }}>#{String(item.player_number).trim()}</span>
+      )}
       {item.size && (
         <span style={{ fontSize: 20, fontWeight: 800, border: '2px solid #475569', borderRadius: 6, padding: '4px 10px', flexShrink: 0 }}>{item.size}</span>
       )}

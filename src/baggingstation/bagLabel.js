@@ -23,11 +23,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif
 hr { border: none; border-top: 1.5pt solid #000; margin: 6pt 0; }
 .item { font-size: 10.5pt; line-height: 1.35; }
 .item .sz { font-weight: 800; border: 1pt solid #000; padding: 0 3pt; margin-left: 3pt; }
+.item .pnum { font-weight: 800; border: 1.5pt solid #000; padding: 0 3pt; margin-left: 3pt; background: #000; color: #fff; }
 .item .clr { color: #444; }
 .item.short { font-weight: 800; }
 /* Long orders: shrink so every item still fits on the 4x6 */
 .items.compact .item { font-size: 8.5pt; line-height: 1.25; }
-.items.compact .item .sz { padding: 0 2pt; }
+.items.compact .item .sz, .items.compact .item .pnum { padding: 0 2pt; }
 .shorts { border: 2pt solid #000; padding: 4pt 6pt; margin-top: 6pt; font-size: 10pt; font-weight: 800; }
 .foot { margin-top: auto; display: flex; align-items: flex-end; justify-content: space-between; gap: 8pt; }
 .foot img { width: 0.95in; height: 0.95in; }
@@ -55,6 +56,8 @@ export function buildBagLabelHtml({ order, items, store, seqTotal, origin }) {
         + `${Number(i.qty) || 0}× ${esc(i.name || i.sku)}`
         + (i.color ? `<span class="clr"> · ${esc(i.color)}</span>` : '')
         + (i.size ? `<span class="sz">${esc(i.size)}</span>` : '')
+        // jerseys: the number to verify is on THIS line (players differ per line)
+        + (String(i.player_number || '').trim() ? `<span class="pnum">#${esc(String(i.player_number).trim())}</span>` : '')
         + (short ? ' ⚠ SHORT' : '')
         + '</div>';
     }).join('');
