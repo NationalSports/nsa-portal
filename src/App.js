@@ -28,7 +28,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
+import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
@@ -733,7 +733,10 @@ const checkBrevoEmailOpens=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
   if(Date.now()<_brevoBackoffUntil)return null;
   try{
-    const r=await authFetch('/.netlify/functions/brevo-proxy?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json'}});
+    // Same neutral-path-first proxy the sends use — a blocker that kills the vendor URL
+    // would otherwise leave open tracking permanently dark for that rep.
+    const{res:r,netErr}=await mailProxyFetch('?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json'}});
+    if(netErr)return null;
     if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
     if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
