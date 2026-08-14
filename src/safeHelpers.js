@@ -227,6 +227,25 @@ export const soLineKey = (it, idx) => (safeStr(it?.sku)||'')+'|'+(safeStr(it?.co
 // key off this, and a drift between them would silently disarm the guards.
 export const soItemKey = (it) => ((safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'')).toLowerCase();
 
+// ── Provisional PO numbers ──
+// The Create-PO form DISPLAYS a number before any PO owns it: one is drawn from the sequence when
+// the form opens, and it only becomes a real PO when Create is clicked. Reps copy that number to
+// paste into the vendor's own order site — that is what the 📋 button next to it is for — so a form
+// abandoned after a copy leaves the vendor holding a PO number this portal never created. Their
+// invoice then references a PO that does not exist and matches nothing: PO 23801 JMHF on SO-1615
+// ($144.78) and PO 26702 LAF on SO-1664 ($432.86), both Augusta bills still unapplied weeks later,
+// each one number above the PO that actually was created (23800 / 26701).
+// True when the order carries no product PO line and no deco PO with this id — i.e. the number was
+// handed out but never issued. Trimmed on both sides; a blank id is never "missing" (nothing to warn
+// about). Deliberately id-only: the vendor and items don't matter, the number's existence does.
+export const poIdMissingFromOrder = (o, poId) => {
+  const id = safeStr(poId).trim();
+  if (!id) return false;
+  const onLine = safeItems(o).some((it) => safePOs(it).some((p) => safeStr(p?.po_id).trim() === id));
+  if (onLine) return false;
+  return !safeArr(o?.deco_pos).some((dp) => safeStr(dp?.po_id).trim() === id);
+};
+
 // Returns a Map of soLineKey -> total invoiced qty across the given invoices.
 // Matches first by exact key, then degrades to sku+color, then to sku alone,
 // for items from invoices written before the key existed or that lost their
