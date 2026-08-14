@@ -42,7 +42,15 @@ const CHROMIUM = process.env.CHROMIUM_PATH
   || (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined);
 
 // Anything that could commit an order. Evaluated against the full URL, case-insensitive.
-const DENY = /checkout|place_?order|submit_?order|\/submit\b|payment|purchase|confirm_?order/i;
+// The asymmetry here decides the design: over-blocking stalls a capture run (annoying, safe),
+// under-blocking could place a real order (unacceptable). So `/submit` stays — the repo's own mock
+// portal submits via /api/submit, and a real portal may too — and every block is logged LOUDLY, so
+// an over-block is diagnosed in seconds instead of looking like a portal hang.
+//
+// `purchase` was removed: on a B2B portal "purchase order" appears in ordinary cart and PO
+// endpoints, so that term blocked routine traffic. Suspected cause of the first live run stalling
+// mid-size-entry.
+const DENY = /checkout|place_?order|submit_?order|confirm_?order|\/payments?\b|\/submit\b/i;
 
 // Request-body keys whose values must never be written to disk.
 const SECRET_KEY = /pass|password|secret|token|auth|csrf|credit|card|cvv/i;
@@ -108,6 +116,8 @@ async function watch(context) {
   await context.route('**/*', async (route, request) => {
     if (DENY.test(request.url())) {
       blocked++;
+      // Loud on purpose: a silent abort looks like a portal hang from the outside.
+      console.warn('[capture] BLOCKED (submission guard): ' + request.method() + ' ' + request.url());
       note({ t: new Date().toISOString(), method: request.method(), url: request.url(), blocked: true });
       await route.abort('blockedbyclient');
       return;
@@ -117,8 +127,20 @@ async function watch(context) {
   context.on('response', async (res) => {
     const req = res.request();
     if (!KEEP.has(req.resourceType())) return;
+    // Body reads can hang on streamed/opaque responses, and a hung listener is indistinguishable
+    // from a hung portal. Only read JSON-ish bodies, and never wait more than a moment.
     let body = null;
-    try { body = shapeBody(await res.text()); } catch { /* opaque/streamed */ }
+    const ctype = (res.headers()['content-type'] || '').toLowerCase();
+    if (/json|text\/plain/.test(ctype)) {
+      try {
+        body = shapeBody(await Promise.race([
+          res.text(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('body read timed out')), 2000)),
+        ]));
+      } catch { body = { kind: 'unread' }; }
+    } else if (ctype) {
+      body = { kind: 'skipped', contentType: ctype.split(';')[0] };
+    }
     let post = null;
     try { post = shapeBody(req.postData()); } catch { /* none */ }
     note({
