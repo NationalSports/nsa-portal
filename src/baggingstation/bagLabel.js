@@ -12,10 +12,10 @@ const esc = (s) => String(s == null ? '' : s)
 const LABEL_CSS = `
 @page { size: 4in 6in; margin: 0; }
 * { box-sizing: border-box; }
-body { margin: 0; font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif; }
+html, body { width: 4in; height: 6in; margin: 0; }
+body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif; }
 .page { width: 4in; height: 6in; padding: 0.18in; page-break-after: always; display: flex; flex-direction: column; overflow: hidden; }
-.num { font-size: 34pt; font-weight: 800; line-height: 1; }
-.name { font-size: 22pt; font-weight: 800; line-height: 1.05; text-transform: uppercase; }
+.name { font-size: 24pt; font-weight: 800; line-height: 1.05; text-transform: uppercase; }
 .store { font-size: 11pt; font-weight: 700; margin-top: 4pt; }
 .ord { font-size: 9.5pt; font-weight: 700; color: #333; margin-top: 2pt; }
 .bagseq { font-size: 10pt; font-weight: 700; color: #333; margin-top: 2pt; }
@@ -67,7 +67,6 @@ export function buildBagLabelHtml({ order, items, store, seqTotal, origin }) {
   return '<!doctype html><html><head><meta charset="utf-8"/>'
     + `<title>${esc(hdr.name)}${hdr.number ? ' #' + esc(hdr.number) : ''}</title>`
     + `<style>${LABEL_CSS}</style></head><body><div class="page">`
-    + `<div class="num">${hdr.number ? '#' + esc(hdr.number) : ''}</div>`
     + `<div class="name">${esc(hdr.name)}</div>`
     + `<div class="store">${esc((store && store.name) || '')}</div>`
     + `<div class="ord">Order #${esc(orderNum)}${buyerLine}</div>`

@@ -11,7 +11,7 @@ const store = { name: 'Lakeville Soccer Club' };
 
 test('label carries player, store, bag N of M, contents, and the scan QR', () => {
   const html = buildBagLabelHtml({ order, items, store, seqTotal: 42, origin: 'https://portal.test' });
-  expect(html).toContain('#23');
+  expect(html).not.toContain('class="num"'); // big jersey number dropped by request
   expect(html).toContain('Jimmy Smith'); // uppercase is CSS text-transform, not markup
   expect(html).toContain('Lakeville Soccer Club');
   expect(html).toContain('Bag 15 of 42');
