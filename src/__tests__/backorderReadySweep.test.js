@@ -192,6 +192,24 @@ describe('checkTransferLowStock (00238 — weekly-throttled, open stores only)',
     expect(admin.calls.filter((c) => c.key === 'webstore_transfers.update').length).toBe(1);
   });
 
+  test('committed unpulled demand triggers the alert even with healthy raw on_hand (UI Avail parity)', async () => {
+    global.fetch = jest.fn(async () => ({ ok: true, status: 200, text: async () => '' }));
+    const admin = fakeAdmin({
+      'webstore_transfers.select': [{ data: [
+        { id: 1, store_id: 'ws1', code: 'LOGO', label: 'Crest', kind: 'design', on_hand: 20, incoming: 0, low_stock_notified_at: null },
+      ], error: null }],
+      'webstores.select': [{ data: [{ id: 'ws1', name: 'Grande FC', status: 'open' }], error: null }],
+      'webstore_orders.select': [{ data: [{ id: 'o1', store_id: 'ws1', status: 'paid', transfers_pulled: false }], error: null }],
+      'webstore_order_items.select': [{ data: [{ order_id: 'o1', product_id: 'p1', qty: 18, player_number: null, is_bundle_parent: false }], error: null }],
+      'webstore_products.select': [{ data: [{ id: 'wp1', store_id: 'ws1', product_id: 'p1', transfer_codes: ['LOGO'] }], error: null }],
+      'webstore_bundle_items.select': [{ data: [], error: null }],
+    });
+    const n = await sweep.checkTransferLowStock(admin, 'ops@nsa.com');
+    expect(n).toBe(1); // Avail = 20 on hand − 18 committed = 2 < 10, despite 20 ≥ 10
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.htmlContent).toContain('Available');
+  });
+
   test('a failed email send stamps nothing (retries next pass)', async () => {
     global.fetch = jest.fn(async () => ({ ok: false, status: 500, text: async () => 'boom' }));
     const admin = fakeAdmin({

@@ -16,30 +16,42 @@
 -- no inventory row is returned found:false and skipped — pulling an untracked
 -- product must not fail the pull (parity with 00206's zero-row posture).
 --
--- The client's absolute-value diff-save still exists (it is the legitimate
--- write path for spreadsheet imports and manual stock edits). Residual risk,
--- documented honestly: a diff-save that fires between another tab's RPC and
--- this tab's state refresh can still overwrite by a few units for a moment —
--- but the window shrinks from "as stale as the tab" to milliseconds, and the
--- next pull's RPC re-anchors to the live row.
+-- The client's diff-save write path for spreadsheet imports and manual stock
+-- edits is handled by 00239 (merge_product_inventory): edits are applied as
+-- baseline-relative deltas on the live row, so a stale tab's save composes
+-- with concurrent pulls instead of overwriting them.
+--
+-- Each pull row may carry the so_id it was pulled FOR. When it does, the RPC
+-- also closes that SO's matching open backorder needs (teamshop_auto_po_needs
+-- qty_needed, oldest row first) by the pulled amount: pulled garments are a
+-- SATISFIED backorder, so the row leaves the Backorders queue and — critically
+-- — its claim stops counting against the checkout cap, whose supply side
+-- (on-hand) also just dropped by the same units. Without this, a pulled-but-
+-- not-yet-completed SO double-subtracts from the sellable pool. Best-effort:
+-- the needs table may predate 00202, and stocked orders have no needs rows.
 --
 -- Guard: same shape as 00206 pull_webstore_transfers — staff (is_team_member)
 -- or service_role; a coach JWT is rejected.
 
 create or replace function public.pull_house_inventory(
-  p_pulls jsonb  -- [{product_id text, size text, qty int}]
+  p_pulls jsonb  -- [{product_id text, size text, qty int, so_id text|null}]
 ) returns jsonb
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  v_role     text;
-  v_pull     record;
-  v_qty      int;
-  v_rows     jsonb := '[]'::jsonb;
-  v_found    boolean;
+  v_role      text;
+  v_pull      record;
+  v_qty       int;
+  v_rows      jsonb := '[]'::jsonb;
+  v_found     boolean;
+  v_has_needs boolean;
+  v_need      record;
+  v_remaining int;
+  v_dec       int;
 begin
+  v_has_needs := to_regclass('public.teamshop_auto_po_needs') is not null;
   v_role := coalesce(
     nullif(current_setting('request.jwt.claims', true), '')::jsonb->>'role',
     current_setting('request.jwt.claim.role', true),
@@ -55,8 +67,8 @@ begin
   -- Deterministic lock order (product_id, size) prevents deadlocks between two
   -- concurrent pulls touching the same products in different orders.
   for v_pull in
-    select x.product_id, x.size, x.qty
-      from jsonb_to_recordset(p_pulls) as x(product_id text, size text, qty int)
+    select x.product_id, x.size, x.qty, x.so_id
+      from jsonb_to_recordset(p_pulls) as x(product_id text, size text, qty int, so_id text)
      where coalesce(x.product_id, '') <> ''
        and coalesce(x.size, '') <> ''
        and coalesce(x.qty, 0) > 0
@@ -72,6 +84,25 @@ begin
       'size', v_pull.size,
       'quantity', coalesce(v_qty, 0),
       'found', v_found);
+
+    -- Close this SO's matching open backorder needs by the pulled amount
+    -- (oldest need row first when an SO has several for the same key).
+    if v_has_needs and coalesce(v_pull.so_id, '') <> '' then
+      v_remaining := v_pull.qty;
+      for v_need in
+        select id, qty_needed from teamshop_auto_po_needs
+         where so_id = v_pull.so_id and product_id = v_pull.product_id
+           and size = v_pull.size and qty_needed > 0
+         order by created_at, id
+      loop
+        exit when v_remaining <= 0;
+        v_dec := least(v_need.qty_needed, v_remaining);
+        update teamshop_auto_po_needs
+           set qty_needed = qty_needed - v_dec
+         where id = v_need.id;
+        v_remaining := v_remaining - v_dec;
+      end loop;
+    end if;
   end loop;
 
   return jsonb_build_object('ok', true, 'rows', v_rows);

@@ -188,14 +188,19 @@ async function checkStock(sb, store, lines) {
         .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2000);
       const rows = (!nd.error && nd.data) || [];
       const soIds = [...new Set(rows.map((n) => n.so_id).filter(Boolean))];
-      const soRes = soIds.length ? await sb.from('sales_orders').select('id,status').in('id', soIds) : { data: [] };
-      const done = new Set((((soRes && !soRes.error && soRes.data) || []))
-        .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
-      rows.forEach((n) => {
-        if (done.has(n.so_id)) return; // finished SO — its claim is settled
-        const k = n.product_id + '|' + (n.size || '');
-        claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
-      });
+      const soRes = soIds.length ? await sb.from('sales_orders').select('id,status').in('id', soIds) : { data: [], error: null };
+      if (!soRes.error) {
+        // Statuses unreadable → count NO claims (fail-open, matching the stock
+        // lookup) rather than counting finished SOs' settled claims and
+        // over-blocking real buyers.
+        const done = new Set((soRes.data || [])
+          .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
+        rows.forEach((n) => {
+          if (done.has(n.so_id)) return; // finished SO — its claim is settled
+          const k = n.product_id + '|' + (n.size || '');
+          claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
+        });
+      }
     } catch (_) { /* fail-open: an unreadable ledger must not block checkout */ }
   }
   const short = []; const holds = [];

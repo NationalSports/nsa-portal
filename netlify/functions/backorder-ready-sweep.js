@@ -122,14 +122,22 @@ async function sendDigestEmail(toEmail, groups) {
 // Open needs = qty_needed > 0 on an SO that isn't finished. Returns { needs,
 // soInfo } where soInfo maps so_id -> { memo, status, webstore_id, store_name }.
 async function loadOpenNeeds(admin, limit) {
+  // The fetch is created_at-ordered (the ledger's own column) but PRIORITY is
+  // order_date, which is only known after the SO join below — so the fetch
+  // bound must comfortably exceed the real open-needs population, or the
+  // oldest-ORDERED rows (teamshop needs recorded late at store close) could be
+  // cut before they can be sorted to the front. 5000 is far above any real
+  // backlog; if it's ever hit, `truncated` flags it (no silent caps).
+  const cap = limit || 5000;
   const needsRes = await admin.from('teamshop_auto_po_needs')
     .select('id, so_id, so_item_id, product_id, sku, size, qty_ordered, qty_needed, vendor, po_id, skip_reason, created_at, ready_qty, ready_at, notified_ready_qty, ready_notified_at, expected_date')
     .gt('qty_needed', 0)
     .order('created_at', { ascending: true })
-    .limit(limit || 1000);
+    .limit(cap);
   if (needsRes.error) return { error: needsRes.error };
   let needs = needsRes.data || [];
-  if (!needs.length) return { needs: [], soInfo: {} };
+  const truncated = needs.length >= cap;
+  if (!needs.length) return { needs: [], soInfo: {}, truncated: false };
 
   const soIds = [...new Set(needs.map((n) => n.so_id).filter(Boolean))];
   const soRes = await admin.from('sales_orders').select('id, memo, status, webstore_id, created_at').in('id', soIds);
@@ -168,7 +176,7 @@ async function loadOpenNeeds(admin, limit) {
   // Oldest ORDER first — the same priority the allocator uses, so the
   // dashboard list and the FIFO line are the same line.
   needs.sort((a, b) => orderKey(a).localeCompare(orderKey(b)));
-  return { needs, soInfo };
+  return { needs, soInfo, truncated };
 }
 
 // Vendor-feed expected dates for still-short needs: products.inventory_source
@@ -202,11 +210,77 @@ async function loadExpectedDates(admin, needs) {
 }
 
 // ── Transfer low-stock check (00238) ─────────────────────────────────────────
-// Heat-transfer inventory below the transfers UI's amber threshold with nothing
-// incoming, on OPEN stores only — emailed on the same ops channel, throttled to
-// once per week per row. Email-only: with no alert address configured this is a
-// no-op (the transfers page already shows the amber state in-app).
+// Heat-transfer AVAILABILITY below the transfers UI's amber threshold with
+// nothing incoming, on OPEN stores only — emailed on the same ops channel,
+// throttled to once per week per row. Availability mirrors the UI exactly:
+// Avail = on_hand − committed (demand from placed, not-yet-pulled orders) —
+// raw on_hand alone misses the store that "has 20" with 18 already promised.
+// Email-only: with no alert address configured this is a no-op (the transfers
+// page already shows the amber state in-app).
 const LOW_STOCK_THRESHOLD = 10; // mirrors the transfers UI amber rule (Avail < 10)
+
+// PINNED COPIES of src/Webstores.js buildTransferMaps/transferUsage (the
+// client's product→transfer-consumption mapping) — keep in sync with the
+// originals; they can't be imported here (that file is JSX/browser code).
+function buildTransferMaps(catalog, bundleItems) {
+  const designsByPid = {}, numSetsByPid = {}, takesNumByPid = {};
+  const process = (c) => {
+    if (!c.product_id) return;
+    const codes = (c.transfer_codes && c.transfer_codes.length) ? c.transfer_codes : (c.transfer_code ? [c.transfer_code] : []);
+    if (codes.length) designsByPid[c.product_id] = codes;
+    if (c.takes_number) {
+      takesNumByPid[c.product_id] = true;
+      const sets = (c.num_transfer_sets && c.num_transfer_sets.length)
+        ? c.num_transfer_sets.map((s) => { const [size, color] = s.split('|'); return { size, color }; })
+        : (c.num_transfer_size ? [{ size: c.num_transfer_size, color: c.num_transfer_color }] : []);
+      if (sets.length) numSetsByPid[c.product_id] = sets;
+    }
+  };
+  (catalog || []).forEach(process);
+  (bundleItems || []).forEach(process);
+  return { designsByPid, numSetsByPid, takesNumByPid };
+}
+function transferUsage(lines, maps) {
+  const used = {};
+  (lines || []).forEach((i) => {
+    if (i.is_bundle_parent) return;
+    const units = i.qty || 1;
+    (maps.designsByPid[i.product_id] || []).forEach((d) => { used[d] = (used[d] || 0) + units; });
+    if (maps.takesNumByPid[i.product_id] && i.player_number) {
+      (maps.numSetsByPid[i.product_id] || []).forEach((set) => {
+        String(i.player_number).replace(/[^0-9]/g, '').split('').forEach((dg) => { const code = `${dg}|${set.size || ''}|${set.color || ''}`; used[code] = (used[code] || 0) + units; });
+      });
+    }
+  });
+  return used;
+}
+
+// Committed (placed, not-yet-pulled) transfer demand per code across the given
+// open stores. Best-effort: any read failure returns {} — the check then
+// degrades to the raw on_hand rule rather than skipping entirely.
+async function loadCommittedTransferUse(admin, storeIds) {
+  try {
+    const ordRes = await admin.from('webstore_orders')
+      .select('id, store_id, status, transfers_pulled').in('store_id', storeIds).limit(5000);
+    if (ordRes.error) return {};
+    const openOrders = (ordRes.data || []).filter((o) =>
+      o.status !== 'cancelled' && o.status !== 'pending_payment' && !o.transfers_pulled);
+    if (!openOrders.length) return {};
+    const itemsRes = await admin.from('webstore_order_items')
+      .select('order_id, product_id, qty, player_number, is_bundle_parent')
+      .in('order_id', openOrders.map((o) => o.id)).limit(10000);
+    if (itemsRes.error) return {};
+    const catRes = await admin.from('webstore_products')
+      .select('id, store_id, product_id, transfer_code, transfer_codes, takes_number, num_transfer_size, num_transfer_color, num_transfer_sets')
+      .in('store_id', storeIds).limit(10000);
+    const catalog = (catRes.error ? [] : catRes.data) || [];
+    const biRes = catalog.length ? await admin.from('webstore_bundle_items')
+      .select('bundle_id, product_id, transfer_code, transfer_codes, takes_number, num_transfer_size, num_transfer_color, num_transfer_sets')
+      .in('bundle_id', catalog.map((c) => c.id)).limit(10000) : { data: [] };
+    const maps = buildTransferMaps(catalog, (biRes.error ? [] : biRes.data) || []);
+    return transferUsage(itemsRes.data || [], maps);
+  } catch (_) { return {}; }
+}
 
 function buildLowStockHtml(groups) {
   const cell = 'padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:13px';
@@ -215,26 +289,29 @@ function buildLowStockHtml(groups) {
       <td style="${cell}">${t.label || t.code}</td>
       <td style="${cell}">${t.kind === 'number' ? ('#' + (t.digit != null ? t.digit : '') + ' ' + (t.tsize || '') + ' ' + (t.color || '')).trim() : 'design'}</td>
       <td style="${cell};text-align:right">${Number(t.on_hand) || 0}</td>
+      <td style="${cell};text-align:right">${t._avail != null ? t._avail : (Number(t.on_hand) || 0)}</td>
     </tr>`).join('');
     return `<h3 style="font-size:14px;margin:18px 0 6px">${g.store_name}</h3>
     <table style="border-collapse:collapse;width:100%"><thead><tr>
       <th style="${cell};text-align:left">Transfer</th><th style="${cell};text-align:left">Variant</th>
-      <th style="${cell};text-align:right">On hand</th>
+      <th style="${cell};text-align:right">On hand</th><th style="${cell};text-align:right">Available</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
   }).join('');
   return `<div style="font-family:Arial,sans-serif;max-width:640px">
     <h2 style="font-size:16px">Heat transfers running low</h2>
-    <p style="font-size:13px">These transfers are under ${LOW_STOCK_THRESHOLD} on hand with nothing on order from the supplier. Reorder before club orders pull into a shortfall.</p>
+    <p style="font-size:13px">These transfers have fewer than ${LOW_STOCK_THRESHOLD} AVAILABLE (on hand minus what placed, not-yet-pulled orders already need) with nothing on order from the supplier. Reorder before club orders pull into a shortfall.</p>
     ${blocks}
     <p style="font-size:11px;color:#94a3b8;margin-top:18px">NSA backorder sweep — throttled to one alert per transfer per week.</p>
   </div>`;
 }
 
 async function checkTransferLowStock(admin, toEmail) {
+  // NO on_hand prefilter — availability (on_hand − committed) is only
+  // computable after loading committed demand, and a transfer with plenty on
+  // hand can still be critically short once open orders are counted.
   const res = await admin.from('webstore_transfers')
     .select('id, store_id, code, label, kind, tsize, color, digit, on_hand, incoming, low_stock_notified_at')
-    .lt('on_hand', LOW_STOCK_THRESHOLD)
-    .limit(2000);
+    .limit(5000);
   if (res.error) {
     if (isMissingRelation(res.error)) return 0;
     throw new Error(res.error.message);
@@ -251,6 +328,14 @@ async function checkTransferLowStock(admin, toEmail) {
   const stores = {};
   ((stRes.error ? [] : stRes.data) || []).forEach((w) => { stores[w.id] = w; });
   rows = rows.filter((t) => { const w = stores[t.store_id]; return w && w.status === 'open'; });
+  if (!rows.length) return 0;
+
+  // Availability = on_hand − committed (UI parity: the transfers page's Avail
+  // column). Committed load failures degrade to the raw on_hand rule.
+  const committed = await loadCommittedTransferUse(admin, [...new Set(rows.map((t) => t.store_id))]);
+  rows = rows
+    .map((t) => ({ ...t, _avail: (Number(t.on_hand) || 0) - (Number(committed[t.code]) || 0) }))
+    .filter((t) => t._avail < LOW_STOCK_THRESHOLD);
   if (!rows.length) return 0;
 
   const byStore = new Map();
@@ -291,13 +376,14 @@ async function runSweep(admin, actor) {
     if (!setRes.error && setRes.data) alertEmail = (setRes.data.backorder_alert_email || '').trim() || null;
   } catch (_) { /* settings are optional */ }
 
-  const loaded = await loadOpenNeeds(admin, 1000);
+  const loaded = await loadOpenNeeds(admin);
   if (loaded.error) {
     if (isMissingRelation(loaded.error)) return { ok: true, enabled: false, note: 'auto-PO migration (00202/00236) not applied' };
     return { ok: false, error: loaded.error.message };
   }
   const { needs, soInfo } = loaded;
   summary.open = needs.length;
+  if (loaded.truncated) summary.errors.push('open needs hit the 5000-row fetch cap — FIFO ordering may be incomplete this pass');
   if (!needs.length) {
     if (alertEmail) {
       try { summary.transfer_low = await checkTransferLowStock(admin, alertEmail); }
@@ -330,8 +416,12 @@ async function runSweep(admin, actor) {
     // Stock got used before decorating: lower the high-water mark so a
     // re-arrival re-alerts.
     if (ready < (Number(n.notified_ready_qty) || 0)) patch.notified_ready_qty = ready;
-    const exp = expected.get(n.id);
-    if (exp && exp !== n.expected_date) patch.expected_date = exp;
+    // expected_date mirrors the vendor feed BOTH ways: stamped while the feed
+    // promises a date for a still-short need, CLEARED when the feed drops it
+    // (vendor cancelled the restock) or the need is fully covered — a stale
+    // "coming on the 25th" that no longer exists must not keep showing.
+    const exp = expected.get(n.id) || null;
+    if (exp !== (n.expected_date || null)) patch.expected_date = exp;
     if (Object.keys(patch).length) {
       const up = await admin.from('teamshop_auto_po_needs').update(patch).eq('id', n.id);
       if (up.error) summary.errors.push('need ' + n.id + ': ' + up.error.message);
@@ -379,12 +469,15 @@ async function runSweep(admin, actor) {
 
 // ── Dashboard rows (staff) ───────────────────────────────────────────────────
 async function listBackorders(admin) {
-  const loaded = await loadOpenNeeds(admin, 500);
+  // Full fetch, THEN sort by order date, THEN trim for display — trimming at
+  // the query (created_at-ordered) could cut the oldest-ordered rows.
+  const loaded = await loadOpenNeeds(admin);
   if (loaded.error) {
     if (isMissingRelation(loaded.error)) return ok({ ok: true, enabled: false, rows: [] });
     return bad(500, loaded.error.message);
   }
-  const { needs, soInfo } = loaded;
+  const { needs: allNeeds, soInfo } = loaded;
+  const needs = allNeeds.slice(0, 500);
 
   const poIds = [...new Set(needs.map((n) => n.po_id).filter(Boolean))];
   const poById = {};

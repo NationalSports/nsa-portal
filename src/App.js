@@ -18585,6 +18585,7 @@ export default function App(){
   // local-absolute write ONLY when the RPC isn't deployed yet.
   const pullHouseInv=(prodPatches,pulls)=>{
     const legacy=()=>{if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x))};
+    if(!supabase){legacy();return}// unconfigured/demo env: pure local decrement, as before 00237
     if(!pulls||!pulls.length){legacy();return}
     supabase.rpc('pull_house_inventory',{p_pulls:pulls}).then(({data,error})=>{
       if(error){
@@ -18596,7 +18597,17 @@ export default function App(){
       }
       const byPid={};
       ((data&&data.rows)||[]).forEach(r=>{if(r.found===false)return;(byPid[r.product_id]=byPid[r.product_id]||{})[r.size]=r.quantity});
-      if(Object.keys(byPid).length>0)setProd(pp=>pp.map(x=>byPid[x.id]?{...x,_inv:{...(x._inv||{}),...byPid[x.id]}}:x));
+      if(Object.keys(byPid).length>0){
+        const adopt=(pp)=>pp.map(x=>byPid[x.id]?{...x,_inv:{...(x._inv||{}),...byPid[x.id]}}:x);
+        // Server truth, not a local edit: advance the diff-save snapshot IN THE
+        // SAME step. Adopting into state alone would make the prod effect see
+        // "local changed vs snapshot" and re-send the pull as a merge delta
+        // (base = pre-pull snapshot) — and the 00239 RPC would then decrement
+        // the pull a SECOND time. With the snapshot advanced there is nothing
+        // to save: the server already holds these quantities.
+        if(_dbSnap.current.prod)_dbSnap.current.prod=adopt(_dbSnap.current.prod);
+        setProd(adopt);
+      }
     }).catch(e=>console.error('[pull] house inventory decrement error:',e));
   };
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
@@ -18617,7 +18628,7 @@ export default function App(){
     const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
     // Deduct warehouse inventory for what was pulled — server-side (00237), see pullHouseInv.
     const prodPatches={};const housePulls=[];
-    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v})}});prodPatches[p.id]=newInv});
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[p.id]=newInv});
     pullHouseInv(prodPatches,housePulls);
     savSO(updatedSO,{skipMerge:true});
     // Atomic per-line DB sync for cross-tab consistency (mirrors desktop pull)
@@ -19102,7 +19113,7 @@ export default function App(){
                       const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
                       // Inventory adjustments per item product — server-side (00237), see pullHouseInv.
                       const prodPatches={};const housePulls=[];
-                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v})}});prodPatches[pi.p.id]=newInv});
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[pi.p.id]=newInv});
                       pullHouseInv(prodPatches,housePulls);
                       if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                         const shipments=[...(updatedSO._shipments||[])];

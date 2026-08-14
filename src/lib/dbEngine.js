@@ -3011,7 +3011,14 @@ const _dbSaveProductInner = async (p, snapBaseline) => {
             // 00239 not applied yet — legacy absolute upsert (the pre-merge behavior).
             await supabase.from('product_inventory').upsert([...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null})),{onConflict:'product_id,size'});
           }else{
+            // A real failure must fail the save. Unlike the old absolute upsert
+            // (self-healing: any later save rewrote the full map), a lost DELTA
+            // is gone forever if we report success here — the snapshot would
+            // advance and the next save's delta would be 0. Marking failed makes
+            // _diffSave roll the snapshot back and the retry loop re-send it.
             console.error('[DB] inventory merge failed for',p.id,':',rpc.error.message);
+            _dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'inventory: '+rpc.error.message);_persistFailedIds();
+            return false;
           }
         }
       }
