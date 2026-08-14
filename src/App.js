@@ -18568,6 +18568,28 @@ export default function App(){
     return{soId:so.id,custName:cc?.name||'',repName:_repNameForSO(so,cc),lines:_receiptLines(so,itemQtyMap),deco:decoG?decoG.jobs:[]};
   };
   const _showMobileReceipt=(payload)=>{const groups=(payload?.groups||[]).filter(Boolean);if(groups.length)setMobileReceipt({...payload,groups})};
+  // Server-authoritative warehouse decrement (00237): sends the pulled DELTAS to
+  // pull_house_inventory, which decrements the LIVE product_inventory rows
+  // (clamped at 0) and returns post-pull quantities we adopt into local state —
+  // so two staff pulling the same product concurrently no longer overwrite each
+  // other's decrement through the absolute diff-save. Falls back to the legacy
+  // local-absolute write ONLY when the RPC isn't deployed yet.
+  const pullHouseInv=(prodPatches,pulls)=>{
+    const legacy=()=>{if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x))};
+    if(!pulls||!pulls.length){legacy();return}
+    supabase.rpc('pull_house_inventory',{p_pulls:pulls}).then(({data,error})=>{
+      if(error){
+        const msg=(error.message||'')+' '+(error.code||'');
+        if(/42883|42P01|does not exist|schema cache/i.test(msg)){legacy();return}
+        console.error('[pull] house inventory decrement failed:',error.message);
+        nf('⚠️ Inventory decrement failed — check stock counts: '+error.message);
+        return;
+      }
+      const byPid={};
+      ((data&&data.rows)||[]).forEach(r=>{if(r.found===false)return;(byPid[r.product_id]=byPid[r.product_id]||{})[r.size]=r.quantity});
+      if(Object.keys(byPid).length>0)setProd(pp=>pp.map(x=>byPid[x.id]?{...x,_inv:{...(x._inv||{}),...byPid[x.id]}}:x));
+    }).catch(e=>console.error('[pull] house inventory decrement error:',e));
+  };
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
@@ -18584,10 +18606,10 @@ export default function App(){
     });
     const _newJobs=recalcJobFulfillment(so,updatedItems);
     const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
-    // Deduct warehouse inventory for what was pulled
-    const prodPatches={};
-    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
-    if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+    // Deduct warehouse inventory for what was pulled — server-side (00237), see pullHouseInv.
+    const prodPatches={};const housePulls=[];
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v})}});prodPatches[p.id]=newInv});
+    pullHouseInv(prodPatches,housePulls);
     savSO(updatedSO,{skipMerge:true});
     // Atomic per-line DB sync for cross-tab consistency (mirrors desktop pull)
     Object.entries(pullMap).forEach(([ii,qtys])=>{const pq={};Object.keys(qtys).forEach(sz=>{pq[sz]=qtys[sz]||0});_dbUpdatePickLineStatus(soId,parseInt(ii),pickId,'pulled',pq)});
@@ -19069,10 +19091,10 @@ export default function App(){
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
                       const _newJobs=recalcJobFulfillment(so,updatedItems);
                       const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
-                      // Inventory adjustments per item product
-                      const prodPatches={};
-                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
-                      if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+                      // Inventory adjustments per item product — server-side (00237), see pullHouseInv.
+                      const prodPatches={};const housePulls=[];
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v})}});prodPatches[pi.p.id]=newInv});
+                      pullHouseInv(prodPatches,housePulls);
                       if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                         const shipments=[...(updatedSO._shipments||[])];
                         boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
