@@ -176,9 +176,95 @@ async function loadExpectedDates(admin, needs) {
   return out;
 }
 
+// ── Transfer low-stock check (00238) ─────────────────────────────────────────
+// Heat-transfer inventory below the transfers UI's amber threshold with nothing
+// incoming, on OPEN stores only — emailed on the same ops channel, throttled to
+// once per week per row. Email-only: with no alert address configured this is a
+// no-op (the transfers page already shows the amber state in-app).
+const LOW_STOCK_THRESHOLD = 10; // mirrors the transfers UI amber rule (Avail < 10)
+
+function buildLowStockHtml(groups) {
+  const cell = 'padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:13px';
+  const blocks = groups.map((g) => {
+    const rows = g.rows.map((t) => `<tr>
+      <td style="${cell}">${t.label || t.code}</td>
+      <td style="${cell}">${t.kind === 'number' ? ('#' + (t.digit != null ? t.digit : '') + ' ' + (t.tsize || '') + ' ' + (t.color || '')).trim() : 'design'}</td>
+      <td style="${cell};text-align:right">${Number(t.on_hand) || 0}</td>
+    </tr>`).join('');
+    return `<h3 style="font-size:14px;margin:18px 0 6px">${g.store_name}</h3>
+    <table style="border-collapse:collapse;width:100%"><thead><tr>
+      <th style="${cell};text-align:left">Transfer</th><th style="${cell};text-align:left">Variant</th>
+      <th style="${cell};text-align:right">On hand</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  }).join('');
+  return `<div style="font-family:Arial,sans-serif;max-width:640px">
+    <h2 style="font-size:16px">Heat transfers running low</h2>
+    <p style="font-size:13px">These transfers are under ${LOW_STOCK_THRESHOLD} on hand with nothing on order from the supplier. Reorder before club orders pull into a shortfall.</p>
+    ${blocks}
+    <p style="font-size:11px;color:#94a3b8;margin-top:18px">NSA backorder sweep — throttled to one alert per transfer per week.</p>
+  </div>`;
+}
+
+async function checkTransferLowStock(admin, toEmail) {
+  const res = await admin.from('webstore_transfers')
+    .select('id, store_id, code, label, kind, tsize, color, digit, on_hand, incoming, low_stock_notified_at')
+    .lt('on_hand', LOW_STOCK_THRESHOLD)
+    .limit(2000);
+  if (res.error) {
+    if (isMissingRelation(res.error)) return 0;
+    throw new Error(res.error.message);
+  }
+  const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+  let rows = (res.data || [])
+    .filter((t) => !(Number(t.incoming) > 0))
+    .filter((t) => !t.low_stock_notified_at || new Date(t.low_stock_notified_at).getTime() < cutoff);
+  if (!rows.length) return 0;
+
+  // Open stores only — a closed store's leftover transfer stock isn't actionable.
+  const storeIds = [...new Set(rows.map((t) => t.store_id).filter(Boolean))];
+  const stRes = await admin.from('webstores').select('id, name, status').in('id', storeIds);
+  const stores = {};
+  ((stRes.error ? [] : stRes.data) || []).forEach((w) => { stores[w.id] = w; });
+  rows = rows.filter((t) => { const w = stores[t.store_id]; return w && w.status === 'open'; });
+  if (!rows.length) return 0;
+
+  const byStore = new Map();
+  for (const t of rows) {
+    if (!byStore.has(t.store_id)) byStore.set(t.store_id, { store_name: (stores[t.store_id] || {}).name || t.store_id, rows: [] });
+    byStore.get(t.store_id).rows.push(t);
+  }
+
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey) { console.error('[backorder-ready-sweep] BREVO_API_KEY missing — cannot email low-stock alert'); return 0; }
+  const sendRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    body: JSON.stringify({
+      sender: { name: 'NSA Production', email: 'noreply@nationalsportsapparel.com' },
+      to: [{ email: toEmail }],
+      subject: `Heat transfers running low — ${rows.length} item${rows.length === 1 ? '' : 's'} to reorder`,
+      htmlContent: buildLowStockHtml([...byStore.values()]),
+    }),
+  });
+  if (!sendRes.ok) { console.error('[backorder-ready-sweep] Brevo low-stock send failed:', sendRes.status, await sendRes.text().catch(() => '')); return 0; }
+
+  const nowIso = new Date().toISOString();
+  for (const t of rows) {
+    await admin.from('webstore_transfers').update({ low_stock_notified_at: nowIso }).eq('id', t.id);
+  }
+  return rows.length;
+}
+
 // ── The sweep ────────────────────────────────────────────────────────────────
 async function runSweep(admin, actor) {
-  const summary = { ok: true, open: 0, ready_rows: 0, alerted: 0, emailed: false, errors: [] };
+  const summary = { ok: true, open: 0, ready_rows: 0, alerted: 0, emailed: false, transfer_low: 0, errors: [] };
+
+  // Alert channel (shared by the backorder digest and the low-stock alert).
+  let alertEmail = null;
+  try {
+    const setRes = await admin.from('teamshop_settings').select('backorder_alert_email').eq('id', 'global').maybeSingle();
+    if (!setRes.error && setRes.data) alertEmail = (setRes.data.backorder_alert_email || '').trim() || null;
+  } catch (_) { /* settings are optional */ }
 
   const loaded = await loadOpenNeeds(admin, 1000);
   if (loaded.error) {
@@ -187,7 +273,13 @@ async function runSweep(admin, actor) {
   }
   const { needs, soInfo } = loaded;
   summary.open = needs.length;
-  if (!needs.length) return summary;
+  if (!needs.length) {
+    if (alertEmail) {
+      try { summary.transfer_low = await checkTransferLowStock(admin, alertEmail); }
+      catch (e) { summary.errors.push('low-stock: ' + (e.message || String(e))); }
+    }
+    return summary;
+  }
 
   // House stock snapshot for every (product, size) in play.
   const stock = {};
@@ -233,9 +325,6 @@ async function runSweep(admin, actor) {
     const groups = [...bySo.values()];
 
     let emailed = false;
-    let alertEmail = null;
-    const setRes = await admin.from('teamshop_settings').select('backorder_alert_email').eq('id', 'global').maybeSingle();
-    if (!setRes.error && setRes.data) alertEmail = (setRes.data.backorder_alert_email || '').trim() || null;
     if (alertEmail) {
       try { emailed = await sendDigestEmail(alertEmail, groups); }
       catch (e) { summary.errors.push('digest: ' + (e.message || String(e))); }
@@ -254,7 +343,12 @@ async function runSweep(admin, actor) {
     }
   }
 
-  console.log(`[backorder-ready-sweep] actor=${actor} open=${summary.open} ready=${summary.ready_rows} alerted=${summary.alerted} emailed=${summary.emailed} errors=${summary.errors.length}`);
+  if (alertEmail) {
+    try { summary.transfer_low = await checkTransferLowStock(admin, alertEmail); }
+    catch (e) { summary.errors.push('low-stock: ' + (e.message || String(e))); }
+  }
+
+  console.log(`[backorder-ready-sweep] actor=${actor} open=${summary.open} ready=${summary.ready_rows} alerted=${summary.alerted} emailed=${summary.emailed} transfer_low=${summary.transfer_low} errors=${summary.errors.length}`);
   return summary;
 }
 
@@ -330,3 +424,5 @@ module.exports.alertRows = alertRows;
 module.exports.buildDigestHtml = buildDigestHtml;
 module.exports.runSweep = runSweep;
 module.exports.listBackorders = listBackorders;
+module.exports.checkTransferLowStock = checkTransferLowStock;
+module.exports.buildLowStockHtml = buildLowStockHtml;

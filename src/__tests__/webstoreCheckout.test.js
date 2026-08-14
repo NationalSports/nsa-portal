@@ -105,6 +105,21 @@ describe('checkStock — demand for the same product+size is summed across cart 
     expect(r.error).toBeNull();
     expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 5, max_avail: 5, label: 'Tee (size M)' }]);
   });
+
+  test('backorder against a KNOWN incoming qty is capped at on-hand + on-order', async () => {
+    // 5 on hand + 10 on order = 15 sellable; 12 passes (no hold — backorder), 16 blocks.
+    const okR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
+    expect(okR.error).toBeNull();
+    expect(okR.holds).toEqual([]);
+    const bigR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 16 }]);
+    expect(bigR.error).toMatch(/sold out/i);
+  });
+
+  test('ETA-only incoming signal (no qty) keeps the uncapped backorder allowance', async () => {
+    const r = await checkout.checkStock(sb(sfRow({ earliest_eta: '2026-09-01' })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 200 }]);
+    expect(r.error).toBeNull();
+    expect(r.holds).toEqual([]);
+  });
 });
 
 describe('checkSizesRequired — a sized item must carry a size', () => {

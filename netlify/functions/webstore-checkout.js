@@ -183,7 +183,21 @@ async function checkStock(sb, store, lines) {
     // (same rule as its hasStockData fallback). Synced-and-zero still blocks below.
     if (p.size_stock == null && p.vendor_size_stock == null) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
-    if (incoming) return; // backorder allowed
+    if (incoming) {
+      // Backorder allowed — but no longer unlimited. When the incoming QUANTITY
+      // is known (on_order_qty), this line is capped at on-hand + on-order; a
+      // burst of orders can't all sell against the same 20 incoming units
+      // forever. ETA-only signals (a vendor restock date with no qty) keep the
+      // uncapped allowance — there is no number to cap against. Known honest
+      // limit: the cap is per-request, not cumulative across already-accepted
+      // unshipped orders (that accounting lives in the backorder ledger/sweep).
+      const onOrder = Number(p.on_order_qty) || 0;
+      if (onOrder > 0) {
+        const avail = _availForSize(p, size);
+        if (avail + onOrder < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+      }
+      return;
+    }
     const avail = _availForSize(p, size);
     if (avail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
     holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, label: `${p.name || 'item'} (size ${size})` });

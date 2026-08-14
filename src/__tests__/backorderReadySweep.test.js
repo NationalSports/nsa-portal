@@ -93,6 +93,7 @@ function fakeAdmin(script) {
         update(payload) { call.op = 'update'; call.payload = payload; return builder; },
         eq(col, val) { call.filters.push(['eq', col, val]); return builder; },
         gt(col, val) { call.filters.push(['gt', col, val]); return builder; },
+        lt(col, val) { call.filters.push(['lt', col, val]); return builder; },
         in(col, val) { call.filters.push(['in', col, val]); return builder; },
         order() { return builder; },
         limit() { return builder; },
@@ -145,6 +146,52 @@ test('runSweep skips needs on finished SOs and reports zero open', async () => {
   const s = await runSweep(admin, 'test');
   expect(s.ok).toBe(true);
   expect(s.open).toBe(0);
+});
+
+describe('checkTransferLowStock (00238 — weekly-throttled, open stores only)', () => {
+  beforeEach(() => {
+    process.env.BREVO_API_KEY = 'test-key';
+    global.fetch = jest.fn(async () => ({ ok: true, text: async () => '' }));
+  });
+  afterEach(() => { delete process.env.BREVO_API_KEY; delete global.fetch; });
+
+  test('alerts the low open-store transfer; skips incoming, closed stores, and recently-notified rows', async () => {
+    const admin = fakeAdmin({
+      'webstore_transfers.select': [{ data: [
+        { id: 1, store_id: 'ws1', code: 'LOGO', label: 'Crest', kind: 'design', on_hand: 2, incoming: 0, low_stock_notified_at: null },
+        { id: 2, store_id: 'ws1', code: '4|M|White', kind: 'number', digit: 4, tsize: 'M', color: 'White', on_hand: 1, incoming: 5, low_stock_notified_at: null }, // supplier order in → skip
+        { id: 3, store_id: 'ws2', code: 'X', kind: 'design', on_hand: 0, incoming: 0, low_stock_notified_at: null }, // closed store → skip
+        { id: 4, store_id: 'ws1', code: 'Y', kind: 'design', on_hand: 3, incoming: 0, low_stock_notified_at: new Date().toISOString() }, // throttled → skip
+      ], error: null }],
+      'webstores.select': [{ data: [
+        { id: 'ws1', name: 'Grande FC', status: 'open' },
+        { id: 'ws2', name: 'Old Store', status: 'closed' },
+      ], error: null }],
+      'webstore_transfers.update': [{ data: null, error: null }],
+    });
+    const n = await sweep.checkTransferLowStock(admin, 'ops@nsa.com');
+    expect(n).toBe(1);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.to).toEqual([{ email: 'ops@nsa.com' }]);
+    expect(body.htmlContent).toContain('Grande FC');
+    expect(body.htmlContent).toContain('Crest');
+    // Only the alerted row gets the throttle stamp.
+    expect(admin.calls.filter((c) => c.key === 'webstore_transfers.update').length).toBe(1);
+  });
+
+  test('a failed email send stamps nothing (retries next pass)', async () => {
+    global.fetch = jest.fn(async () => ({ ok: false, status: 500, text: async () => 'boom' }));
+    const admin = fakeAdmin({
+      'webstore_transfers.select': [{ data: [
+        { id: 1, store_id: 'ws1', code: 'LOGO', kind: 'design', on_hand: 2, incoming: 0, low_stock_notified_at: null },
+      ], error: null }],
+      'webstores.select': [{ data: [{ id: 'ws1', name: 'Grande FC', status: 'open' }], error: null }],
+    });
+    const n = await sweep.checkTransferLowStock(admin, 'ops@nsa.com');
+    expect(n).toBe(0);
+    expect(admin.calls.filter((c) => c.key === 'webstore_transfers.update').length).toBe(0);
+  });
 });
 
 test('runSweep degrades quietly when 00202/00236 are not applied', async () => {
