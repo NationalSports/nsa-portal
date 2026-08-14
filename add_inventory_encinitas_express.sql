@@ -24,8 +24,8 @@
 -- Cost is retail x .55 x .75, with the penny truncated, not rounded: 55 retail -> 22.6875 -> 22.68.
 -- Retail for the six red goalkeeper/short articles (JF2887, JF2881, JF2871, JJ4162, JF2872,
 -- JP0179) came from the club — they aren't in the catalog at all. Note the base articles carry the
--- rounded-UP penny on the 35/50/55 retails (14.44 / 20.63 / 22.69) and so disagree with these rows
--- by a cent; other Locker Room rows (GP9047 etc.) already truncate. Not corrected here.
+-- rounded-UP penny on the 35/50/55 retails (14.44 / 20.63 / 22.69); section 3 truncates those to
+-- match. 119 other Locker Room rows carry the same rounded-up penny and are NOT touched here.
 --
 -- The backpack is the one exception on both counts: it is a stock Agron article, not Locker Room
 -- custom, so it takes no pricing_group and keeps its catalog cost of 24.38 on a 65 retail
@@ -123,6 +123,20 @@ INSERT INTO product_inventory (product_id, size, quantity) VALUES
   -- Backpack, Navy — 64
   ('p-exp-5159406-EXP','OSFA',64)
 ON CONFLICT (product_id, size) DO UPDATE SET quantity = EXCLUDED.quantity;
+
+-- 3. Base articles: truncate the same penny --------------------------------
+-- The 13 base articles these rows were costed from carry the rounded-UP penny on their 35/50/55
+-- retails. Cost truncates, so bring them onto the same rule (5 of the 13 actually move). Scoped to
+-- this list's articles by SKU — the other 119 rounded-up lockerroom rows are a separate call.
+UPDATE products
+   SET nsa_cost = floor(retail_price * 0.55 * 0.75 * 100) / 100,
+       updated_at = now()
+ WHERE pricing_group = 'lockerroom'
+   AND id NOT LIKE 'p-exp-%'
+   AND sku IN ('JD7373','KB4028','JY5390','JY5395','JD7371','KB4029','KB4042','KE9910',
+               'JD7370','KB4032','KB4037','JY5389','KB3914')
+   AND retail_price > 0
+   AND nsa_cost IS DISTINCT FROM floor(retail_price * 0.55 * 0.75 * 100) / 100;
 
 COMMIT;
 
