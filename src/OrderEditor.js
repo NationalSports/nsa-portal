@@ -2695,7 +2695,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=o.items[i];if(!item)return;
-    const cur=item.sizes[sz]||0;
+    const cur=safeSizes(item)[sz]||0;
     if(n===cur)return;// no-op: value unchanged, skip render + side effects
     const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
     const poQty=poCommitted(item.po_lines,sz);
@@ -4886,6 +4886,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Keep any size the item actually declares — including custom/ball labels not in SZ_ORD — rather
       // than dropping it. Known sizes order by SZ_ORD; unknown/custom labels sort to the end.
       const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)||(item.available_sizes||[]).includes(s)).sort((a,b)=>szRank(a)-szRank(b));
+      // Size quantities, read through safeSizes: an item can legitimately reach this render with NO
+      // sizes object at all — a DB-restored line (dbEngine's item revive) carries whatever the row
+      // held, and a sparse row's sizes column is null. Reading item.sizes[sz] directly on such a line
+      // threw "Cannot read properties of undefined (reading 'S')" and took the whole OrderEditor down
+      // with it (SO-1971, 2026-08-14), so one bad line blanked the entire order instead of one grid.
+      const _iSz=safeSizes(item);
       const addable=sizePool.filter(s=>!(item.available_sizes||[]).includes(s));
       const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
       // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
@@ -5075,12 +5081,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 one line and longer runs double up into a second row that lines up under the first
                 (an 11-wide row starting at 5 breaks after 10). */}
             <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
-            {szs.map(sz=>{const _szFilled=((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
-              <input className="oe-num" value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
+            {szs.map(sz=>{const _szFilled=((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(_iSz[sz]||0))>0;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
+              <input className="oe-num" value={sizingDraft[idx+'_'+sz]??(_iSz[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:44,textAlign:'center',border:_szFilled?'1.5px solid #192853':'1px solid #E2E6EF',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700,color:_szFilled?'#192853':'#C2C7D2',background:_szFilled?'#F4F7FF':'#fff'}}/>
-              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
+              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=_iSz[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
               {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
-              {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=item.sizes[sz]||0;const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const soon=hasRestock&&dOut<=RESTOCK_SOON_DAYS;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):soon?'#ca8a04':hasRestock?'#b45309':'#dc2626';return<div onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360))})}} onMouseLeave={()=>setB2bPop(null)} style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:'help'}}>{soon?'✓':b2bStk.toLocaleString()}</div>})()}
+              {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=_iSz[sz]||0;const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const soon=hasRestock&&dOut<=RESTOCK_SOON_DAYS;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):soon?'#ca8a04':hasRestock?'#b45309':'#dc2626';return<div onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360))})}} onMouseLeave={()=>setB2bPop(null)} style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:'help'}}>{soon?'✓':b2bStk.toLocaleString()}</div>})()}
               {(()=>{
                 // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
                 // stored _sizeCosts; fall back to the live vendor pricing map so the
@@ -5140,7 +5146,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             Display-only; a restock within RESTOCK_SOON_DAYS is left to the cell
             hover above and isn't repeated here. */}
         {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading||!ai.sizes)return null;
-          const delayed=szs.filter(sz=>(item.sizes[sz]||0)>0).map(sz=>{const c=ai.sizes[sz];return c?{sz,qty:c.qty||0,date:c.futureDate,futQty:c.futureQty}:null}).filter(c=>c&&c.qty<=0&&c.date&&restockDaysOut(c.date)>RESTOCK_SOON_DAYS);
+          const delayed=szs.filter(sz=>(_iSz[sz]||0)>0).map(sz=>{const c=ai.sizes[sz];return c?{sz,qty:c.qty||0,date:c.futureDate,futQty:c.futureQty}:null}).filter(c=>c&&c.qty<=0&&c.date&&restockDaysOut(c.date)>RESTOCK_SOON_DAYS);
           if(delayed.length===0)return null;
           return<div style={{padding:'2px 18px 8px 18px'}}><div style={{display:'inline-flex',alignItems:'center',gap:8,flexWrap:'wrap',fontSize:11,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'5px 10px'}}>
             <span style={{fontWeight:700}}>↻ Backordered ({b2bBrandName(item)} B2B):</span>
@@ -5502,7 +5508,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
                       const csv=prompt('Paste (Size,Number per line):\nM,12\nL,34');
                       if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());
-                        if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});
+                        if(sz&&num){if(!nr[sz])nr[sz]=Array(_iSz[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});
                         uD(idx,di,'roster',nr);nf('Imported')}}}>📋 Paste</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'roster',{});nf('Cleared')}}>Clear</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>uD(idx,di,'_showRoster',false)}>▲ Close</button>
@@ -5569,7 +5575,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const nKey=idx+'-'+di;const nCollapsed=!!collapsedNames[nKey];
               const importNamesCsv=text=>{const lines=text.split('\n').filter(l=>l.trim());const nn={...nd};let ct=0;
                 lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;const parts=line.split(',').map(s=>s.trim());const sz=parts[0];const name=parts.length>=3?parts[2]:parts[1]||'';
-                  if(sz&&name&&item.sizes[sz]>0){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;ct++}}});
+                  if(sz&&name&&_iSz[sz]>0){if(!nn[sz])nn[sz]=Array(_iSz[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;ct++}}});
                 uD(idx,di,'names',nn);nf(ct+' names imported')};
               return(<div key={di} style={decoCardStyle}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:nCollapsed?0:6}}>
@@ -5644,7 +5650,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{addNumDeco(idx);setMoreActionsFor(null)}}>🔢 Numbers</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{addNameDeco(idx);setMoreActionsFor(null)}}>🏷 Names</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>{addTwillDeco(idx);setMoreActionsFor(null)}}>🧵 Twill</button>
-            {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
+            {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(_iSz[sz]||0)>0);
               if(activeSizes.length===0)return null;
               return<button className="btn btn-sm btn-secondary" style={{fontSize:12,background:hasAny?'#FEF3C7':'white',borderColor:hasAny?'#FDE68A':'#D1D5DE',color:hasAny?'#92400E':'#5A6075'}} onClick={()=>{if(!hasAny){uI(idx,'size_availability',{[activeSizes[0]]:''})}else{uI(idx,'_showAvail',!item._showAvail)}}}>⏳ Later{hasAny?' ✓':''}</button>})()}
             {/* Garment-level Underbase — one toggle, cascades to every screen-print art deco on the item */}
@@ -5698,7 +5704,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <$Txt value={item.notes||''} onChange={v=>uI(idx,'notes',v)} placeholder="Notes to show on estimate / sales order / invoice PDF" style={{flex:1,fontSize:12,border:'1px solid #fde047',borderRadius:4,padding:'4px 8px',background:'white'}}/>
             <button onClick={()=>uI(idx,'notes',null)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:14,padding:'2px 4px'}} title="Remove notes">✕</button>
           </div>}
-          {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
+          {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(_iSz[sz]||0)>0);
             if(!hasAny||activeSizes.length===0)return null;
             return<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6,padding:'6px 10px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',alignItems:'center'}}>
               <span style={{fontSize:10,fontWeight:600,color:'#92400e'}}>⏳ Available:</span>

@@ -572,7 +572,10 @@ const _dbLoad = async (opts={}) => {
           if(sizes._billed&&!recovered.billed){recovered.billed=sizes._billed;delete recovered._billed}
           if(sizes._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=sizes._tracking_numbers;delete recovered._tracking_numbers}
           return recovered});
-        const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
+        // sizes defaults to {} — a sparse so_items row (e.g. one written by the item-revive path from a
+        // row that itself only carried sku/color) has sizes NULL, and every consumer treats item.sizes as
+        // a size→qty map. Handing null up crashed OrderEditor's size grid on SO-1971 (2026-08-14).
+        const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,sizes:rest.sizes||{},decorations,pick_lines,po_lines}});
       // _itemsHydrated: true only when so_items loaded cleanly this session. Save guards use it to distinguish a
       // deliberate rep deletion (hydrated→empty) from items vanishing on a timed-out load (never hydrated).
       // _hydratedPoIds: the set of PO ids present when this SO loaded cleanly. The save uses it to tell a deliberate
@@ -1674,8 +1677,23 @@ const _dbSaveSOInner = async (so) => {
           const{data:_decoRows,error:_decoErr}=await supabase.from('so_item_decorations').select('*').eq('so_item_id',oi.id);
           if(_decoErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— decoration read failed:',_decoErr.message);return -1}
           const decorations=(_decoRows||[]).slice().sort((a,b)=>(a.deco_index||0)-(b.deco_index||0)).map(d=>{const{id:_di,so_item_id:_ds,deco_index:_dx,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
-          const{id:_oid,so_id:_osid,item_index:_oidx,...itemRest}=oi;
-          const revived={...itemRest,decorations,po_lines:[],pick_lines:[]};
+          // Re-read the FULL row. `oi` comes from _oldSoItems, which is a 5-column projection
+          // (id,item_index,sku,color,product_id) selected for the delete/guard passes — reviving from
+          // it rebuilt the garment as a husk carrying only sku+color, and since the revived object is
+          // both re-inserted by this save and pushed into live React state, that husk REPLACED the real
+          // line: name, sizes, costs, unit_sell and vendor all gone, and the editor then crashed reading
+          // item.sizes on it (SO-1971 "112 Split Black/White", 2026-08-14). Fails closed on a read error
+          // like the decoration read above; a row that is simply gone falls back to the projection, which
+          // still preserves the PO and is all that is left of the line at that point.
+          let _srcRow=oi;
+          const{data:_fullRow,error:_rowErr}=await supabase.from('so_items').select('*').eq('id',oi.id).maybeSingle();
+          if(_rowErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— item read failed:',_rowErr.message);return -1}
+          if(_fullRow)_srcRow=_fullRow;
+          else console.warn('[DB] Restoring item',oi.id,'on',so.id,'from sku/color only — its so_items row is gone');
+          const{id:_oid,so_id:_osid,item_index:_oidx,...itemRest}=_srcRow;
+          // sizes:{} — same normalization the loader does. The revived item is persisted by this save and
+          // rendered by the editor, and every consumer treats item.sizes as a size→qty map.
+          const revived={...itemRest,sizes:itemRest.sizes||{},decorations,po_lines:[],pick_lines:[]};
           const idx=items.length;items.push(revived);_revivedByKey.set(_k,idx);_revived++;
           _revivedLabels.push([revived.sku,revived.color].filter(Boolean).join(' ')||('item '+oi.id));
           _restoredLines.push({idx,sku:revived.sku||null,color:revived.color||null,kind:'item',item:revived});
