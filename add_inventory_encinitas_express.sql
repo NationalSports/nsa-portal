@@ -13,10 +13,23 @@
 -- convention and take a -N / -W colour suffix.
 --
 -- Sizes are recorded exactly as the sheet labels them (its "2X" column normalized to 2XL, the
--- backpack's single count to OSFA). Costs/retail are copied from the matching base article and
--- cover the blank garment only — decoration is not included. The six red goalkeeper/short articles
--- (JF2887, JF2881, JF2871, JJ4162, JF2872, JP0179) are not in the catalog at all, so those rows
--- carry no cost.
+-- backpack's single count to OSFA).
+--
+-- Pricing: every garment here is a Locker Room custom adidas item, so each carries
+-- pricing_group='lockerroom' — the flag auTierDisc reads to price the reduced Locker Room tier
+-- schedule (A=35% / B=30% / C=25% off retail) instead of the standard A=40% / B=35% / C=30%. All
+-- 13 base articles already in the catalog carry it; dropping it here would quietly discount this
+-- club's goods 5 points too deep at every tier.
+--
+-- Cost is retail x .55 x .75, with the penny truncated, not rounded: 55 retail -> 22.6875 -> 22.68.
+-- Retail for the six red goalkeeper/short articles (JF2887, JF2881, JF2871, JJ4162, JF2872,
+-- JP0179) came from the club — they aren't in the catalog at all. Note the base articles carry the
+-- rounded-UP penny on the 35/50/55 retails (14.44 / 20.63 / 22.69) and so disagree with these rows
+-- by a cent; other Locker Room rows (GP9047 etc.) already truncate. Not corrected here.
+--
+-- The backpack is the one exception on both counts: it is a stock Agron article, not Locker Room
+-- custom, so it takes no pricing_group and keeps its catalog cost of 24.38 on a 65 retail
+-- (the stock Adidas/Agron rate of retail x .5 x .75, not x .55 x .75).
 --
 -- Idempotent: re-running re-applies the same quantities. Run in the Supabase SQL editor.
 
@@ -24,32 +37,32 @@ BEGIN;
 
 -- 1. Catalog rows -----------------------------------------------------------
 INSERT INTO products (
-  id, sku, name, brand, color, category, vendor_id,
+  id, sku, name, brand, color, category, vendor_id, pricing_group,
   nsa_cost, retail_price, available_sizes, inventory_source, is_active, is_archived, updated_at
 ) VALUES
-  ('p-exp-JD7373-EXP-W','JD7373-EXP-W','Encinitas Express — Youth Jersey','Adidas','White','Jersey','v1',20.63,50,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JD7373-EXP-N','JD7373-EXP-N','Encinitas Express — Youth Jersey','Adidas','Navy','Jersey','v1',20.63,50,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB4028-EXP','KB4028-EXP','Encinitas Express — Youth Shorts','Adidas','Navy','Shorts','v1',14.44,35,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JY5390-EXP','JY5390-EXP','Encinitas Express — Youth Jacket','Adidas','Navy','Outerwear','v1',24.75,60,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JY5395-EXP','JY5395-EXP','Encinitas Express — Youth Pant','Adidas','Navy','Pants','v1',22.69,55,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JD7371-EXP-W','JD7371-EXP-W','Encinitas Express — Adult Jersey','Adidas','White','Jersey','v1',22.69,55,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JD7371-EXP-N','JD7371-EXP-N','Encinitas Express — Adult Jersey','Adidas','Navy','Jersey','v1',22.69,55,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB4029-EXP','KB4029-EXP','Encinitas Express — Adult Shorts','Adidas','Navy','Shorts','v1',16.50,40,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB4042-EXP','KB4042-EXP','Encinitas Express — Adult Jacket','Adidas','Navy','Outerwear','v1',26.81,65,'["S","M","L","XL","2XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KE9910-EXP','KE9910-EXP','Encinitas Express — Adult Pant','Adidas','Navy','Pants','v1',24.75,60,'["S","M","L","XL","2XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JD7370-EXP-N','JD7370-EXP-N','Encinitas Express — Womens Jersey','Adidas','Navy','Jersey','v1',22.69,55,'["S","M","L"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JD7370-EXP-W','JD7370-EXP-W','Encinitas Express — Womens Jersey','Adidas','White','Jersey','v1',22.69,55,'["S","M","L"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB4032-EXP','KB4032-EXP','Encinitas Express — Womens Shorts','Adidas','Navy','Shorts','v1',16.50,40,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB4037-EXP','KB4037-EXP','Encinitas Express — Womens Jacket','Adidas','Navy','Outerwear','v1',26.81,65,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JY5389-EXP','JY5389-EXP','Encinitas Express — Womens Pant','Adidas','Navy','Pants','v1',24.75,60,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JF2887-EXP','JF2887-EXP','Encinitas Express — Youth GK Jersey LS','Adidas','Red','Jersey',NULL,NULL,NULL,'["XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JF2881-EXP','JF2881-EXP','Encinitas Express — Adult GK Jersey LS','Adidas','Red','Jersey',NULL,NULL,NULL,'["S","M","L"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JF2871-EXP','JF2871-EXP','Encinitas Express — Womens GK Jersey LS','Adidas','Red','Jersey',NULL,NULL,NULL,'["S","M","L"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JJ4162-EXP','JJ4162-EXP','Encinitas Express — Womens GK Shorts','Adidas','Red','Shorts',NULL,NULL,NULL,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JF2872-EXP','JF2872-EXP','Encinitas Express — Youth GK Shorts','Adidas','Red','Shorts',NULL,NULL,NULL,'["S","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-JP0179-EXP','JP0179-EXP','Encinitas Express — Adult GK Shorts','Adidas','Red','Shorts',NULL,NULL,NULL,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-KB3914-EXP','KB3914-EXP','Encinitas Express — Adult All Weather Jacket','Adidas','Navy','Outerwear','v1',35.06,85,'["L","XL","2XL"]'::jsonb,'manual',true,false,now()),
-  ('p-exp-5159406-EXP','5159406-EXP','Encinitas Express — Stadium 4 Backpack','Adidas','Navy','Bags','v1777312659133',24.38,65,'["OSFA"]'::jsonb,'manual',true,false,now())
+  ('p-exp-JD7373-EXP-W','JD7373-EXP-W','Encinitas Express — Youth Jersey','Adidas','White','Jersey','v1','lockerroom',20.62,50,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7373-EXP-N','JD7373-EXP-N','Encinitas Express — Youth Jersey','Adidas','Navy','Jersey','v1','lockerroom',20.62,50,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB4028-EXP','KB4028-EXP','Encinitas Express — Youth Shorts','Adidas','Navy','Shorts','v1','lockerroom',14.43,35,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JY5390-EXP','JY5390-EXP','Encinitas Express — Youth Jacket','Adidas','Navy','Outerwear','v1','lockerroom',24.75,60,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JY5395-EXP','JY5395-EXP','Encinitas Express — Youth Pant','Adidas','Navy','Pants','v1','lockerroom',22.68,55,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7371-EXP-W','JD7371-EXP-W','Encinitas Express — Adult Jersey','Adidas','White','Jersey','v1','lockerroom',22.68,55,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7371-EXP-N','JD7371-EXP-N','Encinitas Express — Adult Jersey','Adidas','Navy','Jersey','v1','lockerroom',22.68,55,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB4029-EXP','KB4029-EXP','Encinitas Express — Adult Shorts','Adidas','Navy','Shorts','v1','lockerroom',16.50,40,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB4042-EXP','KB4042-EXP','Encinitas Express — Adult Jacket','Adidas','Navy','Outerwear','v1','lockerroom',26.81,65,'["S","M","L","XL","2XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KE9910-EXP','KE9910-EXP','Encinitas Express — Adult Pant','Adidas','Navy','Pants','v1','lockerroom',24.75,60,'["S","M","L","XL","2XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7370-EXP-N','JD7370-EXP-N','Encinitas Express — Womens Jersey','Adidas','Navy','Jersey','v1','lockerroom',22.68,55,'["S","M","L"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JD7370-EXP-W','JD7370-EXP-W','Encinitas Express — Womens Jersey','Adidas','White','Jersey','v1','lockerroom',22.68,55,'["S","M","L"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB4032-EXP','KB4032-EXP','Encinitas Express — Womens Shorts','Adidas','Navy','Shorts','v1','lockerroom',16.50,40,'["XS","S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB4037-EXP','KB4037-EXP','Encinitas Express — Womens Jacket','Adidas','Navy','Outerwear','v1','lockerroom',26.81,65,'["M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JY5389-EXP','JY5389-EXP','Encinitas Express — Womens Pant','Adidas','Navy','Pants','v1','lockerroom',24.75,60,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JF2887-EXP','JF2887-EXP','Encinitas Express — Youth GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',28.87,70,'["XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JF2881-EXP','JF2881-EXP','Encinitas Express — Adult GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',30.93,75,'["S","M","L"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JF2871-EXP','JF2871-EXP','Encinitas Express — Womens GK Jersey LS','Adidas','Red','Jersey',NULL,'lockerroom',30.93,75,'["S","M","L"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JJ4162-EXP','JJ4162-EXP','Encinitas Express — Womens GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JF2872-EXP','JF2872-EXP','Encinitas Express — Youth GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["S","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-JP0179-EXP','JP0179-EXP','Encinitas Express — Adult GK Shorts','Adidas','Red','Shorts',NULL,'lockerroom',20.62,50,'["S","M","L","XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-KB3914-EXP','KB3914-EXP','Encinitas Express — Adult All Weather Jacket','Adidas','Navy','Outerwear','v1','lockerroom',35.06,85,'["L","XL","2XL"]'::jsonb,'manual',true,false,now()),
+  ('p-exp-5159406-EXP','5159406-EXP','Encinitas Express — Stadium 4 Backpack','Adidas','Navy','Bags','v1777312659133',NULL,24.38,65,'["OSFA"]'::jsonb,'manual',true,false,now())
 ON CONFLICT (id) DO UPDATE SET
   sku              = EXCLUDED.sku,
   name             = EXCLUDED.name,
@@ -57,6 +70,7 @@ ON CONFLICT (id) DO UPDATE SET
   color            = EXCLUDED.color,
   category         = EXCLUDED.category,
   vendor_id        = EXCLUDED.vendor_id,
+  pricing_group    = EXCLUDED.pricing_group,
   nsa_cost         = EXCLUDED.nsa_cost,
   retail_price     = EXCLUDED.retail_price,
   available_sizes  = EXCLUDED.available_sizes,
