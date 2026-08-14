@@ -427,6 +427,7 @@ import {
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
+  _setInvBaseProvider,
   _dbSaveEstimate,
   _dbSaveSO,
   _dbSaveArtFiles,
@@ -2319,6 +2320,12 @@ export default function App(){
   const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
+  // Inventory merge-save baseline (00239): DIRECT _dbSaveProduct callers (editor
+  // Save, Auto Inventory upload) read their pre-edit baseline from the prod
+  // snapshot at call time — the diff-save effect hasn't advanced it yet at that
+  // moment. Diff-save-initiated saves don't use this (they pass the captured
+  // pre-pass item explicitly — see _diffSave).
+  React.useEffect(()=>{_setInvBaseProvider((id)=>{const s=_dbSnap.current.prod;return(s&&s.find(x=>x.id===id))||null})},[]);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
@@ -3243,11 +3250,13 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c),_custDiffCmp)},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
-  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p),_prodDiffCmp)},[prod]);
+  // The second arg (pre-pass snapshot item) is the inventory merge-save
+  // baseline — the diff-save loop captures it before advancing the snapshot.
+  React.useEffect(()=>{_diffSave(prod,'prod',(p,old)=>_dbSaveProduct(p,old),_prodDiffCmp)},[prod]);
   // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
   React.useEffect(()=>{
     if(adidasBulkFetched.current||!prod||prod.length===0)return;

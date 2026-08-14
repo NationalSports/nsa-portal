@@ -2311,17 +2311,18 @@ function AutoPoSection() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Backorders — open (qty_needed > 0) rows from the auto-PO needs ledger, i.e.
-// every backordered teamshop/club (so_item, size) whose garments weren't in
-// house stock at conversion. Club rows carry skip_reason='club_review': NO
-// auto-PO is drafted for them (club shortages are often already inbound on
-// standing vendor inventory POs — the Expected column shows the vendor's
-// incoming date); staff order manually only when nothing is coming.
-// The backorder-ready-sweep (00236, every 30 min)
-// stamps how many units house stock now covers (FIFO by order age), refreshes
-// the vendor expected date, and emails the decoration team on increases; this
-// section is the live view of that ledger plus a "check stock now" button.
-// Release itself stays in Production & Pull — this is visibility, not a queue.
+// Backorders — ONE unified queue over the auto-PO needs ledger: every open
+// (qty_needed > 0) backordered (so_item, size), teamshop and club together,
+// sorted oldest ORDER first (earliest customer order behind the SO — the same
+// priority the sweep's stock allocator uses, so this list IS the line).
+// Club rows carry skip_reason='club_review': NO auto-PO is drafted for them
+// (club shortages are often already inbound on standing vendor inventory POs —
+// the Expected column shows the vendor's incoming date); staff order manually
+// only when nothing is coming. The backorder-ready-sweep (00236, every 30 min)
+// stamps how many units house stock now covers, refreshes the vendor expected
+// date, and emails the decoration team on increases; this section is the live
+// view of that ledger plus a "check stock now" button. Release itself stays in
+// Production & Pull — this is visibility, not a queue.
 function BackorderSection() {
   const [state, setState] = useState({ loading: true, enabled: true, rows: [], error: null });
   const [busy, setBusy] = useState(null);
@@ -2401,6 +2402,7 @@ function BackorderSection() {
         <table style={{ borderCollapse: 'collapse', width: '100%', background: '#fff', borderRadius: 8, overflow: 'hidden' }}>
           <thead>
             <tr style={{ background: '#f8fafc' }}>
+              <th style={{ ...cell, textAlign: 'left' }}>Ordered</th>
               <th style={{ ...cell, textAlign: 'left' }}>Store / SO</th>
               <th style={{ ...cell, textAlign: 'left' }}>SKU</th>
               <th style={{ ...cell, textAlign: 'left' }}>Size</th>
@@ -2413,6 +2415,7 @@ function BackorderSection() {
           <tbody>
             {state.rows.map((r) => (
               <tr key={r.id}>
+                <td style={cell}>{(r.order_date || r.created_at || '').slice(0, 10) || '—'}</td>
                 <td style={cell}>
                   <div style={{ fontWeight: 600 }}>{r.store_name || '—'}</div>
                   <div style={{ fontSize: 11, color: '#64748b' }}>{r.so_id}</div>

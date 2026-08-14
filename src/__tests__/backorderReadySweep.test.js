@@ -39,6 +39,18 @@ describe('allocateReady (FIFO house-stock allocation)', () => {
     expect(ready.get(1)).toBe(2);
     expect(ready.get(2)).toBe(1);
   });
+  test('ORDER date outranks need-record date: a bulk-converted teamshop order placed first beats a club order recorded first', () => {
+    const needs = [
+      // Club order: placed Aug 10, converted (need recorded) instantly Aug 10.
+      { id: 1, product_id: 'p1', size: 'M', qty_needed: 4, order_date: '2026-08-10', created_at: '2026-08-10' },
+      // Teamshop order: placed Jul 20, but the store closed (bulk conversion
+      // recorded the need) on Aug 12 — created_at alone would rank it LAST.
+      { id: 2, product_id: 'p1', size: 'M', qty_needed: 4, order_date: '2026-07-20', created_at: '2026-08-12' },
+    ];
+    const ready = allocateReady(needs, { 'p1|M': 5 });
+    expect(ready.get(2)).toBe(4); // July order gets its gear first
+    expect(ready.get(1)).toBe(1); // club order takes the remainder
+  });
 });
 
 describe('alertRows (alert only on increases past the notified mark)', () => {

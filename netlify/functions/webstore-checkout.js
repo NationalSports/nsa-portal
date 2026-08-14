@@ -18,6 +18,7 @@
 const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
+const { SO_DONE } = require('./backorder-ready-sweep'); // one definition of "SO finished"
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -167,11 +168,36 @@ async function checkStock(sb, store, lines) {
   if (!singles.length) return { error: null, holds: [] };
   const ids = [...new Set(singles.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
+    .select('webstore_product_id,product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
   if (error) return { error: null, holds: [] }; // parity with the client: don't block checkout on a lookup failure
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
   const need = {}; singles.forEach((l) => { const k = l.wp.id + '|' + l.size; need[k] = (need[k] || 0) + l.qty; });
+
+  // Cumulative backorder claims: open needs-ledger rows (teamshop and club
+  // alike, ANY store) already promise units of on-hand + incoming stock to
+  // earlier orders — the sweep allocates FIFO by order date, so a new buyer
+  // only truly gets what's left after those claims. Loaded once per checkout,
+  // only for products this cart backorders against; fail-open on any error
+  // (parity with the stock lookup above).
+  const claimed = {}; // '<product_id>|<size>' -> promised qty on unfinished SOs
+  const capPids = [...new Set((data || []).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
+  if (capPids.length) {
+    try {
+      const nd = await sb.from('teamshop_auto_po_needs')
+        .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2000);
+      const rows = (!nd.error && nd.data) || [];
+      const soIds = [...new Set(rows.map((n) => n.so_id).filter(Boolean))];
+      const soRes = soIds.length ? await sb.from('sales_orders').select('id,status').in('id', soIds) : { data: [] };
+      const done = new Set((((soRes && !soRes.error && soRes.data) || []))
+        .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
+      rows.forEach((n) => {
+        if (done.has(n.so_id)) return; // finished SO — its claim is settled
+        const k = n.product_id + '|' + (n.size || '');
+        claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
+      });
+    } catch (_) { /* fail-open: an unreadable ledger must not block checkout */ }
+  }
   const short = []; const holds = [];
   Object.entries(need).forEach(([k, q]) => {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
@@ -185,16 +211,19 @@ async function checkStock(sb, store, lines) {
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) {
       // Backorder allowed — but no longer unlimited. When the incoming QUANTITY
-      // is known (on_order_qty), this line is capped at on-hand + on-order; a
-      // burst of orders can't all sell against the same 20 incoming units
-      // forever. ETA-only signals (a vendor restock date with no qty) keep the
-      // uncapped allowance — there is no number to cap against. Known honest
-      // limit: the cap is per-request, not cumulative across already-accepted
-      // unshipped orders (that accounting lives in the backorder ledger/sweep).
+      // is known (on_order_qty), this line is capped at on-hand + on-order
+      // MINUS what the open backorder ledger already promises to earlier
+      // orders (loaded above), so a burst of orders can't all sell against the
+      // same 20 incoming units. ETA-only signals (a vendor restock date with
+      // no qty) keep the uncapped allowance — there is no number to cap
+      // against. Remaining honest limit: an accepted order's claim appears in
+      // the ledger only at conversion (club: instant; teamshop: store close),
+      // so unconverted teamshop demand isn't counted yet.
       const onOrder = Number(p.on_order_qty) || 0;
       if (onOrder > 0) {
         const avail = _availForSize(p, size);
-        if (avail + onOrder < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+        const promised = claimed[(p.product_id || '') + '|' + size] || 0;
+        if (avail + onOrder - promised < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
       }
       return;
     }

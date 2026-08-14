@@ -2916,8 +2916,32 @@ const _dbDeletePendingShipUsage = async (soId) => {
 };
 const _dbDuplicateSkuIds=new Set(JSON.parse(localStorage.getItem('nsa_duplicate_sku_ids')||'[]'));// product IDs with duplicate SKU — skip saves entirely
 const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify([..._dbDuplicateSkuIds]))};
-const _dbSaveProduct = (p) => _outboxWrap('products', p, _dbSaveProductInner(p));
-const _dbSaveProductInner = async (p) => {
+// ── Inventory merge-save plumbing (00239) ─────────────────────────────────────
+// product_inventory is written as a BASELINE-RELATIVE merge, not an absolute
+// upsert: the RPC applies (quantity - base) to the LIVE row, so a warehouse
+// pull (00237) landing between this tab's last sync and its save survives the
+// save. base comes from the diff-save snapshot — the last state this tab
+// loaded or saved:
+//   • diff-save-initiated saves pass the pre-pass snapshot item explicitly
+//     (the App.js _diffSave loop captures it BEFORE advancing the snapshot);
+//   • direct callers (editor Save button, Auto Inventory upload) omit it and
+//     the provider below reads the not-yet-advanced snapshot at call time.
+// Both paths therefore compute the SAME payload for the same logical edit,
+// which is what makes _invMergeSent (below) a safe dedupe: a manual save and
+// the diff-save effect it triggers apply the delta ONCE. A genuinely new edit
+// always changes the payload (same quantity + same base = delta 0 = no-op),
+// so nothing real is ever skipped. Cleared on failure so retries run.
+let _invBaseProvider=null;
+const _setInvBaseProvider=(fn)=>{_invBaseProvider=fn};
+const _invMergeSent={};// product id -> last successfully-initiated payload JSON
+// Pure (unit-tested): one row per size present in inv or alerts, sorted for a
+// stable dedupe key. base null (no snapshot) = absolute set, legacy semantics.
+const _buildInvMergeRows=(inv,alerts,base)=>{
+  const sizes=[...new Set([...Object.keys(inv||{}),...Object.keys(alerts||{})])].sort();
+  return sizes.map(sz=>({size:sz,quantity:Number((inv||{})[sz])||0,base:base==null?null:(Number(base[sz])||0),alert_threshold:(alerts||{})[sz]||null}));
+};
+const _dbSaveProduct = (p, snapBaseline) => _outboxWrap('products', p, _dbSaveProductInner(p, snapBaseline));
+const _dbSaveProductInner = async (p, snapBaseline) => {
   if(!supabase)return;
   // Never save a product with no id: the row would violate products.id NOT NULL, and adding
   // a null id to _dbSaveFailedIds jams the retry loop on [null] forever (the Costs-tab
@@ -2971,8 +2995,26 @@ const _dbSaveProductInner = async (p) => {
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
     if(allSizes.size>0){
-      const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
-      await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
+      // Merge-save (00239): apply this edit as a delta from the tab's baseline
+      // so it can't overwrite a concurrent pull. See _buildInvMergeRows above.
+      const _snapItem=snapBaseline!==undefined?snapBaseline:(_invBaseProvider?_invBaseProvider(p.id):null);
+      const _base=(_snapItem&&_snapItem._inv)||null;
+      const rows=_buildInvMergeRows(_inv,_alerts,_base);
+      const _payload=JSON.stringify(rows);
+      if(_invMergeSent[p.id]!==_payload){
+        _invMergeSent[p.id]=_payload;// set BEFORE the await — the diff-save double-fire arrives while this is in flight
+        const rpc=await supabase.rpc('merge_product_inventory',{p_product_id:p.id,p_rows:rows});
+        if(rpc.error){
+          delete _invMergeSent[p.id];// failed — a retry (or the fallback) must be allowed to run
+          const _m=(rpc.error.message||'')+' '+(rpc.error.details||'');
+          if(rpc.error.code==='42883'||/could not find|does not exist|schema cache/i.test(_m)){
+            // 00239 not applied yet — legacy absolute upsert (the pre-merge behavior).
+            await supabase.from('product_inventory').upsert([...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null})),{onConflict:'product_id,size'});
+          }else{
+            console.error('[DB] inventory merge failed for',p.id,':',rpc.error.message);
+          }
+        }
+      }
     }
     _dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,e.message||String(e));_persistFailedIds();return false}
@@ -3431,6 +3473,8 @@ export {
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
+  _setInvBaseProvider,
+  _buildInvMergeRows,
   _dbSaveEstimate,
   _dbSaveSO,
   _dbSaveArtFiles,

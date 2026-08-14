@@ -42,15 +42,22 @@ const isMissingRelation = (e) => {
 };
 
 // ── Pure: FIFO allocation (unit-tested directly) ─────────────────────────────
-// needs: [{ id, product_id, size, qty_needed, created_at, ... }] — open needs only.
-// stock: { '<product_id>|<size>': qty } — house on-hand snapshot.
-// Returns Map need.id -> ready qty (0..qty_needed). Oldest need per key first;
-// units allocated to one need are gone for the next, so a pass never promises
-// the same shirt to two orders.
+// needs: [{ id, product_id, size, qty_needed, order_date?, created_at, ... }] —
+// open needs only. stock: { '<product_id>|<size>': qty } — house on-hand
+// snapshot. Returns Map need.id -> ready qty (0..qty_needed). ONE unified
+// queue: teamshop and club needs compete in the same line, ordered by when the
+// CUSTOMER ORDERED (order_date — earliest webstore order on the SO), not by
+// when the need row was recorded. That distinction matters: club orders
+// convert (and record needs) instantly at purchase while a teamshop store's
+// orders convert in bulk at store close — record time would let a club order
+// placed yesterday jump teamshop orders placed weeks earlier. created_at is
+// the tiebreak/fallback. Units allocated to one need are gone for the next,
+// so a pass never promises the same shirt to two orders.
+const orderKey = (n) => String(n.order_date || n.created_at || '') + '|' + String(n.created_at || '');
 function allocateReady(needs, stock) {
   const pool = { ...stock };
   const out = new Map();
-  const sorted = [...needs].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  const sorted = [...needs].sort((a, b) => orderKey(a).localeCompare(orderKey(b)));
   for (const n of sorted) {
     const key = (n.product_id || '') + '|' + (n.size || '');
     const have = Math.max(0, Number(pool[key]) || 0);
@@ -125,10 +132,25 @@ async function loadOpenNeeds(admin, limit) {
   if (!needs.length) return { needs: [], soInfo: {} };
 
   const soIds = [...new Set(needs.map((n) => n.so_id).filter(Boolean))];
-  const soRes = await admin.from('sales_orders').select('id, memo, status, webstore_id').in('id', soIds);
+  const soRes = await admin.from('sales_orders').select('id, memo, status, webstore_id, created_at').in('id', soIds);
   if (soRes.error) return { error: soRes.error };
   const soInfo = {};
-  (soRes.data || []).forEach((s) => { soInfo[s.id] = { memo: s.memo, status: s.status, webstore_id: s.webstore_id, store_name: '' }; });
+  (soRes.data || []).forEach((s) => { soInfo[s.id] = { memo: s.memo, status: s.status, webstore_id: s.webstore_id, store_name: '', order_date: s.created_at || null }; });
+
+  // True order date per SO: the EARLIEST customer order behind it. A club SO
+  // maps to one webstore order placed at purchase; a teamshop SO is a bulk
+  // conversion at store close whose earliest order may be weeks older than the
+  // SO itself. Best-effort — on any miss the SO's own created_at (above) or
+  // the need row's created_at stands in.
+  const woRes = await admin.from('webstore_orders').select('so_id, created_at').in('so_id', soIds).limit(5000);
+  if (!woRes.error) {
+    (woRes.data || []).forEach((o) => {
+      if (!o.so_id || !o.created_at) return;
+      const s = soInfo[o.so_id];
+      if (s && (!s.order_date || o.created_at < s.order_date)) s.order_date = o.created_at;
+    });
+  }
+  needs = needs.map((n) => ({ ...n, order_date: (soInfo[n.so_id] || {}).order_date || n.created_at || null }));
 
   const storeIds = [...new Set((soRes.data || []).map((s) => s.webstore_id).filter(Boolean))];
   if (storeIds.length) {
@@ -143,6 +165,9 @@ async function loadOpenNeeds(admin, limit) {
     const s = soInfo[n.so_id];
     return !s || !SO_DONE.includes(String(s.status || '').toLowerCase());
   });
+  // Oldest ORDER first — the same priority the allocator uses, so the
+  // dashboard list and the FIFO line are the same line.
+  needs.sort((a, b) => orderKey(a).localeCompare(orderKey(b)));
   return { needs, soInfo };
 }
 
@@ -378,7 +403,7 @@ async function listBackorders(admin) {
       expected_date: n.expected_date || null, ready_at: n.ready_at || null,
       vendor: n.vendor || null, skip_reason: n.skip_reason || null,
       po_number: po ? po.po_number : null, po_status: po ? (po.submitted_at ? 'submitted' : po.status) : null,
-      created_at: n.created_at,
+      created_at: n.created_at, order_date: n.order_date || n.created_at || null,
     };
   });
   return ok({ ok: true, rows });
@@ -418,8 +443,13 @@ exports.handler = async (event) => {
   }
 };
 
+// Shared with webstore-checkout's cumulative backorder cap (one definition of
+// "this SO is finished" — don't fork it).
+module.exports.SO_DONE = SO_DONE;
+
 // ── Test surface (src/__tests__/backorderReadySweep.test.js) ─────────────────
 module.exports.allocateReady = allocateReady;
+module.exports.orderKey = orderKey;
 module.exports.alertRows = alertRows;
 module.exports.buildDigestHtml = buildDigestHtml;
 module.exports.runSweep = runSweep;
