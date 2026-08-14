@@ -29,9 +29,8 @@
 --
 -- Cost is retail x .55 x .75, with the penny truncated, not rounded: 55 retail -> 22.6875 -> 22.68.
 -- Retail for the six red goalkeeper/short articles (JF2887, JF2881, JF2871, JJ4162, JF2872,
--- JP0179) came from the club — they aren't in the catalog at all. Note the base articles carry the
--- rounded-UP penny on the 35/50/55 retails (14.44 / 20.63 / 22.69); section 3 truncates those to
--- match. 119 other Locker Room rows carry the same rounded-up penny and are NOT touched here.
+-- JP0179) came from the club — they aren't in the catalog at all. The catalog had drifted a penny
+-- high on 123 Locker Room rows (the base articles among them); section 3 truncates all of those.
 --
 -- The backpack is the one exception on both counts: it is a stock Agron article, not Locker Room
 -- custom, so it takes no pricing_group and keeps its catalog cost of 24.38 on a 65 retail
@@ -86,8 +85,10 @@ ON CONFLICT (id) DO UPDATE SET
   updated_at       = now();
 
 -- 2. On-hand quantities -----------------------------------------------------
--- JD7373-EXP-W (White Youth Jersey) is on the sheet with every size blank, so it gets a catalog
--- row and no counts — nothing was counted, which is not the same as a counted zero.
+-- JD7373-EXP-W (White Youth Jersey) is blank across every size on the sheet. Confirmed with the
+-- club: there is genuinely none on hand, so it is recorded as an explicit counted zero rather than
+-- left absent. That distinction matters here — 31 youth players are sized for a white jersey in
+-- the open roster session, so the roster reads this as "must order", not "unknown".
 INSERT INTO product_inventory (product_id, size, quantity) VALUES
   -- Youth Jersey, Navy — 330
   ('p-exp-JD7373-EXP-N','YXS',12), ('p-exp-JD7373-EXP-N','YS',55), ('p-exp-JD7373-EXP-N','YM',112), ('p-exp-JD7373-EXP-N','YL',108), ('p-exp-JD7373-EXP-N','YXL',43),
@@ -127,26 +128,32 @@ INSERT INTO product_inventory (product_id, size, quantity) VALUES
   -- Adult All Weather Jacket, Navy — 5
   ('p-exp-KB3914-EXP','L',3), ('p-exp-KB3914-EXP','XL',1), ('p-exp-KB3914-EXP','2XL',1),
   -- Backpack, Navy — 64
-  ('p-exp-5159406-EXP','OSFA',64)
+  ('p-exp-5159406-EXP','OSFA',64),
+  -- Youth Jersey, White — counted, none on hand
+  ('p-exp-JD7373-EXP-W','YXS',0), ('p-exp-JD7373-EXP-W','YS',0), ('p-exp-JD7373-EXP-W','YM',0),
+  ('p-exp-JD7373-EXP-W','YL',0), ('p-exp-JD7373-EXP-W','YXL',0)
 ON CONFLICT (product_id, size) DO UPDATE SET quantity = EXCLUDED.quantity;
 
--- 3. Base articles: truncate the same penny --------------------------------
--- The 13 base articles these rows were costed from carry the rounded-UP penny on their 35/50/55
--- retails. Cost truncates, so bring them onto the same rule (5 of the 13 actually move). Scoped to
--- this list's articles by SKU — the other 119 rounded-up lockerroom rows are a separate call.
+-- 3. Truncate the penny across the Locker Room catalog ----------------------
+-- Cost truncates, but 123 lockerroom rows carried the rounded-UP penny (including 5 of the 13 base
+-- articles these club rows were costed from). Bring them onto the rule.
+--
+-- The band matters. Guard on the difference being a PENNY (0.005..0.01), not merely "differs from
+-- the computed value": KB4031 (Entrada 26 Jersey Men Custom, 45 retail) is costed 16.87 — the
+-- x.5 x .75 stock rate, 0.3749, not the x .55 x .75 Locker Room one. An unguarded truncate would
+-- have RAISED it to 18.56, a $1.69 repricing dressed up as a rounding fix. It is left alone; if it
+-- is genuinely a Locker Room item its cost is wrong on a different axis, which is a separate call.
 UPDATE products
    SET nsa_cost = floor(retail_price * 0.55 * 0.75 * 100) / 100,
        updated_at = now()
  WHERE pricing_group = 'lockerroom'
    AND id NOT LIKE 'p-exp-%'
-   AND sku IN ('JD7373','KB4028','JY5390','JY5395','JD7371','KB4029','KB4042','KE9910',
-               'JD7370','KB4032','KB4037','JY5389','KB3914')
-   AND retail_price > 0
-   AND nsa_cost IS DISTINCT FROM floor(retail_price * 0.55 * 0.75 * 100) / 100;
+   AND nsa_cost IS NOT NULL AND retail_price > 0
+   AND nsa_cost - floor(retail_price * 0.55 * 0.75 * 100) / 100 BETWEEN 0.005 AND 0.01;
 
 COMMIT;
 
--- Verify: 23 catalog rows, 1,656 units on hand across 22 SKUs.
+-- Verify: 23 catalog rows, 84 size rows, 1,656 units on hand across 22 SKUs.
 -- select count(*) from products where id like 'p-exp-%';
 -- select sum(quantity) from product_inventory where product_id like 'p-exp-%';
 
