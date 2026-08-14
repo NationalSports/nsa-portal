@@ -444,10 +444,20 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
 
   // DB holds two items; the stale payload keeps the first and replaces the second with a brand
   // new garment (a new sku|color key, so the pure-deletion guard abstains and we reach the PO pass).
+  // The old-items read is a 5-column PROJECTION (id,item_index,sku,color,product_id) — the shape the
+  // save's delete/guard passes need. Reviving straight from it rebuilt the garment as a husk carrying
+  // only sku+color, wiping name/sizes/costs off the real line (SO-1971), so the revive re-reads the
+  // full row; fullItemRow() is what that read returns.
   const dbItems = () => [
     { id: 'oi-1', item_index: 0, sku: 'K540', color: 'Black', product_id: null },
     { id: 'oi-2', item_index: 1, sku: 'LST550', color: 'Black', product_id: null },
   ];
+  const fullItemRow = () => ({
+    id: 'oi-2', so_id: 'SO-REVIVE-1', item_index: 1, product_id: null,
+    sku: 'LST550', name: 'Sport-Tek Long Sleeve Tee', brand: 'Sport-Tek', color: 'Black',
+    nsa_cost: 7.35, retail_price: 0, unit_sell: 14.5,
+    sizes: { L: 22, M: 20 }, available_sizes: ['S', 'M', 'L', 'XL'], vendor_id: 'v9',
+  });
   const poRow = () => ({
     id: 'po-row-1', so_item_id: 'oi-2', po_id: 'PO 57028 BAH', vendor: 'SanMar',
     status: 'waiting', sizes: { L: 22, M: 20, unit_cost: 7.35 },
@@ -472,7 +482,8 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
         { error: null },                                                    // sales_orders upsert
       ],
       so_items: [
-        { data: dbItems(), error: null },                                   // old-items read
+        { data: dbItems(), error: null },                                   // old-items read (projection)
+        { data: fullItemRow(), error: null },                               // full-row re-read for the revive
         { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null },  // insert: 3 rows back
       ],
       so_art_files: [{ data: [], error: null }],
@@ -508,6 +519,13 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
     expect(rows[2].sku).toBe('LST550');
     expect(rows[2].color).toBe('Black');
     expect(rows[2].item_index).toBe(2);
+    // ...as the WHOLE garment, not a sku+color husk: reviving from the projection alone used to
+    // write these back as null, silently destroying the line it was supposed to be rescuing.
+    expect(rows[2].name).toBe('Sport-Tek Long Sleeve Tee');
+    expect(rows[2].sizes).toEqual({ L: 22, M: 20 });
+    expect(rows[2].available_sizes).toEqual(['S', 'M', 'L', 'XL']);
+    expect(rows[2].nsa_cost).toBe(7.35);
+    expect(rows[2].unit_sell).toBe(14.5);
 
     // ...and its PO line rides along, attached to the rebuilt item's new id.
     const poInserts = __mockState.calls.filter(c => c.table === 'so_item_po_lines' && c.method === 'insert');
@@ -530,6 +548,7 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
       ],
       so_items: [
         { data: dbItems(), error: null },
+        { data: fullItemRow(), error: null },
         { data: [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }], error: null },
       ],
       so_art_files: [{ data: [], error: null }],
@@ -558,6 +577,11 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
     expect(itemRestores[0].idx).toBe(2);
     // The synced object carries the PO line, so the editor's copy is whole.
     expect(itemRestores[0].item.po_lines.map(l => l.po_id)).toEqual(['PO 57028 BAH']);
+    // And it carries the garment itself. This object is pushed straight into React state, so a husk
+    // here reaches the editor: OrderEditor read item.sizes on such a line and crashed the whole order
+    // ("Cannot read properties of undefined (reading 'S')", SO-1971).
+    expect(itemRestores[0].item.name).toBe('Sport-Tek Long Sleeve Tee');
+    expect(itemRestores[0].item.sizes).toEqual({ L: 22, M: 20 });
   });
 
   test('fails closed — a decoration read error still blocks rather than rebuilding a bare item', async () => {
