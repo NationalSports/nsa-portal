@@ -279,14 +279,18 @@ async function generateForSo(admin, soId, actor) {
     return { ok: true, replayed: true, so_id: so, po_ids: [...new Set(probe.data.map((r) => r.po_id).filter(Boolean))] };
   }
 
-  // Source guard: only SOs born from a teamshop or club webstore order (club
-  // joined the engine so backordered club items auto-turn into vendor POs —
-  // same needs ledger, same client_ref idempotency).
+  // Source guard: only SOs born from a teamshop or club webstore order. Club
+  // orders get the NEEDS LEDGER only (it powers the Backorders dashboard and
+  // the ready-alert sweep) — NO automatic vendor POs: club shortages are often
+  // already inbound on standing vendor inventory POs, so auto-drafting a new
+  // PO per order would double-order. Staff see the shortage + the vendor's
+  // incoming date on the Backorders tab and order manually only if needed.
   const ordRes = await admin.from('webstore_orders')
     .select('id,order_source').eq('so_id', so).limit(1);
   if (ordRes.error) return { ok: false, error: ordRes.error.message };
   const ord = ordRes.data && ordRes.data[0];
   if (!ord || !['teamshop', 'club'].includes(ord.order_source)) return { ok: false, error: 'Not a converted Team Shop / club store order.' };
+  const isClub = ord.order_source === 'club';
 
   const itemsRes = await admin.from('so_items')
     .select('id,item_index,product_id,sku,sizes,is_custom').eq('so_id', so).order('item_index');
@@ -334,11 +338,12 @@ async function generateForSo(admin, soId, actor) {
   (settingsRes.data || []).forEach((s) => { settingByVendor[s.vendor] = s; });
 
   // One draft PO per vendor through the 00193 RPC. client_ref makes any
-  // replay/race collapse onto the same PO with the same lines.
+  // replay/race collapse onto the same PO with the same lines. Club orders
+  // skip this loop entirely (needs ledger only — see the source guard above).
   const created = [];
   const poIdByVendor = {};
   const autoSubmits = [];
-  for (const [vendor, g] of Object.entries(vendorGroups)) {
+  for (const [vendor, g] of Object.entries(isClub ? {} : vendorGroups)) {
     const clientRef = 'tsauto:' + so + ':' + vendor;
     const rpc = await admin.rpc('create_purchase_order', {
       p_client_ref: clientRef,
@@ -393,9 +398,15 @@ async function generateForSo(admin, soId, actor) {
   }
 
   // Record the evaluation (marker + audit). ignoreDuplicates: a concurrent
-  // run that lost the client_ref race may have inserted these already.
+  // run that lost the client_ref race may have inserted these already. Club
+  // shortage rows are stamped skip_reason='club_review' (no auto-PO — staff
+  // check incoming stock on the Backorders tab and order manually if needed).
   const rows = needs.map((n) => ({
     ...n,
+    // Every club shortage row is club_review — including unmapped vendors, so
+    // club rows never leak into the teamshop manual-ordering queue (which
+    // filters on no_vendor_mapping); the Backorders tab is their one home.
+    ...(isClub && n.qty_needed > 0 ? { skip_reason: 'club_review' } : {}),
     so_id: so,
     po_id: (n.vendor && n.qty_needed > 0 && poIdByVendor[n.vendor]) || null,
   }));
@@ -411,6 +422,7 @@ async function generateForSo(admin, soId, actor) {
     so_id: so,
     pos: created,
     needs_rows: rows.length,
+    ...(isClub ? { club: true, note: 'club order — backorder needs recorded, no auto-PO (stock is often already inbound on standing vendor POs)' } : {}),
     unmapped: needs.filter((n) => n.skip_reason === 'no_vendor_mapping').length,
     ...(autoSubmits.length ? { auto_submits: autoSubmits, auto_submitted: autoSubmits.filter((a) => a.submitted).length } : {}),
     ...(notes.length ? { notes } : {}),

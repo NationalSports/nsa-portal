@@ -2313,7 +2313,11 @@ function AutoPoSection() {
 // ─────────────────────────────────────────────────────────────────────────
 // Backorders — open (qty_needed > 0) rows from the auto-PO needs ledger, i.e.
 // every backordered teamshop/club (so_item, size) whose garments weren't in
-// house stock at conversion. The backorder-ready-sweep (00236, every 30 min)
+// house stock at conversion. Club rows carry skip_reason='club_review': NO
+// auto-PO is drafted for them (club shortages are often already inbound on
+// standing vendor inventory POs — the Expected column shows the vendor's
+// incoming date); staff order manually only when nothing is coming.
+// The backorder-ready-sweep (00236, every 30 min)
 // stamps how many units house stock now covers (FIFO by order age), refreshes
 // the vendor expected date, and emails the decoration team on increases; this
 // section is the live view of that ledger plus a "check stock now" button.
@@ -2417,7 +2421,7 @@ function BackorderSection() {
                 <td style={cell}>{r.size}</td>
                 <td style={{ ...cell, textAlign: 'right', fontWeight: 700 }}>{r.qty_needed}</td>
                 <td style={cell}>{badge(r)}</td>
-                <td style={cell}>{r.po_number ? (r.po_number + (r.po_status ? ' · ' + r.po_status : '')) : (r.skip_reason === 'no_vendor_mapping' ? 'manual order' : '—')}</td>
+                <td style={cell}>{r.po_number ? (r.po_number + (r.po_status ? ' · ' + r.po_status : '')) : (r.skip_reason === 'no_vendor_mapping' ? 'manual order' : r.skip_reason === 'club_review' ? 'check incoming' : '—')}</td>
                 <td style={cell}>{r.expected_date || '—'}</td>
               </tr>
             ))}

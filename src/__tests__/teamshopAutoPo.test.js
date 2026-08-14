@@ -301,14 +301,25 @@ describe('generateForSo', () => {
     expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
   });
 
-  test('CLUB order generates POs exactly like teamshop (backorders become vendor orders)', async () => {
+  test('CLUB order records backorder needs but creates NO vendor POs (stock is often already inbound)', async () => {
     const sb = fakeSb(freshScript({
       'webstore_orders.select': [{ data: [{ id: 'ord-1', order_source: 'club' }], error: null }],
     }));
     const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
     expect(r.ok).toBe(true);
-    const rpcCalls = sb.calls.filter((c) => c.op === 'rpc' && c.table === 'create_purchase_order');
-    expect(rpcCalls.length).toBe(2);
+    expect(r.club).toBe(true);
+    expect(r.pos).toEqual([]);
+    // No PO RPC ever fires for a club order.
+    expect(sb.calls.filter((c) => c.op === 'rpc' && c.table === 'create_purchase_order').length).toBe(0);
+    // The needs ledger IS recorded — shortage rows stamped club_review, po_id null.
+    const up = sb.calls.find((c) => c.table === 'teamshop_auto_po_needs' && c.op === 'upsert');
+    expect(up).toBeTruthy();
+    const shortRows = up.payload.filter((n) => n.qty_needed > 0);
+    expect(shortRows.length).toBeGreaterThan(0);
+    shortRows.forEach((n) => {
+      expect(n.skip_reason).toBe('club_review');
+      expect(n.po_id).toBeNull();
+    });
   });
 
   test('unreadable warehouse stock fails safe: everything needs ordering, and the result says so', async () => {
