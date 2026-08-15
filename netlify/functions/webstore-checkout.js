@@ -628,9 +628,20 @@ async function placeOrder(sb, body) {
         amount: Math.round(total * 100),
         currency: 'usd',
         automatic_payment_methods: { enabled: true },
-        receipt_email: order.buyer_email || undefined,
-        metadata: { webstore_order_id: order.id, store_slug: store.slug, source: 'nsa_webstore' },
-        description: `${store.name} webstore — order ${order.id}`,
+        // NO receipt_email — deliberately. Setting it makes Stripe send its own receipt
+        // on top of our confirmation (sendOrderConfirmation), so every card buyer got two
+        // emails for one order: ours, and one titled by Stripe's internal receipt number
+        // with no order number the buyer or a rep could act on. Stripe's receipt subject
+        // isn't customizable, so the fix is to send one email — ours, which carries the
+        // order number, the line items with sizes/numbers, the totals, the ship-to
+        // address, and the tracking link. Adding this key back re-enables the duplicate.
+        metadata: { webstore_order_id: order.id, webstore_order_number: order.order_number != null ? String(order.order_number) : '', store_slug: store.slug, source: 'nsa_webstore' },
+        // The description is what Stripe prints on the card statement and in the
+        // Dashboard, so it has to be the human order number staff see everywhere else
+        // (portal, confirmation email, support). The raw UUID meant nobody — buyer or
+        // rep — could match a charge to an order. order_number is a sequence default,
+        // so it's on the row the insert/RPC just returned.
+        description: `${store.name} webstore — order ${order.order_number != null ? '#' + order.order_number : order.id}`,
       }, { idempotencyKey: 'wsorder_' + order.id });
     } catch (e) {
       await rollback();
