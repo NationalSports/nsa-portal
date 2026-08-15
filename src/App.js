@@ -14790,7 +14790,7 @@ export default function App(){
     return{rev,cost,shipRev,margin:mBase-cost,pct:mBase>0?Math.round((mBase-cost)/mBase*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===rptRep});
-    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===rptRep});
+    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so,i)===rptRep});
     const filtBookingInvPOs=(invPOs||[]).filter(p=>p.is_booking).filter(p=>rptRep==='all'?true:p.created_by_id===rptRep);
 
     // Pipeline data
@@ -14812,7 +14812,7 @@ export default function App(){
       // One soCalc pass per SO; shipRev tallied so the leaderboard pct denominator matches margin
       const _sums=rSOs.reduce((a,s)=>{const m=soCalc(s);a.rev+=m.rev;a.margin+=m.margin;a.shipRev+=safeNum(m.shipRev);return a},{rev:0,margin:0,shipRev:0});
       const rev=_sums.rev,margin=_sums.margin,repShipRev=_sums.shipRev;
-      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===r.id});
+      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so,i)===r.id});
       const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
@@ -14977,7 +14977,7 @@ export default function App(){
     // the order, so the two tabs disagreed (Jered, Aug 2026: INV-63398, $526.05).
     const _custById={};(cust||[]).forEach(c=>{if(c&&c.id)_custById[c.id]=c});
     const _soByIdRpt={};(sos||[]).forEach(s=>{if(s&&s.id)_soByIdRpt[s.id]=s});
-    const _billRepId=(row)=>{const so=row&&row.so_id?_soByIdRpt[row.so_id]:null;return so?commissionRepId(_custById[so.customer_id],so):(((_custById[row.customer_id]||{}).primary_rep_id)||null)};
+    const _billRepId=(row)=>{const so=row&&row.so_id?_soByIdRpt[row.so_id]:null;return so?commissionRepId(_custById[so.customer_id],so,row):((row&&row.rep_id)||((_custById[row.customer_id]||{}).primary_rep_id)||null)};
     const _matchRep=(hi)=>rptRep==='all'?true:(_billRepId(hi)===rptRep);
     const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
     let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0;
@@ -15735,7 +15735,7 @@ export default function App(){
           const _isFut=(p)=>p.y>_tY||(p.y===_tY&&(p.mo>_tM||(p.mo===_tM&&p.d>_tD)));
           const _hSet=new Set((histInvs||[]).map(h=>h.id));
           const _bills=[];
-          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?commissionRepId(_cById(so.customer_id),so):((_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
+          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?commissionRepId(_cById(so.customer_id),so,iv):(iv.rep_id||(_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
           (histInvs||[]).forEach(hi=>{if(!hi||hi.status==='void')return;const p=_pYMD(hi.date);if(!p)return;const c=_cById(hi.customer_id);_bills.push({rep:(c&&c.primary_rep_id)||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&c.name)||hi.raw_customer_name||hi.customer_id||'Unknown',total:safeNum(hi.total),paid:safeNum(hi.paid),status:hi.status||'paid',src:'NetSuite',id:hi.id})});
           const _allReps=rptRep==='all';
           const _scoped=_allReps?_bills:_bills.filter(b=>b.rep===rptRep);
@@ -35410,7 +35410,7 @@ export default function App(){
           case 'date':return ymdInt(i.date);
           case 'due_date':return ymdInt(i.due_date);
           case 'customer':return custHay(custById(i.customer_id));
-          case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id));
+          case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id),i);
           case 'customer_id':return String(i.customer_id||'').toLowerCase();
           case 'text':return ((i.id||'')+' '+(i.memo||'')+' '+(custById(i.customer_id)?.name||'')).toLowerCase();
           default:return '';}};

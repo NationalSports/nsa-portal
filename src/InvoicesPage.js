@@ -23,7 +23,25 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+
+    // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
+    // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
+    // editing the rep on a single invoice reassigned the customer's whole history — every other
+    // invoice, SO and estimate, plus already-paid commission lines, since attribution is resolved
+    // live rather than frozen at snapshot time. Account-level reassignment still lives on the
+    // customer record and in the SO editor's rep control; this control is deliberately narrower.
+    // The `invs` effect in App.js persists the change (_dbSaveInvoice) off the state update.
+    const setInvoiceRep=React.useCallback((inv,newRepId)=>{
+      const next=newRepId||null;
+      if((inv.rep_id||null)===next)return;
+      if(inv._hist){nf('NetSuite invoices can only be changed in NetSuite','error');return}
+      setInvs(prev=>prev.map(x=>x.id===inv.id?{...x,rep_id:next}:x));
+      const acctRep=REPS.find(r=>r.id===cust.find(c=>c.id===inv.customer_id)?.primary_rep_id);
+      nf(next
+        ?inv.id+' assigned to '+(REPS.find(r=>r.id===next)?.name||'rep')+' (this invoice only)'
+        :inv.id+' returned to the account rep'+(acctRep?' ('+acctRep.name+')':''));
+    },[setInvs,REPS,cust,nf]);
 
     // Packing slip builder — what's actually going in the box for this invoice. Local to the
     // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
@@ -122,7 +140,11 @@ export default function InvoicesPage(){
       const so=sos.find(s=>s.id===inv.so_id);
       // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
       const invShipSel=(inv.shipping_name||inv.shipping_address)?null:resolveOrderShipTo(so,ic);
-      const repObj=REPS.find(r=>r.id===(ic?.primary_rep_id||so?.created_by))||null;
+      // Per-invoice override first, then the account rep, then the SO creator — the same order
+      // commissionRepId() pays on, so the rep printed here is always the rep who earns it.
+      const repObj=REPS.find(r=>r.id===(inv.rep_id||ic?.primary_rep_id||so?.created_by))||null;
+      const repIsOverride=!!(inv.rep_id&&inv.rep_id!==ic?.primary_rep_id);
+      const acctRepName=REPS.find(r=>r.id===ic?.primary_rep_id)?.name||'none';
       const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
@@ -299,12 +321,14 @@ export default function InvoicesPage(){
           <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
             {editingInvRep
-              ?<><select className="form-select" style={{width:180,fontSize:12,padding:'2px 6px'}} defaultValue={repObj?.id||''} onChange={e=>{changeDocRep(ic,e.target.value,inv.id);setEditingInvRep(false)}}>
-                <option value="">— None —</option>
+              ?<><select className="form-select" style={{width:200,fontSize:12,padding:'2px 6px'}} defaultValue={inv.rep_id||''} onChange={e=>{setInvoiceRep(inv,e.target.value);setEditingInvRep(false)}}>
+                <option value="">Account rep — {acctRepName}</option>
                 {REPS.filter(r=>r.is_active!==false&&(isCommissionRep(r))).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button></>
+              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button>
+              <span style={{fontSize:10,color:'#94a3b8'}}>Applies to {inv.id} only — the account stays with {acctRepName}.</span></>
               :<><span style={{fontSize:12,color:'#1e293b'}}>{repObj?.name||'—'}</span>
-              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change rep" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
+              {repIsOverride&&<span style={{fontSize:10,padding:'1px 6px',background:'#ede9fe',color:'#6d28d9',borderRadius:10,fontWeight:600}} title={'This invoice only — the account rep is '+acctRepName}>this invoice only</span>}
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change the rep on this invoice" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
           </div>
 
           {/* Sent History */}
@@ -1236,7 +1260,7 @@ export default function InvoicesPage(){
     // Enrich invoices with computed fields — portal invs plus NetSuite invoice history (read-only).
     const enrichedInvs=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
-      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=c?.primary_rep_id||so?.created_by||null;
+      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
 
     // ── Store settlement proposals (OMG deposit funds + webstore Stripe) ──
