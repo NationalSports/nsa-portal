@@ -3,6 +3,11 @@
 const stripe = require('stripe');
 const crypto = require('crypto');
 const { verifyUser, verifyAdmin, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
+const { sendRefundNotice } = require('./_webstoreEmail');
+
+// Dollar formatting for the refund message posted into the order thread — the
+// email builds its own via _webstoreEmail's `money`.
+const usd = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
@@ -289,7 +294,35 @@ exports.handler = async (event) => {
       if (rpc && rpc.ok === false) {
         return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: rpc.error === 'exceeds_total' ? 'Amount exceeds the refundable balance.' : (rpc.error || 'Refund rejected.'), ...rpc }) };
       }
-      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, ...(rpc || {}) }) };
+
+      // Tell the family. Money moved and it's recorded, so from here everything is
+      // best-effort: a Brevo or message-insert failure must never turn a completed
+      // refund into an error response, or staff would retry it and refund twice.
+      // Re-read the order so the notice quotes the post-refund refunded_amt the RPC
+      // just wrote, not the stale pre-refund value read above.
+      let notified = false;
+      try {
+        const { data: fresh } = await admin.from('webstore_orders')
+          .select('id,store_id,order_number,buyer_name,buyer_email,total,refunded_amt,payment_mode').eq('id', order.id).limit(1);
+        const row = (fresh && fresh[0]) || order;
+        await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason });
+        notified = !!row.buyer_email;
+        // Mirror it into the order's message thread — the same `messages` rows the
+        // Manage-orders panel and the buyer's order page already render — so staff
+        // can see at a glance that the family was told, and the family has it in
+        // the thread as well as their inbox. No message-notify email here: the
+        // refund email above is the notification.
+        await admin.from('messages').insert({
+          id: 'm' + Date.now() + Math.random().toString(36).slice(2, 7),
+          entity_type: 'webstore_order', entity_id: String(order.id),
+          author: 'NSA Team', author_id: v.teamMemberId || null,
+          text: `Refund issued: ${usd(cents / 100)}${kind === 'credit' ? ' (credited to the team account)' : ' back to the card on file'}${reason ? ` — ${reason}` : ''}.`,
+          ts: new Date().toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true,
+        });
+      } catch (e) {
+        console.error('[stripe-payment] refund notice failed for order', order.id, 'refund', stripeRefundId, '-', e.message);
+      }
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, notified, ...(rpc || {}) }) };
     }
 
     if (action === 'refund') {

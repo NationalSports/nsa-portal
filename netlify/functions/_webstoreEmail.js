@@ -207,6 +207,58 @@ async function sendPoOrderApproved(sb, order) {
   });
 }
 
+// "Refund issued" — sent to the buyer once a refund is recorded against their
+// order (stripe-payment.js refund_webstore_order, after apply_webstore_refund
+// commits, so this only ever claims money that actually moved). Called
+// best-effort by that endpoint: the refund is already done, so an email hiccup
+// must never fail the request or make the refund look unsuccessful.
+//
+// `kind` is 'card' (money back to the card that paid) or 'credit' (team-tab
+// order, recorded as a credit — no card to return money to). The wording has
+// to differ: telling a team-tab family to watch their statement would send them
+// looking for a deposit that is never coming.
+async function sendRefundNotice(sb, order, { amount, kind, reason } = {}) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey || !order.buyer_email) return;
+  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
+  const store = stores && stores[0];
+  if (!store) return;
+  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
+  const accent = store.accent_color || '#e11d2a';
+  const num = order.order_number || String(order.id || '').slice(0, 8);
+  const card = kind === 'card';
+  // Totals AFTER this refund — read from the row the RPC just updated, so the
+  // family sees the same remaining balance the portal shows staff.
+  const total = Number(order.total) || 0;
+  const refunded = Number(order.refunded_amt) || 0;
+  const link = `${portal}/shop/${store.slug}/order/${order.id}`;
+  const bodyHtml = `
+      <p style="margin:0 0 14px">Hi ${esc(order.buyer_name || 'there')} — we've refunded <b>${money(amount)}</b> on your order.</p>
+      ${reason ? `<p style="margin:0 0 14px;color:#475569">${esc(reason)}</p>` : ''}
+      <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:4px">
+        <tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5;color:#475569">Refunded now</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:800;color:#16a34a">${money(amount)}</td></tr>
+        ${refunded > Number(amount) ? `<tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5;color:#475569">Refunded in total</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right">${money(refunded)}</td></tr>` : ''}
+        <tr><td style="padding:8px 0;color:#475569">Order total</td><td style="padding:8px 0;text-align:right">${money(total)}</td></tr>
+      </table>
+      <p style="margin:14px 0 0;color:#475569">${card
+        ? 'The money is on its way back to the card you paid with. Most banks post it within 5&ndash;10 business days — it will show up as a refund from National Sports Apparel.'
+        : 'This order was billed to the team account, so the amount has been credited there rather than returned to a card.'}</p>
+      <a href="${link}" style="display:inline-block;margin-top:20px;background:${accent};color:#fff;text-decoration:none;padding:13px 26px;border-radius:8px;font-weight:700">View your order</a>
+      <p style="font-size:12px;color:#94a3b8;margin-top:18px">Questions about this refund? Just reply to this email and we'll help.</p>`;
+  const html = emailShell({
+    store, portal,
+    headline: 'Refund issued',
+    subhead: `Order #${esc(num)}`,
+    bodyHtml,
+  });
+  await postBrevo(brevoKey, {
+    fromName: store.name,
+    toEmail: order.buyer_email, toName: order.buyer_name || '',
+    subject: `${money(amount)} refunded on your ${store.name} order #${num}`,
+    html,
+  });
+}
+
 // Compare-and-swap increment so concurrent redemptions can't under-count
 // (a plain read-add-write loses updates and lets max_uses quotas be exceeded).
 async function bumpCouponUse(sb, storeId, code) {
@@ -222,4 +274,4 @@ async function bumpCouponUse(sb, storeId, code) {
   console.warn('[webstore] coupon used_count increment lost the race 3x for code:', code);
 }
 
-module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, bumpCouponUse };
+module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendRefundNotice, bumpCouponUse };
