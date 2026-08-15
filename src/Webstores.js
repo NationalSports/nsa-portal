@@ -3047,7 +3047,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
   // state) with an over-refund cap before any money moves.
   const refundingRef = useRef(false);
-  const refundOrder = useCallback(async (order, amount) => {
+  const refundOrder = useCallback(async (order, amount, customerMessage) => {
     if (refundingRef.current) return { error: 'A refund is already in progress' };
     refundingRef.current = true;
     try {
@@ -3063,12 +3063,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       try {
         const res = await authFetch('/.netlify/functions/stripe-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId }),
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null }),
         });
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
       if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
-      flash(d.kind === 'card' ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
+      // The refund notice fires automatically server-side. Say plainly whether it
+      // actually went — a refund the buyer was never told about looks identical to a
+      // clean one otherwise, and the rep is the only person who can follow up.
+      const _who = order.buyer_email ? ` — emailed ${order.buyer_email}` : '';
+      flash(d.kind === 'card' ? `Refunded ${money(cents / 100)} to card${d.notified ? _who : ''}` : `Recorded ${money(cents / 100)} credit${d.notified ? _who : ''}`);
+      if (!d.notified) flash(`⚠️ Refund went through, but the confirmation email did NOT send${d.notify_error ? ' (' + d.notify_error + ')' : ''} — contact the customer yourself.`);
       loadDetail(sel); return { ok: true, ...d };
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
@@ -13133,18 +13138,24 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </tbody>
         </table>
       </div></div>
-      {editId && (() => { const o = orders.find((x) => x.id === editId); if (!o) return null; return <OrderManageModal order={o} items={itemsByOrder[o.id] || []} availSizes={availSizes} nameByPid={nameByPid} onSave={onSaveOrderEdits} onRefund={onRefundOrder} onClose={() => setEditId(null)} />; })()}
+      {editId && (() => { const o = orders.find((x) => x.id === editId); if (!o) return null; return <OrderManageModal order={o} items={itemsByOrder[o.id] || []} availSizes={availSizes} nameByPid={nameByPid} storeName={store && store.name} onSave={onSaveOrderEdits} onRefund={onRefundOrder} onClose={() => setEditId(null)} />; })()}
     </>
   );
 }
 
 // Edit an order's line items (size/qty/remove) and issue refunds.
-function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, onSave, onRefund, onClose }) {
+function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
   const initRows = editable.map((i) => ({ id: i.id, sku: i.sku, name: nameByPid[i.product_id] || i.name, color: i.color, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false }));
   const [rows, setRows] = useState(initRows);
   const [refundAmt, setRefundAmt] = useState('');
   const [busy, setBusy] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  // Amount a completed save left owed back to the buyer. Held separately from the
+  // live suggestion so the post-save resync can't wipe it before it's refunded.
+  const [savedOwed, setSavedOwed] = useState(0);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [refundMsg, setRefundMsg] = useState(null); // null = still the generated default
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
 
@@ -13154,18 +13165,6 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, onSav
   // a shrunken order. oldPot is the order's stored subtotal + fundraise at checkout.
   const _oldPot = (Number(order.subtotal) || 0) + (Number(order.fundraise_amt) || 0);
   const scaledDiscount = (newPot) => _oldPot > 0 ? Math.round((Number(order.discount_amt) || 0) / _oldPot * newPot * 100) / 100 : (Number(order.discount_amt) || 0);
-
-  // Auto-suggest refund = value of removed items when user clicks "remove"
-  useEffect(() => {
-    if (!rows.some((r) => r._removed)) { setRefundAmt(''); return; }
-    const bSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
-    const bFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
-    const sub = bSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
-    const fund = bFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
-    const nt = Math.max(0, sub + fund - scaledDiscount(sub + fund)) + (Number(order.shipping_fee) || 0);
-    const delta = Math.max(0, (Number(order.total) || 0) - (Number(order.tax) || 0) - nt);
-    setRefundAmt(delta > 0.005 ? delta.toFixed(2) : '');
-  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Only recompute total when the user has actually made a change — bundle
   // components have unit_price:0 (price lives on the parent row which is
@@ -13177,10 +13176,67 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, onSav
   const bundleBaseFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
   const newSubtotal = bundleBaseSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
   const newFund = bundleBaseFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
-  const newTotal = Math.max(0, newSubtotal + newFund - scaledDiscount(newSubtotal + newFund)) + (Number(order.shipping_fee) || 0);
+  // The new total has to be the number saveOrderEdits will actually WRITE, or the
+  // preview and the refund suggestion below are both wrong. It previously stopped at
+  // goods + shipping − discount, omitting the processing fee and the sales tax that
+  // saveOrderEdits rescales and persists: on a $333 order edited to $261 it showed a
+  // "New total" of $261.00 against a real new total of $294.28. Mirror that function
+  // exactly — fee and tax re-derived from THIS order's own stored ratios.
+  const _round2 = (n) => Math.round(n * 100) / 100;
+  const _oldSub = Number(order.subtotal) || 0;
+  const _scaleFromSub = (v) => _round2(_oldSub > 0 ? (Number(v) || 0) / _oldSub * newSubtotal : (Number(v) || 0));
+  const newProcessing = _scaleFromSub(order.processing_fee);
+  const newTax = _scaleFromSub(order.tax);
+  const newPreTax = _round2(Math.max(0, newSubtotal + newFund + (Number(order.shipping_fee) || 0) + newProcessing - scaledDiscount(newSubtotal + newFund)));
+  const newTotal = _round2(newPreTax + newTax);
+  // What the buyer is owed back: what they were charged, less what they'd now owe.
+  // The old formula subtracted the ORIGINAL tax from the old total without adding back
+  // the fee and tax still owed on the items kept, so it was wrong in BOTH directions
+  // depending on the order — over by $7.47 on #1010542 ($88.65 offered against $81.18
+  // owed), but under by $25.81 when every line is removed, and under on a coupon order.
+  const owed = _round2(Math.max(0, (Number(order.total) || 0) - newTotal));
 
-  const save = async () => { setBusy(true); const r = await onSave(order, rows); setBusy(false); if (r && r.ok) onClose(); };
-  const refund = async () => { setBusy(true); const r = await onRefund(order, Number(refundAmt)); setBusy(false); if (r && r.ok) { setRefundAmt(''); onClose(); } };
+  // Keep the refund box in step with the item edits — but never clear an amount that a
+  // just-completed save left standing.
+  useEffect(() => {
+    if (savedOwed > 0) return;
+    setRefundAmt(hasChanges && owed > 0.005 ? owed.toFixed(2) : '');
+  }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-sync the editable rows whenever the saved order comes back from the reload, so
+  // the panel can stay open after a save (below) instead of closing to resync.
+  const itemsSig = editable.map((i) => `${i.id}:${i.size || ''}:${i.qty || 1}`).join('|');
+  useEffect(() => { setRows(initRows); }, [itemsSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Saving used to close the panel, which discarded the refund the rep was mid-way
+  // through issuing — the items came off the order, the total dropped, and the money
+  // owed was never sent (and afterwards nothing on screen recorded that it was owed).
+  // Adjusting and refunding stay two separate, deliberate buttons; saving now just
+  // keeps the panel open and carries the amount owed into the refund box.
+  const save = async () => {
+    setBusy(true);
+    const _owed = owed;
+    const r = await onSave(order, rows);
+    setBusy(false);
+    if (!r || !r.ok) return;
+    // Accumulate across successive saves. A rep who trims the order, saves, then trims
+    // again before refunding is owed the sum — overwriting here would drop the first
+    // round's money on the floor, which is the exact bug this whole change is about.
+    if (_owed > 0.005) setSavedOwed((prev) => { const t = _round2(prev + _owed); setRefundAmt(t.toFixed(2)); return t; });
+    setJustSaved(true); setTimeout(() => setJustSaved(false), 2500);
+  };
+  // Refunding goes through the compose step below — same shape as sending an invoice.
+  // Send is what processes the refund, so the money and the email leave together and a
+  // refund the customer was never told about isn't reachable from this screen.
+  const _firstName = String(order.buyer_name || '').trim().split(/\s+/)[0] || 'there';
+  const defaultRefundMsg = `Hi ${_firstName} — we've refunded ${money(Number(refundAmt) || 0)} on your order.`;
+  const refundMsgValue = refundMsg == null ? defaultRefundMsg : refundMsg; // null = untouched, so it tracks the amount
+  const refund = async () => {
+    setBusy(true);
+    const r = await onRefund(order, Number(refundAmt), (refundMsgValue || '').trim());
+    setBusy(false);
+    if (r && r.ok) { setRefundAmt(''); setSavedOwed(0); setRefundMsg(null); setComposeOpen(false); onClose(); }
+  };
 
   const sectionLabel = { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, color: '#94a3b8', marginBottom: 10 };
 
@@ -13241,11 +13297,17 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, onSav
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : 'Save item changes'}</button>
+          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : 'Save item changes'}</button>
 
-          {/* Refund */}
+          {/* Refund — a deliberate second step. Saving the items above no longer closes
+              this panel, so the amount owed stays on screen until it's actually sent. */}
           <div style={{ borderTop: '1px solid #eef1f5', marginTop: 20, paddingTop: 18 }}>
             <div style={sectionLabel}>Refund</div>
+            {savedOwed > 0.005 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontSize: 13 }}>
+                <span>Items saved. <b>{money(savedOwed)}</b> is still owed back — issue the refund below.</span>
+              </div>
+            )}
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
               {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
               {Number(order.refunded_amt) > 0 && <> Already refunded <b>{money(order.refunded_amt)}</b>; <b>{money(remaining)}</b> remaining.</>}
@@ -13256,11 +13318,57 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, onSav
                 <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 110, padding: '9px 10px', border: 'none', fontSize: 14, outline: 'none' }} />
               </div>
               <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
-              <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{busy ? 'Processing…' : order.stripe_pi_id ? 'Refund to card' : 'Record credit'}</button>
+              <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={() => setComposeOpen(true)} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{order.stripe_pi_id ? 'Refund to card…' : 'Record credit…'}</button>
             </div>
+            {order.buyer_email
+              ? <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 8 }}>You'll review the email to {order.buyer_email} before anything is charged back.</div>
+              : <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 8 }}>No email on file for this buyer — the refund will process without one.</div>}
           </div>
         </div>
       </div>
+
+      {/* Compose step — Send is what actually processes the refund, so the money and
+          the note to the family always go together. Same flow as sending an invoice. */}
+      {composeOpen && (
+        <div onClick={() => !busy && setComposeOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '24px 16px', overflow: 'auto' }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" style={{ maxWidth: 540, width: '100%', marginTop: 40, borderRadius: 12, overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,.3)' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5' }}>
+              <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.stripe_pi_id ? 'Refund' : 'Record credit'} {money(Number(refundAmt) || 0)}</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
+                {order.buyer_email
+                  ? <>Sending to <b>{order.buyer_email}</b> · Order #{order.order_number}</>
+                  : <>No email on file · Order #{order.order_number}</>}
+              </div>
+            </div>
+            <div style={{ padding: '18px 20px' }}>
+              {order.buyer_email && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, color: '#94a3b8', marginBottom: 6 }}>Subject</div>
+                  <div style={{ fontSize: 13, color: '#334155', background: '#f8fafc', border: '1px solid #eef1f5', borderRadius: 8, padding: '9px 12px', marginBottom: 14 }}>
+                    {money(Number(refundAmt) || 0)} refunded on your {storeName || 'team store'} order #{order.order_number}
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, color: '#94a3b8', marginBottom: 6 }}>Message</div>
+                  <textarea value={refundMsgValue} onChange={(e) => setRefundMsg(e.target.value)} rows={4}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13.5, fontFamily: 'inherit', lineHeight: 1.5, resize: 'vertical' }} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5, color: '#94a3b8', marginTop: 6, marginBottom: 14 }}>
+                    <span>The amounts, the {order.stripe_pi_id ? 'when-to-expect-it note' : 'team-account note'} and the order link are added automatically.</span>
+                    {refundMsg != null && <button type="button" onClick={() => setRefundMsg(null)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', padding: 0 }}>Reset</button>}
+                  </div>
+                </>
+              )}
+              <div style={{ background: '#fff5f5', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 16 }}>
+                Sending {order.stripe_pi_id ? `returns ${money(Number(refundAmt) || 0)} to the buyer's card` : `records a ${money(Number(refundAmt) || 0)} credit`}. This can't be undone.
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button className="btn btn-secondary" disabled={busy} onClick={() => setComposeOpen(false)}>Cancel</button>
+                <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={refund} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>
+                  {busy ? 'Sending…' : order.buyer_email ? `Send & refund ${money(Number(refundAmt) || 0)}` : `Refund ${money(Number(refundAmt) || 0)}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
