@@ -223,7 +223,7 @@ async function sendPoOrderApproved(sb, order) {
 // in this file returns silently when the key is missing or Brevo rejects the
 // message, which is indistinguishable from success — after a refund that gap
 // means the family is never told and nobody finds out. This one reports.
-async function sendRefundNotice(sb, order, { amount, kind, reason } = {}) {
+async function sendRefundNotice(sb, order, { amount, kind, reason, message } = {}) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
   if (!brevoKey) return { sent: false, reason: 'BREVO_API_KEY is not configured in this environment' };
   if (!order.buyer_email) return { sent: false, reason: 'no buyer email on the order' };
@@ -239,8 +239,15 @@ async function sendRefundNotice(sb, order, { amount, kind, reason } = {}) {
   const total = Number(order.total) || 0;
   const refunded = Number(order.refunded_amt) || 0;
   const link = `${portal}/shop/${store.slug}/order/${order.id}`;
+  // `message` is the staff-written note from the Manage panel's compose step. It
+  // REPLACES the generated opening line (that's the line the rep was editing), and is
+  // escaped + newline-converted because it lands in HTML. Falling back to the generated
+  // copy keeps every other caller — and a rep who cleared the box — with a sane email.
+  const intro = String(message || '').trim()
+    ? esc(String(message).trim()).replace(/\r?\n/g, '<br>')
+    : `Hi ${esc(order.buyer_name || 'there')} — we've refunded <b>${money(amount)}</b> on your order.`;
   const bodyHtml = `
-      <p style="margin:0 0 14px">Hi ${esc(order.buyer_name || 'there')} — we've refunded <b>${money(amount)}</b> on your order.</p>
+      <p style="margin:0 0 14px">${intro}</p>
       ${reason ? `<p style="margin:0 0 14px;color:#475569">${esc(reason)}</p>` : ''}
       <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:4px">
         <tr><td style="padding:8px 0;border-bottom:1px solid #eef1f5;color:#475569">Refunded now</td><td style="padding:8px 0;border-bottom:1px solid #eef1f5;text-align:right;font-weight:800;color:#16a34a">${money(amount)}</td></tr>

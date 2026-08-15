@@ -248,6 +248,9 @@ exports.handler = async (event) => {
       const v = await verifyUser(event);
       if (!v.ok) return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       const { webstore_order_id, amount_cents, reason, attempt_id } = body;
+      // Staff-written note for the buyer's email (the compose step in the Manage panel).
+      // Bounded and escaped downstream — it is rendered into HTML.
+      const customerMessage = String(body.customer_message || '').slice(0, 2000).trim() || null;
       if (!webstore_order_id) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'webstore_order_id required' }) };
       if (!attempt_id) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'attempt_id required' }) };
 
@@ -309,7 +312,7 @@ exports.handler = async (event) => {
         // Report what actually happened, not whether an address existed. `notified` used
         // to be `!!row.buyer_email`, which claimed success for an email that may never
         // have left the building — the one thing this notice must not do quietly.
-        const notice = await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason });
+        const notice = await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason, message: customerMessage });
         notified = !!(notice && notice.sent);
         if (!notified) {
           notifyError = (notice && notice.reason) || 'unknown';
@@ -324,7 +327,11 @@ exports.handler = async (event) => {
           id: 'm' + Date.now() + Math.random().toString(36).slice(2, 7),
           entity_type: 'webstore_order', entity_id: String(order.id),
           author: 'NSA Team', author_id: v.teamMemberId || null,
-          text: `Refund issued: ${usd(cents / 100)}${kind === 'credit' ? ' (credited to the team account)' : ' back to the card on file'}${reason ? ` — ${reason}` : ''}.`,
+          // Record what the buyer was actually told, not just that something was sent —
+          // the next person on this order needs to read the same words the family did.
+          text: `Refund issued: ${usd(cents / 100)}${kind === 'credit' ? ' (credited to the team account)' : ' back to the card on file'}${reason ? ` — ${reason}` : ''}.`
+            + (customerMessage ? `\n\n${notified ? 'Emailed' : 'Message (NOT emailed)'}: ${customerMessage}` : '')
+            + (notified ? '' : `\n⚠️ Confirmation email did not send${notifyError ? ` (${notifyError})` : ''}.`),
           ts: new Date().toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true,
         });
       } catch (e) {
