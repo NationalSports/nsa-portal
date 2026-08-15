@@ -3068,7 +3068,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
       if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
-      flash(d.kind === 'card' ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
+      // The refund notice fires automatically server-side. Say plainly whether it
+      // actually went — a refund the buyer was never told about looks identical to a
+      // clean one otherwise, and the rep is the only person who can follow up.
+      const _who = order.buyer_email ? ` — emailed ${order.buyer_email}` : '';
+      flash(d.kind === 'card' ? `Refunded ${money(cents / 100)} to card${d.notified ? _who : ''}` : `Recorded ${money(cents / 100)} credit${d.notified ? _who : ''}`);
+      if (!d.notified) flash(`⚠️ Refund went through, but the confirmation email did NOT send${d.notify_error ? ' (' + d.notify_error + ')' : ''} — contact the customer yourself.`);
       loadDetail(sel); return { ok: true, ...d };
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);

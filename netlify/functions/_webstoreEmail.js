@@ -217,12 +217,19 @@ async function sendPoOrderApproved(sb, order) {
 // order, recorded as a credit — no card to return money to). The wording has
 // to differ: telling a team-tab family to watch their statement would send them
 // looking for a deposit that is never coming.
+//
+// Returns { sent, reason } rather than nothing, because "the refund email fires
+// automatically" is only true if a failure to fire is VISIBLE. Every other sender
+// in this file returns silently when the key is missing or Brevo rejects the
+// message, which is indistinguishable from success — after a refund that gap
+// means the family is never told and nobody finds out. This one reports.
 async function sendRefundNotice(sb, order, { amount, kind, reason } = {}) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey || !order.buyer_email) return;
+  if (!brevoKey) return { sent: false, reason: 'BREVO_API_KEY is not configured in this environment' };
+  if (!order.buyer_email) return { sent: false, reason: 'no buyer email on the order' };
   const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
-  if (!store) return;
+  if (!store) return { sent: false, reason: 'store not found for order ' + order.id };
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const accent = store.accent_color || '#e11d2a';
   const num = order.order_number || String(order.id || '').slice(0, 8);
@@ -251,12 +258,32 @@ async function sendRefundNotice(sb, order, { amount, kind, reason } = {}) {
     subhead: `Order #${esc(num)}`,
     bodyHtml,
   });
-  await postBrevo(brevoKey, {
+  // postBrevo resolves for ANY HTTP status — a 401 on a bad key and a 202 on a
+  // delivered message look identical to an un-checked caller. Check the status, and
+  // give a transient failure one retry before reporting it: a refund notice is worth
+  // a second attempt, and Brevo 5xx/429s are usually momentary.
+  const payload = {
     fromName: store.name,
     toEmail: order.buyer_email, toName: order.buyer_name || '',
     subject: `${money(amount)} refunded on your ${store.name} order #${num}`,
     html,
-  });
+  };
+  let last = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 700));
+    try {
+      const resp = await postBrevo(brevoKey, payload);
+      if (resp && resp.ok) return { sent: true };
+      let detail = '';
+      try { const j = await resp.json(); detail = j.message || j.code || JSON.stringify(j); } catch { detail = await resp.text().catch(() => ''); }
+      last = `Brevo returned ${resp && resp.status}${detail ? ': ' + detail : ''}`;
+      // 4xx other than rate-limiting won't fix itself on a retry — stop early.
+      if (resp && resp.status >= 400 && resp.status < 500 && resp.status !== 429) break;
+    } catch (e) {
+      last = 'Brevo request failed: ' + e.message;
+    }
+  }
+  return { sent: false, reason: last || 'unknown Brevo failure' };
 }
 
 // Compare-and-swap increment so concurrent redemptions can't under-count

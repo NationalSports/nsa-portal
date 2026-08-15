@@ -301,12 +301,20 @@ exports.handler = async (event) => {
       // Re-read the order so the notice quotes the post-refund refunded_amt the RPC
       // just wrote, not the stale pre-refund value read above.
       let notified = false;
+      let notifyError = null;
       try {
         const { data: fresh } = await admin.from('webstore_orders')
           .select('id,store_id,order_number,buyer_name,buyer_email,total,refunded_amt,payment_mode').eq('id', order.id).limit(1);
         const row = (fresh && fresh[0]) || order;
-        await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason });
-        notified = !!row.buyer_email;
+        // Report what actually happened, not whether an address existed. `notified` used
+        // to be `!!row.buyer_email`, which claimed success for an email that may never
+        // have left the building — the one thing this notice must not do quietly.
+        const notice = await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason });
+        notified = !!(notice && notice.sent);
+        if (!notified) {
+          notifyError = (notice && notice.reason) || 'unknown';
+          console.error('[stripe-payment] refund EMAIL NOT SENT for order', order.id, 'refund', stripeRefundId, '-', notifyError);
+        }
         // Mirror it into the order's message thread — the same `messages` rows the
         // Manage-orders panel and the buyer's order page already render — so staff
         // can see at a glance that the family was told, and the family has it in
@@ -322,7 +330,7 @@ exports.handler = async (event) => {
       } catch (e) {
         console.error('[stripe-payment] refund notice failed for order', order.id, 'refund', stripeRefundId, '-', e.message);
       }
-      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, notified, ...(rpc || {}) }) };
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, notified, notify_error: notifyError, ...(rpc || {}) }) };
     }
 
     if (action === 'refund') {
