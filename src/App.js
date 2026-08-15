@@ -427,6 +427,7 @@ import {
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
+  _setInvBaseProvider,
   _dbSaveEstimate,
   _dbSaveSO,
   _dbSaveArtFiles,
@@ -2319,6 +2320,12 @@ export default function App(){
   const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
+  // Inventory merge-save baseline (00239): DIRECT _dbSaveProduct callers (editor
+  // Save, Auto Inventory upload) read their pre-edit baseline from the prod
+  // snapshot at call time — the diff-save effect hasn't advanced it yet at that
+  // moment. Diff-save-initiated saves don't use this (they pass the captured
+  // pre-pass item explicitly — see _diffSave).
+  React.useEffect(()=>{_setInvBaseProvider((id)=>{const s=_dbSnap.current.prod;return(s&&s.find(x=>x.id===id))||null})},[]);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
@@ -3243,11 +3250,13 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c),_custDiffCmp)},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
-  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p),_prodDiffCmp)},[prod]);
+  // The second arg (pre-pass snapshot item) is the inventory merge-save
+  // baseline — the diff-save loop captures it before advancing the snapshot.
+  React.useEffect(()=>{_diffSave(prod,'prod',(p,old)=>_dbSaveProduct(p,old),_prodDiffCmp)},[prod]);
   // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
   React.useEffect(()=>{
     if(adidasBulkFetched.current||!prod||prod.length===0)return;
@@ -18568,6 +18577,39 @@ export default function App(){
     return{soId:so.id,custName:cc?.name||'',repName:_repNameForSO(so,cc),lines:_receiptLines(so,itemQtyMap),deco:decoG?decoG.jobs:[]};
   };
   const _showMobileReceipt=(payload)=>{const groups=(payload?.groups||[]).filter(Boolean);if(groups.length)setMobileReceipt({...payload,groups})};
+  // Server-authoritative warehouse decrement (00237): sends the pulled DELTAS to
+  // pull_house_inventory, which decrements the LIVE product_inventory rows
+  // (clamped at 0) and returns post-pull quantities we adopt into local state —
+  // so two staff pulling the same product concurrently no longer overwrite each
+  // other's decrement through the absolute diff-save. Falls back to the legacy
+  // local-absolute write ONLY when the RPC isn't deployed yet.
+  const pullHouseInv=(prodPatches,pulls)=>{
+    const legacy=()=>{if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x))};
+    if(!supabase){legacy();return}// unconfigured/demo env: pure local decrement, as before 00237
+    if(!pulls||!pulls.length){legacy();return}
+    supabase.rpc('pull_house_inventory',{p_pulls:pulls}).then(({data,error})=>{
+      if(error){
+        const msg=(error.message||'')+' '+(error.code||'');
+        if(/42883|42P01|does not exist|schema cache/i.test(msg)){legacy();return}
+        console.error('[pull] house inventory decrement failed:',error.message);
+        nf('⚠️ Inventory decrement failed — check stock counts: '+error.message);
+        return;
+      }
+      const byPid={};
+      ((data&&data.rows)||[]).forEach(r=>{if(r.found===false)return;(byPid[r.product_id]=byPid[r.product_id]||{})[r.size]=r.quantity});
+      if(Object.keys(byPid).length>0){
+        const adopt=(pp)=>pp.map(x=>byPid[x.id]?{...x,_inv:{...(x._inv||{}),...byPid[x.id]}}:x);
+        // Server truth, not a local edit: advance the diff-save snapshot IN THE
+        // SAME step. Adopting into state alone would make the prod effect see
+        // "local changed vs snapshot" and re-send the pull as a merge delta
+        // (base = pre-pull snapshot) — and the 00239 RPC would then decrement
+        // the pull a SECOND time. With the snapshot advanced there is nothing
+        // to save: the server already holds these quantities.
+        if(_dbSnap.current.prod)_dbSnap.current.prod=adopt(_dbSnap.current.prod);
+        setProd(adopt);
+      }
+    }).catch(e=>console.error('[pull] house inventory decrement error:',e));
+  };
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
@@ -18584,10 +18626,10 @@ export default function App(){
     });
     const _newJobs=recalcJobFulfillment(so,updatedItems);
     const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
-    // Deduct warehouse inventory for what was pulled
-    const prodPatches={};
-    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
-    if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+    // Deduct warehouse inventory for what was pulled — server-side (00237), see pullHouseInv.
+    const prodPatches={};const housePulls=[];
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[p.id]=newInv});
+    pullHouseInv(prodPatches,housePulls);
     savSO(updatedSO,{skipMerge:true});
     // Atomic per-line DB sync for cross-tab consistency (mirrors desktop pull)
     Object.entries(pullMap).forEach(([ii,qtys])=>{const pq={};Object.keys(qtys).forEach(sz=>{pq[sz]=qtys[sz]||0});_dbUpdatePickLineStatus(soId,parseInt(ii),pickId,'pulled',pq)});
@@ -19069,10 +19111,10 @@ export default function App(){
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
                       const _newJobs=recalcJobFulfillment(so,updatedItems);
                       const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
-                      // Inventory adjustments per item product
-                      const prodPatches={};
-                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
-                      if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+                      // Inventory adjustments per item product — server-side (00237), see pullHouseInv.
+                      const prodPatches={};const housePulls=[];
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[pi.p.id]=newInv});
+                      pullHouseInv(prodPatches,housePulls);
                       if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                         const shipments=[...(updatedSO._shipments||[])];
                         boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});

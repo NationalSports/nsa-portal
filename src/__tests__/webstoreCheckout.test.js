@@ -13,7 +13,7 @@ function fakeSb(tables) {
       const result = tables[table] || { data: [], error: null };
       const chain = {
         select: () => chain, eq: () => chain, in: () => chain, order: () => chain,
-        ilike: () => chain, limit: () => chain,
+        ilike: () => chain, limit: () => chain, gt: () => chain,
         then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
       };
       return chain;
@@ -104,6 +104,44 @@ describe('checkStock — demand for the same product+size is summed across cart 
     const r = await checkout.checkStock(sb(sfRow()), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 5 }]);
     expect(r.error).toBeNull();
     expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 5, max_avail: 5, label: 'Tee (size M)' }]);
+  });
+
+  test('backorder against a KNOWN incoming qty is capped at on-hand + on-order', async () => {
+    // 5 on hand + 10 on order = 15 sellable; 12 passes (no hold — backorder), 16 blocks.
+    const okR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
+    expect(okR.error).toBeNull();
+    expect(okR.holds).toEqual([]);
+    const bigR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 16 }]);
+    expect(bigR.error).toMatch(/sold out/i);
+  });
+
+  test('ETA-only incoming signal (no qty) keeps the uncapped backorder allowance', async () => {
+    const r = await checkout.checkStock(sb(sfRow({ earliest_eta: '2026-09-01' })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 200 }]);
+    expect(r.error).toBeNull();
+    expect(r.holds).toEqual([]);
+  });
+
+  test('backorder cap is CUMULATIVE: open ledger claims on unfinished SOs shrink the sellable pool', async () => {
+    // 5 on hand + 10 on order = 15 gross, but 8 units are already promised to
+    // an earlier open order (needs ledger) → 7 truly sellable. 12 must block.
+    const client = fakeSb({
+      webstore_storefront_products: { data: [sfRow({ product_id: 'p1', on_order_qty: 10 })], error: null },
+      teamshop_auto_po_needs: { data: [{ product_id: 'p1', size: 'M', qty_needed: 8, so_id: 'SO-1' }], error: null },
+      sales_orders: { data: [{ id: 'SO-1', status: 'need_order' }], error: null },
+    });
+    const r = await checkout.checkStock(client, store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
+    expect(r.error).toMatch(/sold out/i);
+  });
+
+  test('claims on a FINISHED SO no longer count against the pool', async () => {
+    const client = fakeSb({
+      webstore_storefront_products: { data: [sfRow({ product_id: 'p1', on_order_qty: 10 })], error: null },
+      teamshop_auto_po_needs: { data: [{ product_id: 'p1', size: 'M', qty_needed: 8, so_id: 'SO-1' }], error: null },
+      sales_orders: { data: [{ id: 'SO-1', status: 'completed' }], error: null },
+    });
+    const r = await checkout.checkStock(client, store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
+    expect(r.error).toBeNull();
+    expect(r.holds).toEqual([]);
   });
 });
 

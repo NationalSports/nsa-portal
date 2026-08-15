@@ -12,7 +12,7 @@
  * pure logic over its arguments + module state.
  */
 import {
-  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp,
+  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp, _buildInvMergeRows,
   _sanitizeArtRow, _unionArtFiles, _mergeArtConflict, _resolveArtRows,
   _matchRestoreItem, _queuedEntitySave, _isNetErr, _retryNet,
   _lsSet, _setOnCacheFullChange, _setLsQuotaWarned,
@@ -42,6 +42,29 @@ describe('diff comparators (phantom-save guards)', () => {
     expect(_soDiffCmp(so({}))).not.toBe(_soDiffCmp({ ...so({}), items: [{ sku: 'TEE', sizes: { M: 3 }, decorations: [], pick_lines: [], po_lines: [] }] }));
     // decorations / pick / po lines are compared whole
     expect(_soDiffCmp(so({ pick_lines: [{ M: 1 }] }))).not.toBe(_soDiffCmp(so({ pick_lines: [] })));
+  });
+
+  test('_buildInvMergeRows — baseline-relative merge rows for the 00239 RPC', () => {
+    // With a baseline: quantity + base per size, sizes sorted for a stable
+    // dedupe key; a size the baseline never saw gets base 0 (pure delta-add).
+    expect(_buildInvMergeRows({ M: 50, L: 3 }, { M: 5 }, { M: 40 })).toEqual([
+      { size: 'L', quantity: 3, base: 0, alert_threshold: null },
+      { size: 'M', quantity: 50, base: 40, alert_threshold: 5 },
+    ]);
+    // No baseline (new product / restore): base null = absolute-set semantics.
+    expect(_buildInvMergeRows({ M: 7 }, {}, null)).toEqual([
+      { size: 'M', quantity: 7, base: null, alert_threshold: null },
+    ]);
+    // Alert-only size: quantity 0 / base 0 → delta 0, so the RPC preserves the
+    // live quantity while still writing the threshold.
+    expect(_buildInvMergeRows({}, { S: 4 }, {})).toEqual([
+      { size: 'S', quantity: 0, base: 0, alert_threshold: 4 },
+    ]);
+    // Identical logical edit builds an identical payload — the dedupe contract
+    // that collapses the manual-save + diff-save double-fire into one apply.
+    const a = JSON.stringify(_buildInvMergeRows({ M: 50 }, {}, { M: 40 }));
+    const b = JSON.stringify(_buildInvMergeRows({ M: 50 }, {}, { M: 40 }));
+    expect(a).toBe(b);
   });
 
   test('_estDiffCmp compares only persisted estimate columns', () => {
