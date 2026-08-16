@@ -8,7 +8,7 @@ import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction, greetLine, withGreeting } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
@@ -87,6 +87,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[showPortal,setShowPortal]=useState(false);
+  // Email Invoices recipients. The modal used to send to getBillingContacts()[0] with no way to
+  // change it — on a parent account like a university that is one AP contact for every team's
+  // invoices. Same checkbox + add-an-address pattern the estimate/SO send modals use.
+  const[invEmailChecked,setInvEmailChecked]=useState({});const[invEmailCustom,setInvEmailCustom]=useState([]);const[invEmailAdding,setInvEmailAdding]=useState('');
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');const[stmtFrom,setStmtFrom]=useState('accounting');const[stmtSending,setStmtSending]=useState(false);
   const[custArtDetail,setCustArtDetail]=useState(null);
   // When a web logo / mockup is added, prompt for the color way it belongs to
@@ -207,6 +211,33 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
+  // Every contact reachable from this account — the customer's own, each sub-customer's, and (when
+  // viewing a sub-customer) the parent's — so a parent like a university can bill the AP office AND
+  // copy the team that actually ordered, and a team can still reach the AP office it inherits.
+  // The parent leg matters for correctness, not just convenience: getBillingContacts() seeds the
+  // checked recipients and returns INHERITED parent contacts, which would otherwise be checked but
+  // absent from this list and silently dropped from the send.
+  // Deduped by email; the first account to claim an address supplies its label.
+  const _idsKey=[...ids,...(customer.parent_id?[customer.parent_id]:[])].join('|');
+  const famContacts=useMemo(()=>{
+    const out=[];const seen=new Set();
+    _idsKey.split('|').forEach(cid=>{
+      const c=allCustomers.find(x=>x.id===cid);
+      (c?.contacts||[]).forEach(ct=>{
+        const em=String(ct?.email||'').trim();if(!em)return;
+        const k=em.toLowerCase();if(seen.has(k))return;seen.add(k);
+        out.push({...ct,email:em,_acct:cid===customer.id?'':((cid===customer.parent_id?(c?.name||gn(cid)):(teamName(cid)||gn(cid)))||'')});
+      });
+    });
+    return out;
+  },[_idsKey,allCustomers,customer.id,customer.parent_id]);// eslint-disable-line react-hooks/exhaustive-deps
+  const invEmailTargets=[...famContacts.map(c=>c.email),...invEmailCustom].filter(em=>invEmailChecked[em]);
+  // Keep the greeting in step with the recipient checkboxes ("Hi Cam and Hillary,") — the same rule
+  // the estimate/SO send modals use. Only the greeting line is swapped; edits below it survive.
+  const _invToKey=invEmailTargets.join('|');
+  useEffect(()=>{if(!showInvEmail||!_invToKey)return;
+    setInvEmailMsg(m=>withGreeting(m,greetLine(_invToKey.split('|'),famContacts)))},[_invToKey,showInvEmail]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Promote a sub-customer's order/estimate artwork into the parent customer's own library
   // (customer.art_files). Library art cascades to every sub-customer ("applies to all"),
   // so this is how a logo first seen on one sub-account becomes shared across the program.
@@ -295,7 +326,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {openInvCount>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag);try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
@@ -1575,20 +1606,33 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {showInvEmail&&(()=>{
     const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
     const accts=getBillingContacts(customer,allCustomers);
-    const acctContact=accts[0]||(customer.contacts||[])[0];
-    const ccAccts=accts.filter(a=>a.email&&a.email!==acctContact?.email);
     const displayInvs=invEmailOverdueOnly?openInvs.filter(inv=>{const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;return age>30;}):openInvs;
     const totalDue=displayInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
     return<div className="modal-overlay" onClick={()=>setShowInvEmail(false)}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" onClick={()=>setShowInvEmail(false)}>×</button></div>
       <div className="modal-body">
-        {/* Sending to */}
-        <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginBottom:14}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>SENDING TO</div>
-          <div style={{fontSize:14,fontWeight:600}}>{acctContact?.name||'—'} <span style={{fontSize:12,color:'#64748b'}}>({acctContact?.role||'Primary'})</span>{acctContact?._inherited_from&&<span style={{fontSize:10,marginLeft:6,padding:'1px 6px',background:'#ede9fe',color:'#6d28d9',borderRadius:10,fontWeight:600}}>from {acctContact._inherited_from}</span>}</div>
-          <div style={{fontSize:13,color:'#2563eb'}}>{acctContact?.email||'No email on file'}</div>
-          {ccAccts.length>0&&<div style={{fontSize:11,color:'#64748b',marginTop:6}}><strong>CC:</strong> {ccAccts.map(a=>a.email+(a._inherited_from?' (from '+a._inherited_from+')':'')).join(', ')}</div>}
-          {accts.length===0&&(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Billing" to auto-send invoices there{customer.parent_id?' — or set one on the parent customer to apply to all sub-customers':''}</div>}
+        {/* Sending to — billing contacts start checked; every family contact is available, and any
+            address can be typed in. Sub-customer contacts are labelled with their account. */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>SENDING TO {invEmailTargets.length>0&&<span style={{fontWeight:400}}>({invEmailTargets.length} selected)</span>}</div>
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,background:'#f8fafc',maxHeight:190,overflowY:'auto'}}>
+            {famContacts.length===0&&invEmailCustom.length===0&&<div style={{fontSize:12,color:'#94a3b8',padding:'4px 8px'}}>No contacts on file — add an email below.</div>}
+            {famContacts.map(ct=><label key={ct.email} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'5px 8px',borderRadius:6,background:invEmailChecked[ct.email]?'#dbeafe':'transparent',marginBottom:3}}>
+              <input type="checkbox" checked={!!invEmailChecked[ct.email]} onChange={e=>setInvEmailChecked(m=>({...m,[ct.email]:e.target.checked}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+              <span style={{fontSize:12}}><strong>{ct.name||'Contact'}</strong> — {ct.email}{ct.role?' ('+ct.role+')':''}</span>
+              {ct._acct&&<span style={{marginLeft:'auto',fontSize:10,padding:'1px 6px',background:'#e0e7ff',color:'#3730a3',borderRadius:10,fontWeight:600,whiteSpace:'nowrap'}}>{ct._acct}</span>}
+            </label>)}
+            {invEmailCustom.map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'5px 8px',borderRadius:6,background:invEmailChecked[em]?'#dbeafe':'transparent',marginBottom:3}}>
+              <input type="checkbox" checked={!!invEmailChecked[em]} onChange={e=>setInvEmailChecked(m=>({...m,[em]:e.target.checked}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+              <span style={{fontSize:12}}>{em} <span style={{fontSize:10,color:'#64748b'}}>(added)</span></span>
+              <button style={{marginLeft:'auto',background:'none',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>{setInvEmailCustom(arr=>arr.filter(x=>x!==em));setInvEmailChecked(m=>{const n={...m};delete n[em];return n})}}>×</button>
+            </label>)}
+            <div style={{display:'flex',gap:6,marginTop:6}}>
+              <input className="form-input" type="email" placeholder="+ Add another email..." value={invEmailAdding} onChange={e=>setInvEmailAdding(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&invEmailAdding.includes('@')){e.preventDefault();const em=invEmailAdding.trim();setInvEmailCustom(arr=>arr.includes(em)?arr:[...arr,em]);setInvEmailChecked(m=>({...m,[em]:true}));setInvEmailAdding('')}}} style={{fontSize:12,flex:1}}/>
+              <button className="btn btn-sm btn-secondary" disabled={!invEmailAdding.includes('@')} onClick={()=>{const em=invEmailAdding.trim();setInvEmailCustom(arr=>arr.includes(em)?arr:[...arr,em]);setInvEmailChecked(m=>({...m,[em]:true}));setInvEmailAdding('')}}>Add</button>
+            </div>
+          </div>
+          {accts.length===0&&(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Billing" to pre-select them here{customer.parent_id?' — or set one on the parent customer to apply to all sub-customers':''}</div>}
         </div>
         {/* Invoice list */}
         <div style={{marginBottom:14}}>
@@ -1603,8 +1647,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             {displayInvs.length===0&&<div style={{padding:'14px',textAlign:'center',fontSize:12,color:'#94a3b8'}}>No overdue invoices</div>}
             {displayInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
               return<div key={inv.id} style={{padding:'10px 14px',borderBottom:i<displayInvs.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10}}>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span>
+                    {isP&&<span style={{fontSize:10,padding:'1px 6px',background:'#e0e7ff',color:'#3730a3',borderRadius:10,fontWeight:600}}>{inv.customer_id===customer.id?'Main account':(teamName(inv.customer_id)||gn(inv.customer_id)||'—')}</span>}
+                  </div>
                   <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||'Invoice'} · {inv.date||'—'}</div>
                 </div>
                 <div style={{textAlign:'right'}}>
@@ -1625,12 +1672,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Preview */}
         <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginTop:14,fontSize:11,color:'#64748b'}}>
-          <strong>Preview:</strong> Email will include this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
+          <strong>Preview:</strong> Email to {invEmailTargets.length>0?invEmailTargets.join(', '):'(no recipients selected)'} with this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
         </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0} onClick={()=>{setShowInvEmail(false);const _ccLine=ccAccts.length>0?'\nCC: '+ccAccts.map(a=>a.email).join(', '):'';alert('📧 Invoice email sent to '+(acctContact?.email||'—')+_ccLine+'\n'+displayInvs.length+' invoice(s) (demo)')}}>📧 Send {displayInvs.length} Invoice{displayInvs.length!==1?'s':''}</button>
+        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0||invEmailTargets.length===0} title={invEmailTargets.length===0?'Select at least one recipient':undefined} onClick={()=>{setShowInvEmail(false);alert('📧 Invoice email sent to '+invEmailTargets.join(', ')+'\n'+displayInvs.length+' invoice(s) (demo)')}}>📧 Send {displayInvs.length} Invoice{displayInvs.length!==1?'s':''}</button>
       </div>
     </div></div>})()}
 

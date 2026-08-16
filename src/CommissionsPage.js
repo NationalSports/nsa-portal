@@ -188,12 +188,12 @@ export default function CommissionsPage(){
       return invs.filter(inv=>{
         if(!isCommissionEarnedInvoice(inv))return false;
         const so=sos.find(s=>s.id===inv.so_id);
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so,inv)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===commissionRepId(c,so));
+        const rep=REPS.find(r=>r.id===commissionRepId(c,so,inv));
         const gp=calcGP(inv);
         // GP cost reflects a shared screen run across manually-linked jobs on other SOs.
         const _combLinked=!!so&&Object.keys(linkedArtCostQty(so,{},sos)).length>0;
@@ -224,7 +224,7 @@ export default function CommissionsPage(){
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
         const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
-        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so),commBasis:revBasis?'revenue':'gp'};
+        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so,inv),commBasis:revBasis?'revenue':'gp'};
         // Frozen line: money fields come from the snapshot; _live keeps today's computation
         // around for the admin Re-freeze action (deliberate corrections only).
         const snap=snaps&&snaps[inv.id];
@@ -242,12 +242,12 @@ export default function CommissionsPage(){
         const so=sos.find(s=>s.id===inv.so_id);
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so,inv)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===commissionRepId(c,so));
+        const rep=REPS.find(r=>r.id===commissionRepId(c,so,inv));
         const gp=calcGP(inv);
         const invDate=new Date(inv.date);
         const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
@@ -256,7 +256,7 @@ export default function CommissionsPage(){
         const expRate=_revB?(safeNum(rep.commission_rate)||0.01):(willBeLate?0.15:0.30);
         const expComm=Math.round((_revB?gp.rev:gp.gp)*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:commissionRepId(c,so),type:'invoice'};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:commissionRepId(c,so,inv),type:'invoice'};
       });
       // IDs of SOs that already have invoices
       const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
@@ -295,16 +295,22 @@ export default function CommissionsPage(){
       return[...invLines,...soLines];
     };
 
+    // Promo cost lines key off the SO, not an invoice — but once that SO is invoiced its revenue
+    // follows any per-invoice rep override (see commissionRepId). Deduct the promo cost from whoever
+    // was credited the sale, or an overridden invoice pays one rep and bills another for its promo.
+    const _soRepOvr={};invs.forEach(i=>{if(i&&i.so_id&&i.rep_id&&!_soRepOvr[i.so_id])_soRepOvr[i.so_id]=i.rep_id});
+    const _ovrOf=soId=>_soRepOvr[soId]?{rep_id:_soRepOvr[soId]}:null;
+
     // Build promo cost lines from SOs with promo_applied
     const buildPromoLines=(repFilter)=>{
       return sos.filter(so=>{
         if(!so.promo_applied)return false;
         if(so.status==='deleted')return false;
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===so.customer_id);return commissionRepId(cc,so)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===so.customer_id);return commissionRepId(cc,so,_ovrOf(so.id))===repFilter}
         return true;
       }).map(so=>{
         const c=cust.find(x=>x.id===so.customer_id);
-        const rep=REPS.find(r=>r.id===commissionRepId(c,so));
+        const rep=REPS.find(r=>r.id===commissionRepId(c,so,_ovrOf(so.id)));
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const _comb=linkedArtCostQty(so,_aq,sos);
         const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
@@ -324,7 +330,7 @@ export default function CommissionsPage(){
         const totalCost=productCost+decoCost+shipCost;
         const soDate=so.created_at?so.created_at.substring(0,10):'';
         const soMonth=soDate?soDate.substring(0,7):'';
-        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:commissionRepId(c,so)};
+        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:commissionRepId(c,so,_ovrOf(so.id))};
       });
     };
 

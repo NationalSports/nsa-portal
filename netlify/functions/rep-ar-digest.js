@@ -79,7 +79,9 @@ exports.handler = async (event) => {
       if (!isOpenInvoice(inv)) return;
       const dpd = invoiceDaysPastDue(inv, todayPTYmd);
       if (dpd == null || dpd < 1) return;
-      const rep = custById[inv.customer_id]?.primary_rep_id || inv.created_by;
+      // invoices.rep_id is the per-invoice override (see commissionRepId in src/businessLogic.js);
+      // it must win here too or an overridden invoice chases the wrong rep for the money.
+      const rep = inv.rep_id || custById[inv.customer_id]?.primary_rep_id || inv.created_by;
       if (!rep) return;
       (byRep[rep] || (byRep[rep] = [])).push({ inv, balance: invoiceBalance(inv), dpd, bucket: agingBucket(dpd) });
     });

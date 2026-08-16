@@ -1368,15 +1368,25 @@ function itemsWithWipedQty(clientItems, dbItems) {
 }
 
 // ─── Commission / account attribution ───
-// The account OWNER (customer.primary_rep_id) is ALWAYS credited — for earned commission, pipeline,
+// The account OWNER (customer.primary_rep_id) is credited — for earned commission, pipeline,
 // promo-cost deductions, and every per-rep rollup. The SO creator (so.created_by) is only a fallback
 // for accounts that have no assigned rep. This ordering decides who gets PAID, so it lives here as the
 // single source of truth: a reversed `created_by || primary_rep_id` credited whoever happened to write
 // the order instead of the account's rep, leaking open invoices on another rep's account into the
 // creator's pipeline (the Rancho Buena Vista regression). Route ALL commission attribution through this
 // helper so the rule can never drift or get reversed at one of its call sites again.
-function commissionRepId(customer, so) {
-  return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
+//
+// `inv.rep_id` (invoices.rep_id, migration 20260815120000) outranks both — it is the ONE deliberate,
+// per-document override, set from the invoice detail page's Rep pencil. It exists because the only way
+// to move a single invoice to another rep used to be rewriting the customer's primary rep, which
+// reassigned the whole account and, since attribution stays live rather than frozen at snapshot time,
+// retroactively moved already-paid commission lines with it. NULL/absent means "follow the account",
+// so every invoice that has never been overridden attributes exactly as it did before.
+//
+// Pass `inv` at every call site that has an invoice in hand. Call sites that only have a sales order
+// (uninvoiced pipeline) correctly pass nothing — an SO with no invoice has no override to honor.
+function commissionRepId(customer, so, inv) {
+  return (inv && inv.rep_id) || (customer && customer.primary_rep_id) || (so && so.created_by) || null;
 }
 
 // Who may be listed as the rep on an account/job and earn commission. Sales reps and admins
