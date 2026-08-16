@@ -14,6 +14,7 @@ import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic
 import { normSzName } from './pricing';
 import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, hydrateStoreArt } from './lib/artGrid';
 import { buildTeamArtLibrary } from './lib/artIdentity';
+import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCloseTime, DEFAULT_CLOSE_TIME, DEFAULT_OPEN_TIME } from './lib/storeClock';
 import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import QuickMockBuilder from './QuickMockBuilder';
@@ -732,7 +733,9 @@ const _storefrontUrl = (store) => `${PUBLIC_SITE}/shop/${store.slug}`;
 // goqr.me image came back as a 1-bit colormap PNG that several clients/image-proxies dropped.
 const _qrImg = (data, size = 300) => `https://quickchart.io/qr?size=${size}&margin=2&ecLevel=M&text=${encodeURIComponent(data)}`;
 const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
-const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
+// Flyers/emails print the PT close date — slicing the ISO string gave the UTC day,
+// which is the day AFTER the rep's date for any evening close time.
+const _fmtDate = (d) => ptDateLabel(d, { month: 'long', day: 'numeric', year: 'numeric' });
 const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
 // The item's applied web logos (webstore_products.decorations), front side, not yet baked
 // into the photo — the same set the storefront's DecoOverlay composites at render time.
@@ -1958,12 +1961,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
-  // Change close date from the list row dropdown, without opening the full store editor.
+  // Change close date/time from the list row dropdown, without opening the full store
+  // editor. The date+time are PT wall clock (see lib/storeClock) — writing the bare
+  // picker date used to land on midnight UTC, closing the store 5 PM the day before.
   // Extending an already-closed store into the future reopens it (and clears the sweep's
   // idempotency stamp so the next close still notifies the rep/CSR).
-  const changeCloseDate = useCallback(async (store, newDate) => {
-    const patch = { close_at: newDate || null, updated_at: new Date().toISOString() };
-    if (store.status === 'closed' && (!newDate || new Date(newDate + 'T23:59:59') > new Date())) {
+  const changeCloseDate = useCallback(async (store, newDate, newTime = DEFAULT_CLOSE_TIME) => {
+    const closeIso = ptToIso(newDate, newTime);
+    if (newDate && !closeIso) { flash('That close date is not valid'); return; }
+    const patch = { close_at: closeIso, updated_at: new Date().toISOString() };
+    if (store.status === 'closed' && (!closeIso || new Date(closeIso) > new Date())) {
       if (!window.confirm(`"${store.name}" is closed. ${newDate ? 'Setting a future close date' : 'Removing the close date'} will reopen it and start taking orders again. Continue?`)) return;
       patch.status = 'open';
       patch.closed_notified_at = null;
@@ -1972,7 +1979,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (error) { flash('Could not update close date: ' + error.message); return; }
     setStores((prev) => prev.map((s) => (s.id === store.id ? data : s)));
     if (sel?.id === store.id) setSel(data);
-    flash(newDate ? 'Close date updated' : 'Close date cleared — store stays open');
+    flash(closeIso ? `Closes ${ptDateLabel(closeIso)} at ${ptTimeLabel(closeIso)} PT` : 'Close date cleared — store stays open');
   }, [sel, flash]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
@@ -4183,6 +4190,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   // Inline close-date editor in the expanded row (id of the store being edited + draft value).
   const [editCloseId, setEditCloseId] = useState(null);
   const [closeDraft, setCloseDraft] = useState('');
+  const [closeTimeDraft, setCloseTimeDraft] = useState(DEFAULT_CLOSE_TIME);
   // Live-inventory panel (Reporting view): per-store stock for every item.
   const [invStoreId, setInvStoreId] = useState('');
   const [invItems, setInvItems] = useState([]);
@@ -4219,8 +4227,10 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const money = (n) => '$' + Math.round(n || 0).toLocaleString();
   const moneyK = (n) => { n = n || 0; return n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); };
   const initials = (name) => (name || '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
-  const fmt = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
-  const fmtYear = (d) => { if (!d) return null; const x = new Date(d); return isNaN(x) ? null : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
+  // Both render the PT calendar day, so a rep outside Pacific reads the same close
+  // date the storefront shows and the sweep acts on.
+  const fmt = (d) => ptDateLabel(d);
+  const fmtYear = (d) => ptDateLabel(d, { month: 'short', day: 'numeric', year: 'numeric' });
 
   const repColorMap = useMemo(() => {
     const m = {};
@@ -4360,9 +4370,12 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     if (st === 'Scheduled') return { main: fmt(s.close_at) || '—', sub: 'Opens ' + fmt(s.open_at), subColor: '#2A6FDB' };
     if (st === 'Closed') return { main: fmt(s.close_at) || '—', sub: 'Closed', subColor: '#8A93A8' };
     const dl = daysLeft(s);
+    // An unusual close time (anything but the 11:59 PM default) is worth surfacing —
+    // a store set to close at 5 PM shouldn't look identical to one that runs all day.
+    const at = isCustomCloseTime(s.close_at) ? ` · ${ptTimeLabel(s.close_at)}` : '';
     return {
       main: s.close_at ? fmt(s.close_at) : 'No end date',
-      sub: dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left',
+      sub: (dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left') + at,
       subColor: dl != null && dl <= 3 ? '#962C32' : '#1B7F4B',
     };
   };
@@ -4550,14 +4563,18 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s); }}>Duplicate</button>}
                                   {onDuplicate && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onDuplicate(s, { rebrand: true }); }}>Clone &amp; Rebrand</button>}
                                   {onChangeCloseDate && editCloseId !== s.id && (
-                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); }}>Change Close Date</button>
+                                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditCloseId(s.id); setCloseDraft(dateOnly(s.close_at) || defaultCloseDate()); setCloseTimeDraft(ptTimeInput(s.close_at)); }}>Change Close Date</button>
                                   )}
                                 </div>
                                 {onChangeCloseDate && editCloseId === s.id && (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
-                                    <input className="form-input" type="date" value={closeDraft} onChange={(e) => setCloseDraft(e.target.value)} style={{ width: 160, padding: '6px 8px', fontSize: 13 }} autoFocus />
-                                    <button className="btn btn-sm btn-primary" onClick={() => { onChangeCloseDate(s, closeDraft); setEditCloseId(null); }}>Save</button>
-                                    <button className="btn btn-sm btn-secondary" onClick={() => setEditCloseId(null)}>Cancel</button>
+                                  <div style={{ marginTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                      <input className="form-input" type="date" value={closeDraft} onChange={(e) => setCloseDraft(e.target.value)} style={{ width: 160, padding: '6px 8px', fontSize: 13 }} autoFocus />
+                                      <input className="form-input" type="time" value={closeTimeDraft} onChange={(e) => setCloseTimeDraft(e.target.value || DEFAULT_CLOSE_TIME)} style={{ width: 120, padding: '6px 8px', fontSize: 13 }} />
+                                      <button className="btn btn-sm btn-primary" onClick={() => { onChangeCloseDate(s, closeDraft, closeTimeDraft); setEditCloseId(null); }}>Save</button>
+                                      <button className="btn btn-sm btn-secondary" onClick={() => setEditCloseId(null)}>Cancel</button>
+                                    </div>
+                                    <div style={{ fontSize: 11.5, color: '#8A93A8', marginTop: 5 }}>Closes at this Pacific time — leave 11:59 PM to run through the end of the day.</div>
                                   </div>
                                 )}
                               </div>
@@ -4570,7 +4587,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                                     ['Delivery', s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home'],
                                     ['Numbers', s.number_enabled ? (s.number_unique ? 'Unique #s' : 'On') : '—'],
                                     ['Opened', fmtYear(s.open_at) || 'Not opened'],
-                                    ['Closes', fmtYear(s.close_at) || 'No close date'],
+                                    ['Closes', s.close_at ? `${fmtYear(s.close_at)} · ${ptTimeLabel(s.close_at)} PT` : 'No close date'],
                                   ].map(([label, val]) => (
                                     <React.Fragment key={label}>
                                       <span style={{ color: '#8A93A8' }}>{label}</span>
@@ -4908,8 +4925,9 @@ const BLANK = {
   theme: 'classic', primary_color: '#0f172a', accent_color: '#2563eb', logo_url: '', banner_url: '', hero_blurb: '',
   featured_product_ids: null,
 };
-// Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
-const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
+// The yyyy-mm-dd a <input type=date> expects, read on the PT clock. Slicing the
+// raw timestamptz returned the UTC day, which is tomorrow for any evening close.
+const dateOnly = (v) => ptDateInput(v);
 // New stores default to closing on the third Sunday from today (midnight): orders are
 // processed Monday mornings, so a store built today runs ~3 weekends and lands on that cycle.
 const defaultCloseDate = () => {
@@ -4918,7 +4936,15 @@ const defaultCloseDate = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()) }));
+  // open_at/close_at are held as plain picker values ('YYYY-MM-DD') while editing and
+  // recombined with close_time on save (see lib/storeClock) — the form never touches
+  // raw timestamps, so the date the rep sees is the date that gets stored.
+  const [f, setF] = useState(() => ({
+    ...BLANK, ...(store || {}), ...(initialOverrides || {}),
+    open_at: dateOnly(store?.open_at),
+    close_at: store ? dateOnly(store.close_at) : (dateOnly(initialOverrides?.close_at) || defaultCloseDate()),
+    close_time: store ? ptTimeInput(store.close_at) : ptTimeInput(initialOverrides?.close_at),
+  }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
   // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
@@ -5065,8 +5091,14 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.customer_id = payload.customer_id || null;
     payload.rep_id = payload.rep_id || null;
     payload.csr_id = payload.csr_id || null;
-    payload.open_at = payload.open_at || null;
-    payload.close_at = payload.close_at || null;
+    // Picker values are PT wall clock: stores open at 12:00 AM on the open date and
+    // stop taking orders at the chosen time (default 11:59 PM) on the close date.
+    // Writing the bare 'YYYY-MM-DD' instead let Postgres read it as midnight UTC,
+    // which closed the store at 5 PM PT the day BEFORE the one the rep picked.
+    const closeTime = payload.close_time || DEFAULT_CLOSE_TIME;
+    delete payload.close_time; // form-only field, not a webstores column
+    payload.open_at = ptToIso(payload.open_at, DEFAULT_OPEN_TIME);
+    payload.close_at = ptToIso(payload.close_at, closeTime);
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
     payload.flat_shipping = Number(payload.flat_shipping) || 0;
     payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
@@ -5134,6 +5166,12 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="Open date (optional)"><input className="form-input" type="date" value={f.open_at || ''} onChange={(e) => set('open_at', e.target.value)} /></Row>
           <Row label="Close date (optional)"><input className="form-input" data-tour-id="ws-close-date" type="date" value={f.close_at || ''} onChange={(e) => set('close_at', e.target.value)} /></Row>
+          <Row label="Close time (Pacific)">
+            <input className="form-input" data-tour-id="ws-close-time" type="time" value={f.close_time || DEFAULT_CLOSE_TIME} onChange={(e) => set('close_time', e.target.value || DEFAULT_CLOSE_TIME)} disabled={!f.close_at} />
+          </Row>
+        </div>
+        <div style={{ fontSize: 12, color: '#8A93A8', marginTop: -6, marginBottom: 10 }}>
+          The store stops taking orders at this Pacific time on the close date. 11:59 PM keeps it open through the whole day; the store opens at 12:00 AM on the open date.
         </div>
         <Row label="Decoration">
           <div style={{ display: 'flex', gap: 8 }}>
@@ -13522,7 +13560,7 @@ function SettingsTab({ store: s }) {
   const rows = [
     ['Slug', '/shop/' + s.slug],
     ['Status', (s.status || 'draft').toUpperCase()],
-    ['Open → Close', `${s.open_at ? String(s.open_at).slice(0, 10) : '—'} → ${s.close_at ? String(s.close_at).slice(0, 10) : '—'}`],
+    ['Open → Close', `${ptDateInput(s.open_at) || '—'} → ${s.close_at ? `${ptDateInput(s.close_at)} ${ptTimeLabel(s.close_at)} PT` : '—'}`],
     ['Director', [s.director_name, s.director_email, s.director_phone].filter(Boolean).join(' · ') || '—'],
     ['Payment mode', s.payment_mode === 'either' ? 'Card + invoice-later' : s.payment_mode === 'unpaid' ? 'Invoice only' : 'Card only'],
     ['Login required', s.require_login ? 'Yes (club members only)' : 'No (public)'],
