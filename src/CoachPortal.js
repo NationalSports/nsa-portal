@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
+import { ptDateLabel } from './lib/storeClock';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
@@ -617,7 +618,7 @@ function CoachStoreCard({ store: s, d }) {
   const allOpen = visibleRows.length > 0 && visibleRows.every((r) => open[r.id]);
   const toggleAll = () => { if (allOpen) { setOpen({}); } else { const m = {}; visibleRows.forEach((r) => { m[r.id] = true; }); setOpen(m); } };
 
-  const closeStr = s.close_at ? (new Date(s.close_at) < new Date() ? `Store closed ${_cpFmtDate(s.close_at)}` : `Closes ${_cpFmtDate(s.close_at)}`) : '';
+  const closeStr = s.close_at ? (new Date(s.close_at) < new Date() ? `Store closed ${ptDateLabel(s.close_at)}` : `Closes ${ptDateLabel(s.close_at)}`) : '';
 
   // ── Reusable style atoms ──
   const disp = { fontFamily: "'Barlow Condensed',sans-serif" };
@@ -2407,7 +2408,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               // Surface an open team store right on the dashboard — a live store is
               // time-sensitive (it closes), so it earns a tile, not just the nav tab.
               const _openStore=cpStores.find(s=>s.status==='open');
-              const _storeClose=_openStore&&_openStore.close_at?new Date(_openStore.close_at).toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'}):'';
+              const _storeClose=_openStore&&_openStore.close_at?(ptDateLabel(_openStore.close_at)||''):'';
               const qa=[
               {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
               // Estimates live inside the Orders section now (the "Estimates to Approve"
