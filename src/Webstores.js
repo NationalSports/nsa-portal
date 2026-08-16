@@ -4177,11 +4177,18 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
+const LS_STATUS_FILTER = 'nsa_ws_status_filter';
+const LS_REP_FILTER = 'nsa_ws_rep_filter';
 
 function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [repFilter, setRepFilter] = useState('all');
+  // A rep opening this page almost always wants their own live stores, so the list
+  // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
+  // Both filters are sticky once touched, so widening the view survives a reload
+  // and the trip in and out of a store detail.
+  const [statusFilter, setStatusFilter] = useState(() => { try { return localStorage.getItem(LS_STATUS_FILTER) || 'Open'; } catch { return 'Open'; } });
+  const [repFilter, setRepFilter] = useState(() => { try { return localStorage.getItem(LS_REP_FILTER) || 'all'; } catch { return 'all'; } });
+  const repDefaulted = useRef(false);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState({});
   const [sortKey, setSortKey] = useState('status');
@@ -4199,6 +4206,22 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
 
   const templates = stores.filter((s) => s.is_template);
   const nonTemplates = stores.filter((s) => !s.is_template);
+
+  // Scope the list to the signed-in rep the first time stores land — but only if they
+  // actually own one (an admin/CSR with no stores of their own would otherwise open to
+  // an empty table). A stored choice, or any manual pick, wins over this.
+  useEffect(() => {
+    if (repDefaulted.current) return;
+    let stored = null;
+    try { stored = localStorage.getItem(LS_REP_FILTER); } catch { /* private mode */ }
+    if (stored) { repDefaulted.current = true; return; }
+    if (!stores.length) return; // still loading
+    repDefaulted.current = true;
+    if (cu?.id && stores.some((s) => !s.is_template && s.rep_id === cu.id)) setRepFilter(cu.id);
+  }, [stores, cu]);
+
+  const pickStatusFilter = (v) => { setStatusFilter(v); try { localStorage.setItem(LS_STATUS_FILTER, v); } catch { /* private mode */ } };
+  const pickRepFilter = (v) => { repDefaulted.current = true; setRepFilter(v); try { localStorage.setItem(LS_REP_FILTER, v); } catch { /* private mode */ } };
 
   // Load a store's items + live availability (vendor by SKU + in-house by product_id), same source
   // of truth as every store builder so the numbers match. Unlinked items get a synthetic key so
@@ -4281,9 +4304,13 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
 
   const sortArrow = (key) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
+  // "Open" means everything still taking orders, so it covers Closing soon too;
+  // the Closing soon chip stays as the narrower "about to close" cut.
+  const matchesStatus = (st) => statusFilter === 'all' || st === statusFilter || (statusFilter === 'Open' && st === 'Closing soon');
+
   const matchesFilter = (s) => {
     const st = storeStatus(s);
-    if (statusFilter !== 'all' && st !== statusFilter) return false;
+    if (!matchesStatus(st)) return false;
     if (repFilter !== 'all' && s.rep_id !== repFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -4336,7 +4363,11 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     return true;
   });
   const statusCounts = { all: repSearchSet.length, Open: 0, 'Closing soon': 0, Scheduled: 0, Draft: 0, Closed: 0 };
-  repSearchSet.forEach((s) => { const st = storeStatus(s); if (statusCounts[st] !== undefined) statusCounts[st]++; });
+  repSearchSet.forEach((s) => {
+    const st = storeStatus(s);
+    if (statusCounts[st] !== undefined) statusCounts[st]++;
+    if (st === 'Closing soon') statusCounts.Open++; // Open chip shows everything it will actually list
+  });
 
   // Reporting: rep stats
   const repStatsMap = {};
@@ -4421,7 +4452,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
             <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
               {[['all', 'All'], ['Open', 'Open'], ['Closing soon', 'Closing Soon'], ['Scheduled', 'Scheduled'], ['Draft', 'Draft'], ['Closed', 'Closed']].map(([key, label]) => (
-                <button key={key} style={chipStyle(statusFilter === key)} onClick={() => setStatusFilter(key)}>
+                <button key={key} style={chipStyle(statusFilter === key)} onClick={() => pickStatusFilter(key)}>
                   {label}<span style={{ opacity: .65, fontFamily: "'Source Sans 3',sans-serif", fontWeight: 600 }}>{statusCounts[key] ?? 0}</span>
                 </button>
               ))}
@@ -4429,7 +4460,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
             <div style={{ height: 24, width: 1, background: '#D1D5DE' }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, fontSize: 11.5, color: '#5A6075' }}>Rep</span>
-              <select className="form-select" value={repFilter} onChange={(e) => setRepFilter(e.target.value)} style={{ fontSize: 13, padding: '6px 10px', minWidth: 140 }}>
+              <select className="form-select" value={repFilter} onChange={(e) => pickRepFilter(e.target.value)} style={{ fontSize: 13, padding: '6px 10px', minWidth: 140 }}>
                 <option value="all">All reps</option>
                 {REPS.filter((r) => nonTemplates.some((s) => s.rep_id === r.id)).map((r) => (
                   <option key={r.id} value={r.id}>{r.name}</option>
