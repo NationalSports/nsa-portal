@@ -429,6 +429,32 @@ async function fetchSkuStock(skuList) {
 async function fetchOverrideSkuStock(lines) {
   return fetchSkuStock((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku));
 }
+// Resolve bare SKUs against the server catalog the way manual order entry would:
+// exact SKU match adopts the row outright; failing that, the SKU as a base style
+// whose colorway rows ("AT105-50", …) unanimously agree on one vendor yields the
+// family's vendor/name/brand/(unanimous) cost with id:null — the exact colorway
+// stays unknown. An ambiguous family or a SKU the catalog has never seen returns
+// nothing: never guess a vendor. Shared by the batch confirm modal (to show which
+// items still need a hand) and the SO build (to stamp what it can).
+async function resolveSkuInfoBySku(skus) {
+  const list = [...new Set((skus || []).filter(Boolean))];
+  const skuInfo = {};
+  if (!list.length || !supabase) return skuInfo;
+  try {
+    const { data: exact } = await supabase.from('products').select('id,sku,name,brand,color,vendor_id,nsa_cost').in('sku', list);
+    (exact || []).forEach((p) => { if (p.sku && !skuInfo[p.sku]) skuInfo[p.sku] = p; });
+    for (const s of list.filter((s) => !skuInfo[s])) {
+      const { data: fam } = await supabase.from('products').select('id,sku,name,brand,vendor_id,nsa_cost').like('sku', s + '-%').limit(50);
+      const rows = (fam || []).filter((p) => p.vendor_id);
+      if (!rows.length) continue;
+      const vids = [...new Set(rows.map((p) => p.vendor_id))];
+      if (vids.length !== 1) continue;
+      const costs = [...new Set(rows.map((p) => String(p.nsa_cost || 0)))];
+      skuInfo[s] = { id: null, sku: s, name: rows[0].name, brand: rows[0].brand, color: '', vendor_id: vids[0], nsa_cost: costs.length === 1 ? rows[0].nsa_cost : 0 };
+    }
+  } catch (e) { console.warn('[Webstores] SKU catalog resolve failed:', e.message); }
+  return skuInfo;
+}
 // ── Deliveries that have already landed ──────────────────────────────
 // Vendor stock is a synced SNAPSHOT, not a live feed. When the last sync recorded a
 // size as 0-on-hand with units due on a date that has since PASSED, those units are
@@ -3393,9 +3419,31 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       });
       return Object.keys(units).map((k) => ({ ...meta[k], units: units[k] }));
     };
+    // Items with no linked catalog product get one more chance BEFORE the SO exists:
+    // pre-resolve their bare SKUs so the confirm modal can list anything the catalog
+    // can't fully place (no match at all, or family-only — vendor known, colorway not)
+    // with a catalog search. The rep links the right item there, or knowingly lets it
+    // through as an unlinked line to fix on the SO.
+    const _bareSkus = [...new Set(lines.filter((i) => !i.product_id && i.sku).map((i) => i.sku))];
+    const preSkuInfo = await resolveSkuInfoBySku(_bareSkus);
+    const unmatchedRowsFor = (selIds) => {
+      const agg = {};
+      lines.forEach((i) => {
+        if (!selIds.has(i.order_id) || i.product_id || !i.sku) return;
+        const inf = preSkuInfo[i.sku];
+        if (inf && inf.id) return; // exact catalog match — resolves at batch, nothing to review
+        const r = agg[i.sku] || (agg[i.sku] = { sku: i.sku, name: i.name || i.sku, units: 0, sizes: {}, partial: !!inf, partialName: inf ? inf.name : '' });
+        r.units += i.qty || 1;
+        const sz = i.size || 'OS';
+        r.sizes[sz] = (r.sizes[sz] || 0) + (i.qty || 1);
+      });
+      return Object.values(agg).map((r) => ({ ...r, topSize: Object.entries(r.sizes).sort((a, b) => b[1] - a[1])[0][0] }));
+    };
     // decoMethods: { artKey (art_id|art_url) -> deco method } — the modal's per-logo
     // method switches; applied to that logo's SO deco lines AND its art file.
-    const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}, decoMethods = {}) => {
+    // skuLinks: { original bare sku -> catalog sku the rep picked in the modal } —
+    // the line takes that SKU, so the resolution below adopts its catalog row.
+    const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}, decoMethods = {}, skuLinks = {}) => {
     // Last-second re-check: another session may have batched, cancelled, or refunded
     // some of these orders while the modal sat open. Drop any that are no longer
     // open BEFORE building the SO, so its items and invoice/settle math only ever
@@ -3464,7 +3512,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     bLines.forEach((i) => {
       const basePid = i.product_id || i.sku || 'unknown';
       const sz = i.size || 'OS';
-      const effectiveSku = inlineOverrides[i.product_id + '|' + sz] || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
+      const effectiveSku = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
       const pid = basePid + '§' + effectiveSku;
       if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[pid]; const q = i.qty || 1;
@@ -3484,31 +3532,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     // Store lines that never got linked to a catalog product (the builder let a bare
     // typed SKU like "AT105" through) arrive here with product_id null. Resolve them
-    // against the server catalog the way manual order entry would: exact SKU first;
-    // failing that, the SKU as a base style whose colorway rows ("AT105-50", …) all
-    // agree on one vendor. Otherwise the SO line lands with no vendor, name, or cost
-    // and the PO builder can't route it (an S&S-carried style falls to the manual
-    // vendor picker). An ambiguous style (colorways split across vendors) stays
-    // unresolved on purpose — never guess a vendor.
-    const _unlinkedSkus = [...new Set(Object.values(byProduct).filter((g) => !g.product_id && g.sku).map((g) => g.sku))];
-    const skuInfo = {};
-    if (_unlinkedSkus.length) {
-      try {
-        const { data: exact } = await supabase.from('products').select('id,sku,name,brand,color,vendor_id,nsa_cost').in('sku', _unlinkedSkus);
-        (exact || []).forEach((p) => { if (p.sku && !skuInfo[p.sku]) skuInfo[p.sku] = p; });
-        for (const s of _unlinkedSkus.filter((s) => !skuInfo[s])) {
-          const { data: fam } = await supabase.from('products').select('id,sku,name,brand,vendor_id,nsa_cost').like('sku', s + '-%').limit(50);
-          const rows = (fam || []).filter((p) => p.vendor_id);
-          if (!rows.length) continue;
-          const vids = [...new Set(rows.map((p) => p.vendor_id))];
-          if (vids.length !== 1) continue;
-          const costs = [...new Set(rows.map((p) => String(p.nsa_cost || 0)))];
-          // No id: the exact colorway is unknown, so the line keeps the bare style SKU —
-          // but it now carries the family's vendor, name, brand, and (unanimous) cost.
-          skuInfo[s] = { id: null, sku: s, name: rows[0].name, brand: rows[0].brand, color: '', vendor_id: vids[0], nsa_cost: costs.length === 1 ? rows[0].nsa_cost : 0 };
-        }
-      } catch (e) { console.warn('[Webstores] Unlinked-SKU catalog resolve failed:', e.message); }
-    }
+    // against the server catalog the way manual order entry would (exact SKU, then
+    // colorway family — see resolveSkuInfoBySku). Runs on the FINAL effective skus,
+    // so a catalog item the rep linked in the confirm modal resolves here too.
+    const skuInfo = await resolveSkuInfoBySku([...new Set(Object.values(byProduct).filter((g) => !g.product_id && g.sku).map((g) => g.sku))]);
     // Coupon discounts are order-level; the SO bills garments only (shipping/tax stay
     // at the webstore level). Scale every line's sell by the batch's net/gross ratio so
     // the SO total reconciles to what was actually collected after discounts. The
@@ -3697,7 +3724,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // Open the styled confirm modal; it calls proceed() on Create with the rep's
     // final selection (cutoff/checkboxes) and batch label.
-    setSoPrompt({ orders: open, shortagesFor, decoRowsFor, proceed, stockByPid, storeId: sel.id });
+    setSoPrompt({ orders: open, shortagesFor, decoRowsFor, unmatchedRowsFor, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -3844,7 +3871,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} decoRowsFor={soPrompt.decoRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods); }} />}
+      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} decoRowsFor={soPrompt.decoRowsFor} unmatchedRowsFor={soPrompt.unmatchedRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods, skuLinks) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods, skuLinks); }} />}
 
       {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
@@ -4160,7 +4187,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
 // names it, and sees inventory shortfalls recomputed live for that selection.
 // Shortfall rows have a product search so the rep can pick a substitute SKU
 // with live stock verification without leaving the modal.
-function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
+function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, unmatchedRowsFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
   // keyed by "pid|size" → altSku string
   const [overrideSkus, setOverrideSkus] = useState({});
@@ -4191,6 +4218,10 @@ function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, onCancel, onCo
   const decoRows = useMemo(() => (decoRowsFor ? decoRowsFor(selIds) : []), [selIds, decoRowsFor]);
   const [decoMethods, setDecoMethods] = useState({});
   const DECO_METHODS = [['screen_print', 'Screen Print'], ['dtf', 'DTF'], ['heat_press', 'Heat Press'], ['embroidery', 'Embroidery']];
+  // Items the catalog can't fully place (no match, or family-only: vendor known but
+  // colorway unknown) — the rep links the right catalog item here, before the SO exists.
+  const unmatchedRows = useMemo(() => (unmatchedRowsFor ? unmatchedRowsFor(selIds) : []), [selIds, unmatchedRowsFor]);
+  const [skuLinks, setSkuLinks] = useState({});
   // 'short' rows warn and offer a substitute; 'assumed' rows are covered — but only
   // by crediting a vendor delivery whose date has passed and whose arrival our stock
   // snapshot predates, so they're surfaced as a note rather than as a shortfall.
@@ -4204,13 +4235,16 @@ function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, onCancel, onCo
     // Only pass substitutions that still have a live shortage row behind them — a
     // substitute typed for a shortage that later disappeared (selection narrowed)
     // must not silently rewrite that SKU's lines.
-    const validKeys = new Set(shortages.map((s) => s.pid + '|' + s.size));
+    const validKeys = new Set(shortages.map((s) => (s.pid || s.sku) + '|' + s.size));
     const activeOverrides = {};
     Object.entries(overrideSkus).forEach(([k, v]) => { if (validKeys.has(k)) activeOverrides[k] = v; });
     // Only pass methods the rep actually changed from the store's setup.
     const changedMethods = {};
     decoRows.forEach((r) => { const v = decoMethods[r.key]; if (v && v !== r.method) changedMethods[r.key] = v; });
-    try { await onConfirm(activeOverrides, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }, changedMethods); }
+    // Only pass links for rows still on screen with a non-empty pick.
+    const activeLinks = {};
+    unmatchedRows.forEach((r) => { const v = (skuLinks[r.sku] || '').trim(); if (v && v !== r.sku) activeLinks[r.sku] = v; });
+    try { await onConfirm(activeOverrides, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }, changedMethods, activeLinks); }
     finally { setBusy(false); }
   };
   return (
@@ -4239,6 +4273,26 @@ function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, onCancel, onCo
               </label>
             ))}
           </div>
+          {unmatchedRows.length > 0 && (
+            <div style={{ border: '1px solid #fecaca', background: '#fef2f2', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 800, color: '#b91c1c', borderBottom: '1px solid #fee2e2' }}>🔎 Items without a catalog match — link before batching</div>
+              {unmatchedRows.map((r, i) => (
+                <div key={r.sku} style={{ padding: '9px 12px', borderTop: i ? '1px solid #fee2e2' : 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, marginBottom: 6 }}>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 800, color: '#991b1b', background: '#fee2e2', borderRadius: 4, padding: '1px 6px' }}>{r.sku}</span>
+                    <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#7f1d1d' }}>{r.name}</span>
+                    <span style={{ fontWeight: 700, color: '#7f1d1d', whiteSpace: 'nowrap' }}>{r.units} unit{r.units === 1 ? '' : 's'}</span>
+                  </div>
+                  {r.partial && <div style={{ fontSize: 11, color: '#b45309', marginBottom: 6 }}>Style found ({r.partialName}) — vendor and cost will carry, but without the exact colorway there's no stock check. Pick the exact item:</div>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, color: '#991b1b', whiteSpace: 'nowrap', fontWeight: 600 }}>Link to:</span>
+                    <SkuSearchInput size={r.topSize} value={skuLinks[r.sku] || ''} onChange={(v) => setSkuLinks((p) => ({ ...p, [r.sku]: v }))} stockByPid={stockByPid} storeId={storeId} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ padding: '6px 12px 9px', fontSize: 11, color: '#b91c1c', lineHeight: 1.45 }}>Linked items batch with that product's vendor, cost, and stock check. Left blank, the line lands on the SO unlinked — fix it there before ordering.</div>
+            </div>
+          )}
           {decoRows.length > 0 && (
             <div style={{ border: '1px solid #e9d5ff', background: '#faf5ff', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
               <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 800, color: '#6d28d9', borderBottom: '1px solid #ede9fe' }}>🎨 Decorations in this batch — confirm the method</div>
@@ -4273,7 +4327,7 @@ function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, onCancel, onCo
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', fontWeight: 600 }}>Sub for {s.size}:</span>
-                      <SkuSearchInput size={s.size} value={overrideSkus[s.pid + '|' + s.size] || ''} onChange={(v) => setOverride(s.pid, s.size, v)} stockByPid={stockByPid} storeId={storeId} />
+                      <SkuSearchInput size={s.size} value={overrideSkus[(s.pid || s.sku) + '|' + s.size] || ''} onChange={(v) => setOverride(s.pid || s.sku, s.size, v)} stockByPid={stockByPid} storeId={storeId} />
                     </div>
                   </div>
                 ))}
