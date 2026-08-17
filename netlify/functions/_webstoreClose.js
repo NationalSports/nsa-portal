@@ -1,10 +1,17 @@
 // Shared "a webstore closed" handler — used by the scheduled sweep (webstore-close-sweep)
-// and the manual-close endpoint (webstore-closed-notify). For a just-closed store it:
+// and the manual-close endpoint (webstore-closed-notify). For a closed store it:
 //   1. builds an order breakdown (orders, units, gross, fundraising, delivery),
 //   2. creates a rep to-do (assigned_todos) assigned to the store's rep to process it,
 //   3. emails the rep + assigned CSR that breakdown with a link to the store's orders,
 //   4. stamps closed_notified_at so a store is never processed twice (sweep + manual).
 // Idempotent: a store that already has closed_notified_at is skipped.
+//
+// Cost window: costs tied to a store (shipping, OMG/CC fees, refunds, late invoices)
+// keep landing for weeks after it closes, so processing it immediately misses them.
+// The process prompt therefore waits until 6 WEEKS after the store's close — this
+// handler skips (reason 'cost-window') until then, and the hourly sweep delivers the
+// to-do/email once the window has passed. Pass opts.force to bypass.
+const COST_WINDOW_MS = 42 * 24 * 60 * 60 * 1000; // 6 weeks
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => '$' + (Number(n) || 0).toFixed(2);
@@ -46,6 +53,13 @@ async function buildBreakdown(admin, store) {
 // Returns { skipped } | { notified, todoId, breakdown }.
 async function notifyStoreClosed(admin, store, opts = {}) {
   if (!store || store.closed_notified_at) return { skipped: true, reason: 'already-notified' };
+  // Wait out the 6-week cost window before prompting anyone to process the store.
+  // close_at is the anchor (manual close stamps it); fall back to updated_at for
+  // legacy closed rows that never had a close date.
+  const closedMs = new Date((store.close_at && new Date(store.close_at) <= new Date()) ? store.close_at : (store.updated_at || Date.now())).getTime();
+  if (!opts.force && Date.now() - closedMs < COST_WINDOW_MS) {
+    return { skipped: true, reason: 'cost-window', notify_after: new Date(closedMs + COST_WINDOW_MS).toISOString() };
+  }
   const portal = (opts.portal || process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
   const brevoKey = opts.brevoKey || process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
 
@@ -120,4 +134,4 @@ async function notifyStoreClosed(admin, store, opts = {}) {
   return { notified: true, todoId: todoOk ? todoId : null, emailed, breakdown: b };
 }
 
-module.exports = { notifyStoreClosed, buildBreakdown, netFundraise };
+module.exports = { notifyStoreClosed, buildBreakdown, netFundraise, COST_WINDOW_MS };
