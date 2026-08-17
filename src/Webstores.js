@@ -3361,7 +3361,41 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
     // selIds: the order ids the rep left checked (defaults to every open order).
     // batchMeta: { label, cutoff } — the batch name + order-date cutoff for the SO.
-    const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}) => {
+    // Logos placed in the store builder live on webstore_products.decorations (the
+    // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
+    // kind:'art' deco lines — one per location — so the Art Dashboard shows a mockup slot
+    // per logo and production gets each logo's own art file. (Mirrors the OMG store→SO
+    // mapping in App.js.) Keyed by product_id (fallback sku) to match byProduct.
+    // Built here (not inside proceed) so the confirm modal can count logo units too.
+    const decosByKey = {};
+    (detail.catalog || []).forEach((c) => {
+      const arr = Array.isArray(c.decorations) ? c.decorations.filter((d) => d && (d.art_url || d.art_id)) : [];
+      if (!arr.length) return;
+      // Register under both product_id and sku so an order line keyed by either resolves.
+      [c.product_id, c.sku].filter(Boolean).forEach((k) => { (decosByKey[k] = decosByKey[k] || []).push(...arr); });
+    });
+    const artById = {};
+    (detail.libraryArt || []).forEach((a) => { if (a && a.id) artById[a.id] = a; });
+    // Decoration review for the confirm modal: one row per placed store logo with how
+    // many garments in the current selection get it, so the rep confirms (or switches)
+    // the method BEFORE the SO exists — a handful of units often moves screen print →
+    // DTF (no screen burn), a big run the other way.
+    const decoRowsFor = (selIds) => {
+      const units = {}; const meta = {};
+      lines.forEach((i) => {
+        if (!selIds.has(i.order_id)) return;
+        const seen = new Set();
+        (decosByKey[i.product_id] || decosByKey[i.sku] || []).forEach((d) => {
+          const k = d.art_id || d.art_url; if (!k || seen.has(k)) return; seen.add(k);
+          units[k] = (units[k] || 0) + (i.qty || 1);
+          if (!meta[k]) { const lib = d.art_id ? artById[d.art_id] : null; meta[k] = { key: k, name: (lib && lib.name) || 'Store logo', method: (lib && lib.deco_type) || 'screen_print', img: d.art_url || (lib && lib.web_logo_url) || '' }; }
+        });
+      });
+      return Object.keys(units).map((k) => ({ ...meta[k], units: units[k] }));
+    };
+    // decoMethods: { artKey (art_id|art_url) -> deco method } — the modal's per-logo
+    // method switches; applied to that logo's SO deco lines AND its art file.
+    const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}, decoMethods = {}) => {
     // Last-second re-check: another session may have batched, cancelled, or refunded
     // some of these orders while the modal sat open. Drop any that are no longer
     // open BEFORE building the SO, so its items and invoice/settle math only ever
@@ -3491,18 +3525,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const batchFundraiseGross = bOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
     const fundraiseCost = r2(batchFundraiseGross * discRatio);
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
-    // Logos placed in the store builder live on webstore_products.decorations (the
-    // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
-    // kind:'art' deco lines — one per location — so the Art Dashboard shows a mockup slot
-    // per logo and production gets each logo's own art file. (Mirrors the OMG store→SO
-    // mapping in App.js.) Keyed by product_id (fallback sku) to match byProduct.
-    const decosByKey = {};
-    (detail.catalog || []).forEach((c) => {
-      const arr = Array.isArray(c.decorations) ? c.decorations.filter((d) => d && (d.art_url || d.art_id)) : [];
-      if (!arr.length) return;
-      // Register under both product_id and sku so an order line keyed by either resolves.
-      [c.product_id, c.sku].filter(Boolean).forEach((k) => { (decosByKey[k] = decosByKey[k] || []).push(...arr); });
-    });
     // Bundle/kit components don't carry placed web-logo decos — their logo is a
     // heat-transfer "design" code (webstore_bundle_items.transfer_code). Map each
     // component product to its transfer code(s) and resolve the design label, so
@@ -3520,8 +3542,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (!b.product_id || !b.transfer_code) return;
       (bundleXfersByPid[b.product_id] = bundleXfersByPid[b.product_id] || new Set()).add(b.transfer_code);
     });
-    const artById = {};
-    (detail.libraryArt || []).forEach((a) => { if (a && a.id) artById[a.id] = a; });
     // Builder placement → the canonical SO position vocabulary (POSITIONS in settings; the
     // SO deco editor binds a <select> to it, so the value must be one of those options).
     const POS_LABEL = { left_chest: 'Left Chest', full_front: 'Front', full_back: 'Back', left_sleeve: 'Left Sleeve', right_sleeve: 'Right Sleeve' };
@@ -3579,6 +3599,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
         const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
         const lib = d.art_id ? artById[d.art_id] : null;
+        // Confirm-modal method switch for this logo (e.g. screen print → DTF on a
+        // small run) — wins over the library record's deco_type on both the deco
+        // line and the art file, for this SO only (the library record is untouched).
+        const _ovType = decoMethods[d.art_id || d.art_url] || null;
         const artId = (lib && lib.id) || d.art_id || ('artweb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
         if (lib) {
           // Carry the placed (possibly recolored) web logo so the mockup shows what the shopper saw.
@@ -3596,9 +3620,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           // Production files still gate normally (artProdFilesConfirmed): approval is skipped,
           // the prod-files stage is not.
           if (base.status !== 'approved' && base.status !== 'art_complete') { base.status = 'approved'; if (!base.approved_at) base.approved_at = new Date().toISOString(); }
-          addArtFile({ ...base, id: artId });
+          addArtFile({ ...base, id: artId, ...(_ovType ? { deco_type: _ovType } : {}) });
         } else {
-          addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
+          addArtFile({ id: artId, name: 'Store logo', deco_type: _ovType || 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
         // Pin the production colorway. The builder's per-color web-logo pick is the source of
         // truth when it carries a color_way_id (the rep chose that CW's cutout for this exact
@@ -3616,7 +3640,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
           cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: _ovType || (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
@@ -3673,7 +3697,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // Open the styled confirm modal; it calls proceed() on Create with the rep's
     // final selection (cutoff/checkboxes) and batch label.
-    setSoPrompt({ orders: open, shortagesFor, proceed, stockByPid, storeId: sel.id });
+    setSoPrompt({ orders: open, shortagesFor, decoRowsFor, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -3820,7 +3844,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta); }} />}
+      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} decoRowsFor={soPrompt.decoRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods); }} />}
 
       {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
@@ -4136,7 +4160,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
 // names it, and sees inventory shortfalls recomputed live for that selection.
 // Shortfall rows have a product search so the rep can pick a substitute SKU
 // with live stock verification without leaving the modal.
-function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
+function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
   // keyed by "pid|size" → altSku string
   const [overrideSkus, setOverrideSkus] = useState({});
@@ -4161,6 +4185,12 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
   // misdescribes which orders are actually in the batch.
   const toggle = (id) => { setCutoff(''); setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
   const rows = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  // One row per placed store logo with its garment count for the current selection —
+  // the rep confirms or switches each logo's method here, before the SO exists
+  // (a small run often moves screen print → DTF; a big one the other way).
+  const decoRows = useMemo(() => (decoRowsFor ? decoRowsFor(selIds) : []), [selIds, decoRowsFor]);
+  const [decoMethods, setDecoMethods] = useState({});
+  const DECO_METHODS = [['screen_print', 'Screen Print'], ['dtf', 'DTF'], ['heat_press', 'Heat Press'], ['embroidery', 'Embroidery']];
   // 'short' rows warn and offer a substitute; 'assumed' rows are covered — but only
   // by crediting a vendor delivery whose date has passed and whose arrival our stock
   // snapshot predates, so they're surfaced as a note rather than as a shortfall.
@@ -4177,7 +4207,10 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
     const validKeys = new Set(shortages.map((s) => s.pid + '|' + s.size));
     const activeOverrides = {};
     Object.entries(overrideSkus).forEach(([k, v]) => { if (validKeys.has(k)) activeOverrides[k] = v; });
-    try { await onConfirm(activeOverrides, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }); }
+    // Only pass methods the rep actually changed from the store's setup.
+    const changedMethods = {};
+    decoRows.forEach((r) => { const v = decoMethods[r.key]; if (v && v !== r.method) changedMethods[r.key] = v; });
+    try { await onConfirm(activeOverrides, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }, changedMethods); }
     finally { setBusy(false); }
   };
   return (
@@ -4206,6 +4239,26 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
               </label>
             ))}
           </div>
+          {decoRows.length > 0 && (
+            <div style={{ border: '1px solid #e9d5ff', background: '#faf5ff', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 800, color: '#6d28d9', borderBottom: '1px solid #ede9fe' }}>🎨 Decorations in this batch — confirm the method</div>
+              {decoRows.map((r, i) => {
+                const cur = decoMethods[r.key] || r.method;
+                const changed = cur !== r.method;
+                return (
+                  <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderTop: i ? '1px solid #f3e8ff' : 'none', fontSize: 12.5 }}>
+                    {r.img ? <img src={r.img} alt="" style={{ width: 26, height: 26, objectFit: 'contain', background: '#fff', border: '1px solid #ede9fe', borderRadius: 5, flexShrink: 0 }} /> : <span style={{ width: 26, textAlign: 'center' }}>🖼</span>}
+                    <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                    <span title="Garments in the selected orders that get this logo" style={{ fontWeight: 800, color: r.units < 12 ? '#b45309' : '#334155', background: r.units < 12 ? '#fffbeb' : '#f1f5f9', border: '1px solid ' + (r.units < 12 ? '#fde68a' : '#e2e8f0'), borderRadius: 5, padding: '1px 7px', whiteSpace: 'nowrap' }}>{r.units} unit{r.units === 1 ? '' : 's'}</span>
+                    <select className="form-select" value={cur} onChange={(e) => setDecoMethods((p) => ({ ...p, [r.key]: e.target.value }))} style={{ width: 120, fontSize: 12, padding: '3px 6px', fontWeight: changed ? 800 : 500, borderColor: changed ? '#7c3aed' : undefined, color: changed ? '#6d28d9' : undefined }}>
+                      {DECO_METHODS.map(([v, l]) => <option key={v} value={v}>{l}{v === r.method ? ' (store setup)' : ''}</option>)}
+                    </select>
+                  </div>
+                );
+              })}
+              <div style={{ padding: '6px 12px 9px', fontSize: 11, color: '#7c3aed', lineHeight: 1.45 }}>Low-count logos are flagged — a small run is often cheaper as DTF than burning screens. A switch applies to this batch's SO only; the store setup is unchanged.</div>
+            </div>
+          )}
           {shortages.length ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
