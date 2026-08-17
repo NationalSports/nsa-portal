@@ -606,3 +606,91 @@ describe('_dbSaveSOInner — item carrying PO lines is rebuilt, not blocked (fix
     expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
   });
 });
+
+// ── SO-2021 (2026-08-17): stale-content guard must honor re-key tombstones ──────────────────
+// Changing a SKU (or color) in place removes the line's old sku|color key from the client's
+// item list. When the server _version had also moved (any other session's benign write), the
+// stale-content guard read that as "another session's line would be dropped" and hard-blocked
+// every save — the "Save blocked — SO-2021 was changed in another session (hr8470 black …
+// would be dropped)" loop. The editor now stamps the OLD key into _deletedItemKeys (the same
+// session tombstone rmI stamps on a deletion), and the guard excludes tombstoned keys.
+describe('_dbSaveSOInner — version-conflict save with an in-place SKU change (SO-2021)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const dbItems = () => [
+    { id: 'oi-1', item_index: 0, sku: 'HR8470', color: 'Black', product_id: null },
+    { id: 'oi-2', item_index: 1, sku: 'K540', color: 'Black', product_id: null },
+  ];
+  // so._version=3 while the server sits at v7 → _checkVersion returns 7 → _versionConflict set,
+  // arming the stale-content guard. The client list re-keyed HR8470 Black → NEWSKU Black.
+  const responses = () => ({
+    sales_orders: [
+      { data: { _version: 7 }, error: null },                             // _checkVersion read
+      { data: { updated_at: 'yesterday', deco_pos: null }, error: null }, // existingSO select
+      { error: null },                                                    // sales_orders upsert
+    ],
+    so_items: [
+      { data: dbItems(), error: null },                        // old-items read
+      { data: [{ id: 'n1' }, { id: 'n2' }], error: null },     // insert: 2 rows back
+    ],
+    so_art_files: [{ data: [], error: null }, { data: [], error: null }],
+    so_item_po_lines: [{ data: [], error: null }, { data: [], error: null }, { data: [], error: null }],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+    so_item_decorations: [{ data: [], error: null }, { data: [], error: null }],
+  });
+  const payload = (id, tombs) => ({
+    id, _version: 3, memo: 'sku changed in place',
+    _decosHydrated: true, _itemsHydrated: true,
+    ...(tombs ? { _deletedItemKeys: tombs } : {}),
+    items: [
+      { sku: 'NEWSKU', color: 'Black', sizes: { M: 2 } },
+      { sku: 'K540', color: 'Black', sizes: { L: 1 } },
+    ],
+  });
+
+  test('regression: WITHOUT a tombstone the guard still blocks (foreign-line protection intact)', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses();
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO(payload('SO-REKEY-BLOCK'));
+
+    expect(result).toBe(false);
+    // Blocked before the item swap: nothing inserted, nothing deleted.
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'delete')).toBe(false);
+  });
+
+  test('with the re-key tombstone the save goes through and writes the re-keyed line', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses();
+
+    const { _dbSaveSO, _dbSaveFailedIds } = require('../lib/dbEngine');
+    // soItemKey of the pre-change line — exactly what _stampRekeyTomb records in the editor.
+    const result = await _dbSaveSO(payload('SO-REKEY-OK', ['hr8470|black']));
+
+    expect(result).toBe(true);
+    expect(_dbSaveFailedIds.has('SO-REKEY-OK')).toBe(false);
+    const inserts = __mockState.calls.filter(c => c.table === 'so_items' && c.method === 'insert');
+    expect(inserts.length).toBe(1);
+    expect(inserts[0].args[0].map(r => r.sku)).toEqual(['NEWSKU', 'K540']);
+  });
+
+  test('a tombstone excuses ONLY its own key — a different uncovered DB line still blocks', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    const resp = responses();
+    // DB also holds a third line this client never loaded (another session's work).
+    resp.so_items[0].data.push({ id: 'oi-3', item_index: 2, sku: 'JW6599', color: 'Red', product_id: null });
+    __mockState.responses = resp;
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO(payload('SO-REKEY-MIXED', ['hr8470|black']));
+
+    expect(result).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
+  });
+});

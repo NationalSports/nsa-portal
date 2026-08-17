@@ -1431,10 +1431,17 @@ const _dbSaveSOInner = async (so) => {
     // passes every hydration gate below (exactly how SO-1333 lost its IND4000 line + S&S PO on
     // 2026-06-30). Block and prompt a reload; a rep who genuinely wants a line removed just reloads and
     // removes it again, conflict-free.
+    // Session tombstones (_deletedItemKeys) are excluded: the editor stamps a line's OLD sku|color key
+    // when the rep deletes it (rmI) or re-keys it in place (Change SKU / color change), so those keys
+    // are THIS session's deliberate work, not another session's. Without this, changing a SKU while the
+    // version had moved (even benignly) hard-blocked every save — "SO-2021 was changed in another
+    // session (hr8470 black … would be dropped)", 2026-08-17. Same tombstone contract, and the same
+    // accepted trade-off, as the pure-deletion guard below.
     if(_versionConflict&&oldItemIds.length>0&&_clientSoItemCount>0){
       const _dbKeyCounts={};_oldSoItems.forEach(r=>{const k=soItemKey(r);_dbKeyCounts[k]=(_dbKeyCounts[k]||0)+1});
       (items||[]).forEach(it=>{const k=soItemKey(it);if(_dbKeyCounts[k])_dbKeyCounts[k]--});
-      const _uncovered=Object.entries(_dbKeyCounts).filter(([,n])=>n>0).map(([k])=>k.split('|').filter(Boolean).join(' ')||'(custom line)');
+      const _tombKeys=new Set(Array.isArray(so._deletedItemKeys)?so._deletedItemKeys:[]);
+      const _uncovered=Object.entries(_dbKeyCounts).filter(([k,n])=>n>0&&!_tombKeys.has(k)).map(([k])=>k.split('|').filter(Boolean).join(' ')||'(custom line)');
       if(_uncovered.length){
         console.error('[DB] SAFETY: Blocking stale SO save for',so.id,'— server version moved (v'+_versionConflict.local+'→v'+_versionConflict.server+') and DB items missing from this tab\'s copy:',_uncovered.join(', '));
         if(_dbNotify)_dbNotify('Save blocked — '+so.id+' was changed in another session ('+_uncovered.join(', ')+' would be dropped). Please reload the page.','error');
