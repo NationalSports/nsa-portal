@@ -1352,12 +1352,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // Fetch per-store aggregate stats. Exclude abandoned card carts
       // (pending_payment — created before Stripe confirms) and cancelled orders,
       // which would otherwise inflate every store's Gross Sales and order count.
-      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt');
+      // so_id rides along so the list can tell a closed store that's been fully
+      // processed (every order batched onto a Sales Order) from one still waiting.
+      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt, so_id');
       const stats = {};
       (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
-        if (!stats[o.store_id]) stats[o.store_id] = { revenue: 0, orders: 0 };
+        if (!stats[o.store_id]) stats[o.store_id] = { revenue: 0, orders: 0, batched: 0 };
         stats[o.store_id].revenue += Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
         stats[o.store_id].orders += 1;
+        if (o.so_id) stats[o.store_id].batched += 1;
       });
       setStoreStats(stats);
     }
@@ -3190,7 +3193,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       downloadCsv(`${slug}-stock.csv`, header, rows);
     } else {
       const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
-      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
+      // Default sort: by order — oldest checkout first, every line of an order
+      // contiguous (order ids are UUIDs, so the fetch order is arbitrary without
+      // this), then player + item inside the order.
+      const sorted = [...lines].sort((a, b) => {
+        const oa = orderById[a.order_id] || {}, ob = orderById[b.order_id] || {};
+        return (new Date(oa.created_at || 0) - new Date(ob.created_at || 0))
+          || String(oa.id || '').localeCompare(String(ob.id || ''))
+          || String(a.player_name || '').localeCompare(String(b.player_name || ''))
+          || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid))
+          || String(a.size || '').localeCompare(String(b.size || ''));
+      });
+      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
       downloadCsv(`${slug}-orders.csv`, header, rows);
     }
   }, [sel, detail, gatherAll, flash]);
@@ -3425,6 +3439,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // garment photo clobber a real proof for the same sku|color.
     const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...itemMockups, ...(rec.item_mockups || {}) } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
+    // Store setting "decorated elsewhere" → every art deco lands on the SO already
+    // flagged Outside, exactly as the item's routing toggle would set it. Names /
+    // numbers / twill are always pressed in-house, so routing never touches them
+    // (the rep still picks the decorator when the Deco PO is built).
+    const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
+    const routing = outsideDeco ? { fulfillment: 'outside' } : {};
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
       const pdef = personalize[g.product_id] || {};
@@ -3475,7 +3495,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
           cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
@@ -3483,7 +3503,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
         const xId = 'xfer_' + code;
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
-        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0 });
+        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0, ...routing });
       });
       // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
       // scaled by the batch discount ratio so the SO reconciles to net-of-coupon
@@ -3511,7 +3531,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so art decos are routed Outside. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
@@ -4175,7 +4195,8 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
   );
 }
 
-const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
+const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4, 'Closed / Ordered': 5 };
+const CLOSED_ORDERED = 'Closed / Ordered';
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 const LS_STATUS_FILTER = 'nsa_ws_status_filter';
 const LS_REP_FILTER = 'nsa_ws_rep_filter';
@@ -4261,8 +4282,17 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     return m;
   }, [REPS]);
 
+  // A closed store whose orders have ALL been batched onto a Sales Order has been
+  // worked — it reads "Closed / Ordered" so a rep can tell it apart at a glance from
+  // a closed store still sitting there waiting to be processed. A closed store with
+  // no orders at all stays plain "Closed" (there was nothing to order).
+  const closedLabel = (s) => {
+    const ss = storeStats[s.id];
+    return (ss && ss.orders > 0 && (ss.batched || 0) >= ss.orders) ? CLOSED_ORDERED : 'Closed';
+  };
+
   const storeStatus = (s) => {
-    if (s.status === 'closed') return 'Closed';
+    if (s.status === 'closed') return closedLabel(s);
     if (s.status === 'draft') return 'Draft';
     if (!s.open_at && !s.close_at) return s.status === 'open' ? 'Open' : 'Draft';
     const now = Date.now();
@@ -4274,7 +4304,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
       if (diff <= 3 && diff > 0) return 'Closing soon';
     }
     if (s.status === 'open') return 'Open';
-    return 'Closed';
+    return closedLabel(s);
   };
 
   const daysLeft = (s) => {
@@ -4289,6 +4319,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
       Scheduled: ['#E4ECF8', '#2A6FDB'],
       Draft: ['#FBEFD6', '#9A6B12'],
       Closed: ['#EAEDF3', '#5A6075'],
+      [CLOSED_ORDERED]: ['#D9EFE7', '#0F6E56'],
     };
     const [bg, fg] = map[st] || ['#EAEDF3', '#5A6075'];
     return { display: 'inline-block', background: bg, color: fg, fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.8px', fontWeight: 700, fontSize: 11.5, padding: '3px 9px', borderRadius: 4, transform: 'skewX(-4deg)', whiteSpace: 'nowrap' };
@@ -4305,8 +4336,11 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const sortArrow = (key) => sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
   // "Open" means everything still taking orders, so it covers Closing soon too;
-  // the Closing soon chip stays as the narrower "about to close" cut.
-  const matchesStatus = (st) => statusFilter === 'all' || st === statusFilter || (statusFilter === 'Open' && st === 'Closing soon');
+  // the Closing soon chip stays as the narrower "about to close" cut. Likewise
+  // "Closed" means every closed store, processed or not.
+  const matchesStatus = (st) => statusFilter === 'all' || st === statusFilter
+    || (statusFilter === 'Open' && st === 'Closing soon')
+    || (statusFilter === 'Closed' && st === CLOSED_ORDERED);
 
   const matchesFilter = (s) => {
     const st = storeStatus(s);
@@ -4340,7 +4374,8 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const allStats = nonTemplates;
   const openCount = allStats.filter((s) => { const st = storeStatus(s); return st === 'Open' || st === 'Closing soon'; }).length;
   const draftCount = allStats.filter((s) => storeStatus(s) === 'Draft').length;
-  const closedCount = allStats.filter((s) => storeStatus(s) === 'Closed').length;
+  const closedCount = allStats.filter((s) => { const st = storeStatus(s); return st === 'Closed' || st === CLOSED_ORDERED; }).length;
+  const orderedCount = allStats.filter((s) => storeStatus(s) === CLOSED_ORDERED).length;
   const totalRev = Object.values(storeStats).reduce((a, s) => a + (s.revenue || 0), 0);
   const totalOrders = Object.values(storeStats).reduce((a, s) => a + (s.orders || 0), 0);
 
@@ -4348,7 +4383,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     { label: 'Total Stores', value: allStats.length, sub: openCount + ' currently live', bar: '#192853' },
     { label: 'Open', value: openCount, sub: 'Accepting orders', bar: '#1B7F4B' },
     { label: 'Drafts', value: draftCount, sub: 'Awaiting launch', bar: '#E0A92B' },
-    { label: 'Closed', value: closedCount, sub: 'This season', bar: '#5A6075' },
+    { label: 'Closed', value: closedCount, sub: orderedCount ? `${orderedCount} ordered` : 'This season', bar: '#5A6075' },
     { label: 'Gross Sales', value: moneyK(totalRev), sub: totalOrders + ' orders', bar: '#962C32' },
     { label: 'Total Orders', value: totalOrders.toLocaleString(), sub: 'Across all stores', bar: '#2A6FDB' },
   ];
@@ -4362,11 +4397,12 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     }
     return true;
   });
-  const statusCounts = { all: repSearchSet.length, Open: 0, 'Closing soon': 0, Scheduled: 0, Draft: 0, Closed: 0 };
+  const statusCounts = { all: repSearchSet.length, Open: 0, 'Closing soon': 0, Scheduled: 0, Draft: 0, Closed: 0, [CLOSED_ORDERED]: 0 };
   repSearchSet.forEach((s) => {
     const st = storeStatus(s);
     if (statusCounts[st] !== undefined) statusCounts[st]++;
     if (st === 'Closing soon') statusCounts.Open++; // Open chip shows everything it will actually list
+    if (st === CLOSED_ORDERED) statusCounts.Closed++; // ditto — the Closed chip lists processed stores too
   });
 
   // Reporting: rep stats
@@ -4399,6 +4435,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
     const st = storeStatus(s);
     if (st === 'Draft') return { main: '—', sub: 'Draft', subColor: '#8A93A8' };
     if (st === 'Scheduled') return { main: fmt(s.close_at) || '—', sub: 'Opens ' + fmt(s.open_at), subColor: '#2A6FDB' };
+    if (st === CLOSED_ORDERED) return { main: fmt(s.close_at) || '—', sub: 'Ordered', subColor: '#0F6E56' };
     if (st === 'Closed') return { main: fmt(s.close_at) || '—', sub: 'Closed', subColor: '#8A93A8' };
     const dl = daysLeft(s);
     // An unusual close time (anything but the 11:59 PM default) is worth surfacing —
@@ -4780,7 +4817,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px' }}>
               <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 16 }}>Stores by Status</div>
-              {[['Open', '#1B7F4B'], ['Closing soon', '#962C32'], ['Scheduled', '#2A6FDB'], ['Draft', '#E0A92B'], ['Closed', '#5A6075']].map(([st, color]) => {
+              {[['Open', '#1B7F4B'], ['Closing soon', '#962C32'], ['Scheduled', '#2A6FDB'], ['Draft', '#E0A92B'], ['Closed', '#5A6075'], [CLOSED_ORDERED, '#0F6E56']].map(([st, color]) => {
                 const count = nonTemplates.filter((s) => storeStatus(s) === st).length;
                 return (
                   <div key={st} style={{ marginBottom: 12 }}>
