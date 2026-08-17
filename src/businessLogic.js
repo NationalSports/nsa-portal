@@ -500,6 +500,12 @@ const buildJobs = (o) => {
     if (it.no_deco) return;
     const decosByType = {};
     safeDecos(it).forEach((d, di) => {
+      // Routed outside (soft flag / on a deco PO) — the vendor produces it, so no derived job.
+      // Mirrors syncJobs' guard in the editors: without it, an SO whose stored jobs are EMPTY
+      // (a fully-outsourced webstore batch never creates any; retiring the last job saves [])
+      // fails the short-circuit above and this derive re-materializes phantom jobs on every
+      // board. Kind-agnostic, same as isDecoOutsourced — names/numbers route outside too.
+      if (d.fulfillment === 'outside' || d.deco_po_id) return;
       if (d.kind === 'art') {
         const artF = d.art_file_id ? safeArr(o?.art_files).find(f => f.id === d.art_file_id) : null;
         const dt = artF?.deco_type || d.deco_type || 'screen_print';

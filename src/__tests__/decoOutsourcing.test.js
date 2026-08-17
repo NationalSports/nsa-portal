@@ -244,3 +244,134 @@ describe('syncJobs gate — end-to-end intent (mirrors OrderEditor.syncJobs deco
     expect([...outByItem[3]]).not.toContain('*');        // item D: embroidery matched, so no wildcard
   });
 });
+
+describe("names/numbers honour the fulfillment:'outside' soft flag", () => {
+  // isDecoOutsourced has always been kind-agnostic — a names or numbers deco flagged outside reads
+  // as outsourced in every COST walk. syncJobs, though, only checked the soft flag in its kind==='art'
+  // branch, so a flagged names/numbers deco had its cost suppressed while STILL spawning an in-house
+  // job: work on the floor with no cost budget behind it. Both branches now carry the same guard, so
+  // job creation and costing agree — which is what isDecoOutsourced's contract claims.
+  //
+  // Reached in the wild by team stores set to "Decorated elsewhere": batching stamps every deco
+  // outside, names and numbers included.
+
+  // Mirrors syncJobs' deco classification for ALL three kinds, soft flag included.
+  const jobDecos = (o) => {
+    const outByItem = outsourcedDecoTypes(o);
+    const art = (o.art_files || []);
+    const kept = [];
+    (o.items || []).forEach((it, ii) => {
+      const ds = (it.decorations || []);
+      const fullyOut = ds.filter(d => d && (d.kind === 'art' || d.kind === 'numbers' || d.kind === 'names'))
+        .every(d => isDecoOutsourced(o, ii, d, outByItem)) && ds.length > 0;
+      ds.forEach((d) => {
+        if (d.fulfillment === 'outside' || d.deco_po_id) return; // soft flag / on a deco PO — no job
+        if (d.kind === 'art') {
+          const af = d.art_file_id ? art.find(a => a.id === d.art_file_id) : null;
+          if (decoIsOutsourced(outByItem[ii], af?.deco_type || d.deco_type || null) && fullyOut) return;
+        } else if (d.kind === 'numbers') {
+          if (decoIsOutsourced(outByItem[ii], d.num_method || 'heat_transfer') && fullyOut) return;
+        } else if (d.kind === 'names') {
+          if (decoIsOutsourced(outByItem[ii], d.name_method || 'heat_press') && fullyOut) return;
+        } else return;
+        kept.push(it.sku + ':' + d.kind);
+      });
+    });
+    return kept;
+  };
+
+  test('isDecoOutsourced treats a flagged names or numbers deco as outsourced', () => {
+    const o = { items: [{ sku: 'A', decorations: [
+      { kind: 'numbers', num_method: 'screen_print', fulfillment: 'outside' },
+      { kind: 'names', name_method: 'heat_press', fulfillment: 'outside' },
+    ] }] };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[1])).toBe(true);
+  });
+
+  test('a fully outsourced store item spawns no in-house job for art, names OR numbers', () => {
+    const o = {
+      art_files: [{ id: 'af1', deco_type: 'screen_print' }],
+      items: [{ sku: 'TEE', decorations: [
+        { kind: 'art', art_file_id: 'af1', fulfillment: 'outside' },
+        { kind: 'numbers', num_method: 'screen_print', fulfillment: 'outside' },
+        { kind: 'names', name_method: 'heat_press', fulfillment: 'outside' },
+      ] }],
+    };
+    expect(jobDecos(o)).toEqual([]);
+  });
+
+  test('an in-house store is untouched — every deco still spawns its job', () => {
+    const o = {
+      art_files: [{ id: 'af1', deco_type: 'screen_print' }],
+      items: [{ sku: 'TEE', decorations: [
+        { kind: 'art', art_file_id: 'af1' },
+        { kind: 'numbers', num_method: 'screen_print' },
+        { kind: 'names', name_method: 'heat_press' },
+      ] }],
+    };
+    expect(jobDecos(o).sort()).toEqual(['TEE:art', 'TEE:names', 'TEE:numbers']);
+  });
+
+  test('flagging only the art leaves names/numbers in-house (partial routing still works)', () => {
+    const o = {
+      art_files: [{ id: 'af1', deco_type: 'screen_print' }],
+      items: [{ sku: 'TEE', decorations: [
+        { kind: 'art', art_file_id: 'af1', fulfillment: 'outside' },
+        { kind: 'numbers', num_method: 'screen_print' },
+      ] }],
+    };
+    expect(jobDecos(o)).toEqual(['TEE:numbers']);
+  });
+});
+
+describe('buildJobs skips outside-routed decos (board derive path)', () => {
+  // buildJobs is the boards' fallback when an SO has NO stored jobs — and a fully-outsourced SO
+  // never stores any (a webstore batch of a "Decorated elsewhere" store creates none; retiring the
+  // last job persists []). An empty array fails buildJobs' short-circuit, so without the same
+  // soft-flag guard syncJobs carries, the derive re-materialized phantom in-house jobs on the
+  // Jobs page for work a vendor produces.
+  const { buildJobs } = require('../businessLogic');
+
+  const so = (decorations) => ({
+    id: 'SO-9001', jobs: [],
+    art_files: [{ id: 'af1', deco_type: 'screen_print', status: 'approved', prod_files_attached: true }],
+    items: [{ sku: 'TEE', name: 'Team Tee', sizes: { M: 5 }, decorations }],
+  });
+
+  test('a fully outsourced item derives no job at all', () => {
+    const jobs = buildJobs(so([
+      { kind: 'art', art_file_id: 'af1', position: 'Front', fulfillment: 'outside' },
+      { kind: 'numbers', num_method: 'screen_print', position: 'Back', fulfillment: 'outside' },
+      { kind: 'names', name_method: 'heat_press', position: 'Back Center', fulfillment: 'outside' },
+    ]));
+    expect(jobs).toEqual([]);
+  });
+
+  test('partial routing derives a job for ONLY the in-house decos', () => {
+    const jobs = buildJobs(so([
+      { kind: 'art', art_file_id: 'af1', position: 'Front', fulfillment: 'outside' },
+      { kind: 'numbers', num_method: 'screen_print', position: 'Back' },
+    ]));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_name).toBe('Numbers — screen print');
+    expect(jobs[0].items[0].deco_idxs).toEqual([1]); // claims the numbers deco, not the outside art
+  });
+
+  test('a deco on a deco PO is skipped the same way', () => {
+    const jobs = buildJobs(so([{ kind: 'art', art_file_id: 'af1', position: 'Front', deco_po_id: 'DPO 1' }]));
+    expect(jobs).toEqual([]);
+  });
+
+  test('unflagged decos still derive jobs exactly as before', () => {
+    const jobs = buildJobs(so([{ kind: 'art', art_file_id: 'af1', position: 'Front' }]));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_file_id).toBe('af1');
+  });
+
+  test('stored jobs still short-circuit — the guard only affects the derive path', () => {
+    const o = so([{ kind: 'art', art_file_id: 'af1', position: 'Front', fulfillment: 'outside' }]);
+    o.jobs = [{ id: 'JOB-9001-01', key: 'stored' }];
+    expect(buildJobs(o)).toEqual(o.jobs); // verbatim, untouched
+  });
+});
