@@ -244,3 +244,83 @@ describe('syncJobs gate — end-to-end intent (mirrors OrderEditor.syncJobs deco
     expect([...outByItem[3]]).not.toContain('*');        // item D: embroidery matched, so no wildcard
   });
 });
+
+describe("names/numbers honour the fulfillment:'outside' soft flag", () => {
+  // isDecoOutsourced has always been kind-agnostic — a names or numbers deco flagged outside reads
+  // as outsourced in every COST walk. syncJobs, though, only checked the soft flag in its kind==='art'
+  // branch, so a flagged names/numbers deco had its cost suppressed while STILL spawning an in-house
+  // job: work on the floor with no cost budget behind it. Both branches now carry the same guard, so
+  // job creation and costing agree — which is what isDecoOutsourced's contract claims.
+  //
+  // Reached in the wild by team stores set to "Decorated elsewhere": batching stamps every deco
+  // outside, names and numbers included.
+
+  // Mirrors syncJobs' deco classification for ALL three kinds, soft flag included.
+  const jobDecos = (o) => {
+    const outByItem = outsourcedDecoTypes(o);
+    const art = (o.art_files || []);
+    const kept = [];
+    (o.items || []).forEach((it, ii) => {
+      const ds = (it.decorations || []);
+      const fullyOut = ds.filter(d => d && (d.kind === 'art' || d.kind === 'numbers' || d.kind === 'names'))
+        .every(d => isDecoOutsourced(o, ii, d, outByItem)) && ds.length > 0;
+      ds.forEach((d) => {
+        if (d.fulfillment === 'outside' || d.deco_po_id) return; // soft flag / on a deco PO — no job
+        if (d.kind === 'art') {
+          const af = d.art_file_id ? art.find(a => a.id === d.art_file_id) : null;
+          if (decoIsOutsourced(outByItem[ii], af?.deco_type || d.deco_type || null) && fullyOut) return;
+        } else if (d.kind === 'numbers') {
+          if (decoIsOutsourced(outByItem[ii], d.num_method || 'heat_transfer') && fullyOut) return;
+        } else if (d.kind === 'names') {
+          if (decoIsOutsourced(outByItem[ii], d.name_method || 'heat_press') && fullyOut) return;
+        } else return;
+        kept.push(it.sku + ':' + d.kind);
+      });
+    });
+    return kept;
+  };
+
+  test('isDecoOutsourced treats a flagged names or numbers deco as outsourced', () => {
+    const o = { items: [{ sku: 'A', decorations: [
+      { kind: 'numbers', num_method: 'screen_print', fulfillment: 'outside' },
+      { kind: 'names', name_method: 'heat_press', fulfillment: 'outside' },
+    ] }] };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[1])).toBe(true);
+  });
+
+  test('a fully outsourced store item spawns no in-house job for art, names OR numbers', () => {
+    const o = {
+      art_files: [{ id: 'af1', deco_type: 'screen_print' }],
+      items: [{ sku: 'TEE', decorations: [
+        { kind: 'art', art_file_id: 'af1', fulfillment: 'outside' },
+        { kind: 'numbers', num_method: 'screen_print', fulfillment: 'outside' },
+        { kind: 'names', name_method: 'heat_press', fulfillment: 'outside' },
+      ] }],
+    };
+    expect(jobDecos(o)).toEqual([]);
+  });
+
+  test('an in-house store is untouched — every deco still spawns its job', () => {
+    const o = {
+      art_files: [{ id: 'af1', deco_type: 'screen_print' }],
+      items: [{ sku: 'TEE', decorations: [
+        { kind: 'art', art_file_id: 'af1' },
+        { kind: 'numbers', num_method: 'screen_print' },
+        { kind: 'names', name_method: 'heat_press' },
+      ] }],
+    };
+    expect(jobDecos(o).sort()).toEqual(['TEE:art', 'TEE:names', 'TEE:numbers']);
+  });
+
+  test('flagging only the art leaves names/numbers in-house (partial routing still works)', () => {
+    const o = {
+      art_files: [{ id: 'af1', deco_type: 'screen_print' }],
+      items: [{ sku: 'TEE', decorations: [
+        { kind: 'art', art_file_id: 'af1', fulfillment: 'outside' },
+        { kind: 'numbers', num_method: 'screen_print' },
+      ] }],
+    };
+    expect(jobDecos(o)).toEqual(['TEE:numbers']);
+  });
+});

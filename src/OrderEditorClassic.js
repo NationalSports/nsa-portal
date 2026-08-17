@@ -2964,10 +2964,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _itemOutsideDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
     if(safeDecos(it).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside'))return true;
     return (o.deco_pos||[]).some(dp=>dp&&!dp.topstar_service&&(dp.item_idxs||[]).includes(ii))};
-  // In-house deco = the item carries decoration work and none of it is routed outside (names /
-  // numbers / twill are always in-house — routing only applies to art). These blanks are pressed
-  // at Emerson, so they must never ride an outside deco PO or a drop-ship PO: the warehouse would
-  // never receive them and the in-house job would have nothing to decorate.
+  // In-house deco = the item carries decoration work and none of it is routed outside. NOTE the
+  // item-level TOGGLE only cascades to art decos, but names/numbers are outsourceable in their own
+  // right (isDecoOutsourced is kind-agnostic, and syncJobs honours fulfillment:'outside' on them) —
+  // so this reads art routing only and errs toward in-house. Deliberate: these blanks are pressed
+  // at Emerson, so they must never ride an outside deco PO or a drop-ship PO — the warehouse would
+  // never receive them and the in-house job would have nothing to decorate. Over-calling in-house
+  // costs an extra hop; under-calling it strands the goods.
   const _itemInHouseDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
     return safeDecos(it).length>0&&!_itemOutsideDeco(ii)};
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
@@ -3532,12 +3535,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!decosByType[bk])decosByType[bk]=[];
           decosByType[bk].push({part,d,di,_dt:dt});
         } else if(d.kind==='numbers'){
+          if(d.fulfillment==='outside'||d.deco_po_id)return;// routed outside (soft flag / on a deco PO) — no in-house job
           const dt=d.num_method||'heat_transfer';
           if(decoIsOutsourced(outTypes,dt)&&_itemFullyOutsourced(ii))return;// whole item vendor-decorated — no in-house job
           const part='numbers_'+dt+'@'+safeStr(d.position);
           if(!decosByType['__combined'])decosByType['__combined']=[];
           decosByType['__combined'].push({part,d,di,_dt:dt});
         } else if(d.kind==='names'){
+          if(d.fulfillment==='outside'||d.deco_po_id)return;// routed outside (soft flag / on a deco PO) — no in-house job
           const dt=d.name_method||'heat_press';
           if(decoIsOutsourced(outTypes,dt)&&_itemFullyOutsourced(ii))return;// whole item vendor-decorated — no in-house job
           const part='names_'+dt+'@'+safeStr(d.position);

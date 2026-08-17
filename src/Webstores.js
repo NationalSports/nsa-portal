@@ -3439,10 +3439,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // garment photo clobber a real proof for the same sku|color.
     const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...itemMockups, ...(rec.item_mockups || {}) } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
-    // Store setting "decorated elsewhere" → every art deco lands on the SO already
-    // flagged Outside, exactly as the item's routing toggle would set it. Names /
-    // numbers / twill are always pressed in-house, so routing never touches them
-    // (the rep still picks the decorator when the Deco PO is built).
+    // Store setting "decorated elsewhere" → every decoration lands on the SO already
+    // flagged Outside: the whole store is produced off-site, names and numbers
+    // included. fulfillment:'outside' is the unified switch (isDecoOutsourced) — it
+    // suppresses the in-house job AND reads the cost from the Deco PO instead, so
+    // the two can never disagree. The rep still picks the decorator on the Deco PO.
     const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
     const routing = outsideDeco ? { fulfillment: 'outside' } : {};
     const soItems = Object.values(byProduct).map((g) => {
@@ -3451,8 +3452,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
-      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers });
-      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names });
+      if (pdef.num && hasVals(g.numbers)) decorations.push({ kind: 'numbers', position: 'Back', num_method: 'screen_print', num_size: '6"', two_color: false, sell_override: null, sell_suppressed: true, custom_font_art_id: null, roster: g.numbers, ...routing });
+      if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
       (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
@@ -3531,7 +3532,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so art decos are routed Outside. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
