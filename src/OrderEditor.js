@@ -1782,19 +1782,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // First-come-first-serve inventory reservations. An OPEN (un-pulled) IF reserves the stock it claims
   // so no other IF — on this order or any other — can pull the same units. Pulled IFs are excluded
   // because pulling already drew down _inv; counting them here would double-subtract. Keyed by `${product_id}|${size}`.
-  const reservedInvMap=useMemo(()=>{
-    const m={};
+  // `src` records WHICH open IFs hold each reservation so the size grid can explain a zero.
+  const{reservedInvMap,reservedInvSrc}=useMemo(()=>{
+    const m={},src={};
     const addFrom=so=>safeItems(so).forEach(it=>{
       const p=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);if(!p)return;
       safePicks(it).forEach(pk=>{if((pk.status||'pick')==='pulled')return;
-        Object.entries(pk).forEach(([sz,v])=>{if(typeof v==='number'&&v>0&&sz!=='status'&&sz!=='pick_id'){m[p.id+'|'+sz]=(m[p.id+'|'+sz]||0)+v}})});
+        Object.entries(pk).forEach(([sz,v])=>{if(typeof v==='number'&&v>0&&sz!=='status'&&sz!=='pick_id'){const k=p.id+'|'+sz;m[k]=(m[k]||0)+v;(src[k]=src[k]||[]).push({pickId:pk.pick_id||'IF',soId:so.id,qty:v})}})});
     });
     addFrom(o);
     (allOrders||[]).forEach(so=>{if(so.id!==o.id)addFrom(so)});
-    return m;
+    return{reservedInvMap:m,reservedInvSrc:src};
   },[allOrders,o,products]);
   // Stock actually available to a NEW IF: on-hand minus units already reserved by open IFs.
   const availInv=(p,sz)=>p?Math.max(0,(p._inv?.[sz]||0)-(reservedInvMap[p.id+'|'+sz]||0)):0;
+  // Tooltip for the size-grid stock line: why the free number is below on-hand.
+  const invTip=(p,sz)=>{
+    const onHand=p?._inv?.[sz]||0;const holds=reservedInvSrc[p.id+'|'+sz]||[];
+    if(holds.length===0)return onHand+' on hand · none reserved';
+    const held=holds.reduce((a,h)=>a+h.qty,0);
+    return onHand+' on hand · '+held+' reserved by open IF'+(holds.length>1?'s':'')+' ('
+      +holds.map(h=>h.pickId+' · '+(h.soId===o.id?'this order':h.soId)+' ×'+h.qty).join(', ')
+      +') · '+Math.max(0,onHand-held)+' free to pull';
+  };
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
   const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
@@ -5153,7 +5163,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {szs.map(sz=>{const _szFilled=((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(_iSz[sz]||0))>0;return<div key={sz} style={{textAlign:'center',width:48}}><div className="oe-eb" style={{fontSize:10,color:'#5A6075',marginBottom:3}}>{sz}</div>
               <input className="oe-num" value={sizingDraft[idx+'_'+sz]??(_iSz[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:44,textAlign:'center',border:_szFilled?'1.5px solid #192853':'1px solid #E2E6EF',borderRadius:6,padding:'5px 0',fontSize:15,fontWeight:700,color:_szFilled?'#192853':'#C2C7D2',background:_szFilled?'#F4F7FF':'#fff'}}/>
-              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=_iSz[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
+              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
+                // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
+                // another SO) are already spoken for, and showing them green invites double-allocating.
+                // Same number the IF picker uses, so the two screens can't disagree. `*` = some held.
+                if(stk==null)return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:'transparent'}}>&nbsp;</div>;
+                const free=availInv(p,sz);const held=Math.max(0,stk-free);const need=_iSz[sz]||0;
+                return<div title={invTip(p,sz)} style={{fontSize:9,fontWeight:600,minHeight:13,cursor:held>0?'help':'default',color:free<=0?'#dc2626':free<need?'#ca8a04':'#166534'}}>{free+' inv'}{held>0?'*':''}</div>})()}
               {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=_iSz[sz]||0;const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const soon=hasRestock&&dOut<=RESTOCK_SOON_DAYS;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):soon?'#ca8a04':hasRestock?'#b45309':'#dc2626';return<div onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360))})}} onMouseLeave={()=>setB2bPop(null)} style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:'help'}}>{soon?'✓':b2bStk.toLocaleString()}</div>})()}
               {(()=>{
