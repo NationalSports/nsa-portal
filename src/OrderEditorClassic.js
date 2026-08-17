@@ -1528,16 +1528,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let ssColorCode=null;
         try{
           let sid=null,firstHit=null;
-          try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];firstHit=sa[0]||null;const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID}catch(e){}
           // Synced API skus are '<styleName>-<colorCode>' (e.g. AT105-50): the whole sku
-          // never matches an S&S style, and falling back to the first fuzzy search hit can
-          // land on the wrong product entirely — bogus stock AND bogus per-size prices that
-          // then leak into PO pricing. Resolve the style part exactly and remember the
-          // color code so the filter below pins the exact colorway.
-          if(!sid&&sku.includes('-')){
-            const dash=sku.lastIndexOf('-');const stylePart=sku.slice(0,dash);const cc=sku.slice(dash+1);
-            try{const st2=await ssApiCall('/Styles?search='+encodeURIComponent(stylePart));const sa2=Array.isArray(st2)?st2:st2?[st2]:[];const exact2=sa2.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===stylePart.toLowerCase());if(exact2){sid=exact2.styleID;ssColorCode=cc}}catch(e){}
+          // never matches an S&S style — searching it both downloads a huge fuzzy style list
+          // AND risks landing on the wrong product (bogus stock and per-size prices leaking
+          // into PO pricing). With a numeric color suffix, resolve the base style exactly
+          // FIRST (typically a single tiny hit) and remember the color code so the filter
+          // below pins the exact colorway; the whole-sku search stays as the fallback.
+          const dash=sku.lastIndexOf('-');
+          const stylePart=dash>0?sku.slice(0,dash):'';
+          const ccSuffix=dash>0?sku.slice(dash+1):'';
+          const tryStylePart=async()=>{
+            try{const st2=await ssApiCall('/Styles?search='+encodeURIComponent(stylePart));const sa2=Array.isArray(st2)?st2:st2?[st2]:[];const exact2=sa2.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===stylePart.toLowerCase());if(exact2){sid=exact2.styleID;ssColorCode=ccSuffix}}catch(e){}
+          };
+          if(stylePart&&/^\d{1,3}$/.test(ccSuffix))await tryStylePart();
+          if(!sid){
+            try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];firstHit=sa[0]||null;const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID}catch(e){}
           }
+          if(!sid&&stylePart&&!ssColorCode)await tryStylePart();
           if(!sid&&firstHit)sid=firstHit.styleID;
           if(sid){data=await ssApiCall('/Products/?style='+encodeURIComponent(sid))}
           else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}

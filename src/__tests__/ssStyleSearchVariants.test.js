@@ -43,10 +43,17 @@ describe('ssStyleSearchVariants', () => {
     ]);
   });
 
-  test('a trailing color suffix is dropped as a (non-strict) fallback', () => {
+  test('a numeric color suffix searches the base style first (synced sku fast path)', () => {
     expect(ssStyleSearchVariants('AT300-50')).toEqual([
-      { code: 'AT300-50', strict: false },
       { code: 'AT300', strict: false },
+      { code: 'AT300-50', strict: false },
+    ]);
+  });
+
+  test('a non-numeric dash suffix keeps the as-is code first', () => {
+    expect(ssStyleSearchVariants('PC54-P')).toEqual([
+      { code: 'PC54-P', strict: false },
+      { code: 'PC54', strict: false },
     ]);
   });
 
