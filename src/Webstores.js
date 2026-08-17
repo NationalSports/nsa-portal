@@ -3423,8 +3423,35 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
     const pinfo = {};
     if (pids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,vendor_id,nsa_cost,retail_price').in('id', pids);
       (data || []).forEach((p) => { pinfo[p.id] = p; });
+    }
+    // Store lines that never got linked to a catalog product (the builder let a bare
+    // typed SKU like "AT105" through) arrive here with product_id null. Resolve them
+    // against the server catalog the way manual order entry would: exact SKU first;
+    // failing that, the SKU as a base style whose colorway rows ("AT105-50", …) all
+    // agree on one vendor. Otherwise the SO line lands with no vendor, name, or cost
+    // and the PO builder can't route it (an S&S-carried style falls to the manual
+    // vendor picker). An ambiguous style (colorways split across vendors) stays
+    // unresolved on purpose — never guess a vendor.
+    const _unlinkedSkus = [...new Set(Object.values(byProduct).filter((g) => !g.product_id && g.sku).map((g) => g.sku))];
+    const skuInfo = {};
+    if (_unlinkedSkus.length) {
+      try {
+        const { data: exact } = await supabase.from('products').select('id,sku,name,brand,color,vendor_id,nsa_cost').in('sku', _unlinkedSkus);
+        (exact || []).forEach((p) => { if (p.sku && !skuInfo[p.sku]) skuInfo[p.sku] = p; });
+        for (const s of _unlinkedSkus.filter((s) => !skuInfo[s])) {
+          const { data: fam } = await supabase.from('products').select('id,sku,name,brand,vendor_id,nsa_cost').like('sku', s + '-%').limit(50);
+          const rows = (fam || []).filter((p) => p.vendor_id);
+          if (!rows.length) continue;
+          const vids = [...new Set(rows.map((p) => p.vendor_id))];
+          if (vids.length !== 1) continue;
+          const costs = [...new Set(rows.map((p) => String(p.nsa_cost || 0)))];
+          // No id: the exact colorway is unknown, so the line keeps the bare style SKU —
+          // but it now carries the family's vendor, name, brand, and (unanimous) cost.
+          skuInfo[s] = { id: null, sku: s, name: rows[0].name, brand: rows[0].brand, color: '', vendor_id: vids[0], nsa_cost: costs.length === 1 ? rows[0].nsa_cost : 0 };
+        }
+      } catch (e) { console.warn('[Webstores] Unlinked-SKU catalog resolve failed:', e.message); }
     }
     // Coupon discounts are order-level; the SO bills garments only (shipping/tax stay
     // at the webstore level). Scale every line's sell by the batch's net/gross ratio so
@@ -3518,7 +3545,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
     const routing = outsideDeco ? { fulfillment: 'outside' } : {};
     const soItems = Object.values(byProduct).map((g) => {
-      const info = pinfo[g.product_id] || {};
+      const info = pinfo[g.product_id] || skuInfo[g.sku] || {};
       const pdef = personalize[g.product_id] || {};
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
@@ -3583,7 +3610,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
       return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
-        product_id: g.product_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
+        product_id: g.product_id || info.id || null, vendor_id: info.vendor_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
