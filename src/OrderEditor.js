@@ -1025,71 +1025,103 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // ─── Vendor Inventory Cache (S&S Activewear) ───
 
+  // Server sku→vendor map. API-vendor catalog rows (S&S / SanMar / Momentec /
+  // Richardson) are excluded from the in-memory products list, so an item that
+  // points at one of them but lost its vendor_id (common on webstore-built SOs)
+  // can't resolve a vendor locally — the brand fallback then mis-routes it (an
+  // S&S-carried adidas tee lands on the Adidas CLICK PO) and hides the live
+  // vendor stock. Resolve those SKUs against the server catalog once per order;
+  // the map feeds the isXItem helpers and the PO builder's resolveVendor.
+  const[dbVendorBySku,setDbVendorBySku]=useState({});
+  const dbVendorReqd=useRef({});
+  React.useEffect(()=>{
+    if(!supabase)return;
+    const skus=[...new Set(safeItems(o).map(it=>it.sku).filter(Boolean))]
+      .filter(s=>!dbVendorReqd.current[s]&&!products.some(p=>p.sku===s&&p.vendor_id));
+    if(!skus.length)return;
+    skus.forEach(s=>{dbVendorReqd.current[s]=true});
+    (async()=>{
+      try{
+        const{data}=await supabase.from('products').select('sku,vendor_id').in('sku',skus);
+        const m={};(data||[]).forEach(r=>{if(r.sku&&r.vendor_id&&!m[r.sku])m[r.sku]=r.vendor_id});
+        if(Object.keys(m).length)setDbVendorBySku(prev=>({...prev,...m}));
+      }catch(e){skus.forEach(s=>{delete dbVendorReqd.current[s]})}
+    })();
+  },[o.items?.length]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
   const isSSItem=useCallback((item)=>{
     if(item._ss_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    // S&S-synced catalog rows carry an ss* product id (ssb- blanks, ssa- adidas,
+    // ssua- UA). Those rows are excluded from the in-memory catalog (API-vendor
+    // rows aren't bootstrapped), so the products.find fallbacks below miss them
+    // — key off the id prefix so e.g. an S&S-sourced adidas tee is treated as an
+    // S&S item, not routed by its brand.
+    if(/^ss/.test(String(item.product_id||'')))return true;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='ss_activewear'||vRec.name==='S&S Activewear';
     if(item.brand==='S&S Activewear')return true;
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from SanMar
   const isSanMarItem=useCallback((item)=>{
     if(item._sm_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='sanmar'||vRec.name==='SanMar';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from Momentec
   const isMomentecItem=useCallback((item)=>{
     if(item._mt_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='momentec'||vRec.name==='Momentec';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from Richardson (live StockInventory feed available)
   const isRichardsonItem=useCallback((item)=>{
     if(item._rs_live)return true;
     if((item.brand||'').toLowerCase()==='richardson')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='richardson'||vRec.name==='Richardson';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase()==='adidas')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return(vRec.name||'').toLowerCase()==='adidas';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
   // Under Armour items use the same synced B2B stock path (ua_inventory via the
   // inventory_unified view, fetched by fetchAdidasInventory) as Adidas.
   const isUAItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase()==='under armour')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return(vRec.name||'').toLowerCase()==='under armour';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
   // Brands whose live B2B stock is shown from the synced union view here (adidas
   // Cowork/S&S + UA Armour House/S&S). Nike's SanMar stock shows via the live
-  // vendor-inventory path instead, so it isn't part of the synced-B2B grid.
-  const isSyncedB2BItem=useCallback((item)=>isAdidasItem(item)||isUAItem(item),[isAdidasItem,isUAItem]);
+  // vendor-inventory path instead, so it isn't part of the synced-B2B grid — and
+  // neither are S&S-sourced adidas/UA items (ssa-/ssua- rows): they order from
+  // S&S, so they show live S&S stock, not a grid labeled with the brand's B2B.
+  const isSyncedB2BItem=useCallback((item)=>(isAdidasItem(item)||isUAItem(item))&&!isSSItem(item),[isAdidasItem,isUAItem,isSSItem]);
   // Brand-aware labels for the B2B size row / popover ("ADIDAS"|"UA", "Adidas"|"Under Armour").
   const b2bBrandTag=useCallback((item)=>isUAItem(item)&&!isAdidasItem(item)?'UA':'ADIDAS',[isAdidasItem,isUAItem]);
   const b2bBrandName=useCallback((item)=>isUAItem(item)&&!isAdidasItem(item)?'Under Armour':'Adidas',[isAdidasItem,isUAItem]);
@@ -1523,7 +1555,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
-  },[o.items?.length]);// only re-run when items are added/removed
+  },[o.items?.length,dbVendorBySku]);// re-run when items are added/removed or the server sku→vendor map lands
 
   // Fill a SanMar line's cost from the live program price (myPrice) ONLY when the line has no
   // cost captured yet — e.g. a SKU that was added without a price. We intentionally do NOT
@@ -2926,6 +2958,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return{...it,decorations:safeDecos(it).map(d=>{
         if(d.kind!=='art')return d;
         if(val==='outside'){const nd={...d,fulfillment:'outside'};if(vendor)nd.vendor=vendor;
+          // Webstore-sourced SOs: the storefront price already includes decoration
+          // (the conversion suppresses deco sells so the garment line carries it
+          // all), so never re-add a customer charge here — keep the deco at $0.
+          if(e.webstore_id||e.source==='webstore'){nd.sell_override=0;nd.sell_each=0;return nd}
           // Auto-set the customer charge off the vendor's cost to hit the target margin (OUTSIDE_DECO_MARGIN).
           if(dvRow){const a=afx.find(f=>f&&f.id===d.art_file_id);const dt=(a&&a.deco_type)||d.deco_type||null;
             const cq=(d.art_file_id&&artQ[d.art_file_id])||itQ||1;const g=(it.name||'')+' '+(it.sku||'');const sp=dt==='screen_print';
@@ -2937,7 +2973,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const nd={...d,fulfillment:undefined,vendor:undefined};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
       })};
     }),updated_at:new Date().toLocaleString()};
-  });setDirty(true);if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
+  });setDirty(true);const _wsSO=!!(o.webstore_id||o.source==='webstore');if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(_wsSO?', deco charge stays $0 (included in the store price).':vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
@@ -8453,8 +8489,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(it._mt_live){const v=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');if(v)return v.id}
         // 3. Product catalog by product_id
         if(it.product_id){const pVid=products.find(p=>p.id===it.product_id)?.vendor_id;if(pVid)return pVid}
+        // 3b. S&S-synced rows (ssb- blanks, ssa- adidas, ssua- UA) aren't in the
+        // in-memory catalog (API-vendor rows aren't bootstrapped), so the lookups
+        // above miss them and the brand fallbacks below would misroute the PO to
+        // the brand vendor (e.g. an S&S-sourced adidas tee → Adidas CLICK). Key
+        // off the product id prefix so these group under S&S Activewear.
+        if(/^ss/.test(String(it.product_id||''))){const v=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');if(v)return v.id}
         // 4. Product catalog by SKU (e.g. A230 → S&S Activewear)
         if(it.sku){const skuMatch=products.find(p=>p.sku===it.sku&&p.vendor_id);if(skuMatch)return skuMatch.vendor_id}
+        // 4b. Server catalog by SKU — the general rule for API-vendor rows the
+        // in-memory list excludes: the products table says who carries the SKU
+        // (adidas CLICK items → Adidas, S&S-carried items → S&S, …), so it
+        // outranks the brand-name fallbacks below.
+        if(it.sku&&dbVendorBySku[it.sku]){const v=vendorList.find(v=>v.id===dbVendorBySku[it.sku]);if(v)return v.id}
         // 5. Product catalog by brand (e.g. "Gildan" → SanMar)
         if(it.brand){const catMatch=products.find(p=>p.brand===it.brand&&p.vendor_id);if(catMatch)return catMatch.vendor_id}
         // 6. Brand name matches vendor name exactly (e.g. "Adidas" → Adidas, "Under Armour" → Under Armour)
