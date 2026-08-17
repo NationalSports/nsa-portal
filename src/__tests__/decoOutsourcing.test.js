@@ -324,3 +324,54 @@ describe("names/numbers honour the fulfillment:'outside' soft flag", () => {
     expect(jobDecos(o)).toEqual(['TEE:numbers']);
   });
 });
+
+describe('buildJobs skips outside-routed decos (board derive path)', () => {
+  // buildJobs is the boards' fallback when an SO has NO stored jobs — and a fully-outsourced SO
+  // never stores any (a webstore batch of a "Decorated elsewhere" store creates none; retiring the
+  // last job persists []). An empty array fails buildJobs' short-circuit, so without the same
+  // soft-flag guard syncJobs carries, the derive re-materialized phantom in-house jobs on the
+  // Jobs page for work a vendor produces.
+  const { buildJobs } = require('../businessLogic');
+
+  const so = (decorations) => ({
+    id: 'SO-9001', jobs: [],
+    art_files: [{ id: 'af1', deco_type: 'screen_print', status: 'approved', prod_files_attached: true }],
+    items: [{ sku: 'TEE', name: 'Team Tee', sizes: { M: 5 }, decorations }],
+  });
+
+  test('a fully outsourced item derives no job at all', () => {
+    const jobs = buildJobs(so([
+      { kind: 'art', art_file_id: 'af1', position: 'Front', fulfillment: 'outside' },
+      { kind: 'numbers', num_method: 'screen_print', position: 'Back', fulfillment: 'outside' },
+      { kind: 'names', name_method: 'heat_press', position: 'Back Center', fulfillment: 'outside' },
+    ]));
+    expect(jobs).toEqual([]);
+  });
+
+  test('partial routing derives a job for ONLY the in-house decos', () => {
+    const jobs = buildJobs(so([
+      { kind: 'art', art_file_id: 'af1', position: 'Front', fulfillment: 'outside' },
+      { kind: 'numbers', num_method: 'screen_print', position: 'Back' },
+    ]));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_name).toBe('Numbers — screen print');
+    expect(jobs[0].items[0].deco_idxs).toEqual([1]); // claims the numbers deco, not the outside art
+  });
+
+  test('a deco on a deco PO is skipped the same way', () => {
+    const jobs = buildJobs(so([{ kind: 'art', art_file_id: 'af1', position: 'Front', deco_po_id: 'DPO 1' }]));
+    expect(jobs).toEqual([]);
+  });
+
+  test('unflagged decos still derive jobs exactly as before', () => {
+    const jobs = buildJobs(so([{ kind: 'art', art_file_id: 'af1', position: 'Front' }]));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_file_id).toBe('af1');
+  });
+
+  test('stored jobs still short-circuit — the guard only affects the derive path', () => {
+    const o = so([{ kind: 'art', art_file_id: 'af1', position: 'Front', fulfillment: 'outside' }]);
+    o.jobs = [{ id: 'JOB-9001-01', key: 'stored' }];
+    expect(buildJobs(o)).toEqual(o.jobs); // verbatim, untouched
+  });
+});
