@@ -39,9 +39,14 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers: JSON_HEADERS,
           body: JSON.stringify({ error: 'messageId query param is required for stats' }) };
       }
+      // `event` is OPTIONAL on Brevo's side, and omitting it returns EVERY event for the
+      // message — opens, bounces, blocks, spam, deferrals — in one call. The caller needs
+      // all of them to tell "delivered but unread" apart from "never arrived", and one
+      // unfiltered call is cheaper than one call per event type. Only forward the filter
+      // when a caller explicitly asks for a single event.
       const url = 'https://api.brevo.com/v3/smtp/statistics/events'
         + '?messageId=' + encodeURIComponent(qs.messageId)
-        + '&event=' + encodeURIComponent(qs.event || 'opened')
+        + (qs.event ? '&event=' + encodeURIComponent(qs.event) : '')
         + '&limit=' + encodeURIComponent(qs.limit || '1');
       const response = await fetch(url, {
         method: 'GET',

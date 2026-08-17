@@ -129,7 +129,11 @@ function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFo
     onKeyDown={e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}}/>;
 }
 
-function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
+function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;
+  // 'failed' = Brevo reported a hard bounce / block / spam rejection. It must read as an
+  // alarm, not a status: the coach never got this email and nobody else will notice.
+  if(s==='failed')return<span title={e._delivery_reason||'The email provider rejected this address — the recipient never received it.'} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered</span>;
+  return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
 function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim()})};
   const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach((ab,i)=>{a.push({id:`${c.id}_alt_${i}`,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim()})})};
