@@ -3358,6 +3358,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Shortfall check for whichever subset of orders is currently selected in the
     // modal (the rep can narrow the batch by cutoff date / checkboxes, and the
     // shortage list re-runs live against just those orders' demand).
+    // Full availability picture for the modal — every line's demand vs. our warehouse
+    // + vendor stock (same aggregation as the store-close stock report), not just the
+    // shortfalls. The rep SEES what each item has before the SO exists.
+    const stockRowsFor = (selIds) => aggStock(lines.filter((i) => selIds.has(i.order_id)), stockByPid, mto, stockBySku);
     const shortagesFor = (selIds) => {
       const demand = {};
       lines.forEach((i) => { if (!selIds.has(i.order_id)) return; if (!i.product_id && !(i.sku && stockBySku[i.sku])) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
@@ -3724,7 +3728,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // Open the styled confirm modal; it calls proceed() on Create with the rep's
     // final selection (cutoff/checkboxes) and batch label.
-    setSoPrompt({ orders: open, shortagesFor, decoRowsFor, unmatchedRowsFor, proceed, stockByPid, storeId: sel.id });
+    setSoPrompt({ orders: open, shortagesFor, stockRowsFor, decoRowsFor, unmatchedRowsFor, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -3871,7 +3875,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} decoRowsFor={soPrompt.decoRowsFor} unmatchedRowsFor={soPrompt.unmatchedRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods, skuLinks) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods, skuLinks); }} />}
+      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockRowsFor={soPrompt.stockRowsFor} decoRowsFor={soPrompt.decoRowsFor} unmatchedRowsFor={soPrompt.unmatchedRowsFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta, decoMethods, skuLinks) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta, decoMethods, skuLinks); }} />}
 
       {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
@@ -4187,7 +4191,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
 // names it, and sees inventory shortfalls recomputed live for that selection.
 // Shortfall rows have a product search so the rep can pick a substitute SKU
 // with live stock verification without leaving the modal.
-function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, unmatchedRowsFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
+function SoConfirmModal({ orders = [], shortagesFor, stockRowsFor, decoRowsFor, unmatchedRowsFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
   // keyed by "pid|size" → altSku string
   const [overrideSkus, setOverrideSkus] = useState({});
@@ -4222,6 +4226,14 @@ function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, unmatchedRowsF
   // colorway unknown) — the rep links the right catalog item here, before the SO exists.
   const unmatchedRows = useMemo(() => (unmatchedRowsFor ? unmatchedRowsFor(selIds) : []), [selIds, unmatchedRowsFor]);
   const [skuLinks, setSkuLinks] = useState({});
+  // Full availability table (demand vs. ours + vendor per line) — shorts sorted first,
+  // then lines with no stock record, then covered lines.
+  const stockRows = useMemo(() => {
+    const rows = stockRowsFor ? stockRowsFor(selIds) : [];
+    const rank = (r) => (r.tracked && r.backorder > 0 ? 0 : !r.known ? 1 : 2);
+    return rows.sort((a, b) => rank(a) - rank(b) || String(a.sku || a.name).localeCompare(String(b.sku || b.name)));
+  }, [selIds, stockRowsFor]);
+  const [showStock, setShowStock] = useState(false);
   // 'short' rows warn and offer a substitute; 'assumed' rows are covered — but only
   // by crediting a vendor delivery whose date has passed and whose arrival our stock
   // snapshot predates, so they're surfaced as a note rather than as a shortfall.
@@ -4273,6 +4285,42 @@ function SoConfirmModal({ orders = [], shortagesFor, decoRowsFor, unmatchedRowsF
               </label>
             ))}
           </div>
+          {stockRows.length > 0 && (() => {
+            const shortRows = stockRows.filter((r) => r.tracked && r.backorder > 0).length;
+            const unknownRows = stockRows.filter((r) => !r.known).length;
+            const okRows = stockRows.length - shortRows - unknownRows;
+            const chip = (txt, fg, bg, bd) => <span style={{ fontSize: 11, fontWeight: 800, color: fg, background: bg, border: '1px solid ' + bd, borderRadius: 5, padding: '1px 7px', whiteSpace: 'nowrap' }}>{txt}</span>;
+            return (
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
+                <button type="button" onClick={() => setShowStock((s) => !s)} style={{ width: '100%', textAlign: 'left', background: '#f8fafc', border: 'none', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 12px' }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: '#334155' }}>📦 Availability — {stockRows.length} line{stockRows.length === 1 ? '' : 's'}</span>
+                  <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {okRows > 0 && chip(okRows + ' covered', '#166534', '#f0fdf4', '#bbf7d0')}
+                    {shortRows > 0 && chip(shortRows + ' short', '#b45309', '#fffbeb', '#fde68a')}
+                    {unknownRows > 0 && chip(unknownRows + ' no record', '#475569', '#f1f5f9', '#e2e8f0')}
+                    <span style={{ color: '#94a3b8', fontSize: 12 }}>{showStock ? '▾' : '▸'}</span>
+                  </span>
+                </button>
+                {showStock && <div style={{ maxHeight: 220, overflowY: 'auto', borderTop: '1px solid #eef1f5' }}>
+                  {stockRows.map((r, i) => {
+                    const short = r.tracked && r.backorder > 0;
+                    return (
+                      <div key={(r.sku || r.name) + '|' + r.size + '|' + i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderTop: i ? '1px solid #f8fafc' : 'none', fontSize: 12, background: short ? '#fffbeb' : '#fff' }}>
+                        <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', whiteSpace: 'nowrap' }}>{r.sku || '—'}</span>
+                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#475569' }}>{r.name}</span>
+                        <span style={{ fontWeight: 700, color: '#334155', whiteSpace: 'nowrap' }}>{r.size} × {r.need}</span>
+                        {!r.known
+                          ? chip('no stock record', '#475569', '#f1f5f9', '#e2e8f0')
+                          : short
+                            ? chip('short ' + r.backorder + ' (' + r.ours + ' ours + ' + r.vendorAvail + ' vendor)', '#b45309', '#fffbeb', '#fde68a')
+                            : chip((r.ours >= r.need ? r.ours + ' ours' : r.ours + ' ours + ' + r.vendorAvail + ' vendor') + (r.tracked ? '' : ' · untracked'), '#166534', '#f0fdf4', '#bbf7d0')}
+                      </div>
+                    );
+                  })}
+                </div>}
+              </div>
+            );
+          })()}
           {unmatchedRows.length > 0 && (
             <div style={{ border: '1px solid #fecaca', background: '#fef2f2', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
               <div style={{ padding: '8px 12px', fontSize: 12.5, fontWeight: 800, color: '#b91c1c', borderBottom: '1px solid #fee2e2' }}>🔎 Items without a catalog match — link before batching</div>
