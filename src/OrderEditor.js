@@ -1028,6 +1028,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
   const isSSItem=useCallback((item)=>{
     if(item._ss_live)return true;
+    // S&S-synced catalog rows carry an ss* product id (ssb- blanks, ssa- adidas,
+    // ssua- UA). Those rows are excluded from the in-memory catalog (API-vendor
+    // rows aren't bootstrapped), so the products.find fallbacks below miss them
+    // — key off the id prefix so e.g. an S&S-sourced adidas tee is treated as an
+    // S&S item, not routed by its brand.
+    if(/^ss/.test(String(item.product_id||'')))return true;
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
@@ -1088,8 +1094,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[products,vendorList]);
   // Brands whose live B2B stock is shown from the synced union view here (adidas
   // Cowork/S&S + UA Armour House/S&S). Nike's SanMar stock shows via the live
-  // vendor-inventory path instead, so it isn't part of the synced-B2B grid.
-  const isSyncedB2BItem=useCallback((item)=>isAdidasItem(item)||isUAItem(item),[isAdidasItem,isUAItem]);
+  // vendor-inventory path instead, so it isn't part of the synced-B2B grid — and
+  // neither are S&S-sourced adidas/UA items (ssa-/ssua- rows): they order from
+  // S&S, so they show live S&S stock, not a grid labeled with the brand's B2B.
+  const isSyncedB2BItem=useCallback((item)=>(isAdidasItem(item)||isUAItem(item))&&!isSSItem(item),[isAdidasItem,isUAItem,isSSItem]);
   // Brand-aware labels for the B2B size row / popover ("ADIDAS"|"UA", "Adidas"|"Under Armour").
   const b2bBrandTag=useCallback((item)=>isUAItem(item)&&!isAdidasItem(item)?'UA':'ADIDAS',[isAdidasItem,isUAItem]);
   const b2bBrandName=useCallback((item)=>isUAItem(item)&&!isAdidasItem(item)?'Under Armour':'Adidas',[isAdidasItem,isUAItem]);
@@ -2926,6 +2934,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return{...it,decorations:safeDecos(it).map(d=>{
         if(d.kind!=='art')return d;
         if(val==='outside'){const nd={...d,fulfillment:'outside'};if(vendor)nd.vendor=vendor;
+          // Webstore-sourced SOs: the storefront price already includes decoration
+          // (the conversion suppresses deco sells so the garment line carries it
+          // all), so never re-add a customer charge here — keep the deco at $0.
+          if(e.webstore_id||e.source==='webstore'){nd.sell_override=0;nd.sell_each=0;return nd}
           // Auto-set the customer charge off the vendor's cost to hit the target margin (OUTSIDE_DECO_MARGIN).
           if(dvRow){const a=afx.find(f=>f&&f.id===d.art_file_id);const dt=(a&&a.deco_type)||d.deco_type||null;
             const cq=(d.art_file_id&&artQ[d.art_file_id])||itQ||1;const g=(it.name||'')+' '+(it.sku||'');const sp=dt==='screen_print';
@@ -2937,7 +2949,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const nd={...d,fulfillment:undefined,vendor:undefined};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
       })};
     }),updated_at:new Date().toLocaleString()};
-  });setDirty(true);if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
+  });setDirty(true);const _wsSO=!!(o.webstore_id||o.source==='webstore');if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(_wsSO?', deco charge stays $0 (included in the store price).':vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
@@ -8448,6 +8460,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(it._mt_live){const v=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');if(v)return v.id}
         // 3. Product catalog by product_id
         if(it.product_id){const pVid=products.find(p=>p.id===it.product_id)?.vendor_id;if(pVid)return pVid}
+        // 3b. S&S-synced rows (ssb- blanks, ssa- adidas, ssua- UA) aren't in the
+        // in-memory catalog (API-vendor rows aren't bootstrapped), so the lookups
+        // above miss them and the brand fallbacks below would misroute the PO to
+        // the brand vendor (e.g. an S&S-sourced adidas tee → Adidas CLICK). Key
+        // off the product id prefix so these group under S&S Activewear.
+        if(/^ss/.test(String(it.product_id||''))){const v=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');if(v)return v.id}
         // 4. Product catalog by SKU (e.g. A230 → S&S Activewear)
         if(it.sku){const skuMatch=products.find(p=>p.sku===it.sku&&p.vendor_id);if(skuMatch)return skuMatch.vendor_id}
         // 5. Product catalog by brand (e.g. "Gildan" → SanMar)
