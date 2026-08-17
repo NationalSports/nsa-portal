@@ -1509,9 +1509,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }else{
         // S&S Activewear: fetch via REST API
         let data;
+        let ssColorCode=null;
         try{
-          let sid=null;
-          try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID;else if(sa.length>0)sid=sa[0].styleID}catch(e){}
+          let sid=null,firstHit=null;
+          try{const st=await ssApiCall('/Styles?search='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];firstHit=sa[0]||null;const exact=sa.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===String(sku).toLowerCase());if(exact)sid=exact.styleID}catch(e){}
+          // Synced API skus are '<styleName>-<colorCode>' (e.g. AT105-50): the whole sku
+          // never matches an S&S style, and falling back to the first fuzzy search hit can
+          // land on the wrong product entirely — bogus stock AND bogus per-size prices that
+          // then leak into PO pricing. Resolve the style part exactly and remember the
+          // color code so the filter below pins the exact colorway.
+          if(!sid&&sku.includes('-')){
+            const dash=sku.lastIndexOf('-');const stylePart=sku.slice(0,dash);const cc=sku.slice(dash+1);
+            try{const st2=await ssApiCall('/Styles?search='+encodeURIComponent(stylePart));const sa2=Array.isArray(st2)?st2:st2?[st2]:[];const exact2=sa2.find(s=>String(s.partNumber||s.styleName||'').toLowerCase()===stylePart.toLowerCase());if(exact2){sid=exact2.styleID;ssColorCode=cc}}catch(e){}
+          }
+          if(!sid&&firstHit)sid=firstHit.styleID;
           if(sid){data=await ssApiCall('/Products/?style='+encodeURIComponent(sid))}
           else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
         }catch(e){
@@ -1525,9 +1536,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const itemColor=(item?.color||'').toLowerCase();
         const prodColor=prod3?.color?.toLowerCase()||itemColor;
         console.log('[S&S] Inventory for',sku,'color filter:',prodColor,'total items:',items.length);
+        // Pin to the exact S&S colorway when the sku carried its colorCode; the
+        // name-based fallback can catch several colorways at once and the last one
+        // wins on price, so it's only used when no exact code match exists.
+        const ccWant=ssColorCode?ssColorCode.replace(/\s+/g,'').toLowerCase():null;
+        const ccHit=!!ccWant&&items.some(it=>String(it.colorCode||'').replace(/\s+/g,'').toLowerCase()===ccWant);
         items.forEach(it=>{
-          const itColor=(it.colorName||'').toLowerCase();
-          if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
+          if(ccHit){
+            if(String(it.colorCode||'').replace(/\s+/g,'').toLowerCase()!==ccWant)return;
+          }else{
+            const itColor=(it.colorName||'').toLowerCase();
+            if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
+          }
           const sz=it.sizeName||'OSFA';
           const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
           sizeQty[sz]=(sizeQty[sz]||0)+qty;
