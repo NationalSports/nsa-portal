@@ -1025,6 +1025,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // ─── Vendor Inventory Cache (S&S Activewear) ───
 
+  // Server sku→vendor map. API-vendor catalog rows (S&S / SanMar / Momentec /
+  // Richardson) are excluded from the in-memory products list, so an item that
+  // points at one of them but lost its vendor_id (common on webstore-built SOs)
+  // can't resolve a vendor locally — the brand fallback then mis-routes it (an
+  // S&S-carried adidas tee lands on the Adidas CLICK PO) and hides the live
+  // vendor stock. Resolve those SKUs against the server catalog once per order;
+  // the map feeds the isXItem helpers and the PO builder's resolveVendor.
+  const[dbVendorBySku,setDbVendorBySku]=useState({});
+  const dbVendorReqd=useRef({});
+  React.useEffect(()=>{
+    if(!supabase)return;
+    const skus=[...new Set(safeItems(o).map(it=>it.sku).filter(Boolean))]
+      .filter(s=>!dbVendorReqd.current[s]&&!products.some(p=>p.sku===s&&p.vendor_id));
+    if(!skus.length)return;
+    skus.forEach(s=>{dbVendorReqd.current[s]=true});
+    (async()=>{
+      try{
+        const{data}=await supabase.from('products').select('sku,vendor_id').in('sku',skus);
+        const m={};(data||[]).forEach(r=>{if(r.sku&&r.vendor_id&&!m[r.sku])m[r.sku]=r.vendor_id});
+        if(Object.keys(m).length)setDbVendorBySku(prev=>({...prev,...m}));
+      }catch(e){skus.forEach(s=>{delete dbVendorReqd.current[s]})}
+    })();
+  },[o.items?.length]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
   const isSSItem=useCallback((item)=>{
     if(item._ss_live)return true;
@@ -1034,64 +1058,64 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // — key off the id prefix so e.g. an S&S-sourced adidas tee is treated as an
     // S&S item, not routed by its brand.
     if(/^ss/.test(String(item.product_id||'')))return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='ss_activewear'||vRec.name==='S&S Activewear';
     if(item.brand==='S&S Activewear')return true;
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from SanMar
   const isSanMarItem=useCallback((item)=>{
     if(item._sm_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='sanmar'||vRec.name==='SanMar';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from Momentec
   const isMomentecItem=useCallback((item)=>{
     if(item._mt_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='momentec'||vRec.name==='Momentec';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from Richardson (live StockInventory feed available)
   const isRichardsonItem=useCallback((item)=>{
     if(item._rs_live)return true;
     if((item.brand||'').toLowerCase()==='richardson')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='richardson'||vRec.name==='Richardson';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase()==='adidas')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return(vRec.name||'').toLowerCase()==='adidas';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
   // Under Armour items use the same synced B2B stock path (ua_inventory via the
   // inventory_unified view, fetched by fetchAdidasInventory) as Adidas.
   const isUAItem=useCallback((item)=>{
     if((item.brand||'').toLowerCase()==='under armour')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return(vRec.name||'').toLowerCase()==='under armour';
     return false;
-  },[products,vendorList]);
+  },[products,vendorList,dbVendorBySku]);
   // Brands whose live B2B stock is shown from the synced union view here (adidas
   // Cowork/S&S + UA Armour House/S&S). Nike's SanMar stock shows via the live
   // vendor-inventory path instead, so it isn't part of the synced-B2B grid — and
@@ -1531,7 +1555,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
-  },[o.items?.length]);// only re-run when items are added/removed
+  },[o.items?.length,dbVendorBySku]);// re-run when items are added/removed or the server sku→vendor map lands
 
   // Fill a SanMar line's cost from the live program price (myPrice) ONLY when the line has no
   // cost captured yet — e.g. a SKU that was added without a price. We intentionally do NOT
@@ -8468,6 +8492,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(/^ss/.test(String(it.product_id||''))){const v=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');if(v)return v.id}
         // 4. Product catalog by SKU (e.g. A230 → S&S Activewear)
         if(it.sku){const skuMatch=products.find(p=>p.sku===it.sku&&p.vendor_id);if(skuMatch)return skuMatch.vendor_id}
+        // 4b. Server catalog by SKU — the general rule for API-vendor rows the
+        // in-memory list excludes: the products table says who carries the SKU
+        // (adidas CLICK items → Adidas, S&S-carried items → S&S, …), so it
+        // outranks the brand-name fallbacks below.
+        if(it.sku&&dbVendorBySku[it.sku]){const v=vendorList.find(v=>v.id===dbVendorBySku[it.sku]);if(v)return v.id}
         // 5. Product catalog by brand (e.g. "Gildan" → SanMar)
         if(it.brand){const catMatch=products.find(p=>p.brand===it.brand&&p.vendor_id);if(catMatch)return catMatch.vendor_id}
         // 6. Brand name matches vendor name exactly (e.g. "Adidas" → Adidas, "Under Armour" → Under Armour)
