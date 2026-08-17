@@ -407,8 +407,8 @@ function annotateEffSkus(lines, skuMap) {
 // product-keyed stock map can't see them). Looks up inventory_unified by SKU →
 // { SKU: { sizes: {size: qty}, eta: bool } }. Best-effort: on error returns {}
 // and overridden lines simply report as untracked rather than wrong.
-async function fetchOverrideSkuStock(lines) {
-  const skus = [...new Set((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku))];
+async function fetchSkuStock(skuList) {
+  const skus = [...new Set((skuList || []).filter(Boolean))];
   if (!skus.length || !supabase) return {};
   try {
     const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
@@ -425,6 +425,9 @@ async function fetchOverrideSkuStock(lines) {
     });
     return out;
   } catch { return {}; }
+}
+async function fetchOverrideSkuStock(lines) {
+  return fetchSkuStock((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku));
 }
 // ── Deliveries that have already landed ──────────────────────────────
 // Vendor stock is a synced SNAPSHOT, not a live feed. When the last sync recorded a
@@ -482,6 +485,16 @@ export function lineStock(i, stockByPid, stockBySku, madeToOrder) {
     return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, arrived: vst ? arrivedVendorQty(vst.sizeEta, vst.sizeIncoming, size) : 0, arrivedEta: vst ? String((vst.sizeEta || {})[size] || '') : '', syncedAt: (vst && vst.syncedAt) || null, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
   }
   const st = i.product_id ? stockByPid[i.product_id] : null;
+  // No product stock record, but the unified vendor inventory knows the SKU
+  // (API/catalog-synced vendors — S&S adidas, UA, CLICK, …): read vendor stock by
+  // SKU so these lines get a real availability picture instead of being skipped.
+  // Tracked only for sizes the feed actually lists — a missing size stays "no
+  // record" (never a phantom shortfall; some synced rows are '_na' placeholders).
+  if (!st && i.sku && stockBySku[i.sku]) {
+    const vst = stockBySku[i.sku];
+    const has = vst.sizes[size] != null;
+    return { ours: 0, vendor: has ? (Number(vst.sizes[size]) || 0) : 0, arrived: has ? arrivedVendorQty(vst.sizeEta, vst.sizeIncoming, size) : 0, arrivedEta: has ? String((vst.sizeEta || {})[size] || '') : '', syncedAt: vst.syncedAt || null, tracked: has && !madeToOrder.has(i.product_id), known: has, onOrder: !!vst.eta, name: i.name };
+  }
   return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, arrived: st ? arrivedVendorQty(st.vendor_size_eta, st.vendor_size_incoming, size) : 0, arrivedEta: String(((st && st.vendor_size_eta) || {})[size] || ''), syncedAt: (st && st.vendor_synced_at) || null, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
 }
 // Aggregation key: overridden sizes pool stock separately from the base SKU.
@@ -3302,7 +3315,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // SKU's vendor stock, not the base product's — the SO will source it.
     const stockByPid = {};
     (detail.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
-    const stockBySku = await fetchOverrideSkuStock(lines);
+    // Override SKUs, plus lines the store stock map can't cover (no linked product,
+    // or a linked product with no stock record): check those against the unified
+    // vendor inventory by SKU — the same synced source manual order entry reads —
+    // so API-carried items (S&S adidas, UA, …) get a real pre-batch stock check
+    // instead of silently skipping it. Bare styles with no colorway ('AT105') have
+    // no inventory row and stay unchecked, same as before.
+    const stockBySku = {
+      ...(await fetchSkuStock(lines.filter((i) => !i._skuOv && i.sku && !(i.product_id && stockByPid[i.product_id])).map((i) => i.sku))),
+      ...(await fetchOverrideSkuStock(lines)),
+    };
     // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
     // produced to demand, so they're never a stock shortfall — same as products with
     // no stock record.
@@ -3312,7 +3334,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // shortage list re-runs live against just those orders' demand).
     const shortagesFor = (selIds) => {
       const demand = {};
-      lines.forEach((i) => { if (!i.product_id || !selIds.has(i.order_id)) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
+      lines.forEach((i) => { if (!selIds.has(i.order_id)) return; if (!i.product_id && !(i.sku && stockBySku[i.sku])) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
       const shortages = [];
       Object.values(demand).forEach(({ line: i, q }) => {
         const pid = i.product_id, size = i.size || 'OS';
@@ -3322,15 +3344,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         // whose date has already passed (arrivedVendorQty). Without that last term a
         // snapshot taken before a landed delivery reports a shortfall that isn't real.
         const avail = ls.ours + ls.vendor + ls.arrived;
-        const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
+        const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || i.sku || pid;
         const who = `${nm}${i._skuOv ? ` (${i._effSku})` : ''}`;
         const sku = i._effSku || i.sku || '';
         if (q > avail) {
-          shortages.push({ kind: 'short', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas${ls.arrived ? ` + ${ls.arrived} delivered ${ls.arrivedEta}` : ''})${ls.onOrder ? ' — more on order' : ''}` });
+          shortages.push({ kind: 'short', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} vendor${ls.arrived ? ` + ${ls.arrived} delivered ${ls.arrivedEta}` : ''})${ls.onOrder ? ' — more on order' : ''}` });
         } else if (ls.arrived && q > ls.ours + ls.vendor) {
           // Covered only BECAUSE we credited a landed delivery — say so rather than
           // showing a silent all-clear on numbers we know are out of date.
-          shortages.push({ kind: 'assumed', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, on hand 0 as of our last sync — Adidas had ${ls.arrived} due ${ls.arrivedEta}, which has passed, so it's counted as available.` });
+          shortages.push({ kind: 'assumed', pid, size, sku, syncedAt: ls.syncedAt, label: `${who} ${size}: need ${q}, on hand 0 as of our last sync — the vendor had ${ls.arrived} due ${ls.arrivedEta}, which has passed, so it's counted as available.` });
         }
       });
       return shortages;
