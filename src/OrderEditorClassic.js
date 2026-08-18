@@ -710,8 +710,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     //
     // A drawn number is HELD for this form — reopening reuses it instead of drawing another — so the
     // only way to spend a number without creating a PO is to open the form and abandon it outright.
-    // The form still DISPLAYS the held number because reps quote it to the vendor before clicking
-    // Create; that is what the po_number_claims breadcrumb below exists to catch.
+    // The form no longer displays the held number before Create: reps quoted the shown number to
+    // the vendor and then abandoned/redid the form, leaving the vendor holding a PO the portal never
+    // created (PO 25552 JMHF vs portal PO 25550 on SO-1615). Numbers are revealed only by Create.
+    // The po_number_claims breadcrumb below still records every held number as a bill-routing net.
     //
     // Was: reserve_po_block() claimed 50 numbers per form open and the client minted one or two from
     // it. Measured 2026-08-11 across so_item_po_lines + the deco_pos arrays: 1,527 numbers used out
@@ -762,6 +764,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       _poHeldRef.current.drawing2=false;
       if(ns.length){_poHeldRef.current.n2=ns[0];setPoHeld2(ns[0])}
     },[_drawPoNumbers]);
+    // The PO forms no longer display a number before Create (reps used to copy the shown
+    // provisional number into vendor order sites and then abandon/redo the form — the
+    // "Adidas has PO 25552, portal has PO 25550" mismatch on SO-1615). The number is revealed
+    // only by Create, so the click itself must secure the reserved draw: wait out an in-flight
+    // draw (or start one) and NEVER fall back to the unreserved local poCounter seed.
+    // Returns the reserved number, or 0 when the draw failed (offline) — callers must abort.
+    const _awaitHeldPoNumber=useCallback(async(second=false)=>{
+      const nKey=second?'n2':'n',dKey=second?'drawing2':'drawing';
+      if(!_poHeldRef.current[nKey]&&!_poHeldRef.current[dKey])await(second?_holdPoNumber2():_holdPoNumber());
+      for(let i=0;i<50&&!_poHeldRef.current[nKey]&&_poHeldRef.current[dKey];i++)await new Promise(r=>setTimeout(r,100));
+      return _poHeldRef.current[nKey]||0;
+    },[_holdPoNumber,_holdPoNumber2]);
     // Only clear a hold whose number actually landed on a PO. Applying a PREEXISTING PO writes the
     // rep's own number, so the held one stays held for the next form rather than being thrown away.
     const _consumeHeldPoNumber=useCallback((usedPrimary=true,usedSecond=false)=>{
@@ -8832,7 +8846,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Add to an existing deco PO on this order</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button type="button" onClick={()=>setLinkDpoId(null)} style={{padding:'5px 10px',borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',border:'1px solid '+(!linkDpo?'#7c3aed':'#e2e8f0'),background:!linkDpo?'#faf5ff':'white',color:!linkDpo?'#6d28d9':'#64748b'}}>
-                  ✨ New PO ({autoPoId})
+                  ✨ New PO (# issued on Create)
                 </button>
                 {_linkableDpos.map(dp=>{const sel=linkDpo&&linkDpo.id===dp.id;const n=(dp.item_idxs||[]).length;
                   return<button key={dp.id} type="button" onClick={()=>setLinkDpoId(dp.id)} title={'Add the checked items to '+dp.po_id+' — its qty and expected cost are recalculated'} style={{padding:'5px 10px',borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',border:'1px solid '+(sel?'#16a34a':'#e2e8f0'),background:sel?'#dcfce7':'white',color:sel?'#166534':'#334155'}}>
@@ -8865,7 +8879,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-              <div><label className="form-label">{preexistingPO?'PO Number':'PO Number (issued on Create)'}</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;if(!preexistingPO)_poCopiedRef.current=v;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+              {/* The generated number is deliberately NOT shown (and not copyable) before Create —
+                  a copied provisional number that never becomes a PO strands the vendor's invoice
+                  (PO 25552 JMHF / SO-1615). Create reveals it in the confirmation + on the PO. */}
+              <div><label className="form-label">{preexistingPO?'PO Number':'PO Number (issued on Create)'}</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<>
+                <input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>
+                <button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPOId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button>
+              </>:<input className="form-input" value="Assigned when you create the PO" readOnly title="The next sequential number is stamped on the PO when you click Create — quote it to the vendor from the created PO, never before." style={{color:'#94a3b8',fontStyle:'italic',flex:1}}/>}</div></div>
               <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue={_dpoEffType} onChange={e=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';const ur=document.getElementById('dpo-upcharge-row-'+poId);if(ur)ur.style.display=e.target.value==='screen_print'?'flex':'none';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
@@ -8947,9 +8967,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // module so the rep sees everything still open to order for those vendors.
               if(_openBlanksModule(fresh,linkDpo.po_id,linkDpo.deco_vendor_id)){nf(_added+' — opening the garment PO for the blanks still to order')}
               else{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setLinkDpoId(null);nf(_added)}
-            }}>➕ Add to {linkDpo.po_id}</button>:<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+            }}>➕ Add to {linkDpo.po_id}</button>:<button className="btn btn-primary" style={preexistingPO?{background:'#d97706',borderColor:'#d97706'}:{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={async()=>{
+              if(_poCreatingRef.current)return;
               if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
-              const effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
+              _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+              // The form shows no number before Create — stamp the reserved draw, never the local seed.
+              let effectivePoId=preexistingPO?preexistingPOId.trim():'';
+              if(!preexistingPO){
+                const _n=await _awaitHeldPoNumber();
+                if(!_n){_poCreatingRef.current=false;nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
+                effectivePoId='DPO '+_n+(cust?.alpha_tag?' '+cust.alpha_tag:'');
+              }
               const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
@@ -9009,7 +9037,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }}>{_dpoMode==='dtf'?'🖨️':'🎨'} {preexistingPO?'Apply Preexisting PO':(_dpoMode==='dtf'?'Create DTF Purchase PO':'Create Deco PO for '+decoVendor)}</button>}
             {!linkDpo&&dv&&!preexistingPO&&_dpoMode!=='dtf'&&<button className="btn btn-primary" style={{background:'#1e40af',borderColor:'#1e40af'}} onClick={async()=>{
               if(_poCreatingRef.current)return;
-              const effectiveDpoId=autoPoId;
+              let effectiveDpoId='';
               const decoType=document.getElementById('dpo-type-'+poId)?.value||_dpoEffType;
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
@@ -9019,6 +9047,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const unitCost=parseFloat(document.getElementById('dpo-unit-cost')?.value)||0;
               const expectedCost=Math.round(totalQty*unitCost*100)/100;
               _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+              {
+                // The form shows no number before Create — stamp the reserved draw, never the local seed.
+                const _n=await _awaitHeldPoNumber();
+                if(!_n){_poCreatingRef.current=false;nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
+                effectiveDpoId='DPO '+_n+(cust?.alpha_tag?' '+cust.alpha_tag:'');
+              }
               // Create Deco PO (same as regular Create button)
               const newDecoPO={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:effectiveDpoId,vendor:decoVendor,deco_vendor_id:dv.id,deco_type:decoType,
@@ -9058,7 +9092,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(showPO==='topstar'){
         const TOPSTAR=TOPSTAR_SERVICES;const planOnly=isE;
         const svc=TOPSTAR[topstarService]||TOPSTAR.dst;
-        const tsPoId='TS '+poCounter+(cust?.alpha_tag?' '+cust.alpha_tag:'');
         return<div className="modal-overlay" onClick={()=>!topstarSending&&setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#0891b2'}}>🧵 {planOnly?'Plan Digitizing / Vector':'Topstar Digitizing PO'}</h2><button className="modal-close" onClick={()=>!topstarSending&&setShowPO(null)}>x</button></div>
           <div className="modal-body">
@@ -9075,7 +9108,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </button>})}
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-              <div><label className="form-label">PO Number</label><input className="form-input" value={tsPoId} readOnly style={{color:'#0891b2',fontWeight:700}}/></div>
+              <div><label className="form-label">PO Number (issued on Create)</label><input className="form-input" value="Assigned when created" readOnly title="The next sequential number is stamped on the PO when it's created." style={{color:'#94a3b8',fontStyle:'italic'}}/></div>
               <div><label className="form-label">Customer Bill</label><input className="form-input" value={'$'+svc.sell.toFixed(2)} readOnly style={{color:'#166534',fontWeight:800}}/></div>
             </div>
             <div style={{marginBottom:12}}><label className="form-label">Artwork / Logo Files{planOnly?' (optional now — add before sending)':' (optional — provide files or written instructions below)'}</label>
@@ -9091,7 +9124,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Still require art OR written instructions so Topstar never gets an empty request.
               if(!planOnly&&topstarImgs.length===0&&!topstarNotes.trim()){nf('Add artwork or written instructions for Topstar before sending','error');return}
               setTopstarSending(true);
-              const tsPoIdFinal=tsPoId;
+              // The form shows no number before Create — stamp the reserved draw, never the local seed.
+              const _tsN=await _awaitHeldPoNumber();
+              if(!_tsN){setTopstarSending(false);nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
+              const tsPoIdFinal='TS '+_tsN+(cust?.alpha_tag?' '+cust.alpha_tag:'');
               const decoPO={id:'TS-'+Date.now()+'-'+Math.floor(Math.random()*10000),
                 po_id:tsPoIdFinal,vendor:'Topstar',deco_vendor_id:null,deco_type:svc.deco_type,
                 topstar_service:topstarService,item_idxs:[],qty:1,unit_cost:svc.cost,expected_cost:svc.cost,
@@ -9230,7 +9266,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // The product PO consumes poCounter (unless preexisting), so the deco PO takes the next number.
       // poCounter+1 is only a pre-draw placeholder — nothing reserves it, so it must never be what
       // actually lands on a PO. The real number is the second hold, drawn when the panel opened.
-      const podPoId='DPO '+(preexistingPO?poCounter:(poHeld2||poCounter+1))+(poAlphaSuffix?' '+poAlphaSuffix:'');
+      // Resolved at CALL time from the held ref (not render state): the deco number is stamped on
+      // the PO only at submit, after the handler has awaited the second reserved draw. Always the
+      // second hold, even under a preexisting product PO — the old preexistingPO?poCounter branch
+      // stamped the still-held PRIMARY number on the deco PO while only consuming the second,
+      // letting the next product PO reuse the same number. poCounter+1 remains a last-resort
+      // display fallback only; submit paths await the real draw first.
+      const _podPoIdNow=()=>'DPO '+(_poHeldRef.current.n2||poHeld2||poCounter+1)+(poAlphaSuffix?' '+poAlphaSuffix:'');
       const _soQty=it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
       // Deco coverage mirrors the product PO's item selection live; podOverrides holds explicit picks
       // (either direction) that win over the mirror, so non-PO items can be added and PO items dropped.
@@ -9297,7 +9339,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           return{decoPos:_existing.map(dp=>dp.id===podLink.id?mergedPo:dp),po:mergedPo,isMerge:true,added:fresh.length};
         }
         const newPo={id:'DECO-'+Date.now()+'-'+Math.floor(Math.random()*10000),
-          po_id:podPoId,vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
+          po_id:_podPoIdNow(),vendor:poDecoInline.vendor,deco_vendor_id:podDv?.id||null,deco_type:podType,
           item_idxs:podSelIdxs,qty:podQty,unit_cost:podUnitCost,expected_cost:podExpectedCost,
           notes:document.getElementById('pod-notes')?.value||'',
           drop_ship:podDropShip||undefined,
@@ -9326,13 +9368,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // remember to add it: the deco PO being created/joined in this same modal, else the
       // decorator's existing deco PO when the blanks ship to one. Typed text always wins.
       const _poAutoAttn=(()=>{
-        if(poDecoInline)return podLink?String(podLink.po_id):podPoId;
+        if(poDecoInline)return podLink?String(podLink.po_id):'';// new inline DPO: number is stamped at submit, never shown before Create
         const _sid=_poShipDecoId||_existingBatchDeco?.deco_vendor_id||null;
         if(!_sid)return'';
         const dp=(o.deco_pos||[]).find(d=>d&&!d.topstar_service&&d.po_mode!=='dtf_purchase'&&d.deco_vendor_id===_sid&&d.po_id);
         return dp?String(dp.po_id):'';
       })();
-      const _poAttnFinal=poAttention.trim()||_poAutoAttn;
+      // (attention stamped at submit is computed inside the create handlers as _attnFinal, after
+      // the reserved deco number has been awaited — a render-time value could carry the placeholder)
       // Checked PO lines whose decoration happens in-house — flagged when the rep picks Drop Ship,
       // since those blanks must be received at Emerson before we can decorate them.
       const _poDsInHouse=poItems.map((it,vi)=>({it,vi})).filter(({it,vi})=>!poExcluded[vi]&&(it.members||[it]).some(m=>_itemInHouseDeco(m._idx)));
@@ -9446,7 +9489,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {_podLinkable.length>0&&<div style={{marginBottom:10,padding:'8px 10px',background:podLink?'#f0fdf4':'white',border:'1px solid '+(podLink?'#bbf7d0':'#ede9fe'),borderRadius:8}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}}>New deco PO, or add to one {poDecoInline.vendor} already has?</div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                  <button type="button" onClick={()=>setPodLinkId(null)} style={{padding:'4px 9px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer',border:'1px solid '+(!podLink?'#7c3aed':'#e2e8f0'),background:!podLink?'#faf5ff':'white',color:!podLink?'#6d28d9':'#64748b'}}>✨ New PO ({podPoId})</button>
+                  <button type="button" onClick={()=>setPodLinkId(null)} style={{padding:'4px 9px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer',border:'1px solid '+(!podLink?'#7c3aed':'#e2e8f0'),background:!podLink?'#faf5ff':'white',color:!podLink?'#6d28d9':'#64748b'}}>✨ New PO (# issued on Create)</button>
                   {_podLinkable.map(dp=>{const sel=podLink&&podLink.id===dp.id;const n=(dp.item_idxs||[]).length;
                     return<button key={dp.id} type="button" onClick={()=>setPodLinkId(dp.id)} title={'Fold the checked items into '+dp.po_id+' at its existing rate — its qty and expected cost are recalculated'} style={{padding:'4px 9px',borderRadius:6,fontSize:11,fontWeight:700,cursor:'pointer',border:'1px solid '+(sel?'#16a34a':'#e2e8f0'),background:sel?'#dcfce7':'white',color:sel?'#166534':'#334155'}}>
                       ▣ {dp.po_id} <span style={{fontWeight:500}}>· {String(dp.deco_type||'').replace(/_/g,' ')||'—'} ({n} item{n!==1?'s':''}{dp.unit_cost?' · $'+safeNum(dp.unit_cost).toFixed(2)+'/pc':''})</span>
@@ -9455,7 +9498,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {podLink&&<div style={{marginTop:6,fontSize:11,color:'#166534'}}>Checked items join <strong>{podLink.po_id}</strong> ({String(podLink.deco_type||'').replace(/_/g,' ')}) at its existing rate{podLink.unit_cost?<> (<strong>${safeNum(podLink.unit_cost).toFixed(2)}/pc</strong>)</>:null} — the PO number, deco type and cost below are ignored. Open a new PO instead when the work differs (e.g. screen print vs embroidery).</div>}
               </div>}
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10,opacity:podLink?0.5:1}}>
-                <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podLink?podLink.po_id:podPoId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Deco PO Number</label><input className="form-input" value={podLink?podLink.po_id:'Assigned when created'} readOnly title="The next sequential number is stamped on the deco PO when you create it." style={podLink?{color:'#7c3aed',fontWeight:700}:{color:'#94a3b8',fontStyle:'italic'}}/></div>
                 <div><label className="form-label" style={{fontSize:10}}>Deco Type</label><select className="form-select" value={podLink?(podLink.deco_type||podType):podType} disabled={!!podLink} onChange={e=>{setPodType(e.target.value);setPodCost(null)}}>
                   <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
                 <div><label className="form-label" style={{fontSize:10}}>Expected Return</label><input className="form-input" type="date" id="pod-date"/></div>
@@ -9536,7 +9579,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>{poItems.filter((_,vi)=>!poExcluded[vi]).length} of {poItems.length} items</span>
           </div>}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-            <div><label className="form-label">{preexistingPO?'PO Number':'PO Number (issued on Create)'}</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<div style={{display:'flex',alignItems:'stretch',border:'1px solid #d1d5db',borderRadius:6,overflow:'hidden',flex:1}}><span style={{padding:'6px 8px',background:'#f1f5f9',borderRight:'1px solid #d1d5db',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,whiteSpace:'nowrap',display:'flex',alignItems:'center'}}>PO {poCounter}</span><input value={poAlphaSuffix} onChange={e=>setPoAlphaSuffix(e.target.value)} placeholder={cust?.alpha_tag||'suffix'} style={{border:'none',outline:'none',padding:'6px 8px',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,flex:1,minWidth:60,background:'white'}}/></div>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;if(!preexistingPO)_poCopiedRef.current=v;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+            <div><label className="form-label">{preexistingPO?'PO Number':'PO Number (issued on Create)'}</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<div style={{display:'flex',alignItems:'stretch',border:'1px solid #d1d5db',borderRadius:6,overflow:'hidden',flex:1}}><span title="The next sequential number is stamped on the PO when you click Create — quote it to the vendor from the created PO, never before." style={{padding:'6px 8px',background:'#f1f5f9',borderRight:'1px solid #d1d5db',fontWeight:700,color:'#94a3b8',fontFamily:'monospace',fontSize:13,whiteSpace:'nowrap',display:'flex',alignItems:'center'}}>PO # on Create</span><input value={poAlphaSuffix} onChange={e=>setPoAlphaSuffix(e.target.value)} placeholder={cust?.alpha_tag||'suffix'} style={{border:'none',outline:'none',padding:'6px 8px',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,flex:1,minWidth:60,background:'white'}}/></div>}{preexistingPO&&<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPOId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button>}</div></div>
             <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{_decoForPo&&<option value="deco">🎨 {_decoForPo.name} (decorator)</option>}{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}{poDropShip===true&&(()=>{const _dvOpts=decoVendors.filter(dv=>dv.id&&dv.id!==_decoForPo?.id&&resolveDecoShipToClient({decoId:dv.id,so:o,decoVendors,vendors:vendorList}));return _dvOpts.length>0&&<optgroup label="🎨 Ship to decorator">{_dvOpts.map(dv=><option key={dv.id} value={'deco:'+dv.id}>{dv.name}</option>)}</optgroup>})()}{poDropShip===true&&<option value="custom">✏️ New address (write-in)…</option>}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='deco'?(_decoForPo?.addr||''):poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           {_decoForPo&&poShipTo==='deco'&&<div style={{marginTop:-8,marginBottom:12,fontSize:11,color:'#7c3aed',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'6px 10px'}}>🎨 Drop-shipping blanks to <strong>{_decoForPo.name}</strong>: {_decoForPo.addr}</div>}
@@ -9556,9 +9599,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {poDropShip===true&&<div style={{marginTop:-4,marginBottom:12}}>
             <label className="form-label">Attention line (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
-              <input className="form-input" style={{flex:1}} value={poAttention} onChange={e=>setPoAttention(e.target.value)} placeholder={_poAutoAttn?_poAutoAttn+' (auto-filled — type to override)':'e.g. DPO 3081 — printed on the label so the receiver can match the shipment'}/>
+              <input className="form-input" style={{flex:1}} value={poAttention} onChange={e=>setPoAttention(e.target.value)} placeholder={_poAutoAttn?_poAutoAttn+' (auto-filled — type to override)':(poDecoInline&&!podLink?'new deco PO # auto-filled on Create — type to override':'e.g. DPO 3081 — printed on the label so the receiver can match the shipment')}/>
             </div>
-            <div style={{fontSize:10,color:_poAutoAttn&&!poAttention.trim()?'#7c3aed':'#94a3b8',marginTop:2}}>{_poAutoAttn&&!poAttention.trim()?<><strong>{_poAutoAttn}</strong> goes on the shipment's attention line automatically, so the decorator can match the blanks to their deco PO.</>:"Goes on the shipment's attention line — use it when the decorator already has a DPO so they can match the blanks to their job."}</div>
+            <div style={{fontSize:10,color:_poAutoAttn&&!poAttention.trim()?'#7c3aed':'#94a3b8',marginTop:2}}>{_poAutoAttn&&!poAttention.trim()?<><strong>{_poAutoAttn}</strong> goes on the shipment's attention line automatically, so the decorator can match the blanks to their deco PO.</>:(poDecoInline&&!podLink&&!poAttention.trim()?"The new deco PO's number goes on the shipment's attention line automatically when you create it.":"Goes on the shipment's attention line — use it when the decorator already has a DPO so they can match the blanks to their job.")}</div>
           </div>}
           <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(_decoForPo?'deco':(addrs[0]?.id||'warehouse')):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
@@ -9622,10 +9665,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(o._posHydrated===false){nf("⚠️ This order's existing POs haven't finished loading. Reload the page before creating a PO so you don't create a duplicate.","error");return}
             if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
             if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
-            const podRes=poDecoInline?buildInlineDecoPO():null;
-            if(podRes&&podRes.error){nf(podRes.error,'error');return}
-            // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
             _poCreatingRef.current=true;
+            // The form shows no number before Create — stamp the reserved draw(s), never the local seed.
+            const _poN=await _awaitHeldPoNumber();
+            if(!_poN){_poCreatingRef.current=false;nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
+            if(poDecoInline&&!podLink&&!(await _awaitHeldPoNumber(true))){_poCreatingRef.current=false;nf('Couldn\'t reserve the deco PO number — check your connection and try again.','error');return}
+            const finalPoId='PO '+_poN+(poAlphaSuffix?' '+poAlphaSuffix:'');
+            const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
+            const podRes=poDecoInline?buildInlineDecoPO():null;
+            if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+            // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
             const _dup=await _poFreshDupCheck(_poSubmitEntries());
             if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
             setTimeout(()=>{_poCreatingRef.current=false},1500);
@@ -9656,19 +9705,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(batchDecoId)bItem.ship_to_deco_id=batchDecoId;
                 else if(isDropShip){bItem.drop_ship=true;if(_poShipDecoId)bItem.ship_to_deco_id=_poShipDecoId}
                 if(isDropShip&&!batchDecoId&&poShipTo==='custom'&&(poShipCustom.line1||poShipCustom.city))bItem.ship_to={...poShipCustom};
-                if((isDropShip||batchDecoId)&&_poAttnFinal)bItem.attention=_poAttnFinal;
+                if((isDropShip||batchDecoId)&&_attnFinal)bItem.attention=_attnFinal;
                 batchItems.push(bItem);
               });
             });
             const bpId='BPO '+Date.now();
-            const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:autoPoId,
+            const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:finalPoId,
               items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString(),...(batchDecoId?{ship_to_deco_id:batchDecoId}:{})};
             // Also persist a source PO line on the order so the SO shows its own PO# (e.g. PO-3005-DHF),
             // not just the eventual bulk batch PO. The line stays in "queued" status until the batch is submitted.
             const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
             batchItems.forEach(bit=>{
               const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
-              const poLine={po_id:autoPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
+              const poLine={po_id:finalPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
               if(bit._size_costs)poLine._size_costs=bit._size_costs;
               if(bit.drop_ship)poLine.drop_ship=true;
               if(bit.ship_to)poLine.ship_to=bit.ship_to;
@@ -9687,7 +9736,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // second held number.
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);_consumeHeldPoNumber(true,!!podRes&&!podRes.isMerge);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+autoPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+finalPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -9706,10 +9755,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(preexistingPO&&!preexistingPOId.trim()){nf('Please enter a PO number','error');return}
           if(poDropShip==null){nf('Choose 🏭 In-House or 📦 Drop Ship for this PO first','error');return}
           if(poDropShip===true&&_poDsInHouse.length>0&&!window.confirm(_poDsInHouseConfirm()))return;
-          const podRes=poDecoInline?buildInlineDecoPO():null;
-          if(podRes&&podRes.error){nf(podRes.error,'error');return}
-          // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
           _poCreatingRef.current=true;
+          // The form shows no number before Create — stamp the reserved draw(s), never the local seed.
+          let _poN=0;
+          if(!preexistingPO){
+            _poN=await _awaitHeldPoNumber();
+            if(!_poN){_poCreatingRef.current=false;nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
+          }
+          if(poDecoInline&&!podLink&&!(await _awaitHeldPoNumber(true))){_poCreatingRef.current=false;nf('Couldn\'t reserve the deco PO number — check your connection and try again.','error');return}
+          const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
+          const podRes=poDecoInline?buildInlineDecoPO():null;
+          if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+          // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
           const _dup=await _poFreshDupCheck(_poSubmitEntries());
           if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
           setTimeout(()=>{_poCreatingRef.current=false},1500);
@@ -9719,7 +9776,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // near-duplicates whose size totals no longer reconciled with the SO. Match PO numbers
           // already on the order ignoring case/whitespace and reuse the existing spelling.
           const _poNorm=s=>String(s||'').trim().replace(/\s+/g,' ').toLowerCase();
-          let effectivePoId=preexistingPO?preexistingPOId.trim():autoPoId;
+          let effectivePoId=preexistingPO?preexistingPOId.trim():('PO '+_poN+(poAlphaSuffix?' '+poAlphaSuffix:''));
           if(preexistingPO){
             const _typedNorm=_poNorm(effectivePoId);
             for(const _it of o.items){const _m=(_it.po_lines||[]).find(pl=>_poNorm(pl.po_id)===_typedNorm);if(_m){effectivePoId=_m.po_id;break}}
@@ -9751,7 +9808,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(isDropShip)poLine.drop_ship=true;
               if(isDropShip&&_poShipDecoId)poLine.ship_to_deco_id=_poShipDecoId;
               if(isDropShip&&poShipTo==='custom'&&(poShipCustom.line1||poShipCustom.city))poLine.ship_to={...poShipCustom};
-              if(isDropShip&&_poAttnFinal)poLine.attention=_poAttnFinal;
+              if(isDropShip&&_attnFinal)poLine.attention=_attnFinal;
               Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty){
@@ -9838,7 +9895,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
                     else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
                   }
-                  if(s&&_poAttnFinal)s.attentionTo=_poAttnFinal;
+                  if(s&&_attnFinal)s.attentionTo=_attnFinal;
                   return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
                 })();
                 if(_dsShipTo){
