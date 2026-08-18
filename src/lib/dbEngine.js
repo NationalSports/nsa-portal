@@ -643,7 +643,11 @@ const _dbLoad = async (opts={}) => {
     const _estTimedOut=_lastLoadTimedOut.has('estimates');
     const _invTimedOut=_lastLoadTimedOut.has('invoices');
     const _msgTimedOut=_lastLoadTimedOut.has('messages');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_coreOnly:coreOnly};
+    // Aggregate for the "don't trust this load" call sites (poll skip, realtime skip, the seed
+    // branch's is-the-DB-really-empty check) so the table list lives HERE, next to where the flags
+    // are set, instead of being hand-synced across App.js call sites.
+    const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
