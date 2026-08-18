@@ -2647,6 +2647,27 @@ export default function App(){
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
+          // Parent-timeout keep-cache guards (2026-08-18) — same shape as the customers guard below. A
+          // timed-out sales_orders/estimates/invoices PARENT query comes back EMPTY with error:null
+          // while hasData stays true off customers, so without this the tab boots with an empty order
+          // book (zero SOs, zero counts on every customer, search finds nothing) AND the _diffSave
+          // baseline goes empty with it. Keep the mount-time cached arrays (localStorage-seeded) in
+          // BOTH state and snapshot; the 60s poll refills once a load completes. Computed HERE — before
+          // the outbox rehydrate below can splice entries into d.* — so an outbox row pushed into an
+          // otherwise-empty timed-out table can't make it look like a real load.
+          const _soTimedOutEmpty=d._soTimedOut&&!d.sales_orders.length&&sos.length>0;
+          const _estTimedOutEmpty=d._estTimedOut&&!d.estimates.length&&ests.length>0;
+          const _invTimedOutEmpty=d._invTimedOut&&!d.invoices.length&&invs.length>0;
+          if(_soTimedOutEmpty||_estTimedOutEmpty||_invTimedOutEmpty){
+            console.warn('[DB] Initial load: order-book parent query timed out — kept cached rows',{sos:_soTimedOutEmpty?sos.length:'loaded',ests:_estTimedOutEmpty?ests.length:'loaded',invs:_invTimedOutEmpty?invs.length:'loaded'});
+            if(typeof nf==='function')nf('Orders didn’t finish loading (usually a slow connection) — showing your last-loaded data. The portal keeps retrying automatically.','error');
+          }
+          // Same timeout with NO cache to fall back on (fresh browser / cleared storage): the tab will
+          // genuinely show an empty order book until a load succeeds — say so instead of staying silent.
+          else if((d._soTimedOut&&!d.sales_orders.length)||(d._estTimedOut&&!d.estimates.length)||(d._invTimedOut&&!d.invoices.length)){
+            console.warn('[DB] Initial load: order-book parent query timed out with no local cache — orders will appear once a load completes');
+            if(typeof nf==='function')nf('Orders are taking too long to load (usually a slow connection). They’ll appear automatically once loading completes.','error');
+          }
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;_syncDbMaxIds();_lastFullSyncAt=Date.now();// initial load already pulled cold tables — don't full-sync again for _FULL_SYNC_MS
           // ─── Durable-outbox rehydrate ───
@@ -2697,7 +2718,7 @@ export default function App(){
           const _custTimedOutEmpty=d._custTimedOut&&!d.customers.length&&cust.length>0;
           const _custLoaded=_custTimedOutEmpty?cust:d.customers;
           if(_custTimedOutEmpty)console.warn('[DB] Initial load: customers query timed out — kept '+cust.length+' cached customers (poll will refill)');
-          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
+          _dbSnap.current={ests:_estTimedOutEmpty?ests:d.estimates,sos:_soTimedOutEmpty?sos:d.sales_orders,invs:_invTimedOutEmpty?invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
           setREPS(d.team.length?d.team:DEFAULT_REPS);
           // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
           if(_custTimedOutEmpty){/* customers timed out — state already holds the cached list; leave it */}
@@ -2706,11 +2727,11 @@ export default function App(){
           }else{setCust(d.customers)}
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
-            setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
-            setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
-            setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
+            if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
+            if(!_soTimedOutEmpty)setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
+            if(!_invTimedOutEmpty)setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
             setMsgs(prev=>d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(_obApplied[m.id]||prev.find(p=>p.id===m.id)||m):m));
-          }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
+          }else{if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));if(!_soTimedOutEmpty)setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));if(!_invTimedOutEmpty)setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           setHistInvs(d.hist_invoices||[]);
           setIssues(d.issues||[]);
@@ -2861,6 +2882,10 @@ export default function App(){
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
         if(d._decoTimedOut){console.warn('[DB] Realtime reload skipped — a child-table query timed out, preserving local data');return}
+        // Parent-table twin of the guard above (2026-08-18, same rule as the poll): a timed-out
+        // sales_orders/estimates/invoices/customers/messages PARENT query is EMPTY with error:null, and
+        // the wholesale-replace merges below would blank state + the _diffSave snapshot. Skip entirely.
+        if(d._soTimedOut||d._estTimedOut||d._invTimedOut||d._custTimedOut||d._msgTimedOut){console.warn('[DB] Realtime reload skipped — a parent-table query timed out, preserving local data');return}
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
@@ -3054,6 +3079,12 @@ export default function App(){
         _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
         if(d._decoTimedOut){console.warn('[DB] Poll skipped — a child-table query timed out, preserving local data');schedulePoll();return}
+        // Same rule for PARENT tables (2026-08-18): a timed-out sales_orders/estimates/invoices/
+        // customers/messages parent comes back EMPTY with error:null, and the wholesale poll-merge
+        // below would replace both state and the _diffSave snapshot with an empty order book. Skip the
+        // whole poll and let the next cycle retry. Flags are only ever set for tables this load
+        // actually fetched (_lastLoadTimedOut is cleared at load start; skipped groups can't trip it).
+        if(d._soTimedOut||d._estTimedOut||d._invTimedOut||d._custTimedOut||d._msgTimedOut){console.warn('[DB] Poll skipped — a parent-table query timed out, preserving local data');schedulePoll();return}
         // Record a completed full sync (cold tables were applied) so the wall-time gate spaces out the next
         // heavy catalog/app_state pull. Only here — past the hasData + _decoTimedOut guards — did a full poll
         // actually reach the state setters below.
