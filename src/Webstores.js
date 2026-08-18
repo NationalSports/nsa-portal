@@ -9934,9 +9934,10 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
         reps.push({ r, id: prodRows[0].id }); viaVendor += 1;
       });
       if (upsertById.size) {
-        const { data, error } = await supabase.from('products').upsert([...upsertById.values()], { onConflict: 'id' }).select('id,sku,name,color,retail_price,image_front_url');
-        if (error) { reps.forEach(({ r }) => notfound.push(r.sku)); viaVendor = 0; }
-        else { const ins = new Map((data || []).map((p) => [p.id, p])); reps.forEach(({ r, id }) => { const p = ins.get(id) || upsertById.get(id); if (p) matched.push({ product: p, meta: metaOf(r) }); }); }
+        let byRowId = null;
+        try { byRowId = await reuseOrImportProductRows([...upsertById.values()]); } catch (e) { byRowId = null; }
+        if (!byRowId) { reps.forEach(({ r }) => notfound.push(r.sku)); viaVendor = 0; }
+        else { reps.forEach(({ r, id }) => { const p = byRowId.get(id) || upsertById.get(id); if (p) matched.push({ product: p, meta: metaOf(r) }); }); }
       }
       setStage('');
     } else if (notInCatalog.length) {
@@ -10122,11 +10123,45 @@ function useVendorCatalogSearch(q, vendorMap, { enabled = true, delay = 550 } = 
   return { styles, errors, loading, ran, retry };
 }
 
+// Reuse-or-import: upsert vendor color rows into `products`, but FIRST reuse an existing
+// live catalog product for the same garment — same base style (sku up to the first dash)
+// and same colorway. Without this, a vendor quick-add re-creates a synced product under a
+// second sku dialect ('AT101-BLACK-WHITE' vs the CLICK-synced 'AT101-50'); the duplicate
+// has no synced inventory rows, so stock checks read 0 vendor and flag phantom shortfalls
+// (the SO-2030 batch). Reuse only on an unambiguous (exactly one) match — anything else
+// imports exactly as before. Returns Map(row id -> the product row to use).
+const _PRODUCT_SEL = 'id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url';
+async function reuseOrImportProductRows(rows) {
+  const cnorm = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const byRowId = new Map();
+  const toUpsert = [];
+  let sibs = [];
+  try {
+    const bases = [...new Set(rows.map((r) => String(r.sku || '').split('-')[0]).filter(Boolean))];
+    for (const b of bases) {
+      const { data } = await supabase.from('products').select(_PRODUCT_SEL + ',is_active,is_archived').or(`sku.eq.${b},sku.ilike.${b}-*`).limit(500);
+      sibs.push(...(data || []));
+    }
+  } catch (e) { sibs = []; /* best-effort — fall through to plain import */ }
+  rows.forEach((r) => {
+    const base = String(r.sku || '').split('-')[0];
+    const hits = sibs.filter((p) => p.id !== r.id && p.is_active !== false && p.is_archived !== true
+      && String(p.sku || '').split('-')[0] === base && cnorm(p.color) && cnorm(p.color) === cnorm(r.color));
+    if (hits.length === 1) byRowId.set(r.id, hits[0]); else toUpsert.push(r);
+  });
+  if (toUpsert.length) {
+    const { data, error } = await supabase.from('products').upsert(toUpsert, { onConflict: 'id' }).select(_PRODUCT_SEL);
+    if (error) throw new Error(error.message);
+    const ins = new Map((data || []).map((p) => [p.id, p]));
+    toUpsert.forEach((r) => byRowId.set(r.id, ins.get(r.id) || r));
+  }
+  return byRowId;
+}
+
 // Import the picked colorways (Map key -> { style, color }) into `products`; returns the rows.
 async function importVendorSelections(selected) {
   const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
-  const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
-  if (error) throw new Error(error.message);
+  const byRowId = await reuseOrImportProductRows(rows);
   // Kick an immediate live-stock backfill for each imported SanMar style (fire-and-forget).
   // The storefront reads SYNCED vendor stock (sanmar_inventory), which otherwise only the
   // nightly brands-sync writes — a style imported today would read "sold out" (or sell
@@ -10136,7 +10171,7 @@ async function importVendorSelections(selected) {
   for (const st of smStyles) {
     try { fetch('/.netlify/functions/vendor-stock-backfill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ style: st, source: 'sanmar' }) }).catch(() => {}); } catch (e) { /* best-effort */ }
   }
-  return (data && data.length ? data : rows);
+  return rows.map((r) => byRowId.get(r.id) || r);
 }
 
 // Style cards with per-colorway toggle buttons — the shared results UI.
