@@ -3292,8 +3292,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
-      const header = ['Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
-      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
+      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
+      // Sort by order number (every line of an order contiguous, oldest order first) —
+      // same rule the Orders CSV got in #1991; without it the fetch order is arbitrary.
+      const sorted = [...lines].sort((a, b) => {
+        const oa = orderById[a.order_id] || {}, ob = orderById[b.order_id] || {};
+        return ((Number(oa.order_number) || 0) - (Number(ob.order_number) || 0))
+          || (new Date(oa.created_at || 0) - new Date(ob.created_at || 0))
+          || String(oa.id || '').localeCompare(String(ob.id || ''))
+          || String(a.player_name || '').localeCompare(String(b.player_name || ''))
+          || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid));
+      });
+      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];

@@ -57,6 +57,23 @@ describe('ssStyleSearchVariants', () => {
     ]);
   });
 
+  test('a spelled-out colorway suffix strips down to the base style (SO-2030 match failures)', () => {
+    // Synced skus that repeat the whole color NAME never matched: only the LAST dash segment
+    // was stripped, so "AT101-BLACK-WHITE" searched "AT101-BLACK" and never reached "AT101".
+    expect(ssStyleSearchVariants('AT101-BLACK-WHITE')).toEqual([
+      { code: 'AT101-BLACK-WHITE', strict: false },
+      { code: 'AT101', strict: false },
+    ]);
+    expect(ssStyleSearchVariants('AT101-TEAM-POWER-RED-WHITE')).toEqual([
+      { code: 'AT101-TEAM-POWER-RED-WHITE', strict: false },
+      { code: 'AT101', strict: false },
+    ]);
+    expect(ssStyleSearchVariants('AT101-MEDIUM-GREY-HEATHER-BLACK')).toEqual([
+      { code: 'AT101-MEDIUM-GREY-HEATHER-BLACK', strict: false },
+      { code: 'AT101', strict: false },
+    ]);
+  });
+
   test('normalizes case/whitespace and dedupes', () => {
     expect(ssStyleSearchVariants('  nl3600 ')).toEqual([
       { code: 'NL3600', strict: false },
