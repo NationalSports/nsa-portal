@@ -1153,6 +1153,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     return ()=>window.removeEventListener('popstate',onPop);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The confirmation banner renders near the top of the page; a buyer who paid from
+  // partway down the billing list would never see it otherwise.
+  const _scrollToConfirmation=()=>{try{window.scrollTo({top:0,behavior:'smooth'})}catch{try{window.scrollTo(0,0)}catch{}}};
+
   const handlePaymentSuccess=(result)=>{
     // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
     // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
@@ -1162,6 +1166,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       setReceiptEmail(contactEmail||'');setReceiptStatus(null);
       setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId,processing:true});
       setShowPay(null);setInvView(null);setPayLoading(false);
+      _scrollToConfirmation();
       return;
     }
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
@@ -1188,6 +1193,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     setReceiptEmail(contactEmail||'');setReceiptStatus(null);
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,intentId:result.intentId});
     setShowPay(null);setInvView(null);setPayLoading(false);
+    _scrollToConfirmation();
   };
 
   // Email a full itemized receipt for the just-completed payment. Content is built server-side from
@@ -2553,7 +2559,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
         {/* Payment success banner */}
-        {page==='home'&&paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+        {/* Not gated to a page: the buyer lands here from home, billing, or the emailed
+            invoice link, and every one of those routes leaves `page` on 'billing'. Gating
+            this to 'home' meant the confirmation — and the receipt controls inside it —
+            never rendered after a real payment. */}
+        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
           <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
           <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
