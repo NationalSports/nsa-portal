@@ -1644,7 +1644,10 @@ const omgReadReportText=async(file)=>{
 const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
 const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
 const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
-const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
+// Fit range that names itself one-size ("MD-LG (ONE SIZE FITS MOST)" on Richardson caps) —
+// vendors list these as the bare 'OSFA'. Checked last so known labels keep their own answer.
+const _ONE_SIZE_PHRASE=/\bONE\s*SIZE\b|\bOSFA\b|\bOSFM\b/;
+const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}if(_ONE_SIZE_PHRASE.test(u))return'OSFA';return u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['XS','S','M','L','XL','2XL','3XL','4XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
@@ -3063,6 +3066,12 @@ export default function App(){
           const dbPoCount=(m.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
           if(localPoCount>0&&dbPoCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.po_lines?.length&&(!si.po_lines||!si.po_lines.length))return{...si,po_lines:li.po_lines};return si});
+            // Keep the hydration markers with the lines they describe. `m` is the DB row wholesale, so its
+            // _hydratedPoIds/_posHydrated come from the read that returned NO po_lines — pairing preserved
+            // local lines with "this client loaded none" left the save's restore guard unable to tell a
+            // deliberate deletion from stale state, and it re-injected the just-deleted PO (SO-2015).
+            if(Array.isArray(local._hydratedPoIds)&&local._hydratedPoIds.length)m._hydratedPoIds=[...new Set([...(Array.isArray(m._hydratedPoIds)?m._hydratedPoIds:[]),...local._hydratedPoIds])];
+            if(local._posHydrated===true)m._posHydrated=true;// only when the local copy really did load them — never assert hydration we don't have
           }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){
@@ -32333,6 +32342,13 @@ export default function App(){
     const openKey=openAnchor?groupKey(openAnchor):null;
     const openMsgs=openKey?[...msgs].filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
     const openRootMsg=openMsgs[0]||openAnchor;
+    // Context for the open thread — who the order is for and its memo, so the reader
+    // knows what the conversation is about without opening the order. Jobs carry so_id,
+    // so the same lookup covers SO / Job; estimates match on entity_id.
+    const openEntity=openRootMsg?(sos.find(s=>s.id===openRootMsg.so_id||s.id===openRootMsg.entity_id)||ests.find(e=>e.id===openRootMsg.entity_id)||null):null;
+    const openWctx=openRootMsg&&openRootMsg.entity_type==='webstore_order'?wsoCtx[String(openRootMsg.entity_id)]:null;
+    const openCustName=openWctx?([openWctx.buyer,openWctx.storeName].filter(Boolean).join(' · ')||null):(openEntity?(cust.find(cc=>cc.id===openEntity.customer_id)?.name||null):null);
+    const openMemo=openEntity?.memo||null;
     // Entity type stats
     const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
     const estCount=allM.filter(m=>m.entity_type==='estimate').length;
@@ -32459,11 +32475,17 @@ export default function App(){
           </div></div>})}</div></div>
     {/* Thread panel */}
     {mThread&&openRootMsg&&<MsgDropZone className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}} setItems={setMThreadAtt} setBusy={setMThreadAttBusy} nf={nf} label="Drop to attach to this reply">
-      <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
+      <div className="card-header" style={{display:'block',borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
         <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
         <h2 style={{margin:0,fontSize:14,display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(openRootMsg),color:entityColor(openRootMsg)}}>{entityLabel(openRootMsg)}</span><span style={{color:entityColor(openRootMsg)}}>{openRootMsg.entity_id||openRootMsg.so_id}</span></h2>
         <span style={{fontSize:11,color:'#64748b'}}>{openMsgs.length} {openMsgs.length===1?'message':'messages'}</span>
         <button style={{fontSize:10,padding:'3px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#1e40af',cursor:'pointer',fontWeight:600,marginLeft:'auto'}} onClick={()=>navigateToEntity(openRootMsg)}>Open {entityLabel(openRootMsg)}</button>
+        </div>
+        {(openCustName||openMemo)&&<div style={{display:'flex',gap:8,alignItems:'baseline',marginTop:4,paddingLeft:28,minWidth:0}}>
+          {openCustName&&<span style={{fontSize:12,fontWeight:600,color:'#475569',whiteSpace:'nowrap'}}>{openCustName}</span>}
+          {openMemo&&<span style={{fontSize:11,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={openMemo}>— {openMemo}</span>}
+        </div>}
       </div>
       <div className="card-body" style={{flex:1,overflow:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
         {/* Full conversation — every message for this entity, oldest first */}

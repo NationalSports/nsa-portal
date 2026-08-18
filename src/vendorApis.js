@@ -983,6 +983,29 @@ const sanmarResolvePartIds = async (descriptors) => {
   return { resolved, candidates };
 };
 
+// Every color/size variant SanMar lists for a style, each with its Unique_Key — the same
+// normalization the resolver uses, exposed so a rep can hand-pick the right part when the
+// automatic match can't (naming differences the correct-biased matcher refuses to guess at,
+// or an order line carrying a style code SanMar catalogs differently). Returns [] for an
+// unknown style rather than throwing, so a typo in the search box is just an empty list.
+const sanmarStyleVariants = async (style) => {
+  const s = String(style || '').trim();
+  if (!s) return [];
+  let d;
+  try { d = await sanmarGetProduct(s); }
+  catch (e) { console.warn('[SanMar] style variant lookup failed for', s, e.message); return []; }
+  const out = [];
+  const seen = new Set();
+  for (const r of ((d && d.items) || [])) {
+    const bi = r.productBasicInfo || r;
+    const uniqueKey = _smKey(r, bi);
+    if (!uniqueKey || seen.has(uniqueKey)) continue;
+    seen.add(uniqueKey);
+    out.push({ style: String(bi.style || bi.styleName || s).trim() || s, color: _smColor(bi), size: _smSize(bi), uniqueKey });
+  }
+  return out;
+};
+
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
 // Docs: https://api.ssactivewear.com/V2/Default.aspx
@@ -1796,4 +1819,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
