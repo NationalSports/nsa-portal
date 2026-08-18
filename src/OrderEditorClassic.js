@@ -2344,6 +2344,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
   const expandAllItems=()=>setCollapsedItems({});
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Returns _deletedItemKeys with `it`'s OLD sku|color identity appended (deduped) — the same
+  // session tombstone rmI stamps on a deletion, reused by every in-place re-key path (Change SKU
+  // modal, color change, inline sku/color edits via _rekeyLineMocks). The engine's version-conflict
+  // stale-content guard consults it so a deliberate re-key isn't mistaken for another session's
+  // line being dropped (the SO-2021 "was changed in another session" save block, 2026-08-17).
+  const _stampRekeyTomb=(e,it)=>{const k=soItemKey(it||{});const cur=e._deletedItemKeys||[];return cur.includes(k)?cur:[...cur,k]};
   // A sku/color edit changes the garment's `sku|color` identity — its per-garment mockups
   // and mock links must move with it, or the mock strands under the departed key and the
   // approval gate reports the garment unmocked (SO-1480). This runs at COMMIT boundaries
@@ -2353,14 +2359,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // the identity captured when editing began (focus time).
   const _rekeyLineMocks=(i,fromSku,fromColor)=>{setO(e=>{const items=safeItems(e);const cur=items[i];if(!cur)return e;
     if(String(fromSku||'')===String(cur.sku||'')&&String(fromColor||'')===String(cur.color||''))return e;
+    // Session tombstone for the engine's data-loss guards: an in-place sku/color edit removes the
+    // line's OLD sku|color key from the item list exactly like a deletion does, so record it the
+    // same way rmI does. Without it, a save landing after the server version moved treats the old
+    // DB row as another session's line and hard-blocks ("Save blocked — … was changed in another
+    // session (<old sku> would be dropped)", SO-2021 2026-08-17).
+    const _tombs=_stampRekeyTomb(e,{sku:fromSku,color:fromColor});
     // Another line still on the old key keeps the bucket — identical lines share it by design.
     const stillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||'')&&(it2.color||'')===(fromColor||''));
-    if(stillUsed)return e;
+    if(stillUsed)return{...e,_deletedItemKeys:_tombs};
     // The legacy bare-sku bucket serves every color of the SKU — only move it when no
     // other line carries the old SKU in ANY color.
     const skuStillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||''));
     const arts=rekeyGarmentMocks(safeArr(e.art_files),fromSku,fromColor,cur.sku,cur.color,{moveBareSku:!skuStillUsed});
-    return arts===e.art_files?e:{...e,art_files:arts,updated_at:new Date().toLocaleString()}});setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}
+    return arts===e.art_files?{...e,_deletedItemKeys:_tombs}:{...e,_deletedItemKeys:_tombs,art_files:arts,updated_at:new Date().toLocaleString()}});setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}
     // Jobs and deco POs reference lines by INDEX; deleting a middle line shifts every later
     // line down. Auto jobs rebuild from lines, but FROZEN jobs (released/merged/split) carry
     // item_idx verbatim — without remapping, their rows silently point at the WRONG line,
@@ -2516,7 +2528,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's existing IFs/POs haven't finished loading. Reload the page before changing the SKU so an unseen pick or PO can't ride onto the new garment.",'error');return}
     const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';
     const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));
-    setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
+    // Tombstone the line's old sku|color identity so the engine's stale-content guard treats this
+    // re-key as this session's deliberate work, not another session's dropped line (SO-2021).
+    setO(e=>({...e,_deletedItemKeys:_stampRekeyTomb(e,safeItems(e)[i]),items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;
@@ -2534,6 +2548,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return next;
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
+    // The garment's `sku|color` identity changed — move its per-garment mocks/links with it
+    // (SO-1480 pattern; the modal path was missing this, stranding webstore mocks on a SKU change).
+    _rekeyLineMocks(i,it.sku,it.color);
     setCopySkuModal(null);
     nf('🔄 Changed SKU → '+p.sku+' (decorations kept)');
   };
@@ -2571,7 +2588,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
-    setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
+    // Tombstone the old identity — same reason as changeItemSku above (SO-2021).
+    setO(e=>({...e,_deletedItemKeys:_stampRekeyTomb(e,safeItems(e)[i]),items:safeItems(e).map((x,xi)=>{
       if(xi!==i)return x;
       const next={...x};
       delete next._ss_live;delete next._sm_live;delete next._mt_live;delete next._rs_live;delete next._mtId;delete next._colors;
@@ -2598,6 +2616,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // a per-size fetch directly so badges populate for the swapped-in SKU.
       fetchVendorInventory(style.sku,vId,{vendor_id:vId,sku:style.sku,color:color.colorName,sizes:{},available_sizes:availSizes.length?availSizes:fallbackSizes});
     }
+    // Same identity move as changeItemSku above — without it the mock strands under the old key.
+    _rekeyLineMocks(i,it.sku,it.color);
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
   };
