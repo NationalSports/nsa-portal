@@ -725,24 +725,68 @@ const _brevoKey = (process.env.REACT_APP_BREVO_ENABLED || 'true') !== 'false';
 // transactionalSMS branch to netlify/functions/brevo-proxy and route through it.
 const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
-// ─── Brevo Email Open Tracking ───
+// ─── Brevo Email Delivery Tracking ───
 // Brevo's statistics/events endpoint is aggressively rate-limited. When we get a 429,
-// pause all open-checks for a cooldown window so we stop hammering the API.
+// pause all delivery checks for a cooldown window so we stop hammering the API.
 let _brevoBackoffUntil=0;
-// Check Brevo events API for email opens by messageId
-const checkBrevoEmailOpens=async(messageId)=>{
+// Brevo event names, matched loosely because the API's casing/pluralisation varies by
+// endpoint ('hardBounces' in filters, 'hard_bounce' in some payloads).
+// A CLICK counts as proof of delivery alongside an open, and is the stronger signal of the
+// two: a coach who clicks the pay link in a client that blocks the tracking pixel registers
+// no open at all, and calling that "never arrived" would be flatly wrong.
+const _BREVO_OPEN=/opened|click|loadedbyproxy|proxy_open/i;            // the coach got it
+const _BREVO_FAIL=/hardbounce|hard_bounce|blocked|spam|invalid|error/i;// permanent — it will NEVER arrive
+// Bare 'bounce' (no hard/soft qualifier) is deliberately grouped with the SOFT cases: it is
+// ambiguous, and the cost of the two mistakes is not symmetric. Calling a soft bounce
+// "not delivered" sends a rep chasing an email that did land; calling a hard bounce
+// "delayed" just leaves the status where it already was.
+const _BREVO_SOFT=/softbounce|soft_bounce|deferred|bounce/i;           // temporary / unclear — Brevo may still retry
+// Delivery outcome for ONE sent message. Returns {status:'opened'|'failed'|'deferred', …}
+// or null when nothing conclusive is known yet.
+//
+// This used to ask only for event=opened, which made a bounced pay link and an unread
+// pay link look identical in the portal — the invoice sat on a green "✉️ Sent" badge
+// forever while the coach never received it, and no screen anywhere could say so. One
+// unfiltered call now returns every event for the message, so a send that never landed
+// is visible the same day instead of surfacing weeks later as an unpaid invoice.
+const checkBrevoDelivery=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
   if(Date.now()<_brevoBackoffUntil)return null;
   try{
     // Same neutral-path-first proxy the sends use — a blocker that kills the vendor URL
-    // would otherwise leave open tracking permanently dark for that rep.
-    const{res:r,netErr}=await mailProxyFetch('?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json'}});
+    // would otherwise leave delivery tracking permanently dark for that rep.
+    const{res:r,netErr}=await mailProxyFetch('?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&limit=50',{headers:{'accept':'application/json'}});
     if(netErr)return null;
     if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
-    if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
-    return null;
+    const evs=Array.isArray(d.events)?d.events:[];
+    if(!evs.length)return null;
+    const _ev=e=>String((e&&e.event)||'');
+    // An open OUTRANKS a bounce on purpose. One send to several contacts shares a single
+    // messageId, so a dead address alongside a coach who opened it is a delivered email —
+    // reporting that as "not delivered" would send reps chasing a link that worked.
+    const open=evs.find(e=>_BREVO_OPEN.test(_ev(e)));
+    if(open)return{status:'opened',at:open.date,email:open.email||null};
+    const bad=evs.find(e=>_BREVO_FAIL.test(_ev(e)));
+    if(bad)return{status:'failed',at:bad.date,email:bad.email||null,event:_ev(bad),reason:bad.reason||''};
+    const soft=evs.find(e=>_BREVO_SOFT.test(_ev(e)));
+    if(soft)return{status:'deferred',at:soft.date,email:soft.email||null,event:_ev(soft),reason:soft.reason||''};
+    return null;// requests/delivered only — in flight, nothing to report yet
   }catch{return null}
+};
+// Fold a delivery verdict into a document. The verdict is stamped onto the sent_history
+// entry it came from (so the log shows WHICH send bounced, and survives a reload — the
+// underscore-prefixed fields below are client-only and never persist), and the doc's
+// email_status only moves for a conclusive outcome.
+// Matched by messageId, NOT object identity: the entry we polled came from a ref snapshot
+// while the entry we patch lives in the latest state, so the two are never the same object.
+const _applyDelivery=(doc,lastSend,res)=>{
+  const hist=(doc.sent_history||[]).map(h=>(h&&h.messageId&&h.messageId===lastSend.messageId)
+    ?{...h,delivery:res.status,delivery_at:res.at||null,delivery_event:res.event||null,delivery_reason:res.reason||null,delivery_to:res.email||h.to||null}
+    :h);
+  if(res.status==='opened')return{...doc,email_status:'opened',email_opened_at:new Date(res.at).toLocaleString(),_opened_by_email:res.email||lastSend.to||'',sent_history:hist};
+  if(res.status==='failed')return{...doc,email_status:'failed',_delivery_failed_to:res.email||lastSend.to||'',_delivery_reason:res.reason||res.event||'',sent_history:hist};
+  return{...doc,sent_history:hist};// deferred — Brevo is still retrying, leave the status alone
 };
 
 
@@ -3142,29 +3186,33 @@ export default function App(){
       // storms, here aimed at the brevo-proxy (whose verifyUser hits the auth server + DB each call).
       // After 14 days an unopened email has realistically stopped changing state; let it rest.
       const _fresh=h=>h&&h.messageId&&(Date.now()-new Date(h.sent_at||0).getTime())<14*86400000;
+      // A 'deferred' verdict leaves email_status on 'sent', so this doc stays in the pending
+      // list and gets re-polled. Only write when the verdict actually CHANGES, or every cycle
+      // would re-stamp identical history and trigger a pointless save.
+      const _isNew=(lastSend,res)=>res&&lastSend.delivery!==res.status;
       // Check estimates with pending email_status='sent' and a recent messageId send
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(_fresh));
       for(const est of pendingEsts.slice(0,5)){
         const lastSend=(est.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
-        const result=await checkBrevoEmailOpens(lastSend.messageId);
-        if(result){setEsts(prev=>prev.map(e=>e.id===est.id?{...e,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:e))}
+        const result=await checkBrevoDelivery(lastSend.messageId);
+        if(_isNew(lastSend,result)){setEsts(prev=>prev.map(e=>e.id===est.id?_applyDelivery(e,lastSend,result):e))}
       }
       // Check SOs
       const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(_fresh));
       for(const so of pendingSOs.slice(0,5)){
         const lastSend=(so.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
-        const result=await checkBrevoEmailOpens(lastSend.messageId);
-        if(result){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:s))}
+        const result=await checkBrevoDelivery(lastSend.messageId);
+        if(_isNew(lastSend,result)){setSOs(prev=>prev.map(s=>s.id===so.id?_applyDelivery(s,lastSend,result):s))}
       }
       // Check invoices
       const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(_fresh));
       for(const inv of pendingInvs.slice(0,5)){
         const lastSend=(inv.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
-        const result=await checkBrevoEmailOpens(lastSend.messageId);
-        if(result){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:i))}
+        const result=await checkBrevoDelivery(lastSend.messageId);
+        if(_isNew(lastSend,result)){setInvs(prev=>prev.map(i=>i.id===inv.id?_applyDelivery(i,lastSend,result):i))}
       }
     };
     // 5-minute cadence (was 60s). Open tracking is a dashboard nicety, not realtime data — at 60s,

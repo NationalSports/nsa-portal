@@ -12,6 +12,12 @@ import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub,
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 
+// The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
+// Read from history rather than the client-only _delivery_* fields so the failure is
+// still visible after a page reload — an invoice whose pay link bounced is exactly the
+// one a rep will come back to days later.
+export const _deliveryFailure=(doc)=>(doc&&doc.sent_history||[]).filter(h=>h&&h.delivery==='failed').slice(-1)[0]||null;
+
 // Fires its `run` callback exactly once, when it mounts. Used to auto-trigger the
 // invoice PDF download when an invoice is opened from an email "Download" deep-link
 // (?inv=<id>&dl=1) — it is only rendered while that flag is present in the URL.
@@ -337,6 +343,7 @@ export default function InvoicesPage(){
               <span style={{fontSize:12,fontWeight:700,color:'#475569'}}>Send History</span>
               {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>✉️ Sent</span>}
               {inv.email_status==='opened'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>👁️ Opened {inv.email_opened_at||''}</span>}
+              {inv.email_status==='failed'&&<span title={_deliveryFailure(inv)?.delivery_reason||'The email provider rejected this address.'} style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered — pay link never arrived</span>}
               {inv.follow_up_at&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {new Date(inv.follow_up_at).toLocaleDateString()}{new Date(inv.follow_up_at)<new Date()?' (overdue)':''}</span>}
             </div>
             {(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
@@ -345,6 +352,10 @@ export default function InvoicesPage(){
               <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
               {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
               {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+              {/* Per-send outcome, so a resend that worked isn't tarred by an earlier bounce */}
+              {h.delivery==='failed'&&<span title={h.delivery_reason||h.delivery_event||''} style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ bounced{h.delivery_to?' ('+h.delivery_to+')':''}</span>}
+              {h.delivery==='deferred'&&<span title={h.delivery_reason||h.delivery_event||''} style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>⏳ delayed</span>}
+              {h.delivery==='opened'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>👁️ opened</span>}
             </div>):<div style={{fontSize:11,color:'#64748b'}}>Sent {inv.email_sent_at}</div>}
           </div>}
           {/* Action buttons */}
@@ -401,7 +412,7 @@ export default function InvoicesPage(){
                 const _job=((so?.memo||inv.memo)||'').trim();
                 const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
-                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,portalUrl,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -551,7 +562,7 @@ export default function InvoicesPage(){
         {/* Email status */}
         {inv.email_sent_at&&<div className="card" style={{marginBottom:16}}>
           <div className="card-body" style={{padding:'12px 16px',fontSize:12,color:'#64748b'}}>
-            Email sent: {inv.email_sent_at} · Status: <span style={{fontWeight:600,color:'#166534'}}>{inv.email_status||'sent'}</span>
+            Email sent: {inv.email_sent_at} · Status: <span style={{fontWeight:600,color:inv.email_status==='failed'?'#b91c1c':'#166534'}}>{inv.email_status==='failed'?'not delivered':(inv.email_status||'sent')}</span>
           </div>
         </div>}
 
@@ -586,6 +597,12 @@ export default function InvoicesPage(){
                 <div><div style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>Coach opened invoice</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{inv.email_opened_at||'Timestamp not recorded'}</div></div>
               </div>}
+              {(()=>{const f=_deliveryFailure(inv);return f&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#fef2f2',borderRadius:6,border:'1px solid #fecaca',marginTop:4}}>
+                <span style={{fontSize:16}}>⚠️</span>
+                <div><div style={{fontSize:13,fontWeight:700,color:'#b91c1c'}}>Not delivered — the coach never got this invoice</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{[f.delivery_to||f.to,f.delivery_reason||f.delivery_event,f.delivery_at?new Date(f.delivery_at).toLocaleString():null].filter(Boolean).join(' · ')||'Rejected by the recipient mail server'}</div>
+                <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Check the address, then resend — or send the portal pay link from your own email.</div></div>
+              </div>})()}
               {inv.follow_up_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(new Date(inv.follow_up_at)<new Date()?'#fecaca':'#fde68a'),marginTop:4}}>
                 <span style={{fontSize:16}}>⏰</span>
                 <div><div style={{fontSize:13,fontWeight:600,color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>Follow-up {new Date(inv.follow_up_at)<new Date()?'overdue':'scheduled'}</div>
@@ -1106,6 +1123,12 @@ export default function InvoicesPage(){
                   <button className="btn btn-sm btn-secondary" disabled={!(si.customEmail||'').includes('@')} onClick={()=>{const em=(si.customEmail||'').trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
                 </div>
               </div>
+              {/* The "View Invoice in Portal" pay button is built from the customer's alpha tag.
+                  Without one it was simply dropped and the email went out anyway — a pay-link
+                  email with no pay link, and nothing on screen said so. */}
+              {!si.portalUrl&&<div style={{marginBottom:12,padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#b91c1c'}}>
+                <strong>No pay link on this email.</strong> This customer has no portal tag, so the “View &amp; Pay in Portal” button can’t be built. Set an alpha tag on the customer to include it.
+              </div>}
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
               <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:12,padding:10,background:si.review?'#eff6ff':'#f8fafc',border:'1px solid '+(si.review?'#93c5fd':'#e2e8f0'),borderRadius:8}}>
@@ -1596,7 +1619,10 @@ export default function InvoicesPage(){
               background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
-              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</>)}</td>
+              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}
+              {/* An unpaid invoice whose email bounced looks exactly like one the coach is
+                  ignoring. Flag it in the list, where reps actually scan for what to chase. */}
+              {inv.email_status==='failed'&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#fee2e2',color:'#b91c1c',marginLeft:3,verticalAlign:'middle'}} title="The last send bounced — the coach never received this invoice or its pay link.">⚠️ NOT DELIVERED</span>}</>)}</td>
             <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
@@ -1841,6 +1867,13 @@ export default function InvoicesPage(){
                   Include portal pay link
                 </label>
               </div>
+              {/* Ticking "Include portal pay link" is not a guarantee: the button is built from
+                  each customer's alpha tag, and one without a tag silently gets an email with no
+                  way to pay. Name them here, before the send, not after. */}
+              {(()=>{const noTag=sendableCustomers.filter(t=>!t.customer.alpha_tag);
+                return pd.options.includePayLink&&noTag.length>0&&<div style={{marginTop:8,padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#b91c1c'}}>
+                  <strong>No pay link for {noTag.length} customer{noTag.length===1?'':'s'}</strong> (no portal tag): {noTag.map(t=>t.customer.name||'—').join(', ')}. They’ll get the statement without a Pay button.
+                </div>})()}
             </div>
             {/* Message template */}
             <div style={{marginBottom:12}}>
