@@ -612,10 +612,18 @@ try { if (_stripePkPublic) stripePromise = loadStripe(_stripePkPublic); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 
-function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
+function StripeCheckoutForm({amount,fee,method,defaultName,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
+  // Stripe's PaymentElement has no way to FORCE a name field — `fields.billingDetails.name`
+  // only accepts 'auto' | 'never', and 'auto' hides it for US cards. So we collect the name
+  // here, tell the Element never to render its own, and pass it at confirm time via
+  // payment_method_data.billing_details (the pattern Stripe documents for omitted fields).
+  // It reaches the Stripe dashboard and the card receipt, which is what staff reconcile against.
+  const[billingName,setBillingName]=useState(defaultName||'');
+  const isBank=method==='bank';
+  const nameLabel=isBank?'Account holder name':'Name on card';
   // The fee is fixed by the Card-vs-Bank choice made before this form loaded (see StripePaymentModal):
   // bank/ACH gets fee=0, card gets the 2.9%. Nothing is detected here, so Link can't muddy it.
   const _fee=fee||0;
@@ -624,8 +632,12 @@ function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
   const handleSubmit=async(e)=>{
     e.preventDefault();
     if(!stripe||!elements){return}
+    const _name=(billingName||'').trim();
+    // Required: the Element no longer collects it, so an empty name would fail at Stripe with a
+    // far less obvious message than this one.
+    if(!_name){setError('Please enter the '+nameLabel.toLowerCase()+'.');return}
     setProcessing(true);setError(null);
-    const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
+    const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href,payment_method_data:{billing_details:{name:_name}}},redirect:'if_required'});
     if(result.error){
       setError(result.error.message);setProcessing(false);
     }else if(result.paymentIntent&&(result.paymentIntent.status==='succeeded'||result.paymentIntent.status==='processing')){
@@ -639,8 +651,15 @@ function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
   };
 
   return<form onSubmit={handleSubmit}>
+    <div style={{marginBottom:14}}>
+      <label htmlFor="nsa-billing-name" style={{display:'block',fontSize:12,fontWeight:600,color:'#334155',marginBottom:6}}>{nameLabel}</label>
+      <input id="nsa-billing-name" type="text" autoComplete={isBank?'name':'cc-name'} value={billingName}
+        onChange={e=>{setBillingName(e.target.value);if(error)setError(null)}}
+        placeholder={isBank?'Name on the bank account':'Name as it appears on the card'}
+        style={{width:'100%',padding:'12px 14px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,fontFamily:'inherit',color:'#0f172a',background:'white'}}/>
+    </div>
     <div style={{marginBottom:16}}>
-      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}}/>
+      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'},fields:{billingDetails:{name:'never'}}}}/>
     </div>
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
@@ -757,7 +776,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
         </div>}
         {!error&&payChoice&&clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={checkoutSubtotal} fee={chosenFee} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+          <StripeCheckoutForm amount={checkoutSubtotal} fee={chosenFee} method={payChoice} defaultName={payChoice==='bank'?(customerName||''):''} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>
