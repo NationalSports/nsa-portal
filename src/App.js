@@ -14051,8 +14051,7 @@ export default function App(){
                   let _grandRcvd=0;poItems.forEach((pi,ri)=>{Object.entries(pi.sizes||{}).filter(([,v])=>v>0).forEach(([sz])=>{const el=document.getElementById('rcv-'+ri+'-'+sz);_grandRcvd+=el?Math.max(0,parseInt(el.value)||0):0})});
                   if(_grandRcvd===0){nf('Enter received quantities first (or click Receive All)','warn');return}
                   const _batchStatus=_grandRcvd>=totalUnits?'received':'partial';
-                  // Update submitted batch status
-                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:_batchStatus,received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  // Batch status flips AFTER every SO save confirms (below) — never for lost receipts.
                   // Update PO lines on SOs to received — match by po_id OR batch_po_number so
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
@@ -14063,6 +14062,7 @@ export default function App(){
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
                   const _recvLines=[]; // actual received qtys per line — box contents (not ordered sizes)
+                  const _qSavePs=[]; // per-SO save results — success UI below waits on these (NSA 4568)
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -14109,9 +14109,19 @@ export default function App(){
                     // fire-and-forget, so on a slow device a reload could clobber the just-received line while
                     // the 4x6 label had already printed — the SO then read "unfulfilled" despite a printed
                     // label. A hard failure now surfaces to the warehouse user instead of failing silently.
-                    Promise.resolve(savSONow({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
-                      .then(ok=>{if(ok===false)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')});
+                    const _qsp=Promise.resolve(savSONow({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+                    _qsp.then(ok=>{if(ok===false)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')});
+                    _qSavePs.push(_qsp.then(ok=>({soId:so.id,ok}),()=>({soId:so.id,ok:false})));
                   });
+                  // Success UI only after every SO save confirms (NSA 4568, 2026-08-06: a batch
+                  // check-in whose saves were all lost still printed labels and read as done).
+                  Promise.all(_qSavePs).then(_qResults=>{
+                  const _qFailed=_qResults.filter(r=>r.ok===false).map(r=>r.soId);
+                  if(_qFailed.length>0){
+                    nf('⚠️ Receipts for '+_qFailed.join(', ')+' did NOT save — no labels were printed for this check-in. Fix the save (see the unsaved-changes banner) or reload and re-receive.','error');
+                    return;
+                  }
+                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:_batchStatus,received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   notifyDecoReady(_decoReady);
                   // Print label(s) after receiving — separate per source PO for batches
@@ -14124,6 +14134,7 @@ export default function App(){
                     const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
                     receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),memo:_recvMemo(_bsid),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
+                  });
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
           </div>
@@ -18675,8 +18686,10 @@ export default function App(){
     // Result-checked save (see the desktop Confirm-Received path): synchronous pending-id + direct
     // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful result
     // so a hard save failure surfaces instead of failing silently. Phone/tablet is the slowest link.
-    Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
-      .then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
+    // The promise is also RETURNED (saveP) so callers gate the confirmation/print screen on it —
+    // the NSA 4568 batch check-in (2026-08-06) printed labels for receipts that never persisted.
+    const saveP=Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+    saveP.then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
     acts.forEach(a=>addWhAction(a));
     const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
     // Aggregate what was received per item (across POs) for the confirmation summary.
@@ -18702,20 +18715,41 @@ export default function App(){
     if(!opts.defer){
       nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
       notifyDecoReady(decoJobs);
-      // Show the confirmation screen (labels print from there on tap) instead of auto-printing.
-      _showMobileReceipt({kind:'received',units:grand,labels,groups:[group]});
+      // Confirmation screen (labels print from there on tap) only AFTER the save confirms — a
+      // check-in label must never exist for a receipt the DB doesn't hold.
+      saveP.then(ok=>{if(ok!==false)_showMobileReceipt({kind:'received',units:grand,labels,groups:[group]})});
     }
-    return{labels,decoJobs,units:grand,group};
+    return{labels,decoJobs,units:grand,group,saveP};
   };
   // Mobile batch check-in: apply every SO's receipts, then ONE combined print job (one page
   // per source PO) and ONE deco-ready toast. Fired after MobilePortal's summary toast so the
   // "🎽 Ready for decoration" notice is what stays on screen instead of being clobbered.
-  const mobileReceiveSOPOBatch=(entries)=>{
-    const labels=[],deco=[],groups=[];let units=0;
-    (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r){labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units}});
-    if(units===0)return;
-    notifyDecoReady(deco);
-    _showMobileReceipt({kind:'received',units,labels,groups});
+  // Truth-checked (NSA 4568, 2026-08-06: all three SO saves of a batch check-in were lost while the
+  // labels still printed): every per-SO receipt is applied, then we WAIT for all the saves. Only SOs
+  // whose save confirmed contribute labels/receipt; failures get a blocking error toast; the batch PO
+  // is marked received (parity with the desktop batch screen) only when every save landed.
+  // Returns a promise of true (all saved) / false so MobilePortal can hold its Saving state.
+  const mobileReceiveSOPOBatch=(entries,opts={})=>{
+    const perSo=[];
+    (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r)perSo.push({soId,r})});
+    if(perSo.length===0)return Promise.resolve(true);
+    return Promise.all(perSo.map(({soId,r})=>Promise.resolve(r.saveP).then(ok=>({soId,ok}),()=>({soId,ok:false})))).then(results=>{
+      const failed=new Set(results.filter(x=>x.ok===false).map(x=>x.soId));
+      const saved=perSo.filter(({soId})=>!failed.has(soId));
+      const labels=[],deco=[],groups=[];let units=0;
+      saved.forEach(({r})=>{labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units});
+      if(failed.size===0&&Array.isArray(opts.batchNos)&&opts.batchNos.length){
+        const _now=new Date().toLocaleString();
+        setSubmittedBatches(prev=>prev.map(sb=>opts.batchNos.includes(sb.po_number)&&sb.status!=='received'?{...sb,status:'received',received_at:_now,received_by:cu?.name||'warehouse'}:sb));
+      }
+      if(units>0){
+        nf('Received '+units+' unit'+(units!==1?'s':'')+' across '+saved.length+' order'+(saved.length!==1?'s':''));
+        notifyDecoReady(deco);
+        _showMobileReceipt({kind:'received',units,labels,groups});
+      }
+      if(failed.size>0)nf('⚠️ Receipts for '+[...failed].join(', ')+' did NOT save — re-receive those orders (their labels were not printed)','error');
+      return failed.size===0;
+    });
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
@@ -19739,6 +19773,9 @@ export default function App(){
                   // of the box that was just put away — not the entire PO.
                   const justReceived=[];
                   const _decoReady=[];
+                  // Per-SO save results — the confirmation tail below waits on these so labels never
+                  // print (and the batch never flips to received) for receipts the DB doesn't hold.
+                  const _soSavePs=[];
 
                   // --- SO PO Lines: group by SO to avoid overwrite race ---
                   if(soPOLines.length>0){
@@ -19777,16 +19814,14 @@ export default function App(){
                       // Result-checked save (see the Confirm-Received path): synchronous pending-id + direct
                       // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful
                       // result so a hard save failure surfaces instead of failing silently.
-                      Promise.resolve(savSONow({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
-                        .then(ok=>{if(ok===false)nf('⚠️ '+grpSO.id+': receipt did not save — please retry','error')});
+                      const _sp=Promise.resolve(savSONow({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+                      _soSavePs.push(_sp.then(ok=>({soId:grpSO.id,ok}),()=>({soId:grpSO.id,ok:false})));
                     });
                   }
 
-                  // --- Batch PO status ---
-                  if(batchMatch&&batchMatch.status!=='received'){
-                    setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
-                    anyReceived=true;
-                  }
+                  // --- Batch PO status --- (flipped to received AFTER every SO save confirms, below)
+                  const _batchToFlip=!!(batchMatch&&batchMatch.status!=='received');
+                  if(_batchToFlip)anyReceived=true;
 
                   // --- Inventory POs ---
                   if(invMatch){
@@ -19806,7 +19841,19 @@ export default function App(){
                       received_at:new Date().toLocaleString(),received_by:cu.name}:p));
                   }
 
+                  // Wait for every SO save to confirm before flipping the batch, logging, printing
+                  // labels, or reporting success (NSA 4568, 2026-08-06: a batch check-in whose saves
+                  // were all lost still printed labels and looked done).
+                  Promise.all(_soSavePs).then(_saveResults=>{
+                  const _failedSo=_saveResults.filter(r=>r.ok===false).map(r=>r.soId);
+                  if(_batchToFlip&&_failedSo.length===0){
+                    setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  }
                   setWhReceiving(false);
+                  if(_failedSo.length>0){
+                    nf('⚠️ Receipts for '+_failedSo.join(', ')+' did NOT save — no labels were printed for this check-in. Fix the save (see the unsaved-changes banner) or reload and re-receive.','error');
+                    return;
+                  }
                   if(anyReceived){
                     // Log receive to recent actions
                     const soIds=[...new Set(poItems.filter(it=>it.soId).map(it=>it.soId))];const custNames=[...new Set(poItems.filter(it=>it.customer).map(it=>it.customer))];
@@ -19837,6 +19884,7 @@ export default function App(){
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
+                  });
                 }}>{whReceiving?'Saving...':'✓ Confirm Received'}</button>
               </div>}
 

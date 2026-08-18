@@ -3286,7 +3286,14 @@ const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_sa
 // Track WHY each save failed — surfaced in the banner so the team can see real DB errors
 // instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
 const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
-const _recordSaveError=(id,msg)=>{if(!id)return;_dbSaveFailedErrors.set(id,{msg:String(msg||'unknown error').slice(0,400),ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}};
+// Telemetry for NON-auth save failures (NSA 4568, 2026-08-06: three receipt saves vanished with zero
+// client_events rows — only auth failures were instrumented). Fire-and-forget via the session client
+// (client_events_insert allows any event for authenticated), throttled per entity like auth_save_failed.
+// Auth-flavored messages are skipped: _handleAuthSaveFailure already logs those as auth_save_failed.
+const _saveFailLoggedAt=new Map();// entity id → last save_failed telemetry ts (10-min throttle)
+const _recordSaveError=(id,msg)=>{if(!id)return;const _m=String(msg||'unknown error').slice(0,400);_dbSaveFailedErrors.set(id,{msg:_m,ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}
+  if(!/session expired|permission denied/i.test(_m)){const _tnow=Date.now();if((_saveFailLoggedAt.get(id)||0)<_tnow-600000){_saveFailLoggedAt.set(id,_tnow);_logClientEvent('save_failed',{id,reason:_m.slice(0,200)})}}
+};
 const _clearSaveError=(id)=>{if(!id)return;_permDenialStreak.delete(id);if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
