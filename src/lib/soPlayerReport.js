@@ -27,54 +27,99 @@ export function omgCodeFromMemo(memo) {
   return m ? m[1] : '';
 }
 
+// Normalized size profile of a set of rows: {SIZE: qty}. The size curve is the
+// strongest identity a product keeps through a swap — the rep changes WHAT we buy,
+// not who ordered which size.
+const norm = (s) => String(s || 'OS').trim().toUpperCase();
+function sizeProfile(rows, get) {
+  const p = {};
+  rows.forEach((r) => { const { size, qty } = get(r); p[norm(size)] = (p[norm(size)] || 0) + (Number(qty) || 0); });
+  return p;
+}
+// Overlap score in [0,1]: shared units / the larger side's units. 1 = identical curve.
+function profileScore(a, b) {
+  let shared = 0, ta = 0, tb = 0;
+  Object.entries(a).forEach(([s, q]) => { ta += q; shared += Math.min(q, b[s] || 0); });
+  Object.values(b).forEach((q) => { tb += q; });
+  const denom = Math.max(ta, tb);
+  return denom > 0 ? shared / denom : 0;
+}
+
 // Map every store line to the SO item that covers it today.
-//  1. sku match (case-insensitive)  — item unchanged (name/color edits still show).
-//  2. product_id match              — SKU edited on the same product.
-//  3. leftover pairing              — store products with no match paired, in order,
-//     with SO items no line claimed: the in-place swap case. Marked "substituted".
+//  1. sku match (case-insensitive)  — product unchanged (SO rows grouped by sku, so a
+//     product split across size-run/colorway rows still matches).
+//  2. product_id match              — SKU edited on the same product row.
+//  3. size-curve pairing            — store products with no match paired with SO
+//     sku+colorway groups no line claimed, best size-profile overlap first: the
+//     in-place swap case (verified live against St. Francis XC: HR8470/HR8472 →
+//     AT203 black/red resolve by curve, JW6620 → AT216, 5144381 → 5160078).
+//     A pairing whose curves don't fully agree carries verify:true.
 //  Anything still unmatched keeps its original data and is flagged for review.
 export function mapLinesToSoItems(lines, soItems) {
-  const items = (soItems || []).map((it, idx) => ({ idx, sku: it.sku || '', name: it.name || it.custom_desc || '', color: it.color || '', product_id: it.product_id || null }));
-  const bySku = {}; const byPid = {};
-  items.forEach((it) => {
-    const k = it.sku.trim().toLowerCase();
-    if (k && bySku[k] === undefined) bySku[k] = it.idx;
-    if (it.product_id && byPid[it.product_id] === undefined) byPid[it.product_id] = it.idx;
+  // SO side, grouped by sku (blank-sku customs key by name), with per-colorway subgroups.
+  const soGroups = {}; const soOrder = [];
+  (soItems || []).forEach((it) => {
+    const sku = (it.sku || '').trim();
+    const key = (sku || (it.name || it.custom_desc || '')).toLowerCase();
+    if (!key) return;
+    const g = soGroups[key] || (soGroups[key] = { sku, name: it.name || it.custom_desc || '', pids: new Set(), colorways: [] });
+    if (!soGroups[key]._seen) { soOrder.push(key); soGroups[key]._seen = true; }
+    if (it.product_id) g.pids.add(it.product_id);
+    if (!g.name) g.name = it.name || it.custom_desc || '';
+    const color = (it.color || '').trim();
+    let cw = g.colorways.find((c) => c.color.toLowerCase() === color.toLowerCase());
+    if (!cw) { cw = { color, profile: {} }; g.colorways.push(cw); }
+    Object.entries(it.sizes || {}).forEach(([s, q]) => { cw.profile[norm(s)] = (cw.profile[norm(s)] || 0) + (Number(q) || 0); });
   });
-  // Group lines by their store product identity so a swap maps the whole group at once.
+  // Store side, grouped by sku (or product id / name when sku is blank).
   const groups = {}; const order = [];
   lines.forEach((l) => {
-    const k = (l.sku || '').trim().toLowerCase() + '|' + (l.product_id || '') + '|' + (l.name || '').trim().toLowerCase();
+    const k = ((l.sku || '').trim() || l.product_id || (l.name || '').trim()).toLowerCase();
     if (!groups[k]) { groups[k] = { lines: [], sku: l.sku || '', product_id: l.product_id || null, name: l.name || '' }; order.push(k); }
     groups[k].lines.push(l);
+    if (!groups[k].name && l.name) groups[k].name = l.name;
   });
   const claimed = new Set();
   order.forEach((k) => {
     const g = groups[k];
-    let idx = bySku[g.sku.trim().toLowerCase()];
-    if (idx === undefined && g.product_id) idx = byPid[g.product_id];
-    if (idx !== undefined) { g.item = items[idx]; g.matched = 'direct'; claimed.add(idx); }
+    let key = (g.sku || '').trim().toLowerCase();
+    if (!soGroups[key] && g.product_id) key = soOrder.find((sk) => soGroups[sk].pids.has(g.product_id)) || '';
+    if (soGroups[key]) { g.so = soGroups[key]; g.matched = 'direct'; claimed.add(key); }
   });
-  // Leftovers: unmatched groups ↔ unclaimed SO items, paired in order. One-to-one is
-  // the confident swap case; with several on both sides the pairing is a guess, so
-  // those lines carry verify:true and the report says so out loud.
-  const looseGroups = order.map((k) => groups[k]).filter((g) => !g.item);
-  const looseItems = items.filter((it) => !claimed.has(it.idx));
-  const ambiguous = looseGroups.length > 1 && looseItems.length > 1;
-  looseGroups.forEach((g, i) => {
-    if (looseItems[i]) { g.item = looseItems[i]; g.matched = 'swap'; g.verify = ambiguous; }
+  // Swap pairing: every unmatched store product scored against every unclaimed SO
+  // colorway by size-curve overlap, best pair claimed first. Colorways are the unit
+  // (two store hoodies can both become one SKU in two colors); each is claimed once.
+  const looseGroups = order.map((k) => groups[k]).filter((g) => !g.so);
+  const looseCws = [];
+  soOrder.forEach((k) => { if (!claimed.has(k)) soGroups[k].colorways.forEach((cw) => looseCws.push({ key: k, g: soGroups[k], cw })); });
+  const cands = [];
+  looseGroups.forEach((g, gi) => {
+    const prof = sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 }));
+    looseCws.forEach((t, ti) => { const s = profileScore(prof, t.cw.profile); if (s > 0) cands.push({ gi, ti, s }); });
+  });
+  cands.sort((a, b) => b.s - a.s || a.gi - b.gi);
+  const gDone = new Set(); const tDone = new Set();
+  cands.forEach((c) => {
+    if (gDone.has(c.gi) || tDone.has(c.ti)) return;
+    gDone.add(c.gi); tDone.add(c.ti);
+    const g = looseGroups[c.gi]; const t = looseCws[c.ti];
+    g.so = t.g; g.soColor = t.cw.color; g.matched = 'swap'; g.verify = c.s < 1;
   });
   const substitutions = []; const unmatched = [];
   const out = [];
   order.forEach((k) => {
     const g = groups[k];
     g.lines.forEach((l) => {
-      if (!g.item) { out.push({ ...l, _unmatched: true }); return; }
-      const changed = g.matched === 'swap' || (g.item.sku.trim().toLowerCase() !== (l.sku || '').trim().toLowerCase());
-      out.push({ ...l, _sku: g.item.sku, _name: g.item.name || l.name || '', _color: g.item.color, _wasSku: changed ? (l.sku || '') : '', _verify: !!g.verify });
+      if (!g.so) { out.push({ ...l, _unmatched: true }); return; }
+      const changed = g.matched === 'swap' || (g.so.sku.trim().toLowerCase() !== (l.sku || '').trim().toLowerCase());
+      // Color: the paired colorway on a swap; a direct match keeps the line's own color
+      // unless the SO group has exactly one (covers a color correction on the SO).
+      const color = g.matched === 'swap' ? (g.soColor || '')
+        : (g.so.colorways.length === 1 ? (g.so.colorways[0].color || l.color || '') : (l.color || ''));
+      out.push({ ...l, _sku: g.so.sku, _name: g.so.name || l.name || '', _color: color, _wasSku: changed ? (l.sku || '') : '', _verify: !!g.verify });
     });
-    if (g.item && g.matched === 'swap') substitutions.push({ from: g.sku || g.name, to: g.item.sku || g.item.name, verify: !!g.verify });
-    if (!g.item) unmatched.push(g.sku || g.name);
+    if (g.so && g.matched === 'swap') substitutions.push({ from: g.sku || g.name, to: (g.so.sku || g.so.name) + (g.soColor ? ' ' + g.soColor : ''), verify: !!g.verify });
+    if (!g.so) unmatched.push(g.sku || g.name);
   });
   return { lines: out, substitutions, unmatched };
 }
@@ -112,10 +157,14 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf }) {
     if (!ws) { toast('No linked store found for ' + so.id + ' — import the player report on the OMG page first.', 'error'); return false; }
     const { data: orders, error: oErr } = await supabase.from('webstore_orders').select('*').eq('store_id', ws.id);
     if (oErr) throw new Error(oErr.message);
+    // Cancelled and never-paid orders don't ship, so they never print (seen live:
+    // St. Francis XC carries 2 cancelled + 3 pending_payment beside its 23 real orders).
+    const live = (orders || []).filter((o) => !/^(cancelled|canceled|pending_payment|refunded)$/i.test(o.status || ''));
     // Scope to this SO when the store batches into several; an OMG store whose orders
-    // never got so_id stamped is all one SO, so everything counts.
-    const mine = (orders || []).filter((o) => o.so_id === so.id);
-    const scoped = mine.length > 0 ? mine : (orders || []);
+    // never got so_id stamped — or a store whose so_id links went stale (also seen
+    // live: orders pointing at a renumbered SO) — is all one SO, so everything counts.
+    const mine = live.filter((o) => o.so_id === so.id);
+    const scoped = mine.length > 0 ? mine : live;
     if (scoped.length === 0) { toast('No store orders imported yet for ' + (ws.name || so.id) + '.', 'error'); return false; }
     const rawLines = await fetchLines(supabase, scoped.map((o) => o.id));
     const orderById = {}; scoped.forEach((o) => { orderById[o.id] = o; });
