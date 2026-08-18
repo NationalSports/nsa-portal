@@ -3422,7 +3422,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
   // Items that share the exact same set of decorations AND deco type are grouped into one job
   // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
-  const syncJobs=useCallback(()=>{
+  // opts.retireOrphans — set by the MANUAL Sync Jobs button only: also drop submitted jobs whose
+  // decorations no longer exist on any line (the orphan-preservation branch below). Auto-sync
+  // never passes it, so the bad-save safety net still holds between explicit user syncs.
+  const syncJobs=useCallback((opts)=>{
     // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'). Computed up front
     // because it gates BOTH which decorations spawn in-house jobs (itemSigs, below) AND whether a
     // frozen released/merged job is retired. A deco PO whose type matches none of an item's
@@ -4069,7 +4072,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _coveredPairs=new Set();
     const _jobDecoPairs=j=>{const out=[];(j.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>out.push(gi.item_idx+'::'+di))});return out;};
     _kept.forEach(j=>_jobDecoPairs(j).forEach(p=>_coveredPairs.add(p)));
-    const orphanedSubmitted=safeJobs(o).filter(j=>{
+    // Skipped entirely on an explicit Sync Jobs (opts.retireOrphans): the rep is saying "make the
+    // jobs match the lines", so a job whose garments/decorations were deliberately removed must
+    // retire — otherwise the button visibly does nothing (SO-2031: the Dolphin screen-print job
+    // survived every sync after its shirt lines were deleted, frozen at 0/11).
+    const orphanedSubmitted=opts?.retireOrphans?[]:safeJobs(o).filter(j=>{
       if(!j||_isRel(j)||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
       if(_isCarryOver(j))return false;// stale job from a prior order that reused this SO number
@@ -10301,7 +10308,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
       // Manual refresh — rebuild jobs from current items/decorations and persist. Preserves
       // merged/split/released jobs; picks up any newly added items that don't yet have a job.
-      const refreshJobs=()=>{const synced=syncJobs();const updated=stampSplitRuns({...o,jobs:synced,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s'))};
+      const refreshJobs=()=>{const _before=safeJobs(o).length;const synced=syncJobs({retireOrphans:true});const _removed=_before-synced.length;const updated=stampSplitRuns({...o,jobs:synced,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s')+(_removed>0?' · '+_removed+' stale job'+(_removed===1?'':'s')+' removed':''))};
 
       // Split job modal state
       // Split job modal state is at component level (splitModal/setSplitModal)
