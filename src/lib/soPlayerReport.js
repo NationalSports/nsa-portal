@@ -49,6 +49,9 @@ function profileScore(a, b) {
 //  1. sku match (case-insensitive)  — product unchanged (SO rows grouped by sku, so a
 //     product split across size-run/colorway rows still matches).
 //  2. product_id match              — SKU edited on the same product row.
+//     A match from 1 or 2 only holds while the SO line still carries some of the
+//     sizes that were ordered; zeroed out, it is released to 3 (the swap-by-adding-
+//     a-new-line case), and taken back if 3 finds nothing.
 //  3. size-curve pairing            — store products with no match paired with SO
 //     sku+colorway groups no line claimed, best size-profile overlap first: the
 //     in-place swap case (verified live against St. Francis XC: HR8470/HR8472 →
@@ -79,13 +82,28 @@ export function mapLinesToSoItems(lines, soItems) {
     groups[k].lines.push(l);
     if (!groups[k].name && l.name) groups[k].name = l.name;
   });
-  const claimed = new Set();
   order.forEach((k) => {
     const g = groups[k];
     let key = (g.sku || '').trim().toLowerCase();
     if (!soGroups[key] && g.product_id) key = soOrder.find((sk) => soGroups[sk].pids.has(g.product_id)) || '';
-    if (soGroups[key]) { g.so = soGroups[key]; g.matched = 'direct'; claimed.add(key); }
+    if (soGroups[key]) { g.so = soGroups[key]; g.soKey = key; g.matched = 'direct'; }
   });
+  // A surviving sku is not proof the SO still buys it. Reps swap an item by zeroing
+  // the old line's sizes and adding the replacement, so the old sku sits on the SO
+  // covering nothing that was ordered (live: St. Francis Tennis SO-2035 — 1203.080
+  // left at L:1 while all 36 S + 12 M moved to a new 1202 line). When the matched SO
+  // line has none of the ordered sizes left, re-open the group for the swap pairing
+  // below; unpaired groups get this match back, so a size-label difference between
+  // store and SO can never turn into a false "not on the SO" flag.
+  order.forEach((k) => {
+    const g = groups[k];
+    if (!g.so) return;
+    const covered = {};
+    g.so.colorways.forEach((cw) => Object.entries(cw.profile).forEach(([s, q]) => { covered[s] = (covered[s] || 0) + q; }));
+    if (profileScore(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })), covered) === 0) { g.released = true; g.so = null; g.matched = null; }
+  });
+  const claimed = new Set();
+  order.forEach((k) => { if (groups[k].so) claimed.add(groups[k].soKey); });
   // Swap pairing: every unmatched store product scored against every unclaimed SO
   // colorway by size-curve overlap, best pair claimed first. Colorways are the unit
   // (two store hoodies can both become one SKU in two colors); each is claimed once.
@@ -95,7 +113,9 @@ export function mapLinesToSoItems(lines, soItems) {
   const cands = [];
   looseGroups.forEach((g, gi) => {
     const prof = sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 }));
-    looseCws.forEach((t, ti) => { const s = profileScore(prof, t.cw.profile); if (s > 0) cands.push({ gi, ti, s }); });
+    // A released group still has its own line on the SO, so re-homing it is the
+    // stronger claim: it needs a curve that mostly agrees, not just any overlap.
+    looseCws.forEach((t, ti) => { const s = profileScore(prof, t.cw.profile); if (g.released ? s >= 0.5 : s > 0) cands.push({ gi, ti, s }); });
   });
   cands.sort((a, b) => b.s - a.s || a.gi - b.gi);
   const gDone = new Set(); const tDone = new Set();
@@ -105,6 +125,8 @@ export function mapLinesToSoItems(lines, soItems) {
     const g = looseGroups[c.gi]; const t = looseCws[c.ti];
     g.so = t.g; g.soColor = t.cw.color; g.matched = 'swap'; g.verify = c.s < 1;
   });
+  // Nothing to swap to — the sku match stands, exactly as it did before the release.
+  order.forEach((k) => { const g = groups[k]; if (g.released && !g.so) { g.so = soGroups[g.soKey]; g.matched = 'direct'; } });
   const substitutions = []; const unmatched = [];
   const out = [];
   order.forEach((k) => {
