@@ -186,6 +186,11 @@ const computeOmgSoSync=(so)=>{
 // portal's syncFromSO allocation: store moves together to the SO stage, but an
 // item whose SKU+size isn't fully received holds at on-order (backorder).
 // Never downgrades, never touches shipped/cancelled. Best-effort + silent.
+// The "apply OMG funds" reminder normally fires when the store's SO finishes its final
+// job (all costs applied). This is the SAFETY-NET window: if no SO has been created
+// this long after the store was brought into the portal, remind accounting anyway so
+// the store is never forgotten. Shared by the reminder effect and the store card.
+const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000; // 6 weeks
 const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
 const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
@@ -4021,9 +4026,12 @@ export default function App(){
       setWebTaxAgg(Object.values(byKey));
     }catch(e){console.warn('[web tax] error:',e.message)}})();
   },[pg]);
-  // OMG stores are settled from store deposit funds (not a coach payment), so
-  // 4 weeks after a store is brought into the portal, remind accounting (Andrea
-  // Jung) to apply those funds to its invoice. Stores already present when this
+  // OMG stores are settled from store deposit funds (not a coach payment). Remind
+  // accounting (Andrea Jung) to apply those funds to the store's invoice when the
+  // linked SO's FINAL JOB finishes (production done / shipped) — that's the moment
+  // every job cost is on the SO, so the invoice+commission come out right. If no SO
+  // exists yet, fall back to 6 weeks after the store was brought in (safety net so
+  // an unprocessed store is never forgotten). Stores already present when this
   // shipped are baselined (no retroactive backlog); tasks are deduped by the
   // [store-id] tag in the title.
   React.useEffect(()=>{
@@ -4035,17 +4043,25 @@ export default function App(){
     let seenChanged=false;
     omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
     if(seenChanged)setOmgFirstSeen(seen);
-    const FOUR_WEEKS=28*24*60*60*1000;
     const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
     const toAdd=[];
     omgStores.forEach(s=>{
       if(!s||!s.id)return;
       const rec=seen[s.id];
       if(!rec||rec.baseline)return;
-      if(now-new Date(rec.at).getTime()<FOUR_WEEKS)return;
       const tag='['+s.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
-      const so=sos.find(x=>x.omg_store_id===s.id);
+      const so=sos.find(x=>x.omg_store_id===s.id&&!x.deleted_at);
+      // Fire when the SO's production is finished (all job costs applied). The 6-week
+      // safety net applies REGARDLESS of whether an SO exists — a stuck, cancelled, or
+      // fully-outsourced SO (no jobs → never 'ready_to_invoice') must not hide the
+      // store's deposit funds from accounting forever.
+      let done=false;
+      if(so){
+        done=so.status==='complete';
+        if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
+      }
+      if(!done&&now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
       // Settlement-aware: if the store's SO is invoiced and every invoice is
       // already paid, the funds have been applied — no reminder needed.
       if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
@@ -6691,6 +6707,43 @@ export default function App(){
       nf(so.id+' closed — fully invoiced and production complete');
     });
   },[sos,invs,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
+  // ── Webstore settle-on-finish ──
+  // When a webstore-batched SO's FINAL JOB finishes (calcSOStatus hits ready_to_invoice),
+  // every job cost is on the SO — that's the moment to invoice and apply the store's
+  // collected funds so commissions carry all costs. Creates an accounting to-do (Andrea
+  // Jung) deduped by the [settle-SOID] tag. OMG stores get the equivalent via the
+  // "Apply OMG funds" effect above; this covers source='webstore' SOs (webstore_id set,
+  // no omg_store_id). Fully-outsourced SOs (decos, no jobs) never reach
+  // ready_to_invoice, so a 6-week-age safety net fires the reminder regardless —
+  // including for SOs manually closed to 'complete' — unless every invoice is already
+  // paid. (Verified against prod at ship time: only 3 legacy SOs qualified, all
+  // genuinely unsettled.)
+  React.useEffect(()=>{
+    if(dbLoading||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
+    const toAdd=[];
+    sos.forEach(so=>{
+      if(!so||!so.webstore_id||so.omg_store_id||so.deleted_at)return;
+      // "Done" = final job finished (ready_to_invoice) or the SO was closed (complete —
+      // how fully-outsourced SOs end, since with no jobs they never hit
+      // ready_to_invoice). Safety net: an SO stuck un-done for 6+ weeks fires anyway so
+      // its store funds are never hidden from accounting indefinitely.
+      let done=so.status==='complete';
+      if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
+      if(!done&&!(Date.now()-new Date(so.created_at).getTime()>=OMG_FUNDS_WINDOW_MS))return;
+      const tag='[settle-'+so.id+']';
+      if(assignedTodos.some(t=>t.title&&t.title.includes(tag)))return;
+      // Already fully settled (invoiced and every invoice paid) → nothing to do.
+      const soInvs=(invs||[]).filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
+      if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;
+      const nowIso=new Date().toISOString();
+      toAdd.push({id:'todo-settle-'+so.id+'-'+Date.now(),title:`Apply store funds & invoice — ${so.id} ${tag}`,
+        description:`The final job on webstore sales order ${so.id} has finished, so all job costs are applied. Invoice the order and apply the store's collected funds (see the Invoices settlement queue) so commissions reflect full costs.${so.memo?'\n'+so.memo:''}`,
+        created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so.id,customer_id:so.customer_id||null,
+        priority:2,status:'open',created_at:nowIso,updated_at:nowIso,comments:[]});
+    });
+    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
+  },[sos,invs,assignedTodos,REPS,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
   const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -17451,8 +17504,12 @@ export default function App(){
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
       if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
         if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')+' '+(s._omg_sale_code||'')).toLowerCase().includes(q))return false}
-      // Date range filter — based on open_date or close_date
-      if(omgFilter.dateRange!=='all'){
+      // Date range filter — based on open_date or close_date. Open and draft
+      // (pending/scheduled) stores are never date-hidden: many OMG pulls carry no
+      // open/close date, so the fallback to _last_synced silently dropped still-active
+      // stores off a rep's default 30-day view (Chase's OLU Cross Country / SO-1465,
+      // Aug 2026). Only closed/complete history trims by date.
+      if(omgFilter.dateRange!=='all'&&s.status!=='open'&&s.status!=='draft'){
         const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
         const cutoff=new Date(Date.now()-days*86400000);
         const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):s._last_synced?new Date(s._last_synced):null;
@@ -17754,7 +17811,11 @@ export default function App(){
             </div>}
             {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
               if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
-              if(rec&&!rec.baseline){const days=Math.ceil((28*864e5-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
+              if(rec&&!rec.baseline){
+                // With a linked SO the reminder fires when its final job finishes; without
+                // one, the 6-week safety-net countdown applies.
+                if(sos.some(so=>so.omg_store_id===s.id&&!so.deleted_at))return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds when the SO's final job finishes</div>;
+                const days=Math.ceil((OMG_FUNDS_WINDOW_MS-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'} (no SO yet)</div>}
               return null})()}
           </div>
         </div></div>

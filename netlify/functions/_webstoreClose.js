@@ -5,6 +5,11 @@
 //   3. emails the rep + assigned CSR that breakdown with a link to the store's orders,
 //   4. stamps closed_notified_at so a store is never processed twice (sweep + manual).
 // Idempotent: a store that already has closed_notified_at is skipped.
+//
+// This prompt is about FULFILLMENT (batch the orders into an SO and get product moving)
+// and fires at close. The money side — applying store funds to the invoice so
+// commissions carry every cost — deliberately waits until the SO's final job finishes
+// (see the settle-on-finish to-dos in App.js), not a calendar delay.
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => '$' + (Number(n) || 0).toFixed(2);
@@ -46,6 +51,9 @@ async function buildBreakdown(admin, store) {
 // Returns { skipped } | { notified, todoId, breakdown }.
 async function notifyStoreClosed(admin, store, opts = {}) {
   if (!store || store.closed_notified_at) return { skipped: true, reason: 'already-notified' };
+  // A rejected store (store-approval.js closes it as part of the reject) has nothing to
+  // process — its captured orders are for refunding, not batching into an SO.
+  if (store.approval_status === 'rejected') return { skipped: true, reason: 'rejected-store' };
   const portal = (opts.portal || process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
   const brevoKey = opts.brevoKey || process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
 

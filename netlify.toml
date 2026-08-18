@@ -106,7 +106,8 @@
   schedule = "0 14 * * *"
 
 # Webstore close sweep — hourly. Closes stores whose close_at has passed and, for each,
-# creates a rep to-do + emails the rep & assigned CSR a breakdown to process the orders.
+# creates a rep to-do + emails the rep & assigned CSR a breakdown to batch the orders.
+# Fund settlement is prompted separately when the SO's final job finishes (App.js).
 [functions."webstore-close-sweep"]
   schedule = "0 * * * *"
 

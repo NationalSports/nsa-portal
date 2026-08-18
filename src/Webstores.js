@@ -1695,7 +1695,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // On a manual close, trigger the server handler that creates a rep to-do and emails the
   // rep + assigned CSR a breakdown of the closed store. The scheduled webstore-close-sweep
   // does the same for stores that close automatically on their schedule; both are idempotent
-  // (closed_notified_at) so a store is processed once.
+  // (closed_notified_at) so a store is processed once. Fund settlement is prompted
+  // separately when the batched SO's final job finishes (App.js settle-on-finish).
   const notifyStoreClosed = useCallback(async (store) => {
     flash('Store closed');
     try {
@@ -2044,6 +2045,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // it in the public team-stores directory and make it purchasable.
     if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     const patch = { status, updated_at: new Date().toISOString() };
+    // Manual close: stamp close_at with the actual close moment (when unset or still in
+    // the future) so the record reflects when the store really stopped selling.
+    if (status === 'closed' && (!store.close_at || new Date(store.close_at) > new Date())) patch.close_at = new Date().toISOString();
     // A coach email typed in the launch dialog is saved to the store so it's on file.
     const coachEmail = (opts.coachEmail || '').trim();
     if (status === 'open' && opts.emailCoach && coachEmail && coachEmail !== (store.coach_contact_email || '')) patch.coach_contact_email = coachEmail;
