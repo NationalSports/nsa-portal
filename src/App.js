@@ -7016,7 +7016,7 @@ export default function App(){
       }
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Auto-attach any pending shipping charge the customer is carrying (mirror of the newSOFn path).
     if(_convCust){const _pb=pendingShipBalance(_convCust);if(_pb.amount>0){so.pending_ship_applied=true;so.pending_ship_amount=_pb.amount;
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
@@ -7092,7 +7092,7 @@ export default function App(){
     }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(est.art_files);
     const clonedItems=remapItemArtIds(safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone}),_artIdMap);
-    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const copySalesOrder=async so=>{
     // Auto-heal a partially-loaded sales order before copying — same failure mode the
@@ -7112,7 +7112,7 @@ export default function App(){
       const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
       if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;
       return clone}),_artIdMap);
-    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
+    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
   // Reorder: clone a past SO (or estimate) into a NEW draft estimate and open it. Promoted from
   // the inline Quick Reorder handler so the Portal Assistant can reuse it. Mirrors
@@ -7132,7 +7132,7 @@ export default function App(){
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(source.art_files);
     const clonedItems=remapItemArtIds(safeItems(source).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;return clone}),_artIdMap);
     const estId=nextEstId(ests);
-    const ne={id:estId,customer_id:source.customer_id,memo:(source.memo||'')+' (reorder)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:source.default_markup||c?.custom_multiplier||1.65,shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,ship_to_id:source.ship_to_id||'default',email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:estId,customer_id:source.customer_id,memo:(source.memo||'')+' (reorder)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:source.default_markup||c?.custom_multiplier||1.65,shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,ship_to_id:source.ship_to_id||'default',bill_to_id:source.bill_to_id||'default',email_status:null,art_files:clonedArt,items:clonedItems};
     if(opts.persist===false){setEEst(ne);setEEstC(c);setPg('estimates');nf(`Draft ${estId} ready from ${source.id} — review and Save to keep it`);}
     else{setEsts(prev=>[ne,...prev]);setEEst(ne);setEEstC(c);setPg('estimates');nf(`Created ${estId} — reordered ${clonedItems.length} items from ${source.id}`);}
   };
@@ -7150,11 +7150,11 @@ export default function App(){
     let targetEst;
     if(parentEst){
       // Reopen the original estimate with SO's current items/art
-      targetEst={...parentEst,status:'draft',updated_at:new Date().toLocaleString(),items:clonedItems,art_files:clonedArt,memo:so.memo||parentEst.memo,default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id};
+      targetEst={...parentEst,status:'draft',updated_at:new Date().toLocaleString(),items:clonedItems,art_files:clonedArt,memo:so.memo||parentEst.memo,default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id};
       setEsts(p=>p.map(e=>e.id===parentEst.id?targetEst:e));
     }else{
       // No parent estimate — create a new one
-      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems,promo_applied:so.promo_applied||false,promo_amount:safeNum(so.promo_amount),credit_applied:so.credit_applied||false,credit_amount:safeNum(so.credit_amount)};
+      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems,promo_applied:so.promo_applied||false,promo_amount:safeNum(so.promo_amount),credit_applied:so.credit_applied||false,credit_amount:safeNum(so.credit_amount)};
       setEsts(p=>[...p,targetEst]);
     }
     // Delete the SO entirely

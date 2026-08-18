@@ -178,6 +178,78 @@ function custShipAddrSub(cu){
 }
 
 
+// ── Bill-to ────────────────────────────────────────────────────────────────────
+// The billing-address twin of the ship-to trio above. An order/estimate carries a
+// `bill_to_id` exactly the way it carries `ship_to_id`, and null is always the
+// "nothing changed" answer: a doc with no selection prints the Bill To block it
+// printed before this field existed.
+//
+// Billing rolls up to the parent customer when there is one — a club's invoices bill
+// the parent org — which is the rule the invoice Bill To selector already follows, so
+// the order-level picker offers exactly the addresses the invoice would.
+function billToCust(cu,all){return cu&&cu.parent_id&&Array.isArray(all)?(all.find(c=>c.id===cu.parent_id)||cu):cu}
+
+// Alternate addresses usable as a bill-to. An entry with no `type` predates the
+// billing/shipping split and the customer editor migrates it to 'billing' (see
+// modals.js), so treat untyped as billing here too rather than hiding it.
+function billAlts(c){return(c?.alt_billing_addresses||[]).filter(ab=>ab.type!=='shipping'&&(ab.street||ab.city))}
+
+// "123 Main St Anytown, CA 90001" — same one-line shape getAddrs builds for ship-to.
+function _billLine(street,city,state,zip){
+  const cityLine=[city,[state,zip].filter(Boolean).join(' ').trim()].filter(Boolean).join(', ');
+  return[street,cityLine].filter(Boolean).join(' ').trim();
+}
+
+// Bill-to options for the order/estimate dropdown. Ids are self-describing so a saved
+// selection survives a reload: 'default' = the customer's own billing address,
+// `${billingCustomerId}_bill_${i}` = the i-th billing entry in alt_billing_addresses.
+function getBillAddrs(cu,all){
+  if(!cu)return[];
+  const bc=billToCust(cu,all);
+  const dflt=_billLine(bc.billing_address_line1,bc.billing_city,bc.billing_state,bc.billing_zip);
+  const a=[{id:'default',label:'Default'+(dflt?': '+dflt:' (no billing address on file)'),addr:dflt}];
+  billAlts(bc).forEach((ab,i)=>{const line=_billLine(ab.street,ab.city,ab.state,ab.zip);
+    a.push({id:`${bc.id}_bill_${i}`,label:(ab.label||'Alt Billing')+(line?': '+line:''),addr:line})});
+  return a}
+
+// Resolve the bill-to selected on an order/estimate (bill_to_id) into structured fields.
+// Returns {name,attention,street,city,state,zip} for an alternate billing address, or
+// null when the doc bills to the customer's default address.
+function resolveOrderBillTo(o,cu,all){
+  const id=o?.bill_to_id;
+  if(!id||id==='default'||!cu)return null;
+  const bc=billToCust(cu,all);
+  const m=/_bill_(\d+)$/.exec(String(id));
+  if(m&&String(id)===bc.id+'_bill_'+m[1]){
+    const ab=billAlts(bc)[parseInt(m[1],10)];
+    if(ab)return{name:ab.label||bc.name||cu.name||'',attention:ab.attention||'',street:ab.street||'',city:ab.city||'',state:ab.state||'',zip:ab.zip||''};
+  }
+  return null;
+}
+
+// The bill_to_id for a raw alt_billing_addresses entry — the inverse of resolveOrderBillTo.
+// Surfaces that pick an address as an object (the invoice Bill To selectors) map it back
+// through here rather than inventing their own index into alt_billing_addresses, so one
+// id scheme covers estimates, sales orders and invoices alike. Matches by value, not
+// identity, because the invoice modals round-trip the entry through JSON.
+function billToIdFor(cu,all,ab){
+  if(!ab||!cu)return'default';
+  const bc=billToCust(cu,all);
+  const same=(x)=>x===ab||((x.label||'')===(ab.label||'')&&(x.street||'')===(ab.street||'')&&(x.city||'')===(ab.city||'')&&(x.state||'')===(ab.state||'')&&(x.zip||'')===(ab.zip||''));
+  const i=billAlts(bc).findIndex(same);
+  return i>=0?`${bc.id}_bill_${i}`:'default';
+}
+
+// <br/>-joined bill-to block for printed docs; '' when the doc bills to the default.
+function orderBillToSub(o,cu,all){
+  const sel=resolveOrderBillTo(o,cu,all);
+  if(!sel)return'';
+  const attn=sel.attention?'Attn: '+sel.attention:null;
+  const cityLine=[sel.city,[sel.state,sel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,sel.street,cityLine].filter(Boolean).join('<br/>');
+}
+
+
 // Shared control for scheduling AUTOMATED follow-up emails on a document
 // (estimate / invoice / art). Controlled: value = {auto, firstDays, intervalDays,
 // max, message}. When auto is on, the server (netlify/functions/followup-sweep.js)
@@ -668,4 +740,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
