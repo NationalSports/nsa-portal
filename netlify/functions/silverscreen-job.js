@@ -438,6 +438,8 @@ async function postProducts(jar, orderPath, items, diag, opts = {}) {
   if (!form) { diag.products = 'no product form found; tried ' + paths.slice(0, 8).join(', ') + (seen.length ? '; saw ' + seen.slice(0, 4).join(' · ') : ''); return 0; }
   const qIdx = sizeQtyIndices(form);
   let added = 0;
+  const fails = [];         // per-item failures, with their validation text
+  diag.failedSkus = [];     // named in the to-do so the rep knows WHICH lines to add by hand
   for (const it of items) {
     const claimedIdx = new Set(qIdx);// the size boxes are spoken for — no header pattern may claim one
     const overrides = new Map();
@@ -483,14 +485,29 @@ async function postProducts(jar, orderPath, items, diag, opts = {}) {
         + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
     }
     void placed;
+    // A rejected line must say WHICH item and WHY (a bare "→ 422" left the rep hunting
+    // through 13 lines — seen live on DPO 57349, job 58505). Carry the portal's own
+    // validation text, and when the colour was blank retry once with a placeholder —
+    // a required-Colour rule is the one validation we can heal without guessing wrong.
+    const postLine = async (ov) => ssFetch(jar, form.action, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
+      body: buildParams(form, ov).toString() });
     try {
-      const resp = await ssFetch(jar, form.action, { method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
-        body: buildParams(form, overrides).toString() });
+      let resp = await postLine(overrides);
+      if (resp.status >= 400 && !(it.color || '').trim()) {
+        const retryClaimed = new Set(qIdx);
+        const ci = pickIdx(form, /colou?r/i, retryClaimed);
+        if (ci >= 0) { const o2 = new Map(overrides); o2.set(ci, 'N/A'); resp = await postLine(o2); }
+      }
       if (resp.status < 400) added++;
-      else diag.products = 'POST ' + form.action + ' → ' + resp.status;
-    } catch { diag.products = 'POST ' + form.action + ' threw'; }
+      else {
+        const errs = railsErrors(await resp.text().catch(() => ''));
+        fails.push((it.sku || it.name || '?') + ' → ' + resp.status + (errs.length ? ': ' + errs.join(' | ') : ''));
+        diag.failedSkus.push(it.sku || it.name || '?');
+      }
+    } catch { fails.push((it.sku || it.name || '?') + ' → POST threw'); diag.failedSkus.push(it.sku || it.name || '?'); }
   }
+  if (fails.length) diag.products = 'POST ' + form.action + ' rejected: ' + fails.slice(0, 6).join(' · ');
   return added;
 }
 
@@ -605,7 +622,12 @@ exports.handler = async (event) => {
       // to finish by hand and the field map can be corrected from the message alone.
       const todo = [];
       if (!productsAdded) todo.push('add the ' + body.items.length + ' product line' + (body.items.length !== 1 ? 's' : '') + ' (breakdown is on the printed PO)');
-      else if (productsAdded < body.items.length) todo.push('check product lines — only ' + productsAdded + ' of ' + body.items.length + ' were added');
+      else if (productsAdded < body.items.length) {
+        // Name the rejected lines — "only 12 of 13" without which one left the rep
+        // diffing the job against the PO by hand (DPO 57349 / job 58505).
+        const who = (sheetDiag && sheetDiag.failedSkus && sheetDiag.failedSkus.length) ? ' — add by hand: ' + sheetDiag.failedSkus.join(', ') : '';
+        todo.push('check product lines — only ' + productsAdded + ' of ' + body.items.length + ' were added' + who);
+      }
       // Product lines exist but every piece landed in the catch-all column — pieces right, sizes
       // wrong. That's silently shippable garbage if unreported (the decorator would run 35 "OTH"),
       // so it's a to-do of its own.
