@@ -1693,10 +1693,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [coachPortalUrl, flash]);
 
   // On a manual close, trigger the server handler that creates a rep to-do and emails the
-  // rep + assigned CSR a breakdown of the closed store. The handler waits out a 6-week
-  // cost window after close (late shipping/fees/refunds) before prompting — until then it
-  // skips and the scheduled webstore-close-sweep delivers the prompt once the window has
-  // passed. Idempotent (closed_notified_at) so a store is processed once.
+  // rep + assigned CSR a breakdown of the closed store. The scheduled webstore-close-sweep
+  // does the same for stores that close automatically on their schedule; both are idempotent
+  // (closed_notified_at) so a store is processed once. Fund settlement is prompted
+  // separately when the batched SO's final job finishes (App.js settle-on-finish).
   const notifyStoreClosed = useCallback(async (store) => {
     flash('Store closed');
     try {
@@ -1709,7 +1709,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j && j.notified) flash('Store closed — rep notified + to-do created');
-      else if (r.ok && j && j.reason === 'cost-window') flash('Store closed — processing reminder will go out 6 weeks after close (capturing all costs first)');
     } catch (e) { /* close already succeeded; the to-do/email is best-effort here */ }
   }, [flash]);
 
@@ -2047,7 +2046,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     const patch = { status, updated_at: new Date().toISOString() };
     // Manual close: stamp close_at with the actual close moment (when unset or still in
-    // the future) — it anchors the sweep's 6-week cost window before the process prompt.
+    // the future) so the record reflects when the store really stopped selling.
     if (status === 'closed' && (!store.close_at || new Date(store.close_at) > new Date())) patch.close_at = new Date().toISOString();
     // A coach email typed in the launch dialog is saved to the store so it's on file.
     const coachEmail = (opts.coachEmail || '').trim();
