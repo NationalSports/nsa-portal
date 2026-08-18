@@ -411,20 +411,57 @@ async function fetchSkuStock(skuList) {
   const skus = [...new Set((skuList || []).filter(Boolean))];
   if (!skus.length || !supabase) return {};
   try {
-    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
-    const out = {};
-    (data || []).forEach((r) => {
-      const e = out[r.sku] || (out[r.sku] = { sizes: {}, sizeEta: {}, sizeIncoming: {}, eta: false, syncedAt: null });
-      e.sizes[r.size] = (Number(e.sizes[r.size]) || 0) + (Number(r.stock_qty) || 0);
-      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) {
-        e.eta = true;
-        e.sizeEta[r.size] = r.future_delivery_date;
-        if ((Number(r.future_delivery_qty) || 0) > 0) e.sizeIncoming[r.size] = Number(r.future_delivery_qty);
+    const out = await _skuStockRows(skus);
+    // S&S-imported adidas colorways duplicate a CLICK-synced product under a color-NAME
+    // sku ('AT101-BLACK-WHITE') while inventory_unified keys stock by the CLICK code sku
+    // ('AT101-50'), so a name-sku line reads 0 vendor stock and the batch modal flags a
+    // phantom shortfall. For skus with no inventory rows, find the code-sku sibling —
+    // same style prefix AND same colorway in products — and serve ITS stock under the
+    // original sku. Only an unambiguous (exactly one) sibling is used, never a guess.
+    const missed = skus.filter((s) => !out[s]);
+    if (missed.length) {
+      const { data: mine } = await supabase.from('products').select('sku,color').in('sku', missed);
+      const named = (mine || []).filter((p) => p.sku && p.color);
+      const bases = [...new Set(named.map((p) => String(p.sku).split('-')[0]).filter(Boolean))];
+      const sibs = [];
+      for (const b of bases) {
+        const { data } = await supabase.from('products').select('sku,color').ilike('sku', b + '-%');
+        sibs.push(...(data || []));
       }
-      if (r.last_synced && (!e.syncedAt || r.last_synced > e.syncedAt)) e.syncedAt = r.last_synced;
-    });
+      const cnorm = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const alias = {};
+      named.forEach((p) => {
+        const base = String(p.sku).split('-')[0];
+        const pref = (base + '-').toUpperCase();
+        const codes = [...new Set(sibs
+          .filter((s) => s.sku !== p.sku && String(s.sku).toUpperCase().startsWith(pref) && /^\d+$/.test(String(s.sku).slice(pref.length)) && cnorm(s.color) === cnorm(p.color))
+          .map((s) => String(s.sku)))];
+        if (codes.length === 1) alias[p.sku] = codes[0];
+      });
+      const aliasSkus = [...new Set(Object.values(alias))];
+      if (aliasSkus.length) {
+        const more = await _skuStockRows(aliasSkus);
+        Object.entries(alias).forEach(([orig, code]) => { if (more[code]) out[orig] = more[code]; });
+      }
+    }
     return out;
   } catch { return {}; }
+}
+// One inventory_unified read, folded per-sku → { SKU: { sizes, sizeEta, sizeIncoming, eta, syncedAt } }.
+async function _skuStockRows(skus) {
+  const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
+  const out = {};
+  (data || []).forEach((r) => {
+    const e = out[r.sku] || (out[r.sku] = { sizes: {}, sizeEta: {}, sizeIncoming: {}, eta: false, syncedAt: null });
+    e.sizes[r.size] = (Number(e.sizes[r.size]) || 0) + (Number(r.stock_qty) || 0);
+    if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) {
+      e.eta = true;
+      e.sizeEta[r.size] = r.future_delivery_date;
+      if ((Number(r.future_delivery_qty) || 0) > 0) e.sizeIncoming[r.size] = Number(r.future_delivery_qty);
+    }
+    if (r.last_synced && (!e.syncedAt || r.last_synced > e.syncedAt)) e.syncedAt = r.last_synced;
+  });
+  return out;
 }
 async function fetchOverrideSkuStock(lines) {
   return fetchSkuStock((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku));
