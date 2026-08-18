@@ -3995,13 +3995,16 @@ export default function App(){
       const tag='['+s.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
       const so=sos.find(x=>x.omg_store_id===s.id&&!x.deleted_at);
-      // Fire when the SO's production is finished (all job costs applied); without an
-      // SO, only the 6-week safety net fires.
+      // Fire when the SO's production is finished (all job costs applied). The 6-week
+      // safety net applies REGARDLESS of whether an SO exists — a stuck, cancelled, or
+      // fully-outsourced SO (no jobs → never 'ready_to_invoice') must not hide the
+      // store's deposit funds from accounting forever.
+      let done=false;
       if(so){
-        let done=so.status==='complete';
+        done=so.status==='complete';
         if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
-        if(!done)return;
-      }else if(now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
+      }
+      if(!done&&now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
       // Settlement-aware: if the store's SO is invoiced and every invoice is
       // already paid, the funds have been applied — no reminder needed.
       if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
@@ -6653,16 +6656,24 @@ export default function App(){
   // collected funds so commissions carry all costs. Creates an accounting to-do (Andrea
   // Jung) deduped by the [settle-SOID] tag. OMG stores get the equivalent via the
   // "Apply OMG funds" effect above; this covers source='webstore' SOs (webstore_id set,
-  // no omg_store_id). Deliberately only fires at ready_to_invoice — already-complete
-  // legacy SOs are not back-filled with reminders.
+  // no omg_store_id). Fully-outsourced SOs (decos, no jobs) never reach
+  // ready_to_invoice, so a 6-week-age safety net fires the reminder regardless —
+  // including for SOs manually closed to 'complete' — unless every invoice is already
+  // paid. (Verified against prod at ship time: only 3 legacy SOs qualified, all
+  // genuinely unsettled.)
   React.useEffect(()=>{
     if(dbLoading||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
     const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
     const toAdd=[];
     sos.forEach(so=>{
-      if(!so||!so.webstore_id||so.omg_store_id||so.deleted_at||so.status==='complete')return;
-      let st;try{st=calcSOStatus(so)}catch{return}
-      if(st!=='ready_to_invoice')return;
+      if(!so||!so.webstore_id||so.omg_store_id||so.deleted_at)return;
+      // "Done" = final job finished (ready_to_invoice) or the SO was closed (complete —
+      // how fully-outsourced SOs end, since with no jobs they never hit
+      // ready_to_invoice). Safety net: an SO stuck un-done for 6+ weeks fires anyway so
+      // its store funds are never hidden from accounting indefinitely.
+      let done=so.status==='complete';
+      if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
+      if(!done&&!(Date.now()-new Date(so.created_at).getTime()>=OMG_FUNDS_WINDOW_MS))return;
       const tag='[settle-'+so.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.includes(tag)))return;
       // Already fully settled (invoiced and every invoice paid) → nothing to do.
