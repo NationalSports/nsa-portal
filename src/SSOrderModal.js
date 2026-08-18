@@ -35,6 +35,10 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,size,sku}]
   const [resolveErr, setResolveErr] = useState('');
+  // Styles whose S&S lookup errored out (throttle/outage) rather than genuinely not matching.
+  const [failedStyles, setFailedStyles] = useState([]);
+  const [lookupErrMsg, setLookupErrMsg] = useState('');
+  const [retryTick, setRetryTick] = useState(0); // bumped by "Retry lookup" to re-run the resolver
   // Manual SKU picker: a rep searches S&S live and hand-picks the exact per-size Sku for a
   // line the auto-resolver couldn't match. manualSku overrides the auto-resolved value.
   const [manualSku, setManualSku] = useState({}); // line key -> S&S sku chosen by hand
@@ -65,15 +69,24 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   useEffect(() => {
     let cancelled = false;
     if (!missing.length) { setResolving(false); return; }
-    setResolving(true); setResolveErr('');
+    setResolving(true); setResolveErr(''); setFailedStyles([]); setLookupErrMsg('');
     ssResolveSkus(missing)
       // Merge, never replace: ssResolveSkus swallows per-style API failures and returns an
       // empty map, so a degraded re-run must not wipe SKUs that already matched.
-      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(prev => ({ ...prev, ...(resolved || {}) })); setCandidates(prev => ({ ...prev, ...(candidates || {}) })); })
+      .then(({ resolved, candidates, failedStyles, lookupError }) => {
+        if (cancelled) return;
+        setResolvedSkus(prev => ({ ...prev, ...(resolved || {}) }));
+        setCandidates(prev => ({ ...prev, ...(candidates || {}) }));
+        // A style S&S never answered for is NOT "S&S doesn't carry it" — surface it as the
+        // retryable condition it is, so the rep doesn't go hand-match 32 lines against a
+        // rate limit that clears in under a minute.
+        setFailedStyles(failedStyles || []);
+        setLookupErrMsg(lookupError || '');
+      })
       .catch(e => { if (!cancelled) setResolveErr(e.message || 'SKU lookup failed'); })
       .finally(() => { if (!cancelled) setResolving(false); });
     return () => { cancelled = true; };
-  }, [missing]);
+  }, [missing, retryTick]);
 
   // Overlay resolved skus (a hand-picked sku wins over the auto-resolved one), recompute
   // warnings + the order that will be submitted.
@@ -211,6 +224,23 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
           {!done && !resolving && resolveErr && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
               <strong>⚠ Couldn't reach S&S to look up SKUs:</strong> {resolveErr}. Try reopening, or order manually.
+            </div>
+          )}
+
+          {/* A lookup that ERRORED is a different problem from a lookup that came back empty:
+              S&S caps us at 60 requests/minute, and a throttled style used to be reported as
+              "no matched SKU" — indistinguishable from "S&S doesn't carry it". Reopening or
+              retrying a minute later normally clears it, so say that instead of sending the
+              rep off to hand-match every line. */}
+          {!done && !resolving && failedStyles.length > 0 && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e' }}>
+              <strong>⏳ S&S didn't answer the lookup for {failedStyles.length} style{failedStyles.length === 1 ? '' : 's'}</strong> — these are <em>not</em> confirmed missing from S&S, we just never got a reply{lookupErrMsg ? ` (${lookupErrMsg})` : ''}.
+              <div style={{ marginTop: 4 }}>Usually S&S's 60-requests-per-minute cap on a large batch. Wait a moment and retry before matching anything by hand.</div>
+              <div style={{ marginTop: 3, fontFamily: 'monospace', fontSize: 11 }}>{failedStyles.slice(0, 20).join(' · ')}</div>
+              <button
+                onClick={() => setRetryTick(t => t + 1)}
+                style={{ marginTop: 8, border: '1px solid #d97706', background: '#fff', color: '#92400e', borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit', padding: '4px 10px' }}
+              >🔄 Retry lookup</button>
             </div>
           )}
 

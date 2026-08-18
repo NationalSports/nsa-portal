@@ -66,6 +66,22 @@ function railsErrors(html) {
     .map((m) => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 6);
 }
 
+// Human-readable text for a checkbox/radio whose name/value is opaque (their VAS boxes are all
+// line_item[option_price_ids][] with numeric values — the meaning is only in the markup around
+// them). Tries <label for=its-id>, then the text trailing the input (covers a wrapping label).
+function inputLabel(body, idx, tag) {
+  const clean = (s) => s.replace(/<[^>]+>/g, ' ').replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim();
+  const id = attr(tag, 'id');
+  if (id) {
+    const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lm = body.match(new RegExp('<label\\b[^>]*\\bfor\\s*=\\s*["\']' + esc + '["\'][^>]*>([\\s\\S]*?)<\\/label>', 'i'));
+    if (lm) { const s = clean(lm[1]); if (s) return s.slice(0, 80); }
+  }
+  const after = body.slice(idx + tag.length, idx + tag.length + 300);
+  const s = clean(after.split(/<\/label>|<input\b|<select\b|<textarea\b|<\/(?:div|td|li|tr|p)>/i)[0]);
+  return s.slice(0, 80);
+}
+
 // Parse one whole <form>…</form> string into { action, fields:[{tag,type,name,value,options?}] }.
 function parseFormTag(formHtml) {
   const action = attr(formHtml.slice(0, formHtml.indexOf('>') + 1), 'action') || '';
@@ -77,7 +93,13 @@ function parseFormTag(formHtml) {
     if (!name) continue;
     // `checked` matters: a generic re-post of every radio/checkbox would flip the order's
     // shipping mode (e.g. "Ship to customer" → "Hold for pickup").
-    fields.push({ tag: 'input', type: (attr(t, 'type') || 'text').toLowerCase(), name, value: attr(t, 'value') || '', checked: /\bchecked\b/i.test(t) });
+    const type = (attr(t, 'type') || 'text').toLowerCase();
+    const field = { tag: 'input', type, name, value: attr(t, 'value') || '', checked: /\bchecked\b/i.test(t) };
+    if (type === 'checkbox' || type === 'radio') {
+      const label = inputLabel(body, m.index, t);
+      if (label) field.label = label;
+    }
+    fields.push(field);
   }
   for (const m of body.matchAll(/<textarea\b[^>]*>([\s\S]*?)<\/textarea>/gi)) {
     const name = attr(m[0], 'name');
@@ -450,14 +472,21 @@ async function postProducts(jar, orderPath, items, diag, opts = {}) {
     // from NSA); the client resolves it per item. Old fixed string stays as the fallback.
     put(/supplier|vendor|brand/i, it.vendor || 'NSA (drop ship)');
     // Wearer Bag Prep VAS (store orders): tick their checkbox on this product line. Their VAS
-    // boxes are checkboxes, so match by field name or value; if neither carries "wearer"/"bag
-    // prep" we can't identify it among Fold/Bag/Sticker etc. — report it as a to-do instead.
+    // boxes are all named line_item[option_price_ids][] with numeric values (seen live, job
+    // 58545), so the field name/value alone can never identify one — the adjacent <label> text
+    // is what distinguishes Wearer Bag Prep from Fold/Bag/Sticker. Match name, value, AND label;
+    // if none carries "wearer"/"bag prep", report it as a to-do with the labels we saw.
     if (opts.wearerBagPrep) {
+      const vasRe = /wearer|bag.?prep/i;
       const vi = form.fields.findIndex((x) => x.type === 'checkbox'
-        && (/wearer|bag.?prep/i.test(x.name) || /wearer|bag.?prep/i.test(x.value || '')));
-      if (vi >= 0) { overrides.set(vi, form.fields[vi].value || '1'); diag.vasInfo = 'Wearer Bag Prep ticked via ' + form.fields[vi].name; }
-      else if (!diag.vas) diag.vas = 'no Wearer Bag Prep checkbox identified — checkboxes seen: ['
-        + form.fields.filter((x) => x.type === 'checkbox').map((x) => x.name + '=' + x.value).slice(0, 12).join(', ') + ']';
+        && (vasRe.test(x.name) || vasRe.test(x.value || '') || vasRe.test(x.label || '')));
+      if (vi >= 0) {
+        overrides.set(vi, form.fields[vi].value || '1');
+        diag.vasInfo = 'Wearer Bag Prep ticked via ' + form.fields[vi].name + '=' + form.fields[vi].value
+          + (form.fields[vi].label ? ' ("' + form.fields[vi].label + '")' : '');
+      } else if (!diag.vas) diag.vas = 'no Wearer Bag Prep checkbox identified — checkboxes seen: ['
+        + form.fields.filter((x) => x.type === 'checkbox')
+          .map((x) => x.name + '=' + x.value + (x.label ? ' "' + x.label + '"' : '')).slice(0, 12).join(', ') + ']';
     }
     put(/desc|title|product_?name/i, it.name || '');
     put(/style|sku|item_?number/i, it.sku || '');

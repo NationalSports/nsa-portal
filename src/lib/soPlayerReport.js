@@ -20,6 +20,86 @@ function printHtml(html) {
   setTimeout(() => { try { w.print(); } catch {} }, 350);
 }
 
+// RFC4180 quoting: wrap only when needed, double any embedded quote. Player and buyer names
+// routinely carry commas ("Smith, Jr.") and the odd quote, and an unquoted one silently
+// shifts every later column — a wrong size against a name is the failure mode here.
+const csvCell = (v) => {
+  const s = String(v == null ? '' : v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+
+function downloadCsv(filename, rows) {
+  const csv = rows.map((r) => r.map(csvCell).join(',')).join('\r\n');
+  // Leading BOM: without it Excel reads the file as ANSI and mangles accented names.
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 1000);
+}
+
+// The item as it should be REPORTED — the SO's replacement when the rep swapped the product,
+// the store's own data when nothing on the SO covers it. Shared by both outputs so the PDF
+// and the CSV can never disagree about what a line says.
+function lineFields(l) {
+  return {
+    name: l._unmatched ? (l.name || l.sku || 'Item') : (l._name || 'Item'),
+    sku: l._unmatched ? (l.sku || '') : (l._sku || ''),
+    color: l._color || '',
+    size: l.size || '',
+    qty: l.qty || 1,
+    wasSku: l._wasSku || '',
+    verify: !!l._verify,
+    unmatched: !!l._unmatched,
+  };
+}
+
+// Human order number for a store order. order_number is the webstore's own counter; OMG
+// orders carry their number instead; the uuid is the last resort so a row is never anonymous.
+const orderNo = (o) => String((o && (o.order_number || o.omg_order_number)) || (o && o.id) || '');
+
+// One row per line item, ordered by order number — the CSV the warehouse sorts and bags from.
+// Every row repeats its order's ship-to so a single line can be read on its own (the whole
+// point of the flat file: filter to one player, still know where the box goes).
+function renderCsv({ so, storeName, lines, orderById }) {
+  const header = [
+    'Order #', 'Order Date', 'Player', 'Player #', 'Buyer', 'Buyer Email', 'Buyer Phone',
+    'Item', 'SKU', 'Color', 'Size', 'Qty', 'Was SKU', 'Flag',
+    'Ship Method', 'Ship Name', 'Address 1', 'Address 2', 'City', 'State', 'Zip', 'Country',
+  ];
+  const rows = lines.map((l) => {
+    const o = orderById[l.order_id] || {};
+    const a = o.ship_address || {};
+    const f = lineFields(l);
+    return {
+      // Sort keys: numeric order number when it is one, so 1010525 < 1010654 (a string sort
+      // would put "1010654" before "99"); then player, so one order's rows stay together.
+      _num: Number(orderNo(o)) || 0,
+      _str: orderNo(o),
+      _player: (l.player_name || '').trim().toLowerCase(),
+      cells: [
+        orderNo(o),
+        o.created_at ? String(o.created_at).slice(0, 10) : '',
+        (l.player_name || '').trim(),
+        l.player_number != null ? String(l.player_number) : '',
+        o.buyer_name || '', o.buyer_email || '', o.buyer_phone || '',
+        f.name, f.sku, f.color, f.size, f.qty,
+        f.wasSku,
+        f.unmatched ? 'NOT ON SO — verify' : f.wasSku ? (f.verify ? 'substituted — verify' : 'substituted') : '',
+        o.ship_method || '',
+        a.name || o.buyer_name || '', a.street1 || '', a.street2 || '',
+        a.city || '', a.state || '', a.zip || '', a.country || '',
+      ],
+    };
+  });
+  rows.sort((x, y) => (x._num - y._num) || x._str.localeCompare(y._str) || x._player.localeCompare(y._player));
+  const stamp = new Date().toISOString().slice(0, 10);
+  const safeStore = String(storeName || '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  downloadCsv(['player-report', so.id, safeStore, stamp].filter(Boolean).join('_') + '.csv',
+    [header, ...rows.map((r) => r.cells)]);
+}
+
 // Sale code out of an OMG SO memo ("OMG Store: … (V7ESK)") — fallback linkage for
 // older SOs saved before webstore_id was stamped at creation.
 export function omgCodeFromMemo(memo) {
@@ -138,7 +218,9 @@ async function fetchLines(supabase, orderIds) {
 
 // Fetch → remap → print. so: the live editor's order object (its items are the truth,
 // unsaved edits included). Returns true when a report was produced.
-export async function downloadSoPlayerReport({ so, soItems, supabase, nf }) {
+// format: 'pdf' (default — the printable per-player sheet) | 'csv' (flat one-row-per-line
+// file, ordered by order number, ship-to repeated on every row).
+export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf' }) {
   const toast = nf || ((m) => alert(m));
   if (!supabase) { toast('No database connection — player report needs the store orders.', 'error'); return false; }
   try {
@@ -169,7 +251,8 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf }) {
     const rawLines = await fetchLines(supabase, scoped.map((o) => o.id));
     const orderById = {}; scoped.forEach((o) => { orderById[o.id] = o; });
     const { lines, substitutions, unmatched } = mapLinesToSoItems(rawLines.filter((l) => orderById[l.order_id]), soItems);
-    renderReport({ so, storeName: ws.name || '', lines, orderById, substitutions, unmatched });
+    if (format === 'csv') renderCsv({ so, storeName: ws.name || '', lines, orderById });
+    else renderReport({ so, storeName: ws.name || '', lines, orderById, substitutions, unmatched });
     return true;
   } catch (e) {
     toast('Player report failed: ' + (e?.message || 'unknown error'), 'error');
@@ -188,13 +271,7 @@ function renderReport({ so, storeName, lines, orderById, substitutions, unmatche
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || l.order_id));
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
     p.units += (l.qty || 1);
-    p.items.push({
-      name: l._unmatched ? (l.name || l.sku || 'Item') : (l._name || 'Item'),
-      sku: l._unmatched ? (l.sku || '') : (l._sku || ''),
-      color: l._color || '', size: l.size || '', qty: l.qty || 1,
-      wasSku: l._wasSku || '', verify: !!l._verify, unmatched: !!l._unmatched,
-      buyer: o.buyer_name || '',
-    });
+    p.items.push({ ...lineFields(l), buyer: o.buyer_name || '' });
   });
   const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
   const totalUnits = list.reduce((a, p) => a + p.units, 0);

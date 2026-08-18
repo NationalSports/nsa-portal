@@ -4411,7 +4411,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">🛒 Webstore</span>}
             {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
                 we're actually buying, so this is the copy that goes to Silver Screen. */}
+            {/* Two formats off one report (owner 2026-08-18). Keep in sync with the same pair
+                in OrderEditorClassic.js. */}
             {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf})} title="Print the per-player report using the items as they are on THIS sales order — items swapped for stock/speed show the replacement, marked with what it replaced">👥 Player Report</span>}
+            {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,format:'csv'})} title="Download the same report as a CSV — one row per line, ordered by order number, with the ship-to address repeated on every row">⬇ CSV</span>}
             {isE&&linkedSO&&onViewSO&&<span style={{color:'#6D28D9'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></span>}
             <span style={{color:'#9aa0ad'}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</span>
             {isSO&&cust&&(editingRep
