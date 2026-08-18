@@ -114,7 +114,7 @@ exports.handler = async () => {
 
 function digestSubject(storesArr, closed, dayLabel) {
   const nOrders = storesArr.reduce((a, s) => a + s.orders.length, 0);
-  if (!nOrders && closed.length) return `Store activity — ${closed.length} store${closed.length === 1 ? '' : 's'} closed (${dayLabel})`;
+  if (!nOrders && closed.length) return `Store activity — ${closed.length} store${closed.length === 1 ? '' : 's'} ready to process (${dayLabel})`;
   const sales = storesArr.reduce((a, s) => a + s.sales, 0);
   return `Your store activity — ${nOrders} order${nOrders === 1 ? '' : 's'}, ${money(sales)} (${dayLabel})`;
 }
@@ -173,7 +173,7 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
   }).join('');
 
   const closedBlock = closed.length ? `<div style="margin-top:18px">
-      <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin-bottom:8px">Stores closed</div>
+      <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin-bottom:8px">Stores ready to process</div>
       ${closed.map((c) => `<div style="font-size:14px;color:${INK};padding:6px 0;border-bottom:1px solid #f1ece1">
         <strong>${esc(c.name)}</strong> <span style="color:${SUB};font-size:12px">· closed &amp; ready to process</span>
         <a href="${portal}/shop/${esc(c.slug)}" style="color:${ACCENT};text-decoration:none;font-weight:700;font-size:12px"> open →</a></div>`).join('')}

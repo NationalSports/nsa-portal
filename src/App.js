@@ -186,6 +186,10 @@ const computeOmgSoSync=(so)=>{
 // portal's syncFromSO allocation: store moves together to the SO stage, but an
 // item whose SKU+size isn't fully received holds at on-order (backorder).
 // Never downgrades, never touches shipped/cancelled. Best-effort + silent.
+// How long after an OMG store is brought into the portal before accounting is reminded
+// to apply its deposit funds — 6 weeks, so all costs (OMG/CC fees, shipping, refunds)
+// have landed first. Single source for the reminder effect AND the store-card countdown.
+const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000;
 const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
 const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
@@ -3979,14 +3983,13 @@ export default function App(){
     let seenChanged=false;
     omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
     if(seenChanged)setOmgFirstSeen(seen);
-    const SIX_WEEKS=42*24*60*60*1000;
     const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
     const toAdd=[];
     omgStores.forEach(s=>{
       if(!s||!s.id)return;
       const rec=seen[s.id];
       if(!rec||rec.baseline)return;
-      if(now-new Date(rec.at).getTime()<SIX_WEEKS)return;
+      if(now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
       const tag='['+s.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
       const so=sos.find(x=>x.omg_store_id===s.id);
@@ -17361,11 +17364,12 @@ export default function App(){
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
       if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
         if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')+' '+(s._omg_sale_code||'')).toLowerCase().includes(q))return false}
-      // Date range filter — based on open_date or close_date. Open stores are never
-      // date-hidden: many OMG pulls carry no open/close date, so the fallback to
-      // _last_synced silently dropped still-active stores off a rep's default 30-day
-      // view (Chase's OLU Cross Country / SO-1465, Aug 2026).
-      if(omgFilter.dateRange!=='all'&&s.status!=='open'){
+      // Date range filter — based on open_date or close_date. Open and draft
+      // (pending/scheduled) stores are never date-hidden: many OMG pulls carry no
+      // open/close date, so the fallback to _last_synced silently dropped still-active
+      // stores off a rep's default 30-day view (Chase's OLU Cross Country / SO-1465,
+      // Aug 2026). Only closed/complete history trims by date.
+      if(omgFilter.dateRange!=='all'&&s.status!=='open'&&s.status!=='draft'){
         const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
         const cutoff=new Date(Date.now()-days*86400000);
         const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):s._last_synced?new Date(s._last_synced):null;
@@ -17667,7 +17671,7 @@ export default function App(){
             </div>}
             {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
               if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
-              if(rec&&!rec.baseline){const days=Math.ceil((42*864e5-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
+              if(rec&&!rec.baseline){const days=Math.ceil((OMG_FUNDS_WINDOW_MS-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
               return null})()}
           </div>
         </div></div>

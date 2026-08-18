@@ -53,6 +53,9 @@ async function buildBreakdown(admin, store) {
 // Returns { skipped } | { notified, todoId, breakdown }.
 async function notifyStoreClosed(admin, store, opts = {}) {
   if (!store || store.closed_notified_at) return { skipped: true, reason: 'already-notified' };
+  // A rejected store (store-approval.js closes it as part of the reject) has nothing to
+  // process — its captured orders are for refunding, not batching into an SO.
+  if (store.approval_status === 'rejected') return { skipped: true, reason: 'rejected-store' };
   // Wait out the 6-week cost window before prompting anyone to process the store.
   // close_at is the anchor (manual close stamps it); fall back to updated_at for
   // legacy closed rows that never had a close date.

@@ -38,7 +38,10 @@ exports.handler = async () => {
       .select('*').eq('status', 'closed').eq('source', 'webstore')
       .is('closed_notified_at', null)
       .not('close_at', 'is', null).lte('close_at', windowIso);
-    if (nErr) console.error('[close-sweep] notify query failed:', nErr.message);
+    // Surface a broken notify query as a failed run (pass 1's closes are already
+    // committed) — a silent 200 here would look healthy while no store ever gets
+    // its close-out prompt.
+    if (nErr) { console.error('[close-sweep] notify query failed:', nErr.message); return { statusCode: 500, body: `Closed ${closed}; notify query failed: ${nErr.message}` }; }
 
     let notified = 0;
     for (const store of ready || []) {
