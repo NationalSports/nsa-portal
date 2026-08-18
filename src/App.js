@@ -3066,6 +3066,12 @@ export default function App(){
           const dbPoCount=(m.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
           if(localPoCount>0&&dbPoCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.po_lines?.length&&(!si.po_lines||!si.po_lines.length))return{...si,po_lines:li.po_lines};return si});
+            // Keep the hydration markers with the lines they describe. `m` is the DB row wholesale, so its
+            // _hydratedPoIds/_posHydrated come from the read that returned NO po_lines — pairing preserved
+            // local lines with "this client loaded none" left the save's restore guard unable to tell a
+            // deliberate deletion from stale state, and it re-injected the just-deleted PO (SO-2015).
+            if(Array.isArray(local._hydratedPoIds)&&local._hydratedPoIds.length)m._hydratedPoIds=[...new Set([...(Array.isArray(m._hydratedPoIds)?m._hydratedPoIds:[]),...local._hydratedPoIds])];
+            if(local._posHydrated!==false)m._posHydrated=true;
           }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){

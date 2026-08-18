@@ -14143,7 +14143,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             if(!window.confirm('Delete entire PO'+(allLines.length>1?' from all '+allLines.length+' items':'')+'? All sizes will go back to open.'))return;
             const updatedItems=[...o.items];
             allLines.forEach(ln=>{updatedItems[ln.lineIdx].po_lines=updatedItems[ln.lineIdx].po_lines.filter((_,i)=>i!==ln.poIdx)});
-            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
+            // Session-scoped tombstone (never persisted — not in _soCols), same as _deletedDecoPoIds:
+            // tells the save layer's stale-restore guard this removal is deliberate. Without it the guard
+            // has to infer intent from _hydratedPoIds and re-injects the PO whenever that marker is
+            // missing, so the deletion comes back on the next reload (SO-2015 / PO 57204 SAHV).
+            const updated={...o,items:updatedItems,_deletedPoIds:[...(o._deletedPoIds||[]),_editPoId].filter(Boolean),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={10}/> Delete PO</button>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
             {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or the Claude bot) to order this PO" onClick={()=>{
@@ -15053,7 +15057,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const lineIdx=allLines?.[0]?.lineIdx||0;
               const affectedIdxs=new Set((allLines||[{lineIdx}]).map(ln=>ln.lineIdx));
               const updatedItems=o.items.map((it,i)=>affectedIdxs.has(i)?{...it,po_lines:(it.po_lines||[]).filter(p=>p.po_id!==po.po_id)}:it);
-              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              // Deliberate-removal tombstone — see the edit-PO modal's Delete PO above.
+              const updated={...o,items:updatedItems,_deletedPoIds:[...(o._deletedPoIds||[]),po.po_id].filter(Boolean),updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);setPoFullPage(null);nf('PO deleted');
             }}>Delete PO</button>
           </div>

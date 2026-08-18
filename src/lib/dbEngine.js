@@ -1634,6 +1634,14 @@ const _dbSaveSOInner = async (so) => {
         // these is an intentional deletion; a DB po_id in neither set is one this client never saw.
         const _knownPoIds=new Set([..._clientPoIds,...(Array.isArray(so._hydratedPoIds)?so._hydratedPoIds:[])]);
         const _posHydrated=so._posHydrated!==false;
+        // Session tombstone stamped by the editor's Delete PO (same pattern as _deletedDecoPoIds above and
+        // _deletedItemKeys below). Intent is knowledge only the client has, and inferring it from
+        // _hydratedPoIds alone fails whenever that marker is lost or was never set — a poll merge that kept
+        // local po_lines over an empty DB read, or a load whose so_item_po_lines read timed out
+        // (_posHydrated false). Both cases restored the very PO the rep had just deleted, so the deletion
+        // silently came back on the next reload (SO-2015 / "PO 57204 SAHV", 2026-08-17). A po_id can only be
+        // deleted from a screen that is showing it, so an explicit tombstone is always deliberate.
+        const _deletedPoIds=new Set(Array.isArray(so._deletedPoIds)?so._deletedPoIds:[]);
         // Money/goods already moved on this line: billed or received units, shipments, tracking, or bill
         // docs inside sizes. Such a line must never vanish just because its ITEM disappeared from the
         // payload — the UI blocks deleting items with PO lines (rmI), so an item-with-billed-PO vanishing
@@ -1732,7 +1740,7 @@ const _dbSaveSOInner = async (so) => {
             // (For an API order this branch is reached only when the client holds NONE of its lines — a genuine
             // whole-PO removal — so an intentional full deletion is still honored.) Same exception as above: a
             // vanished item may not take billed/received history down with it.
-            else if(_posHydrated&&_knownPoIds.has(poId)){if(ci||!_poRowHasHistory(row))continue;if(!(await _revive())){_histBlocked++;_unrestorable++;continue;}}
+            else if(_deletedPoIds.has(poId)||(_posHydrated&&_knownPoIds.has(poId))){if(ci||!_poRowHasHistory(row))continue;if(!(await _revive())){_histBlocked++;_unrestorable++;continue;}}
             // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
             else if(!ci&&!(await _revive())){_unrestorable++;continue;}
           }
