@@ -26,6 +26,7 @@ import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCom
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
+import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artReview';
 import { artFamilyKey } from './lib/artSplitFamily';
@@ -870,12 +871,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const sizes=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
         const qty=sizes.reduce((a,[,v])=>a+safeNum(v),0);
         if(qty===0)return null;
-        return{sku:it.sku||'',name:it.name||it.custom_desc||'',color:it.color||'',sizes:Object.fromEntries(sizes),qty}}).filter(Boolean);
+        // Supplier on their product line = the garment's actual vendor (blanks ship to Silver
+        // Screen from them, not from NSA). Same resolution chain as the is*Item brand checks.
+        const vId=it.vendor_id||products.find(p=>p.id===it.product_id||p.sku===it.sku)?.vendor_id||dbVendorBySku[it.sku];
+        const vendor=(vendorList.find(v=>v.id===vId)?.name)||it.brand||'';
+        return{sku:it.sku||'',name:it.name||it.custom_desc||'',color:it.color||'',vendor,sizes:Object.fromEntries(sizes),qty}}).filter(Boolean);
       if(rows.length===0){nf('No covered items with quantities — nothing to send to Silver Screen','error');return Promise.resolve()}
       const totalPcs=rows.reduce((a,r)=>a+r.qty,0);
       const deco_instructions=(dp.item_idxs||[]).flatMap(ii=>{const it=soItems[ii];if(!it)return[];
         return safeDecos(it).filter(d=>d&&(d.kind==='outside_deco'||d.fulfillment==='outside'||d.deco_po_id===dp.po_id)).map(d=>({sku:it.sku||'',position:d.position||'',type:d.type||d.deco_type||'',notes:d.notes||''}))});
-      return new Promise(resolve=>{setSspConfirm({dp,baseOrder:cur,rows,totalPcs,deco_instructions,_resolve:resolve})});
+      // Store orders default the Wearer Bag Prep VAS on — each buyer's pieces get bagged per
+      // wearer. The confirm modal carries the toggle so the rep can flip it either way.
+      const wearerBagPrep=!!(cur.omg_store_id||cur.webstore_id||cur.source==='webstore');
+      return new Promise(resolve=>{setSspConfirm({dp,baseOrder:cur,rows,totalPcs,deco_instructions,wearerBagPrep,_resolve:resolve})});
     };
     // Where Silver Screen sends the FINISHED goods: the order's own ship-to when set, else the
     // customer's shipping address, else their billing address.
@@ -912,12 +920,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       setSspUnlinkKey(null);
       nf('Unlinked job '+(dp._silverscreen_job_id||'')+' from '+(dp.po_id||'this PO')+' — delete that draft on the Silver Screen portal, then send again.');
     };
-    const _sspSendNow=async({dp,baseOrder,rows,deco_instructions})=>{
+    const _sspSendNow=async({dp,baseOrder,rows,deco_instructions,wearerBagPrep})=>{
       const cur=baseOrder;
       setSspSending(true);
       try{
         const r=await authFetch('/.netlify/functions/silverscreen-job',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',
+          body:JSON.stringify({action:'create',so_id:cur.id,customer:cust?.name||cust?.alpha_tag||'',memo:cur.memo||'',wearer_bag_prep:!!wearerBagPrep,
             po:{po_id:dp.po_id,deco_type:dp.deco_type,qty:dp.qty,unit_cost:dp.unit_cost,expected_date:dp.expected_date,notes:dp.notes,drop_ship:!!dp.drop_ship},
             // Finished goods ship to the CUSTOMER, not back to NSA — their create form has no
             // ship-to field, so send it for the job sheet (and for the field map once known).
@@ -4380,6 +4388,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </span>;})()}
             {isSO&&o.omg_store_id&&onNavOmgStore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">🏪 OMG Store</span>}
             {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">🛒 Webstore</span>}
+            {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
+                we're actually buying, so this is the copy that goes to Silver Screen. */}
+            {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf})} title="Print the per-player report using the items as they are on THIS sales order — items swapped for stock/speed show the replacement, marked with what it replaced">👥 Player Report</span>}
             {isE&&linkedSO&&onViewSO&&<span style={{color:'#6D28D9'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></span>}
             <span style={{color:'#9aa0ad'}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</span>
             {isSO&&cust&&(editingRep
@@ -9928,6 +9939,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontWeight:700,whiteSpace:'nowrap'}}>{r.qty} pcs</span>
             </div>)}
           </div>
+          <label style={{display:'flex',gap:8,alignItems:'center',fontSize:12,marginBottom:12,cursor:'pointer',padding:'8px 10px',background:sspConfirm.wearerBagPrep?'#f0fdf4':'#f8fafc',border:'1px solid '+(sspConfirm.wearerBagPrep?'#bbf7d0':'#e2e8f0'),borderRadius:8}}>
+            <input type="checkbox" checked={!!sspConfirm.wearerBagPrep} onChange={e=>setSspConfirm({...sspConfirm,wearerBagPrep:e.target.checked})}/>
+            <span><strong>Wearer Bag Prep</strong> — tick the VAS box on every product line (on by default for store orders)</span>
+          </label>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
             <button className="btn btn-secondary" onClick={_sspClose}>Not now</button>
             <button className="btn btn-primary" disabled={sspSending} style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{const c=sspConfirm;setSspConfirm(null);_sspSendNow(c).finally(()=>{c._resolve&&c._resolve()})}}>{sspSending?'Sending…':'🖨 Create Job on Silver Screen'}</button>

@@ -187,6 +187,7 @@ function buildJobSheet(p) {
       [p.ship_to.city, p.ship_to.state, p.ship_to.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
       + ' — UPS Ground');
   }
+  if (p.wearer_bag_prep) lines.push('VAS: Wearer Bag Prep on EVERY item.');
   if (p.po.notes) lines.push('Notes: ' + p.po.notes);
   if ((p.deco_instructions || []).length) {
     lines.push('', 'Decoration:');
@@ -222,7 +223,13 @@ function fillForm(form, payload) {
   const assigned = {};
   // Job name is customer + memo only — the PO number has its own field right above it on their
   // form, so repeating it here just truncates the part that identifies the job.
-  const jobName = [payload.customer, payload.memo].filter(Boolean).join(' ').trim() || payload.po.po_id;
+  // Store SOs carry a memo like "OMG Store: Mountain House HS Football 2026 (V7ESK) (DPO …)" —
+  // the store name repeats the customer and the DPO repeats the customer_po field, so the job
+  // name compresses to "<Customer> OMG <sale code>". The full memo still goes in the job sheet.
+  const omgCode = ((payload.memo || '').match(/^\s*OMG Store:.*?\(([A-Z0-9]{4,8})\)/i) || [])[1];
+  const jobName = omgCode
+    ? [payload.customer, 'OMG', omgCode].filter(Boolean).join(' ')
+    : [payload.customer, payload.memo].filter(Boolean).join(' ').trim() || payload.po.po_id;
   // customer_po carries the PO number VERBATIM — the bill parser matches their invoice by it.
   // The sales-rep selects keep the form's own pre-selected value (seeded by ?order[sales_rep_id]=…).
   const KNOWN = {
@@ -399,7 +406,7 @@ async function postShipTo(jar, orderPath, shipTo, diag) {
 // Add each item as a product line via the order's product form (the "Add Additional Product"
 // modal). Posts to a form discovered on the page — never a guessed endpoint. Returns the count
 // added so a partial result is reportable rather than silently wrong.
-async function postProducts(jar, orderPath, items, diag) {
+async function postProducts(jar, orderPath, items, diag, opts = {}) {
   // The "Add Additional Product" modal is JS-driven, so its form isn't in the order page HTML.
   // Start from the paths their Rails app would use, then add any product-ish URL the page
   // itself advertises (href / data-*-url / data-*-src / turbo-frame src), which is how the
@@ -431,13 +438,27 @@ async function postProducts(jar, orderPath, items, diag) {
   if (!form) { diag.products = 'no product form found; tried ' + paths.slice(0, 8).join(', ') + (seen.length ? '; saw ' + seen.slice(0, 4).join(' · ') : ''); return 0; }
   const qIdx = sizeQtyIndices(form);
   let added = 0;
+  const fails = [];         // per-item failures, with their validation text
+  diag.failedSkus = [];     // named in the to-do so the rep knows WHICH lines to add by hand
   for (const it of items) {
     const claimedIdx = new Set(qIdx);// the size boxes are spoken for — no header pattern may claim one
     const overrides = new Map();
     const put = (re, val) => { const i = pickIdx(form, re, claimedIdx); if (i >= 0 && val !== '') overrides.set(i, String(val)); return i >= 0; };
     // Claim the modal's header fields in ITS order (Supplier, Description, Style, Colour), most
     // specific first: a generic /name/ pattern would otherwise swallow a supplier_name field.
-    put(/supplier|vendor|brand/i, 'NSA (drop ship)');
+    // Supplier = the garment's actual vendor (the blanks ship to Silver Screen from them, not
+    // from NSA); the client resolves it per item. Old fixed string stays as the fallback.
+    put(/supplier|vendor|brand/i, it.vendor || 'NSA (drop ship)');
+    // Wearer Bag Prep VAS (store orders): tick their checkbox on this product line. Their VAS
+    // boxes are checkboxes, so match by field name or value; if neither carries "wearer"/"bag
+    // prep" we can't identify it among Fold/Bag/Sticker etc. — report it as a to-do instead.
+    if (opts.wearerBagPrep) {
+      const vi = form.fields.findIndex((x) => x.type === 'checkbox'
+        && (/wearer|bag.?prep/i.test(x.name) || /wearer|bag.?prep/i.test(x.value || '')));
+      if (vi >= 0) { overrides.set(vi, form.fields[vi].value || '1'); diag.vasInfo = 'Wearer Bag Prep ticked via ' + form.fields[vi].name; }
+      else if (!diag.vas) diag.vas = 'no Wearer Bag Prep checkbox identified — checkboxes seen: ['
+        + form.fields.filter((x) => x.type === 'checkbox').map((x) => x.name + '=' + x.value).slice(0, 12).join(', ') + ']';
+    }
     put(/desc|title|product_?name/i, it.name || '');
     put(/style|sku|item_?number/i, it.sku || '');
     put(/colou?r/i, it.color || '');
@@ -464,14 +485,29 @@ async function postProducts(jar, orderPath, items, diag) {
         + form.fields.filter((x) => x.type !== 'hidden' && x.type !== 'submit').map((x) => x.tag + ':' + x.name).slice(0, 24).join(', ') + ']';
     }
     void placed;
+    // A rejected line must say WHICH item and WHY (a bare "→ 422" left the rep hunting
+    // through 13 lines — seen live on DPO 57349, job 58505). Carry the portal's own
+    // validation text, and when the colour was blank retry once with a placeholder —
+    // a required-Colour rule is the one validation we can heal without guessing wrong.
+    const postLine = async (ov) => ssFetch(jar, form.action, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
+      body: buildParams(form, ov).toString() });
     try {
-      const resp = await ssFetch(jar, form.action, { method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'text/vnd.turbo-stream.html, text/html' },
-        body: buildParams(form, overrides).toString() });
+      let resp = await postLine(overrides);
+      if (resp.status >= 400 && !(it.color || '').trim()) {
+        const retryClaimed = new Set(qIdx);
+        const ci = pickIdx(form, /colou?r/i, retryClaimed);
+        if (ci >= 0) { const o2 = new Map(overrides); o2.set(ci, 'N/A'); resp = await postLine(o2); }
+      }
       if (resp.status < 400) added++;
-      else diag.products = 'POST ' + form.action + ' → ' + resp.status;
-    } catch { diag.products = 'POST ' + form.action + ' threw'; }
+      else {
+        const errs = railsErrors(await resp.text().catch(() => ''));
+        fails.push((it.sku || it.name || '?') + ' → ' + resp.status + (errs.length ? ': ' + errs.join(' | ') : ''));
+        diag.failedSkus.push(it.sku || it.name || '?');
+      }
+    } catch { fails.push((it.sku || it.name || '?') + ' → POST threw'); diag.failedSkus.push(it.sku || it.name || '?'); }
   }
+  if (fails.length) diag.products = 'POST ' + form.action + ' rejected: ' + fails.slice(0, 6).join(' · ');
   return added;
 }
 
@@ -580,17 +616,25 @@ exports.handler = async (event) => {
         if (!sheetPosted) sheetPosted = r2.posted;
         sheetDiag = r2.diag;
         shipToSet = await postShipTo(jar, orderPath, body.ship_to, sheetDiag);
-        productsAdded = await postProducts(jar, orderPath, body.items, sheetDiag);
+        productsAdded = await postProducts(jar, orderPath, body.items, sheetDiag, { wearerBagPrep: !!body.wearer_bag_prep });
       }
       // Anything left undone is named explicitly (with the forms we saw), so the rep knows what
       // to finish by hand and the field map can be corrected from the message alone.
       const todo = [];
       if (!productsAdded) todo.push('add the ' + body.items.length + ' product line' + (body.items.length !== 1 ? 's' : '') + ' (breakdown is on the printed PO)');
-      else if (productsAdded < body.items.length) todo.push('check product lines — only ' + productsAdded + ' of ' + body.items.length + ' were added');
+      else if (productsAdded < body.items.length) {
+        // Name the rejected lines — "only 12 of 13" without which one left the rep
+        // diffing the job against the PO by hand (DPO 57349 / job 58505).
+        const who = (sheetDiag && sheetDiag.failedSkus && sheetDiag.failedSkus.length) ? ' — add by hand: ' + sheetDiag.failedSkus.join(', ') : '';
+        todo.push('check product lines — only ' + productsAdded + ' of ' + body.items.length + ' were added' + who);
+      }
       // Product lines exist but every piece landed in the catch-all column — pieces right, sizes
       // wrong. That's silently shippable garbage if unreported (the decorator would run 35 "OTH"),
       // so it's a to-do of its own.
       if (productsAdded && sheetDiag && sheetDiag.sizes) todo.push('enter the size breakdown on each product line — the quantities went into the catch-all column, not per size');
+      // Wearer Bag Prep was requested but the checkbox couldn't be identified on their modal —
+      // the pieces would ship un-prepped if nobody ticks it by hand.
+      if (body.wearer_bag_prep && sheetDiag && sheetDiag.vas) todo.push('tick the Wearer Bag Prep VAS checkbox on each product line');
       // The job sheet lands in their Notifications message thread, which carries the address as
       // TEXT only — it is not the order's Ship To Location, and the warehouse ships off the
       // structured field. So a posted sheet never counts as ship-to being handled.
@@ -598,7 +642,8 @@ exports.handler = async (event) => {
       if (!sheetPosted) todo.push('paste the job sheet into the order notes');
       const diagStr = sheetDiag ? ' [forms: ' + (sheetDiag.forms.slice(0, 8).join(' · ') || 'none')
         + (sheetDiag.shipTo ? ' | ship-to: ' + sheetDiag.shipTo : '') + (sheetDiag.products ? ' | products: ' + sheetDiag.products : '')
-        + (sheetDiag.sizes ? ' | sizes: ' + sheetDiag.sizes : '') + (sheetDiag.sizesInfo ? ' | sizes: ' + sheetDiag.sizesInfo : '') + ']' : '';
+        + (sheetDiag.sizes ? ' | sizes: ' + sheetDiag.sizes : '') + (sheetDiag.sizesInfo ? ' | sizes: ' + sheetDiag.sizesInfo : '')
+        + (sheetDiag.vas ? ' | vas: ' + sheetDiag.vas : '') + ']' : '';
       return {
         statusCode: 200, headers,
         body: JSON.stringify({ ok: true, order_id: idMatch ? idMatch[1] : '', order_url: loc.startsWith('http') ? loc : BASE + loc,
