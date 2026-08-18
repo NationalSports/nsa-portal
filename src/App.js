@@ -7336,13 +7336,16 @@ export default function App(){
   // written back). Routed to the account's assigned rep when we can resolve the coach's
   // team (explicit link → their coach_accounts row → a contact-email hit); left
   // UNASSIGNED otherwise — an empty queue beats guessing the wrong rep.
+  // Resolve a request to its customer: explicit link → coach_accounts email link →
+  // contact-email match. Shared by the TODO-routing effect and the visibility filter.
+  const matchCatReqCust=(r)=>{
+    if(r.customer_id)return cust.find(c2=>c2.id===r.customer_id)||null;
+    const linked=coachCustMap[String(r.coach_email||'').toLowerCase()];
+    if(linked){const c=cust.find(c2=>c2.id===linked);if(c)return c}
+    return cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()))||null;
+  };
   useEffect(()=>{if(!supabase||!cu?.id||!catReqs.length)return;
-    const matchCust=(r)=>{
-      if(r.customer_id)return cust.find(c2=>c2.id===r.customer_id)||null;
-      const linked=coachCustMap[String(r.coach_email||'').toLowerCase()];
-      if(linked){const c=cust.find(c2=>c2.id===linked);if(c)return c}
-      return cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()))||null;
-    };
+    const matchCust=matchCatReqCust;
     catReqs.filter(r=>!r.todo_id&&r.status==='new').slice(0,20).forEach(r=>{
       const match=matchCust(r);
       const rep=match?REPS.find(x=>x.id===match.primary_rep_id&&x.is_active!==false):null;
@@ -7458,13 +7461,28 @@ export default function App(){
     nf('Created customer '+name+' — now build the estimate');
     await _dbSaveCustomer(c);
   };
-  const renderCatReqCard=()=>catReqs.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #191919'}}>
+  // LiveLook quote requests are account-scoped: a rep only sees requests for
+  // customers assigned to them (or explicitly handed to them via Reassign);
+  // CSRs see their reps' requests. Admin/GM see everything — including
+  // requests with no customer match yet, so unowned ones still get triaged.
+  const catReqVisible=(r)=>{
+    if(!cu?.id)return false;
+    if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
+    const todoRep=r.todo_id?(assignedTodos.find(t=>t.id===r.todo_id)?.assigned_to||null):null;
+    const c=matchCatReqCust(r);
+    const owners=[todoRep,c?.primary_rep_id].filter(Boolean);
+    if(cu.role==='rep')return owners.includes(cu.id);
+    if(cu.role==='csr'){const myReps=repCsrAssignments.filter(a=>a.csr_id===cu.id&&a.is_active!==false).map(a=>a.rep_id);return owners.some(id=>myReps.includes(id))}
+    return false;
+  };
+  const visCatReqs=catReqs.filter(catReqVisible);
+  const renderCatReqCard=()=>visCatReqs.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #191919'}}>
     <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-      <h2>📥 Estimate Requests ({catReqs.filter(r=>r.status==='new').length} new)</h2>
+      <h2>📥 Estimate Requests ({visCatReqs.filter(r=>r.status==='new').length} new)</h2>
       <button className="btn btn-sm btn-primary" onClick={()=>setCatReqOpen(true)}>Review</button>
     </div>
     <div className="card-body" style={{padding:0,maxHeight:240,overflow:'auto'}}>
-      {catReqs.slice(0,8).map(r=>{const c2=cust.find(x=>x.id===r.customer_id);const lines=Array.isArray(r.lines)?r.lines:[];const units=lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);
+      {visCatReqs.slice(0,8).map(r=>{const c2=cust.find(x=>x.id===r.customer_id);const lines=Array.isArray(r.lines)?r.lines:[];const units=lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);
         return<div key={r.id} style={{padding:'9px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',display:'flex',gap:8,alignItems:'center'}} onClick={()=>setCatReqOpen(true)}>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:600}}>{r.coach_name}{r.team_name?' · '+r.team_name:''}</div>
@@ -7487,8 +7505,8 @@ export default function App(){
         <button style={{marginLeft:'auto',border:'none',background:'#f1f5f9',borderRadius:8,width:30,height:30,cursor:'pointer',fontWeight:700}} onClick={()=>setCatReqOpen(false)}>✕</button>
       </div>
       <div style={{padding:'8px 22px 20px'}}>
-        {catReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
-        {catReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
+        {visCatReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
+        {visCatReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
           const est2=r.estimate_id?ests.find(e=>e.id===r.estimate_id):null;
           return<div key={r.id} id={'catreq-'+r.id} style={{border:r.id===catReqFocus?'2px solid #191919':'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12,boxShadow:r.id===catReqFocus?'0 0 0 4px rgba(25,25,25,.08)':'none'}}>
             <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}>
