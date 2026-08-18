@@ -3071,7 +3071,7 @@ export default function App(){
             // local lines with "this client loaded none" left the save's restore guard unable to tell a
             // deliberate deletion from stale state, and it re-injected the just-deleted PO (SO-2015).
             if(Array.isArray(local._hydratedPoIds)&&local._hydratedPoIds.length)m._hydratedPoIds=[...new Set([...(Array.isArray(m._hydratedPoIds)?m._hydratedPoIds:[]),...local._hydratedPoIds])];
-            if(local._posHydrated!==false)m._posHydrated=true;
+            if(local._posHydrated===true)m._posHydrated=true;// only when the local copy really did load them — never assert hydration we don't have
           }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){

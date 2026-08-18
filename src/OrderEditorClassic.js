@@ -13779,7 +13779,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       const _rmStyles=[...new Set(removedApi.map(x=>o.items[x.ln.lineIdx]?.sku).filter(Boolean))];
                       if(!window.confirm('This removes '+removedApi.length+' item'+(removedApi.length!==1?'s':'')+(_rmStyles.length?' ('+_rmStyles.join(', ')+')':'')+' from placed vendor order '+po.po_id+'. Those were already ordered from the supplier and would no longer be receivable. Remove anyway?'))return;
                     }
-                    const updated={...o,items:items3,updated_at:new Date().toLocaleString()};
+                    // Emptying the last line deletes the PO from this order — the same deliberate removal
+                    // the Delete PO button makes, so it needs the same tombstone or the save's restore
+                    // guard re-injects it (see that handler's note).
+                    const updated={...o,items:items3,...(newAllLines.length===0&&po.po_id?{_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),po.po_id])]}:{}),updated_at:new Date().toLocaleString()};
                     setO(updated);onSave(updated);
                     if(newAllLines.length===0){setEditPO(null);nf('PO '+po.po_id+' removed from order')}
                     else{
@@ -14142,12 +14145,15 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
             if(!window.confirm('Delete entire PO'+(allLines.length>1?' from all '+allLines.length+' items':'')+'? All sizes will go back to open.'))return;
             const updatedItems=[...o.items];
+            // Read the po_ids off the lines being removed BEFORE the filter below — updatedItems is a
+            // shallow copy, so the filter rewrites the very arrays this would otherwise read back from.
+            const _rmPoIds=allLines.map(ln=>((updatedItems[ln.lineIdx]||{}).po_lines||[])[ln.poIdx]).filter(Boolean).map(pl=>pl.po_id);
             allLines.forEach(ln=>{updatedItems[ln.lineIdx].po_lines=updatedItems[ln.lineIdx].po_lines.filter((_,i)=>i!==ln.poIdx)});
             // Session-scoped tombstone (never persisted — not in _soCols), same as _deletedDecoPoIds:
             // tells the save layer's stale-restore guard this removal is deliberate. Without it the guard
             // has to infer intent from _hydratedPoIds and re-injects the PO whenever that marker is
             // missing, so the deletion comes back on the next reload (SO-2015 / PO 57204 SAHV).
-            const updated={...o,items:updatedItems,_deletedPoIds:[...(o._deletedPoIds||[]),_editPoId].filter(Boolean),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
+            const updated={...o,items:updatedItems,_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),_editPoId,..._rmPoIds])].filter(Boolean),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={10}/> Delete PO</button>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
             {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or the Claude bot) to order this PO" onClick={()=>{
