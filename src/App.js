@@ -2647,6 +2647,38 @@ export default function App(){
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
+          // Parent-timeout guards (2026-08-18) — same shape as the customers guard below. A timed-out
+          // sales_orders/estimates/invoices PARENT query comes back EMPTY with error:null while
+          // hasData stays true off customers, so without this the tab boots with an empty order book
+          // (zero SOs, zero counts on every customer, search finds nothing) with NO error anywhere,
+          // AND the _diffSave baseline goes empty with it. _*TimedOutBlank = "this table's load is
+          // untrustworthy": the outbox rehydrate below must not gate against it (an empty array reads
+          // as "row deleted on server" → phantom conflict cards). _*TimedOutEmpty additionally keeps
+          // the mount-time arrays in state+snapshot — NOTE: since the 2026-08-11 localStorage cache
+          // purge (dbEngine ~3300) those arrays are ALWAYS empty on a fresh boot, so today this branch
+          // only fires if a cache source returns; the user-visible boot fix is the banner below plus
+          // the poll refilling once a load completes. Mid-session blanking is prevented by the
+          // _parentTimedOut skips at the poll/realtime sites. Computed HERE — before the outbox
+          // rehydrate can splice entries into d.* — so an outbox row pushed into an otherwise-empty
+          // timed-out table can't make it look like a real load.
+          const _soTimedOutBlank=d._soTimedOut&&!d.sales_orders.length;
+          const _estTimedOutBlank=d._estTimedOut&&!d.estimates.length;
+          const _invTimedOutBlank=d._invTimedOut&&!d.invoices.length;
+          const _custTimedOutBlank=d._custTimedOut&&!d.customers.length;
+          const _msgTimedOutBlank=d._msgTimedOut&&!d.messages.length;
+          const _soTimedOutEmpty=_soTimedOutBlank&&sos.length>0;
+          const _estTimedOutEmpty=_estTimedOutBlank&&ests.length>0;
+          const _invTimedOutEmpty=_invTimedOutBlank&&invs.length>0;
+          if(_soTimedOutEmpty||_estTimedOutEmpty||_invTimedOutEmpty){
+            console.warn('[DB] Initial load: order-book parent query timed out — kept cached rows',{sos:_soTimedOutEmpty?sos.length:'loaded',ests:_estTimedOutEmpty?ests.length:'loaded',invs:_invTimedOutEmpty?invs.length:'loaded'});
+            if(typeof nf==='function')nf('Orders didn’t finish loading (usually a slow connection) — showing your last-loaded data. The portal keeps retrying automatically.','error');
+          }
+          // Timed out with nothing local to show (the normal case post-purge): the tab will show an
+          // empty order book until a load succeeds — say so instead of staying silent.
+          else if(_soTimedOutBlank||_estTimedOutBlank||_invTimedOutBlank){
+            console.warn('[DB] Initial load: order-book parent query timed out with no local cache — orders will appear once a load completes');
+            if(typeof nf==='function')nf('Orders are taking too long to load (usually a slow connection). They’ll appear automatically once loading completes.','error');
+          }
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;_syncDbMaxIds();_lastFullSyncAt=Date.now();// initial load already pulled cold tables — don't full-sync again for _FULL_SYNC_MS
           // ─── Durable-outbox rehydrate ───
@@ -2660,10 +2692,28 @@ export default function App(){
             const _obEntries=_outboxList();
             if(_obEntries.length){
               const _obTables={estimates:d.estimates,sales_orders:d.sales_orders,invoices:d.invoices,customers:d.customers,products:d.products,messages:d.messages};
+              // Tables whose load this boot is untrustworthy (parent query timed out empty; products:
+              // the essential tier-1 load SKIPS the catalog, so d.products=[] is normal, not a delete).
+              // Gating an outbox entry against such a table reads the missing row as "deleted on
+              // server" (_outboxGate → 'conflict') and raises a phantom conflict card that can discard
+              // a real unsaved edit. Instead, restore those entries via the same splice as an 'apply'
+              // verdict — the payload MUST re-enter state, because both orphan-cleanup sites (the
+              // startup sweep below and doRetry) treat a failed ID absent from state as "deleted by
+              // user" and purge its outbox entry. A genuinely-stale payload is still safe: the save
+              // paths re-check _version server-side, so a bad replay is rejected and stays failed.
+              // The entry gates normally on the next boot whose table actually loads.
+              const _obNoGate={sales_orders:_soTimedOutBlank,estimates:_estTimedOutBlank,invoices:_invTimedOutBlank,customers:_custTimedOutBlank,messages:_msgTimedOutBlank,products:!d.products.length};
               const _obConflicts=[];
               _obEntries.forEach(en=>{
                 const arr=_obTables[en.table];
                 if(!arr||!en.payload){_outboxRemove(en.table,en.id);return}
+                if(_obNoGate[en.table]&&!arr.find(r=>r.id===en.id)){
+                  arr.push(en.payload);
+                  _obApplied[en.id]=en.payload;
+                  _dbSaveFailedIds.add(en.id);
+                  console.warn('[Outbox] restored unsaved edit for',en.id,'without gating — its table didn’t load this boot');
+                  return;
+                }
                 const row=arr.find(r=>r.id===en.id);
                 const verdict=_outboxGate(en,row);
                 if(verdict==='drop'){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
@@ -2697,7 +2747,7 @@ export default function App(){
           const _custTimedOutEmpty=d._custTimedOut&&!d.customers.length&&cust.length>0;
           const _custLoaded=_custTimedOutEmpty?cust:d.customers;
           if(_custTimedOutEmpty)console.warn('[DB] Initial load: customers query timed out — kept '+cust.length+' cached customers (poll will refill)');
-          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
+          _dbSnap.current={ests:_estTimedOutEmpty?ests:d.estimates,sos:_soTimedOutEmpty?sos:d.sales_orders,invs:_invTimedOutEmpty?invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
           setREPS(d.team.length?d.team:DEFAULT_REPS);
           // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
           if(_custTimedOutEmpty){/* customers timed out — state already holds the cached list; leave it */}
@@ -2706,11 +2756,11 @@ export default function App(){
           }else{setCust(d.customers)}
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
-            setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
-            setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
-            setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
+            if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
+            if(!_soTimedOutEmpty)setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
+            if(!_invTimedOutEmpty)setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
             setMsgs(prev=>d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(_obApplied[m.id]||prev.find(p=>p.id===m.id)||m):m));
-          }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
+          }else{if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));if(!_soTimedOutEmpty)setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));if(!_invTimedOutEmpty)setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           setHistInvs(d.hist_invoices||[]);
           setIssues(d.issues||[]);
@@ -2758,6 +2808,17 @@ export default function App(){
             setProd(prev=>{const base=_dbSaveFailedIds.size?pd.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):pd.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
             console.log('[DB] Tier 2: product catalog loaded ('+pd.products.length+' products)');
           }).catch(e=>{console.warn('[DB] Tier 2 product load failed:',e?.message||e)});
+        }else if(d._parentTimedOut){
+          // hasData is false because parent queries TIMED OUT (each came back empty with error:null),
+          // NOT because the DB is empty. Without this branch a slow connection that 408'd both
+          // customers AND sales_orders fell into the seed path below, saw the seed lock already
+          // "done" with "empty" tables (lockDoneButEmpty), and RE-SEEDED the live DB from this
+          // browser's defaults — upserting DEFAULT_REPS over team_members and overwriting app_state
+          // blobs (change_log/so_history/qb_config/company_info…) that the 2026-08-11 cache purge
+          // had already emptied locally. Treat it as a failed load: banner up, writes stay paused
+          // (_dbLoadSuccess stays false), the poll retries and re-enables writes when a load succeeds.
+          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+          console.error('[DB] Initial load returned no data but parent queries timed out — treating as a FAILED load, not an empty database (seeding suppressed)');
         }else{
           // Supabase tables exist but are all empty — seed from localStorage
           // Use a lock row to prevent multiple browsers from seeding simultaneously
@@ -2789,7 +2850,13 @@ export default function App(){
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
             const d2=await _dbLoad({histInvoices:true,fullState:true});
-            if(d2?.hasData){
+            // Same parent-timeout rule as the main branches: a d2 with timed-out parents must neither
+            // be applied wholesale (would blank state + snapshot) nor fall through to the seed
+            // fallback (would re-seed the live DB from local defaults). Fail the load instead.
+            if(d2&&d2._parentTimedOut){
+              setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+              console.error('[DB] Post-seed-wait load had parent-table timeouts — treating as a FAILED load (apply and fallback-seed both suppressed)');
+            }else if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
               if(d2.vendors.length)setVend(d2.vendors);setProd(d2.products.length?d2.products:prod);
@@ -2861,6 +2928,11 @@ export default function App(){
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
         if(d._decoTimedOut){console.warn('[DB] Realtime reload skipped — a child-table query timed out, preserving local data');return}
+        // Parent-table twin of the guard above (2026-08-18, same rule as the poll): a timed-out
+        // sales_orders/estimates/invoices/customers/messages PARENT query is EMPTY with error:null, and
+        // the wholesale-replace merges below would blank state + the _diffSave snapshot. Skip entirely.
+        // (_parentTimedOut is the aggregate dbEngine sets next to the per-table flags — one table list.)
+        if(d._parentTimedOut){console.warn('[DB] Realtime reload skipped — a parent-table query timed out, preserving local data');return}
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
@@ -3054,6 +3126,13 @@ export default function App(){
         _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
         if(d._decoTimedOut){console.warn('[DB] Poll skipped — a child-table query timed out, preserving local data');schedulePoll();return}
+        // Same rule for PARENT tables (2026-08-18): a timed-out sales_orders/estimates/invoices/
+        // customers/messages parent comes back EMPTY with error:null, and the wholesale poll-merge
+        // below would replace both state and the _diffSave snapshot with an empty order book. Skip the
+        // whole poll and let the next cycle retry. Flags are only ever set for tables this load
+        // actually fetched (_lastLoadTimedOut is cleared at load start; skipped groups can't trip it);
+        // _parentTimedOut is the aggregate dbEngine sets next to the per-table flags — one table list.
+        if(d._parentTimedOut){console.warn('[DB] Poll skipped — a parent-table query timed out, preserving local data');schedulePoll();return}
         // Record a completed full sync (cold tables were applied) so the wall-time gate spaces out the next
         // heavy catalog/app_state pull. Only here — past the hasData + _decoTimedOut guards — did a full poll
         // actually reach the state setters below.

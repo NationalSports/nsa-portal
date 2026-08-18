@@ -634,7 +634,20 @@ const _dbLoad = async (opts={}) => {
     // hasData stays true off sales_orders, so the load looks successful and the empty list would blank
     // every customer to "Unknown". The initial-load apply reads this to keep the cached list instead.
     const _custTimedOut=_lastLoadTimedOut.has('customers');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_coreOnly:coreOnly};
+    // Same gap for the other order-book PARENT tables (2026-08-18, the "rep's portal shows zero SOs /
+    // zero counts on every customer" report): a timed-out sales_orders/estimates/invoices/messages
+    // query returns EMPTY with error:null (408), hasData stays true off customers, and the apply paths
+    // would replace both state and the _diffSave snapshot with an empty order book. Callers use these
+    // flags to keep cached data (initial load) or skip the apply entirely (poll / realtime reload).
+    const _soTimedOut=_lastLoadTimedOut.has('sales_orders');
+    const _estTimedOut=_lastLoadTimedOut.has('estimates');
+    const _invTimedOut=_lastLoadTimedOut.has('invoices');
+    const _msgTimedOut=_lastLoadTimedOut.has('messages');
+    // Aggregate for the "don't trust this load" call sites (poll skip, realtime skip, the seed
+    // branch's is-the-DB-really-empty check) so the table list lives HERE, next to where the flags
+    // are set, instead of being hand-synced across App.js call sites.
+    const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
