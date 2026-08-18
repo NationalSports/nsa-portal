@@ -2538,6 +2538,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return next;
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
+    // The garment's `sku|color` identity changed — move its per-garment mocks/links with it
+    // (SO-1480 pattern; the modal path was missing this, stranding webstore mocks on a SKU change).
+    _rekeyLineMocks(i,it.sku,it.color);
     setCopySkuModal(null);
     nf('🔄 Changed SKU → '+p.sku+' (decorations kept)');
   };
@@ -2603,6 +2606,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // a per-size fetch directly so badges populate for the swapped-in SKU.
       fetchVendorInventory(style.sku,vId,{vendor_id:vId,sku:style.sku,color:color.colorName,sizes:{},available_sizes:availSizes.length?availSizes:fallbackSizes});
     }
+    // Same identity move as changeItemSku above — without it the mock strands under the old key.
+    _rekeyLineMocks(i,it.sku,it.color);
     setCopySkuModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);setExpandedStyle(null);
     nf('🔄 Changed SKU → '+style.sku+' (decorations kept)');
   };
