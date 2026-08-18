@@ -719,13 +719,17 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
   const choiceBtn={width:'100%',textAlign:'left',padding:'14px 16px',borderRadius:10,border:'2px solid #e2e8f0',background:'white',cursor:'pointer',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:14};
 
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
-    <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
-      <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px'}}>
+    {/* maxHeight 100% (not 100vh) caps the card to the fixed overlay's box, so it can never grow past
+        the viewport — on mobile that also dodges the 100vh-vs-collapsing-toolbar gap. The card is a
+        flex column so the header stays put and only the body scrolls. Without this the Stripe
+        PaymentElement pushed the Pay button off-screen with nothing to scroll. */}
+    <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden',maxHeight:'100%',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
+      <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px',flexShrink:0}}>
         <img src="/nsa-logo.svg" alt="NSA" style={{height:28,filter:'brightness(0) invert(1)',marginBottom:4}}/>
         <div style={{fontSize:20,fontWeight:800,marginTop:4}}>Secure Payment</div>
         <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
       </div>
-      <div style={{padding:'20px 24px'}}>
+      <div style={{padding:'20px 24px',overflowY:'auto'}}>
         {paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:12,lineHeight:1.4}}>{paymentNote}</div>}
         {error&&<div style={{padding:20,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
