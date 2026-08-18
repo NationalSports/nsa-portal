@@ -7515,7 +7515,12 @@ export default function App(){
       </div>
       <div style={{padding:'8px 22px 20px'}}>
         {visCatReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
-        {visCatReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
+        {visCatReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');
+          // Match every word of the query independently ("FPU Volleyball" finds
+          // "Fresno Pacific Women's Volleyball (FPUVB)"), and cap high — the list
+          // scrolls, so big families like Fresno Pacific's 20+ teams stay reachable.
+          const qWords=q.toLowerCase().split(/\s+/).filter(Boolean);
+          const sugg=q.length>=2?cust.filter(c2=>{if(c2.is_active===false)return false;const hay=((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase();return qWords.every(w=>hay.includes(w))}).slice(0,50):[];
           const est2=r.estimate_id?ests.find(e=>e.id===r.estimate_id):null;
           return<div key={r.id} id={'catreq-'+r.id} style={{border:r.id===catReqFocus?'2px solid #191919':'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12,boxShadow:r.id===catReqFocus?'0 0 0 4px rgba(25,25,25,.08)':'none'}}>
             <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}>
@@ -7535,7 +7540,7 @@ export default function App(){
               {selCust2?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'4px 10px',fontWeight:600}}>Customer: {selCust2.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:null}));setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:null}:x))}}>✕</button></span>
               :<><div style={{position:'relative'}}>
                 <input placeholder="Match customer…" value={q} onChange={e=>setCatReqSearch(s=>({...s,[r.id]:e.target.value}))} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,width:220}}/>
-                {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280}}>
+                {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280,maxHeight:260,overflowY:'auto'}}>
                   {sugg.map(c2=><div key={c2.id} style={{padding:'7px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9'}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:c2.id}));setCatReqSearch(s=>({...s,[r.id]:''}));if(supabase)supabase.from('catalog_order_requests').update({customer_id:c2.id}).eq('id',r.id).then(()=>{});setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:c2.id}:x))}}>{c2.name}{c2.alpha_tag?' ('+c2.alpha_tag+')':''}</div>)}
                 </div>}
               </div><button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap'}} onClick={()=>createCustFromCatReq(r)}>+ New customer</button></>}
