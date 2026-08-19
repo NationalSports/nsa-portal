@@ -12903,6 +12903,12 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
 // Seed only — recalcJobFulfillment below re-derives both from the live sizes/receipts (see the
 // Merge Jobs button); the summed gi.units/gi.fulfilled here are build-time snapshots.
 const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);let updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);
+// Re-parent the merged slice's own children onto the job it merged into — their split_from
+// would otherwise point at a job that no longer exists. An orphaned slice (a) becomes its own
+// family root in allocateJobFulfillment, double-counting the line's receipts against the real
+// family, and (b) drops out of the parent-rebuild's slice-owned walk, so the next sync re-adds
+// its garments to the parent at full quantity (the SO-1634 double-count through another door).
+updJobs=updJobs.map(jj=>jj.split_from===j.id?{...jj,split_from:j.split_from}:jj);
 // If the parent has no remaining split children it's one run again — drop the separate-pricing
 // flag so the design goes back to combined-tier billing (stampSplitRuns clears d.split_runs).
 if(!updJobs.some(jj=>jj.split_from===j.split_from))updJobs=updJobs.map(jj=>jj.id===j.split_from?{...jj,priced_separately:false,price_override:null}:jj);

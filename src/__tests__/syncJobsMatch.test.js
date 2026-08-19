@@ -594,3 +594,28 @@ describe('splitSliceOwnedKeys (SO-1634 grandchild double-count)', () => {
     expect(owned.has('0-X')).toBe(false);
   });
 });
+
+describe('splitSliceOwnedKeys — orphaned slices', () => {
+  // An orphaned slice (split_from pointing at a job that no longer exists) is unreachable
+  // from the family root, so its garments are NOT counted as slice-owned. This is why the
+  // Merge Back handler re-parents the merged slice's children instead of leaving them
+  // orphaned — an orphan would get its garments re-added to the parent on the next sync.
+  test('a slice whose parent link is broken is not reachable from the root', () => {
+    const jobs = [
+      { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+      // JOB-1634-01-B was merged back and removed; B-B was left pointing at it.
+      { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01-B', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', () => false);
+    expect(owned.has('7-KC4512')).toBe(false);
+  });
+
+  test('after Merge Back re-parents the child, its garments are owned again', () => {
+    const jobs = [
+      { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+      { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', () => false);
+    expect(owned.has('7-KC4512')).toBe(true);
+  });
+});
