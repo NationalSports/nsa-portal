@@ -622,6 +622,12 @@ function StripeCheckoutForm({amount,fee,method,defaultName,onSuccess,onCancel}){
   // payment_method_data.billing_details (the pattern Stripe documents for omitted fields).
   // It reaches the Stripe dashboard and the card receipt, which is what staff reconcile against.
   const[billingName,setBillingName]=useState(defaultName||'');
+  // Manually-entered bank account: Stripe verifies it with micro-deposits BEFORE any debit
+  // (status 'requires_action' + next_action verify_with_microdeposits). The storefront and
+  // team-shop checkouts already treat this as pending; this modal showed "Payment was not
+  // completed. Please try again." — wrong (retrying just mints another unverified intent),
+  // and exactly what the Tiki Hut payer hit. Hold the verification URL and explain instead.
+  const[microdeposit,setMicrodeposit]=useState(null);// {url} once Stripe asks for verification
   const isBank=method==='bank';
   const nameLabel=isBank?'Account holder name':'Name on card';
   // The fee is fixed by the Card-vs-Bank choice made before this form loaded (see StripePaymentModal):
@@ -645,10 +651,27 @@ function StripeCheckoutForm({amount,fee,method,defaultName,onSuccess,onCancel}){
       // 'succeeded'. Treat that as a (pending) success; the invoice is marked paid on settlement via
       // the webhook. (Without this, ACH wrongly showed "payment not completed.")
       onSuccess({intentId:result.paymentIntent.id,amount,fee:_fee,last4:null,brand:null,status:result.paymentIntent.status});
+    }else if(result.paymentIntent&&result.paymentIntent.status==='requires_action'
+      &&result.paymentIntent.next_action&&result.paymentIntent.next_action.type==='verify_with_microdeposits'){
+      // No debit has happened yet — the invoice correctly stays open. Once the payer verifies,
+      // Stripe runs the debit and the webhook marks the invoice paid (reconcileInvoiceFromIntent).
+      setMicrodeposit({url:(result.paymentIntent.next_action.verify_with_microdeposits||{}).hosted_verification_url||null});
+      setProcessing(false);
     }else{
       setError('Payment was not completed. Please try again.');setProcessing(false);
     }
   };
+
+  if(microdeposit)return<div style={{textAlign:'center',padding:'8px 0'}}>
+    <div style={{fontSize:34,marginBottom:10}}>🏦</div>
+    <div style={{fontSize:16,fontWeight:800,color:'#92400e',marginBottom:8}}>One more step — verify your bank account</div>
+    <div style={{fontSize:13,color:'#475569',lineHeight:1.6,textAlign:'left',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'12px 14px',marginBottom:14}}>
+      Your bank couldn't be connected instantly, so Stripe will send a <strong>small test deposit</strong> to your account in 1&ndash;2 business days. Once you confirm it, your payment of <strong>${total.toFixed(2)}</strong> runs automatically &mdash; there's nothing else to submit.
+      <br/><br/>Stripe has emailed you a verification link{microdeposit.url?' (or use the button below)':''}. <strong>Please don't pay again</strong> &mdash; the invoice will show as due until the payment clears. If you'd rather pay another way, contact NSA first so we can cancel this one.
+    </div>
+    {microdeposit.url&&<a href={microdeposit.url} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'#1e3a5f',color:'white',textDecoration:'none',padding:'11px 20px',borderRadius:8,fontSize:14,fontWeight:700,marginBottom:10}}>Open verification page</a>}
+    <div><button type="button" className="btn btn-secondary btn-sm" style={{fontSize:12}} onClick={onCancel}>Close</button></div>
+  </div>;
 
   return<form onSubmit={handleSubmit}>
     <div style={{marginBottom:14}}>
