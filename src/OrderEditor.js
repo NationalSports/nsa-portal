@@ -13413,7 +13413,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const NON_SZ=['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'];
       const itemInfos=picks.map((p,i)=>{
         const it=o.items[p.lineIdx]||{};const pk=p.pick;
-        const szKeys=Object.keys(pk).filter(k=>!NON_SZ.includes(k)&&typeof pk[k]==='number'&&pk[k]>0);
+        // Pick objects carry sizes in whatever order they were written, so the IF read
+        // "L S XL XS 2XL". Rank them so every IF shows the wear run XS→5XL.
+        const szKeys=Object.keys(pk).filter(k=>!NON_SZ.includes(k)&&typeof pk[k]==='number'&&pk[k]>0).sort((a,b)=>szRank(a)-szRank(b));
         const total=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
         return{idx:i,item:it,pick:pk,szKeys,total,lineIdx:p.lineIdx,pickIdx:p.pickIdx};
       });
@@ -13425,7 +13427,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       // so the user can grow the pick from the order side. Mirrors the "Create IF" availability check.
       const onPickIdxs=new Set(picks.map(p=>p.lineIdx));
       const pickDefaultDest=(picks.map(p=>p.pick).find(pk=>pk.ship_dest)?.ship_dest)||firstPk.ship_dest||'in_house';
-      const opensForItem=(it)=>Object.entries(it.sizes||{}).map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,(v||0)-picked-po)]}).filter(([,op])=>op>0);
+      const opensForItem=(it)=>Object.entries(it.sizes||{}).map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,(v||0)-picked-po)]}).filter(([,op])=>op>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));
       const addablePickItems=o.items.map((it,li)=>({it,li})).filter(({it,li})=>!onPickIdxs.has(li)&&opensForItem(it).length>0);
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
       // Build shared ship badge from first pick that has ship info
