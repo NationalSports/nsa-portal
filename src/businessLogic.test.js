@@ -2896,6 +2896,46 @@ describe('jobAllRoutedOutside', () => {
     expect(jobAllRoutedOutside(so, job([]))).toBe(false);
     expect(jobAllRoutedOutside(so, job([{ item_idx: 3, deco_idxs: [0] }]))).toBe(false);
   });
+
+  test('outside-routed deco + deleted-deco claim → true (SO-1403: dead claim is neutral)', () => {
+    // JOB-1403-02: the tee's front logo went to an outside decorator, the pant's deco was deleted
+    // entirely. The dead claim must not veto routed-outside — the vendor produces all remaining work.
+    const so = makeSO({
+      items: [
+        makeSOItem({ decorations: [
+          { kind: 'art', art_file_id: 'a1', position: 'Front Center', fulfillment: 'outside', vendor: 'Silver Screen' },
+        ] }),
+        makeSOItem({ decorations: [] }), // pant — deco deleted after release
+      ],
+      art_files: [mkArtFile('a1', 'screen_print')],
+    });
+    expect(jobAllRoutedOutside(so, job([
+      { item_idx: 0, deco_idxs: [0] },
+      { item_idx: 1, deco_idxs: [0] },
+    ]))).toBe(true);
+  });
+
+  test('in-house deco + deleted-deco claim → false (job still produced in-house)', () => {
+    const so = makeSO({
+      items: [
+        makeSOItem({ decorations: [{ kind: 'art', art_file_id: 'a1', position: 'Front Center' }] }),
+        makeSOItem({ decorations: [] }),
+      ],
+      art_files: [mkArtFile('a1', 'screen_print')],
+    });
+    expect(jobAllRoutedOutside(so, job([
+      { item_idx: 0, deco_idxs: [0] },
+      { item_idx: 1, deco_idxs: [0] },
+    ]))).toBe(false);
+  });
+
+  test('only deleted-deco claims → false (retirement belongs to the live-deco rule)', () => {
+    const so = makeSO({
+      items: [makeSOItem({ decorations: [] })],
+      art_files: [],
+    });
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 0, deco_idxs: [0] }]))).toBe(false);
+  });
 });
 
 // ═══════════════════════════════════════════════

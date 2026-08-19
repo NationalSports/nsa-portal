@@ -3469,8 +3469,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // A job whose decorations have ALL been routed to an outside decorator (their items put on a deco
     // PO, or flagged outside) must retire even when frozen — the vendor now produces this work, so an
     // in-house production job would double-track it (and double-count its cost against the PO). A
-    // decoration that's genuinely gone (item/deco removed) is NOT outsourced-covered here, so real
-    // orphans still fall through to the preservation branches below.
+    // decoration that's genuinely gone (item/deco removed) is NEUTRAL: it can't be produced in-house
+    // or outside, so it neither retires the job nor blocks retirement (SO-1403: a released job over
+    // an outside-routed tee plus a pant whose deco was deleted survived every sync because the dead
+    // claim vetoed this gate while the live tee deco satisfied _jobHasLiveDeco). A job with NO live
+    // claims at all still falls through to the live-deco / orphan-preservation branches below.
     const _jobAllOutsourced=j=>{
       const pairs=[];
       (j?.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>pairs.push([gi.item_idx,di]))});
@@ -3478,8 +3481,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Mirrors the build gate below: a PO-covered deco on an item that keeps in-house work is a
       // materials purchase (the floor still applies it), so it does NOT count toward retiring the
       // job — only whole-item vendor decoration or explicit per-deco routing does.
-      return pairs.every(([ii,di])=>{const it=safeItems(o)[ii];if(!it)return false;const d=safeDecos(it)[di];if(!d)return false;
-        return d.kind==='outside_deco'||d.fulfillment==='outside'||!!d.deco_po_id||_itemFullyOutsourced(ii)});
+      let out=0;
+      for(const[ii,di]of pairs){
+        const it=safeItems(o)[ii];if(!it)continue;
+        const d=safeDecos(it)[di];if(!d)continue;
+        if(d.kind==='outside_deco'||d.fulfillment==='outside'||!!d.deco_po_id||_itemFullyOutsourced(ii))out++;
+        else return false;
+      }
+      return out>0;
     };
     // Frozen jobs whose claimed decorations were all cleared (rep deleted art from every line)
     // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
