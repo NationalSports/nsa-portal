@@ -1653,6 +1653,9 @@ const _dbSaveSOInner = async (so) => {
     // would be silently wiped. We read the live DB PO lines and re-inject any the client was never aware of, so
     // ONLY deliberate deletions (a PO the client loaded and then removed) actually stick.
     const _restoredLines=[];// restored PO/pick lines, pushed back into React state after both restore passes
+    // Non-size metadata keys on an in-memory po_line — everything else that's a positive number is a
+    // size qty. Shared by the receiving-rollback merge below and the duplicate-PO guard further down.
+    const _poMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
     if(oldItemIds.length){
       const{data:_dbPoRows,error:_dbPoErr}=await _retryNet(()=>supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds));
       if(_dbPoErr){
@@ -1678,6 +1681,19 @@ const _dbSaveSOInner = async (so) => {
         // silently came back on the next reload (SO-2015 / "PO 57204 SAHV", 2026-08-17). A po_id can only be
         // deleted from a screen that is showing it, so an explicit tombstone is always deliberate.
         const _deletedPoIds=new Set(Array.isArray(so._deletedPoIds)?so._deletedPoIds:[]);
+        // RECEIVING ROLLBACK GUARD (SO-1663 / batch "NSA 4563" fulfillment wipe + SO-1837 /
+        // "PO 48200 CIVVB", 2026-08-19). Every skip below trusts the client's own copy of a po_id
+        // it holds — but a long-lived tab's copy predates receiving/billing another session wrote
+        // (warehouse check-in), so its next full-SO save re-inserted the line with received:{} and
+        // the units silently un-fulfilled themselves hours after being scanned in. Receiving is
+        // warehouse-owned state: a save may only REDUCE a line's received units when this session
+        // deliberately edited or deleted a receipt (stamped in _receiptEditedPoIds by the editors'
+        // receipt-edit/delete flows — the same session-tombstone pattern as _deletedPoIds above).
+        // Any unstamped reduction is stale client state: merge the DB row's warehouse fields
+        // forward into the client's line (per-size max on received/billed, union on shipments/
+        // tracking/bill docs) before the line is re-serialized.
+        const _receiptEdited=new Set(Array.isArray(so._receiptEditedPoIds)?so._receiptEditedPoIds:[]);
+        const _rcvMergedPoIds=[];
         // Money/goods already moved on this line: billed or received units, shipments, tracking, or bill
         // docs inside sizes. Such a line must never vanish just because its ITEM disappeared from the
         // payload — the UI blocks deleting items with PO lines (rmI), so an item-with-billed-PO vanishing
@@ -1760,6 +1776,42 @@ const _dbSaveSOInner = async (so) => {
           // Last resort when no current item can take this row: rebuild the row's own item (above).
           // Only called on the paths that would otherwise count _unrestorable and block the save.
           const _revive=async()=>{if(!oi)return false;const i=await _reviveItem(oi);if(i<0)return false;_ti=i;ci=items[i];return true};
+          // Receiving-rollback merge (see _receiptEditedPoIds comment above): runs before every skip
+          // branch, because the skips are exactly where the client's stale copy of a held line wins.
+          if(ci&&!_receiptEdited.has(poId)){
+            const cl=(ci.po_lines||[]).find(p=>p&&p.po_id===poId);
+            if(cl){
+              const dbRcv=row.received||{},clRcv=cl.received||{};
+              const _rolled=Object.entries(dbRcv).some(([sz,v])=>typeof v==='number'&&v>0&&(typeof clRcv[sz]==='number'?clRcv[sz]:0)<v);
+              if(_rolled){
+                const merged={...cl,received:{...clRcv}};
+                Object.entries(dbRcv).forEach(([sz,v])=>{if(typeof v==='number'&&v>(merged.received[sz]||0))merged.received[sz]=v});
+                Object.entries(row.billed||{}).forEach(([sz,v])=>{if(typeof v==='number'&&v>0&&v>((merged.billed||{})[sz]||0))merged.billed={...(merged.billed||{}),[sz]:v}});
+                const _clShipSigs=new Set((Array.isArray(cl.shipments)?cl.shipments:[]).map(s=>JSON.stringify(s)));
+                const _missingShips=(Array.isArray(row.shipments)?row.shipments:[]).filter(s=>!_clShipSigs.has(JSON.stringify(s)));
+                if(_missingShips.length)merged.shipments=[...(Array.isArray(cl.shipments)?cl.shipments:[]),..._missingShips];
+                const _clTrk=new Set(Array.isArray(cl.tracking_numbers)?cl.tracking_numbers:[]);
+                const _addTrk=(Array.isArray(row.tracking_numbers)?row.tracking_numbers:[]).filter(t=>!_clTrk.has(t));
+                if(_addTrk.length)merged.tracking_numbers=[...(Array.isArray(cl.tracking_numbers)?cl.tracking_numbers:[]),..._addTrk];
+                const _dbBills=Array.isArray((row.sizes||{})._bill_details)?row.sizes._bill_details:[];
+                if(_dbBills.length){
+                  const _clDocs=new Set((Array.isArray(cl._bill_details)?cl._bill_details:[]).map(b=>b&&b.doc));
+                  const _addBills=_dbBills.filter(b=>b&&!_clDocs.has(b.doc));
+                  if(_addBills.length){
+                    merged._bill_details=[...(Array.isArray(cl._bill_details)?cl._bill_details:[]),..._addBills];
+                    merged._bill_cost=merged._bill_details.reduce((a,b)=>a+(Number(b&&b.cost)||0),0);
+                  }
+                }
+                // Same cancel-aware status derivation every receive screen uses, from the merged units.
+                const _anyRcv=Object.values(merged.received).some(v=>typeof v==='number'&&v>0);
+                const _openTot=Object.keys(merged).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof merged[k]==='number').reduce((a,sz)=>a+Math.max(0,(merged[sz]||0)-(merged.received[sz]||0)-((merged.cancelled||{})[sz]||0)),0);
+                merged.status=_openTot<=0&&_anyRcv?'received':_anyRcv?'partial':(merged.status||'waiting');
+                ci.po_lines=(ci.po_lines||[]).map(p=>p===cl?merged:p);
+                _rcvMergedPoIds.push(poId);
+                _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po_merge',line:merged});
+              }
+            }
+          }
           if(_isApiOrder&&_clientPoIds.has(poId)){
             // Partial loss of a placed order: the client still holds this po_id on at least one item, so this is
             // NOT a whole-PO removal. Preserve this item's row unless the matched item already carries a line for
@@ -1792,6 +1844,11 @@ const _dbSaveSOInner = async (so) => {
           if(_dataLossAlert)_dataLossAlert({kind:'item_restored',soId:so.id,restored:_revived,reason:'item(s) missing from save payload but still carrying DB PO line(s), re-added with their decorations: '+_revLbl});
         }
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
+        if(_rcvMergedPoIds.length){
+          const _uniqMerged=[...new Set(_rcvMergedPoIds)];
+          console.warn('[DB] Restored received/billing data on',_rcvMergedPoIds.length,'PO line(s) for',so.id,'that this save would have rolled back:',_uniqMerged.join(', '));
+          if(_dataLossAlert)_dataLossAlert({kind:'received_restored',soId:so.id,restored:_rcvMergedPoIds.length,reason:'stale client state would have rolled back warehouse receiving on: '+_uniqMerged.join(', ')});
+        }
         if(_unrestorable){
           // An undeleted PO couldn't be matched to a current item AND its item couldn't be rebuilt
           // (the decoration read failed) — block rather than silently lose it. Reviving the item is
@@ -1818,7 +1875,6 @@ const _dbSaveSOInner = async (so) => {
     // where the counter advanced (so the new po_id differs) but the units were already covered.
     if(items&&items.length){
       const _dbPoIdSet=new Set((oldItemIds.length?(await(async()=>{try{const r=await supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds);return(r.data||[]).map(x=>x.po_id).filter(Boolean)}catch{return[]}})()):[]));
-      const _poMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
       const _sizeSig=pl=>{const ks=Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof pl[k]==='number'&&pl[k]>0).sort();return ks.map(k=>k+':'+pl[k]).join('|')};
       const _isClean=pl=>{
         if(pl.status&&pl.status!=='waiting'&&pl.status!=='queued')return false;
