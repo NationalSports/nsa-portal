@@ -18,7 +18,7 @@ import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
-import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems } from '../businessLogic';
+import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 
@@ -2036,7 +2036,7 @@ const _dbSaveSOInner = async (so) => {
       // Delete Job button). Auto needs_art placeholders still delete freely: that is the JOB-1057
       // retirement case, and syncJobs regenerates them from live decorations anyway.
       const _explicitDel=new Set(Array.isArray(so._deleteJobIds)?so._deleteJobIds:[]);
-      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status,art_file_id,_art_ids').eq('so_id',so.id);
+      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status,art_file_id,_art_ids,items').eq('so_id',so.id);
       if(_dbJobErr){
         console.error('[DB] SAFETY: skipping so_jobs wipe for',so.id,'— could not read existing jobs:',_dbJobErr.message);
       }else{
@@ -2055,17 +2055,17 @@ const _dbSaveSOInner = async (so) => {
         // the protection.
         if(_blocked.length){
           try{
-            const{data:_artRows,error:_ae}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
+            const{data:_artRows,error:_ae}=await supabase.from('so_art_files').select('id,deco_type').eq('so_id',so.id);
             if(_ae)throw _ae;
-            const{data:_itRows,error:_ie}=await supabase.from('so_items').select('id').eq('so_id',so.id);
+            const{data:_itRows,error:_ie}=await supabase.from('so_items').select('id,item_index').eq('so_id',so.id);
             if(_ie)throw _ie;
-            let _hasDeco=false;
+            let _decoRows=[];
             if((_itRows||[]).length){
-              const{data:_decoRows,error:_de}=await supabase.from('so_item_decorations').select('id').in('so_item_id',(_itRows||[]).map(r=>r.id)).limit(1);
+              const{data:_dr,error:_de}=await supabase.from('so_item_decorations').select('so_item_id,deco_index,kind,fulfillment,deco_po_id,deco_type,art_file_id,num_method,name_method').in('so_item_id',(_itRows||[]).map(r=>r.id));
               if(_de)throw _de;
-              _hasDeco=(_decoRows||[]).length>0;
+              _decoRows=_dr||[];
             }
-            if(!_hasDeco){
+            if(!_decoRows.length){
               const _liveArt=new Set((_artRows||[]).map(r=>r.id));
               const _dead=_blocked.filter(r=>{
                 const _ids=[...(Array.isArray(r._art_ids)?r._art_ids:[]),r.art_file_id].filter(id=>id&&id!=='__tbd');
@@ -2076,6 +2076,33 @@ const _dbSaveSOInner = async (so) => {
                 _blocked=_blocked.filter(r=>!_deadIds.has(r.id));
                 _dead.forEach(r=>_delIds.push(r.id));
                 console.warn('[DB] Retired',_dead.length,'dead job(s) on',so.id,'— DB has no decorations on this SO and the job\'s art file(s) no longer exist:',_dead.map(r=>r.id).join(', '));
+              }
+            }
+            // OUTSOURCED RETIREMENT (SO-1403, 2026-08-19): syncJobs retires a released job whose
+            // every remaining claimed decoration is routed to an outside decorator (jobAllRoutedOutside
+            // — deleted claims are neutral). When that was the SO's LAST job the save lands here with
+            // jobs:[], and the protection above blocked the retirement forever: every open re-computed
+            // the retirement, the wipe was blocked, and the rep got the data-loss banner + email on a
+            // loop. Per this guard's own rule, liveness is decided by the DATABASE: rebuild the order
+            // shape from the DB's own rows (items, decorations, PO lines, deco POs, art types) and
+            // retire a protected job only when the DB itself proves every remaining claim vendor-routed.
+            // A stale/short-loaded client payload can't fake that. Any read error keeps the protection.
+            if(_blocked.length&&(_itRows||[]).length){
+              const{data:_poRows,error:_pe}=await supabase.from('so_item_po_lines').select('so_item_id,po_type,deco_type').in('so_item_id',(_itRows||[]).map(r=>r.id));
+              if(_pe)throw _pe;
+              const{data:_dpRow,error:_dpe}=await supabase.from('sales_orders').select('deco_pos').eq('id',so.id).maybeSingle();
+              if(_dpe)throw _dpe;
+              const _idxById={};(_itRows||[]).forEach(r=>{_idxById[r.id]=r.item_index});
+              const _dbO={id:so.id,deco_pos:_dpRow?.deco_pos||null,art_files:_artRows||[],items:[]};
+              (_itRows||[]).forEach(r=>{if(r.item_index!=null)_dbO.items[r.item_index]={decorations:[],po_lines:[]}});
+              _decoRows.forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];if(it&&d.deco_index!=null)it.decorations[d.deco_index]=d});
+              (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];if(it)it.po_lines.push(p)});
+              const _routed=_blocked.filter(r=>jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
+              if(_routed.length){
+                const _routedIds=new Set(_routed.map(r=>r.id));
+                _blocked=_blocked.filter(r=>!_routedIds.has(r.id));
+                _routed.forEach(r=>_delIds.push(r.id));
+                console.warn('[DB] Retired',_routed.length,'outsourced job(s) on',so.id,'— the DB shows every remaining claimed decoration routed to an outside decorator:',_routed.map(r=>r.id).join(', '));
               }
             }
           }catch(err){console.error('[DB] SAFETY: dead-job liveness check failed on',so.id,'— keeping protection:',err?.message||err)}
