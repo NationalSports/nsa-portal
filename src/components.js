@@ -111,7 +111,7 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
 // blur was invisible to autosave AND to the unsaved-changes tab-close warning while
 // the field was still focused — closing the tab mid-note silently lost the note.
 const TXT_IDLE_MS=400,TXT_MAX_MS=1500;
-function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFocus}){
+function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,onClick,autoFocus}){
   const cur=value==null?'':String(value);
   const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
   const rawRef=React.useRef(raw);rawRef.current=raw;
@@ -123,6 +123,7 @@ function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFo
   React.useEffect(()=>flush,[flush]);// flush pending text on unmount
   const commit=()=>{setFocused(false);flush()};
   return<input className={className} style={style} placeholder={placeholder} title={title} autoFocus={autoFocus} value={raw}
+    onClick={onClick}
     onFocus={()=>setFocused(true)}
     onChange={e=>{const v=e.target.value;setRaw(v);rawRef.current=v;if(!firstEditRef.current)firstEditRef.current=Date.now();if(timerRef.current)clearTimeout(timerRef.current);if(Date.now()-firstEditRef.current>=TXT_MAX_MS)flush();else timerRef.current=setTimeout(flush,TXT_IDLE_MS)}}
     onBlur={commit}

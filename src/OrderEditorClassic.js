@@ -6375,7 +6375,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{flex:1}}>
                   {/* Name + Status */}
                   <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
-                    <input className="form-input" value={art.name} onChange={e=>uArt(i,'name',e.target.value)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}} onClick={e=>e.stopPropagation()}/>
+                    <$Txt className="form-input" value={art.name} onChange={v=>uArt(i,'name',v)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}} onClick={e=>e.stopPropagation()}/>
                     <select style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,border:'1px solid #e2e8f0',background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c,cursor:'pointer'}} value={art.status==='uploaded'?'needs_approval':art.status} onChange={e=>uArt(i,'status',e.target.value)}>
                       <option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved / Needs Files</option>
                     </select>
@@ -6385,7 +6385,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Size + default location */}
                   <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
-                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
                     {/* Default location — when this folder is placed on a garment, the deco's position
                         seeds from here instead of the generic front default. Blank = no default. */}
                     <div style={{width:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Default location</label><select className="form-select" value={art.location||''} onChange={e=>uArt(i,'location',e.target.value)} style={{fontSize:12}} title="Where this art usually goes — decorations default here when the folder is added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
