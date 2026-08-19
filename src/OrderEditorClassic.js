@@ -5739,9 +5739,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   reader.onload=ev=>importNamesCsv(ev.target.result);reader.readAsText(f)}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:11,fontWeight:600,color:'#92400e'}}>Drag CSV or enter names</span>
-                  <div style={{display:'flex',gap:4}}>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {/* Copy names from another item's Names deco — mirrors the number roster's "Copy from..." */}
+                    {(()=>{const otherNameDecos=[];safeItems(o).forEach((oit,oi)=>{if(oi===idx)return;safeDecos(oit).forEach(od=>{if(od.kind==='names'&&od.names&&Object.values(od.names).flat().some(v=>v&&String(v).trim())){otherNameDecos.push({sku:oit.sku,position:od.position,names:od.names})}})});
+                      return otherNameDecos.length>0&&<select className="form-select" style={{fontSize:9,padding:'2px 4px',width:'auto',background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e',fontWeight:600}} value="" onChange={e=>{const src=otherNameDecos[parseInt(e.target.value)];if(!src)return;
+                      // Scope to THIS garment's sizes, same as the numbers copy: a raw deep-copy plants the
+                      // source's size keys on a garment that doesn't have them, and those stale keys are
+                      // invisible here (slots render per own size) but duplicate every name on job displays
+                      // and billing counts (SO-1588). One-size garment (e.g. a bag) takes the whole list.
+                      const scoped=scopeRosterToSizes(src.names,item.sizes);
+                      const liveSzs=Object.entries(item.sizes||{}).filter(([,v])=>v>0);
+                      let nn2=scoped;
+                      if(!Object.values(scoped).flat().some(v=>v&&String(v).trim())&&liveSzs.length===1){
+                        const[sz,q]=liveSzs[0];nn2={[sz]:Object.values(src.names).flat().filter(v=>v&&String(v).trim()).slice(0,q)}}
+                      // Nothing landed (no shared sizes): leave the deco alone rather than blanking
+                      // whatever the rep already typed here.
+                      const _ct=Object.values(nn2).flat().filter(v=>v&&String(v).trim()).length;
+                      if(!_ct){nf('No names matched this garment\u2019s sizes','error');return}
+                      uD(idx,di,'names',JSON.parse(JSON.stringify(nn2)));nf(_ct+' name'+(_ct===1?'':'s')+' copied from '+src.sku)}}>
+                        <option value="">📋 Copy from...</option>
+                        {otherNameDecos.map((ndc,ni)=><option key={ni} value={ni}>{ndc.sku} — {ndc.position} ({Object.values(ndc.names).flat().filter(v=>v&&String(v).trim()).length} names)</option>)}
+                      </select>})()}
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{let csv='Size,Number,Name\n';sQ2.forEach(([sz,sq])=>{for(let i=0;i<sq;i++)csv+=sz+',,\n'});const b=new Blob([csv],{type:'text/csv'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='name_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(u)}}>📥 Template</button>
                     <label className="btn btn-sm btn-secondary" style={{fontSize:9,cursor:'pointer',margin:0}}>📤 Upload<input type="file" accept=".csv,text/csv" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>importNamesCsv(ev.target.result);reader.readAsText(f);e.target.value=''}}/></label>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{const t=prompt('Paste (Size,Name per line):\nM,Smith\nL,Jones');if(t)importNamesCsv(t)}}>📋 Paste</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'names',{});nf('Cleared')}}>Clear</button></div></div>
                 {sQ2.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes first</div>:
                 <div style={{display:'flex',flexDirection:'column',gap:2}}>
@@ -6357,7 +6378,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{flex:1}}>
                   {/* Name + Status */}
                   <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
-                    <input className="form-input" value={art.name} onChange={e=>uArt(i,'name',e.target.value)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}} onClick={e=>e.stopPropagation()}/>
+                    <$Txt className="form-input" value={art.name} onChange={v=>uArt(i,'name',v)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}} onClick={e=>e.stopPropagation()}/>
                     <select style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,border:'1px solid #e2e8f0',background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c,cursor:'pointer'}} value={art.status==='uploaded'?'needs_approval':art.status} onChange={e=>uArt(i,'status',e.target.value)}>
                       <option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved / Needs Files</option>
                     </select>
@@ -6367,7 +6388,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Size + default location */}
                   <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end',flexWrap:'wrap'}}>
-                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><$Txt className="form-input" value={art.art_size||''} onChange={v=>uArt(i,'art_size',v)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
                     {/* Default location — when this folder is placed on a garment, the deco's position
                         seeds from here instead of the generic front default. Blank = no default. */}
                     <div style={{width:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Default location</label><select className="form-select" value={art.location||''} onChange={e=>uArt(i,'location',e.target.value)} style={{fontSize:12}} title="Where this art usually goes — decorations default here when the folder is added to a garment"><option value="">— No default —</option>{POSITIONS.map(p=><option key={p} value={p}>{p==='Front'?'Center Chest':p}</option>)}</select></div>
@@ -13333,7 +13354,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const NON_SZ=['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'];
       const itemInfos=picks.map((p,i)=>{
         const it=o.items[p.lineIdx]||{};const pk=p.pick;
-        const szKeys=Object.keys(pk).filter(k=>!NON_SZ.includes(k)&&typeof pk[k]==='number'&&pk[k]>0);
+        // Pick objects carry sizes in whatever order they were written, so the IF read
+        // "L S XL XS 2XL". Rank them so every IF shows the wear run XS→5XL.
+        const szKeys=Object.keys(pk).filter(k=>!NON_SZ.includes(k)&&typeof pk[k]==='number'&&pk[k]>0).sort((a,b)=>szRank(a)-szRank(b));
         const total=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
         return{idx:i,item:it,pick:pk,szKeys,total,lineIdx:p.lineIdx,pickIdx:p.pickIdx};
       });
@@ -13345,7 +13368,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       // so the user can grow the pick from the order side. Mirrors the "Create IF" availability check.
       const onPickIdxs=new Set(picks.map(p=>p.lineIdx));
       const pickDefaultDest=(picks.map(p=>p.pick).find(pk=>pk.ship_dest)?.ship_dest)||firstPk.ship_dest||'in_house';
-      const opensForItem=(it)=>Object.entries(it.sizes||{}).map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,(v||0)-picked-po)]}).filter(([,op])=>op>0);
+      const opensForItem=(it)=>Object.entries(it.sizes||{}).map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return[sz,Math.max(0,(v||0)-picked-po)]}).filter(([,op])=>op>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));
       const addablePickItems=o.items.map((it,li)=>({it,li})).filter(({it,li})=>!onPickIdxs.has(li)&&opensForItem(it).length>0);
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
       // Build shared ship badge from first pick that has ship info
