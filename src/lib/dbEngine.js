@@ -1778,34 +1778,45 @@ const _dbSaveSOInner = async (so) => {
           const _revive=async()=>{if(!oi)return false;const i=await _reviveItem(oi);if(i<0)return false;_ti=i;ci=items[i];return true};
           // Receiving-rollback merge (see _receiptEditedPoIds comment above): runs before every skip
           // branch, because the skips are exactly where the client's stale copy of a held line wins.
-          if(ci&&!_receiptEdited.has(poId)){
+          // Two independently-triggered halves: RECEIVED (tombstone-gated — receipt edit/delete is a
+          // legitimate reduction) and BILLED/bill docs/tracking (never gated — every billed write in
+          // the app is additive, so any billed rollback is stale state; this also covers drop-ship
+          // lines, whose fulfillment lives entirely in billed with received always empty).
+          if(ci){
             const cl=(ci.po_lines||[]).find(p=>p&&p.po_id===poId);
             if(cl){
               const dbRcv=row.received||{},clRcv=cl.received||{};
-              const _rolled=Object.entries(dbRcv).some(([sz,v])=>typeof v==='number'&&v>0&&(typeof clRcv[sz]==='number'?clRcv[sz]:0)<v);
-              if(_rolled){
-                const merged={...cl,received:{...clRcv}};
-                Object.entries(dbRcv).forEach(([sz,v])=>{if(typeof v==='number'&&v>(merged.received[sz]||0))merged.received[sz]=v});
-                Object.entries(row.billed||{}).forEach(([sz,v])=>{if(typeof v==='number'&&v>0&&v>((merged.billed||{})[sz]||0))merged.billed={...(merged.billed||{}),[sz]:v}});
-                const _clShipSigs=new Set((Array.isArray(cl.shipments)?cl.shipments:[]).map(s=>JSON.stringify(s)));
-                const _missingShips=(Array.isArray(row.shipments)?row.shipments:[]).filter(s=>!_clShipSigs.has(JSON.stringify(s)));
-                if(_missingShips.length)merged.shipments=[...(Array.isArray(cl.shipments)?cl.shipments:[]),..._missingShips];
+              const _rolledRcv=!_receiptEdited.has(poId)&&Object.entries(dbRcv).some(([sz,v])=>typeof v==='number'&&v>0&&(typeof clRcv[sz]==='number'?clRcv[sz]:0)<v);
+              const dbBld=row.billed||{},clBld=cl.billed||{};
+              const _rolledBld=Object.entries(dbBld).some(([sz,v])=>typeof v==='number'&&v>0&&(typeof clBld[sz]==='number'?clBld[sz]:0)<v);
+              const _dbBills=Array.isArray((row.sizes||{})._bill_details)?row.sizes._bill_details:[];
+              const _clDocs=new Set((Array.isArray(cl._bill_details)?cl._bill_details:[]).map(b=>b&&b.doc));
+              const _addBills=_dbBills.filter(b=>b&&!_clDocs.has(b.doc));
+              if(_rolledRcv||_rolledBld||_addBills.length){
+                const merged={...cl};
+                if(_rolledRcv){
+                  merged.received={...clRcv};
+                  Object.entries(dbRcv).forEach(([sz,v])=>{if(typeof v==='number'&&v>(merged.received[sz]||0))merged.received[sz]=v});
+                  const _clShipSigs=new Set((Array.isArray(cl.shipments)?cl.shipments:[]).map(s=>JSON.stringify(s)));
+                  const _missingShips=(Array.isArray(row.shipments)?row.shipments:[]).filter(s=>!_clShipSigs.has(JSON.stringify(s)));
+                  if(_missingShips.length)merged.shipments=[...(Array.isArray(cl.shipments)?cl.shipments:[]),..._missingShips];
+                  // Same cancel-aware status derivation every receive screen uses, from the merged units.
+                  // Only when received changed: a drop-ship line's stored status is billing-driven.
+                  const _anyRcv=Object.values(merged.received).some(v=>typeof v==='number'&&v>0);
+                  const _openTot=Object.keys(merged).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof merged[k]==='number').reduce((a,sz)=>a+Math.max(0,(merged[sz]||0)-(merged.received[sz]||0)-((merged.cancelled||{})[sz]||0)),0);
+                  merged.status=_openTot<=0&&_anyRcv?'received':_anyRcv?'partial':(merged.status||'waiting');
+                }
+                if(_rolledBld){
+                  merged.billed={...clBld};
+                  Object.entries(dbBld).forEach(([sz,v])=>{if(typeof v==='number'&&v>(merged.billed[sz]||0))merged.billed[sz]=v});
+                }
+                if(_addBills.length){
+                  merged._bill_details=[...(Array.isArray(cl._bill_details)?cl._bill_details:[]),..._addBills];
+                  merged._bill_cost=merged._bill_details.reduce((a,b)=>a+(Number(b&&b.cost)||0),0);
+                }
                 const _clTrk=new Set(Array.isArray(cl.tracking_numbers)?cl.tracking_numbers:[]);
                 const _addTrk=(Array.isArray(row.tracking_numbers)?row.tracking_numbers:[]).filter(t=>!_clTrk.has(t));
                 if(_addTrk.length)merged.tracking_numbers=[...(Array.isArray(cl.tracking_numbers)?cl.tracking_numbers:[]),..._addTrk];
-                const _dbBills=Array.isArray((row.sizes||{})._bill_details)?row.sizes._bill_details:[];
-                if(_dbBills.length){
-                  const _clDocs=new Set((Array.isArray(cl._bill_details)?cl._bill_details:[]).map(b=>b&&b.doc));
-                  const _addBills=_dbBills.filter(b=>b&&!_clDocs.has(b.doc));
-                  if(_addBills.length){
-                    merged._bill_details=[...(Array.isArray(cl._bill_details)?cl._bill_details:[]),..._addBills];
-                    merged._bill_cost=merged._bill_details.reduce((a,b)=>a+(Number(b&&b.cost)||0),0);
-                  }
-                }
-                // Same cancel-aware status derivation every receive screen uses, from the merged units.
-                const _anyRcv=Object.values(merged.received).some(v=>typeof v==='number'&&v>0);
-                const _openTot=Object.keys(merged).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof merged[k]==='number').reduce((a,sz)=>a+Math.max(0,(merged[sz]||0)-(merged.received[sz]||0)-((merged.cancelled||{})[sz]||0)),0);
-                merged.status=_openTot<=0&&_anyRcv?'received':_anyRcv?'partial':(merged.status||'waiting');
                 ci.po_lines=(ci.po_lines||[]).map(p=>p===cl?merged:p);
                 _rcvMergedPoIds.push(poId);
                 _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po_merge',line:merged});

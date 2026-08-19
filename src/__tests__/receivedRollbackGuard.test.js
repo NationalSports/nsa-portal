@@ -145,3 +145,144 @@ test('a client copy that already carries the receiving saves unchanged (no rollb
   expect(inserted[0].received).toEqual(RECEIVED);
   expect(inserted[0].shipments).toEqual([SHIPMENT]);
 });
+
+// ── Edge cases ──
+
+const saveWith = async (p, rows) => {
+  const { __mockState } = require('@supabase/supabase-js');
+  __mockState.calls.length = 0;
+  __mockState.responses = {
+    sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }, { error: null }],
+    so_items: [{ data: dbItems(), error: null }, { data: [{ id: 'n1' }], error: null }],
+    so_art_files: [{ data: [], error: null }],
+    so_item_po_lines: [
+      { data: rows, error: null },
+      { data: [{ po_id: PO }], error: null },
+      { data: [{ po_id: PO }], error: null },
+      { error: null },
+      { count: rows.length, error: null },
+    ],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+    so_item_decorations: [{ data: [], error: null }],
+  };
+  const { _dbSaveSO } = require('../lib/dbEngine');
+  const ok = await _dbSaveSO(p);
+  const inserted = __mockState.calls
+    .filter(c => c.table === 'so_item_po_lines' && c.method === 'insert')
+    .flatMap(c => (c.args && c.args[0]) || [])
+    .filter(r => r.po_id === PO);
+  return { ok, inserted };
+};
+
+test('drop-ship: a billed-only wipe is restored (received stays empty, no tombstone applies)', async () => {
+  // Drop-ship fulfillment lives entirely in billed — the SO-1663 wipe shape on a drop-ship line
+  // never touches received, so the guard must trigger on the billed rollback alone.
+  const dbRow = { id: 'r1', so_item_id: 'oi-1', po_id: PO, vendor: 'S&S Activewear', status: 'shipped',
+    sizes: { L: 3, M: 4, unit_cost: 15.4, drop_ship: true, _bill_details: [BILL], _bill_cost: 354.2 },
+    received: {}, billed: { L: 3, M: 4 }, cancelled: {}, shipments: [], tracking_numbers: ['1Z999'] };
+  const line = { po_id: PO, vendor: 'S&S Activewear', status: 'waiting', created_at: '7/27/2026',
+    drop_ship: true, received: {}, shipments: [], L: 3, M: 4, unit_cost: 15.4 };
+  const { ok, inserted } = await saveWith(payload(line), [dbRow]);
+  expect(ok).toBe(true);
+  expect(inserted[0].billed).toEqual({ L: 3, M: 4 });
+  expect(inserted[0].sizes._bill_details).toEqual([BILL]);
+  expect(inserted[0].sizes._bill_cost).toBe(354.2);
+  expect(inserted[0].tracking_numbers).toEqual(['1Z999']);
+  expect(inserted[0].received).toEqual({});
+  // Billing-driven status is derived at render for drop-ship — the merge must not rewrite it.
+  expect(inserted[0].status).toBe('waiting');
+});
+
+test('a tombstoned receipt delete still gets rolled-back BILLING restored (billed is never user-reduced)', async () => {
+  const { ok, inserted } = await saveWith(
+    payload(staleClientLine(), { _receiptEditedPoIds: [PO] }),
+    [{ ...poRows()[0], billed: { XL: 7 } }]
+  );
+  expect(ok).toBe(true);
+  expect(inserted[0].received).toEqual({});      // deliberate un-receive honored
+  expect(inserted[0].status).toBe('waiting');
+  expect(inserted[0].billed).toEqual({ XL: 7 }); // stale billing rollback still repaired
+  expect(inserted[0].sizes._bill_details).toEqual([BILL]);
+});
+
+test('batch/API-order lines (api_order_id present) merge before the api-order skip branch', async () => {
+  const dbRow = poRows()[0];
+  dbRow.sizes.api_order_id = 'ADI-778812';
+  const { ok, inserted } = await saveWith(payload(staleClientLine({ api_order_id: 'ADI-778812' })), [dbRow]);
+  expect(ok).toBe(true);
+  expect(inserted).toHaveLength(1);
+  expect(inserted[0].received).toEqual(RECEIVED);
+  expect(inserted[0].status).toBe('received');
+});
+
+test('SO-1837 shape: the stale copy also rolled back ORDERED sizes — receiving still restores in full', async () => {
+  // The 8/19 CIVVB wipe reverted the client line's ordered XL 4→2 and dropped 2XL entirely; the DB
+  // row had received XL:4 and 2XL:1. Received merges in full (over-received per the client's stale
+  // ordered qtys is visible and correct); ordered sizes stay the rep-owned client values.
+  const line = staleClientLine({ XL: 2 });
+  delete line['2XL'];
+  const { ok, inserted } = await saveWith(payload(line), poRows());
+  expect(ok).toBe(true);
+  expect(inserted[0].received).toEqual(RECEIVED);
+  expect(inserted[0].status).toBe('received');
+  expect(inserted[0].sizes.XL).toBe(2);          // ordered sizes untouched by the merge
+  expect(inserted[0].sizes['2XL']).toBeUndefined();
+});
+
+test('cancel-aware status: merged receipts + cancelled remainder derive status received, not partial', async () => {
+  const dbRow = { id: 'r1', so_item_id: 'oi-1', po_id: PO, vendor: 'S&S Activewear', status: 'received',
+    sizes: { L: 5, unit_cost: 15.4 }, received: { L: 3 }, billed: {}, cancelled: { L: 2 }, shipments: [], tracking_numbers: [] };
+  const line = { po_id: PO, vendor: 'S&S Activewear', status: 'waiting', created_at: '7/27/2026',
+    received: {}, cancelled: { L: 2 }, shipments: [], L: 5, unit_cost: 15.4 };
+  const { ok, inserted } = await saveWith(payload(line), [dbRow]);
+  expect(ok).toBe(true);
+  expect(inserted[0].received).toEqual({ L: 3 });
+  expect(inserted[0].status).toBe('received'); // 5 ordered − 3 received − 2 cancelled = 0 open
+});
+
+test('multi-item PO (one row per item): every item\'s rolled-back line merges independently', async () => {
+  const { __mockState } = require('@supabase/supabase-js');
+  __mockState.calls.length = 0;
+  __mockState.responses = {
+    sales_orders: [{ data: { updated_at: 'yesterday', deco_pos: null }, error: null }, { error: null }],
+    so_items: [
+      { data: [
+        { id: 'oi-1', item_index: 0, sku: 'AT101', color: 'Dark Green/ White', product_id: null },
+        { id: 'oi-2', item_index: 1, sku: 'AT102', color: 'Navy', product_id: null },
+      ], error: null },
+      { data: [{ id: 'n1' }, { id: 'n2' }], error: null },
+    ],
+    so_art_files: [{ data: [], error: null }],
+    so_item_po_lines: [
+      { data: [
+        { id: 'r1', so_item_id: 'oi-1', po_id: PO, vendor: 'S&S Activewear', status: 'received', sizes: { L: 3, unit_cost: 15.4 }, received: { L: 3 }, billed: {}, cancelled: {}, shipments: [], tracking_numbers: [] },
+        { id: 'r2', so_item_id: 'oi-2', po_id: PO, vendor: 'S&S Activewear', status: 'received', sizes: { M: 2, unit_cost: 12.1 }, received: { M: 2 }, billed: {}, cancelled: {}, shipments: [], tracking_numbers: [] },
+      ], error: null },
+      { data: [{ po_id: PO }, { po_id: PO }], error: null },
+      { data: [{ po_id: PO }, { po_id: PO }], error: null },
+      { error: null },
+      { count: 2, error: null },
+    ],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+    so_item_decorations: [{ data: [], error: null }, { data: [], error: null }],
+  };
+  const { _dbSaveSO } = require('../lib/dbEngine');
+  const ok = await _dbSaveSO({
+    id: 'SO-1663', memo: 'Santa Barbara HS Football', _decosHydrated: true,
+    items: [
+      { sku: 'AT101', color: 'Dark Green/ White', sizes: { L: 3 }, po_lines: [{ po_id: PO, vendor: 'S&S Activewear', status: 'waiting', created_at: '7/27/2026', received: {}, shipments: [], L: 3, unit_cost: 15.4 }] },
+      { sku: 'AT102', color: 'Navy', sizes: { M: 2 }, po_lines: [{ po_id: PO, vendor: 'S&S Activewear', status: 'waiting', created_at: '7/27/2026', received: {}, shipments: [], M: 2, unit_cost: 12.1 }] },
+    ],
+  });
+  expect(ok).toBe(true);
+  const inserted = __mockState.calls
+    .filter(c => c.table === 'so_item_po_lines' && c.method === 'insert')
+    .flatMap(c => (c.args && c.args[0]) || [])
+    .filter(r => r.po_id === PO);
+  expect(inserted).toHaveLength(2);
+  const bySku = Object.fromEntries(inserted.map(r => [r.sizes.L ? 'AT101' : 'AT102', r]));
+  expect(bySku.AT101.received).toEqual({ L: 3 });
+  expect(bySku.AT101.status).toBe('received');
+  expect(bySku.AT102.received).toEqual({ M: 2 });
+  expect(bySku.AT102.status).toBe('received');
+});
