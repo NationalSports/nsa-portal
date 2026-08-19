@@ -21,7 +21,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors } from './lib/syncJobsMatch';
@@ -3446,30 +3446,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Build a set of (item_idx, deco_idx) pairs already covered by a released
     // job so we can skip them when assembling itemSigs below.
     const _isRel=j=>j._released||j.key?.startsWith('released_');
-    // A job whose decorations have ALL been routed to an outside decorator (their items put on a deco
-    // PO, or flagged outside) must retire even when frozen — the vendor now produces this work, so an
-    // in-house production job would double-track it (and double-count its cost against the PO). A
-    // decoration that's genuinely gone (item/deco removed) is NEUTRAL: it can't be produced in-house
-    // or outside, so it neither retires the job nor blocks retirement (SO-1403: a released job over
-    // an outside-routed tee plus a pant whose deco was deleted survived every sync because the dead
-    // claim vetoed this gate while the live tee deco satisfied _jobHasLiveDeco). A job with NO live
-    // claims at all still falls through to the live-deco / orphan-preservation branches below.
-    const _jobAllOutsourced=j=>{
-      const pairs=[];
-      (j?.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>pairs.push([gi.item_idx,di]))});
-      if(!pairs.length)return false;
-      // Mirrors the build gate below: a PO-covered deco on an item that keeps in-house work is a
-      // materials purchase (the floor still applies it), so it does NOT count toward retiring the
-      // job — only whole-item vendor decoration or explicit per-deco routing does.
-      let out=0;
-      for(const[ii,di]of pairs){
-        const it=safeItems(o)[ii];if(!it)continue;
-        const d=safeDecos(it)[di];if(!d)continue;
-        if(d.kind==='outside_deco'||d.fulfillment==='outside'||!!d.deco_po_id||_itemFullyOutsourced(ii))out++;
-        else return false;
-      }
-      return out>0;
-    };
+    // A job whose decorations have ALL been routed to an outside decorator must retire even when
+    // frozen — the vendor now produces this work, so an in-house production job would double-track
+    // it (and double-count its cost against the PO). The rule itself — including the SO-1403
+    // deleted-claim-is-neutral case and the SO-1660 materials-purchase exception — lives in
+    // businessLogic.jobAllRoutedOutside, shared with the art boards so sync and boards can't drift.
+    const _jobAllOutsourced=j=>jobAllRoutedOutside(o,j,outsourcedByItem);
     // Frozen jobs whose claimed decorations were all cleared (rep deleted art from every line)
     // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
     // live deco behind it (SO-1057 JOB-1057-01 after line art was wiped).
