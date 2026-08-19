@@ -812,3 +812,172 @@ describe('_mergeArtConflict — prod_files_attached defers to the DB copy (SO-11
     jest.resetModules();
   });
 });
+
+// ── Stale so_jobs saves must not lower receipt state or truncate append-only history ──
+describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (SO-1131 follow-up)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const dbJobRow = (over = {}) => ({
+    id: 'JOB-H-01', sent_to_coach_at: null, coach_approved_at: null,
+    coach_approval_comment: null, coach_rejected: null,
+    art_status: 'art_complete', _version: 5,
+    fulfilled_units: 6, item_status: 'partially_received',
+    art_messages: [{ id: 'm1', text: 'a' }, { id: 'm2', text: 'b' }],
+    sent_history: [{ sent_at: '2026-08-01T00:00:00Z', to: 'coach@x.org' }],
+    rejections: [{ at: '2026-07-01T00:00:00Z', reason: 'r1' }],
+    ...over,
+  });
+  const soWith = (job) => ({
+    id: 'SO-GUARD-2', memo: 'm',
+    items: [{ sku: 'TEE', color: 'Red' }],
+    jobs: [job],
+  });
+  const responses = (dbRow) => ({
+    sales_orders: [
+      { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
+      { error: null },
+    ],
+    so_items: [
+      { data: [], error: null },
+      { data: [{ id: 'ni-1' }], error: null },
+    ],
+    so_art_files: [{ data: [], error: null }],
+    so_item_po_lines: [
+      { data: [], error: null }, { data: [], error: null }, { data: [], error: null },
+    ],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+    so_jobs: [
+      { data: [dbRow], error: null },
+      { error: null },
+      { data: [{ id: dbRow.id }], error: null },
+    ],
+  });
+  const jobUpsertRow = (calls) => {
+    const up = calls.filter(c => c.table === 'so_jobs' && c.method === 'upsert');
+    expect(up.length).toBe(1);
+    return up[0].args[0][0];
+  };
+
+  test('stale copy lowering fulfilled_units keeps the DB count AND its paired item_status', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-H-01', art_status: 'art_complete', _version: 3, fulfilled_units: 0, item_status: 'need_to_order', items: [] };
+    await _dbSaveSO(soWith(job));
+    const row = jobUpsertRow(__mockState.calls);
+    expect(row.fulfilled_units).toBe(6);
+    expect(row.item_status).toBe('partially_received');
+  });
+
+  test('a current copy (version matches DB) may lower fulfilled_units — deliberate un-receive', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-H-01', art_status: 'art_complete', _version: 5, fulfilled_units: 2, item_status: 'partially_received', items: [] };
+    await _dbSaveSO(soWith(job));
+    expect(jobUpsertRow(__mockState.calls).fulfilled_units).toBe(2);
+  });
+
+  test('stale copy with truncated history lists gets the union: DB entries kept, its new entries appended', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = {
+      id: 'JOB-H-01', art_status: 'art_complete', _version: 3, fulfilled_units: 6, item_status: 'partially_received', items: [],
+      art_messages: [{ id: 'm1', text: 'a' }, { id: 'm3', text: 'new from this tab' }], // m2 never loaded here
+      sent_history: [],                                                                // never loaded here
+      rejections: [{ at: '2026-07-01T00:00:00Z', reason: 'r1' }],                      // unchanged
+    };
+    await _dbSaveSO(soWith(job));
+    const row = jobUpsertRow(__mockState.calls);
+    expect(row.art_messages.map(m => m.id)).toEqual(['m1', 'm2', 'm3']); // DB order first, new entry appended
+    expect(row.sent_history.length).toBe(1);                             // DB record rescued
+    expect(row.rejections.length).toBe(1);                               // unchanged list untouched
+  });
+
+  test('a current copy keeps full authority over its lists', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = {
+      id: 'JOB-H-01', art_status: 'art_complete', _version: 5, fulfilled_units: 6, item_status: 'partially_received', items: [],
+      art_messages: [{ id: 'm1', text: 'a' }],
+    };
+    await _dbSaveSO(soWith(job));
+    expect(jobUpsertRow(__mockState.calls).art_messages.map(m => m.id)).toEqual(['m1']);
+  });
+});
+
+// ── Header-decision guard: a version-conflicted SO save keeps po_number and completed status ──
+describe('_dbSaveSOInner — stale SO save preserves header decisions (po_number / complete)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  // so._version=5, server at v8 → _checkVersion returns 8 → _versionConflict set.
+  const responses = (dbHeader) => ({
+    sales_orders: [
+      { data: { _version: 8 }, error: null },   // _checkVersion read
+      { data: { updated_at: 'yesterday', deco_pos: null, ...dbHeader }, error: null }, // existingSO read
+      { error: null },                           // upsert
+    ],
+    so_items: [
+      { data: [{ id: 'oi-1', item_index: 0, sku: 'TEE', color: 'Red', product_id: null }], error: null },
+      { data: [{ id: 'ni-1' }], error: null },
+    ],
+    so_art_files: [{ data: [], error: null }],
+    so_item_po_lines: [
+      { data: [], error: null }, { data: [], error: null }, { data: [], error: null },
+    ],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+  });
+  const soUpsertRow = (calls) => {
+    const up = calls.filter(c => c.table === 'sales_orders' && c.method === 'upsert');
+    expect(up.length).toBeGreaterThan(0);
+    return up[0].args[0];
+  };
+  const basePayload = (over = {}) => ({
+    id: 'SO-GUARD-3', memo: 'm', _version: 5,
+    items: [{ sku: 'TEE', color: 'Red' }],
+    ...over,
+  });
+
+  test('a stale save may not null a po_number or reopen a completed order', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses({ status: 'complete', po_number: 'PO-777' });
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    await _dbSaveSO(basePayload({ status: 'ready_to_invoice', po_number: null }));
+    const row = soUpsertRow(__mockState.calls);
+    expect(row.po_number).toBe('PO-777');
+    expect(row.status).toBe('complete');
+  });
+
+  test('the deliberate reopen (_status_reverted) passes and the one-shot marker is consumed', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses({ status: 'complete', po_number: 'PO-777' });
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const so = basePayload({ status: 'ready_to_invoice', po_number: 'PO-777', _status_reverted: true });
+    await _dbSaveSO(so);
+    expect(soUpsertRow(__mockState.calls).status).toBe('ready_to_invoice');
+    expect(so._status_reverted).toBeUndefined();
+  });
+
+  test('without a version conflict the client header is written as-is', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    const resp = responses({ status: 'complete', po_number: 'PO-777' });
+    resp.sales_orders[0] = { data: { _version: 5 }, error: null }; // server matches local → no conflict
+    __mockState.responses = resp;
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    await _dbSaveSO(basePayload({ status: 'ready_to_invoice', po_number: null }));
+    const row = soUpsertRow(__mockState.calls);
+    expect(row.status).toBe('ready_to_invoice');
+    expect(row.po_number == null).toBe(true);
+  });
+});

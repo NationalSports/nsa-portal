@@ -7966,7 +7966,9 @@ export default function App(){
           // No more invoices — SO goes back to ready_to_invoice. savSO (not a
           // bare setSOs) so this persists — same reasoning as the ShipStation
           // handlers above.
-          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
+          // _status_reverted marks this as the DELIBERATE reopen of a completed order for dbEngine's
+          // header-decision guard — without it a stale-flagged save may not pull 'complete' back open.
+          savSO({...so,status:'ready_to_invoice',_status_reverted:true,updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
