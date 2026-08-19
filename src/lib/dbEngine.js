@@ -2086,7 +2086,16 @@ const _dbSaveSOInner = async (so) => {
       // overwriting. Applies regardless of the deliberate-move markers: a send-back's new rejection
       // is an APPEND, so the union keeps it while also rescuing entries the stale copy never saw.
       {const _HIST_COLS=['art_messages','sent_history','rejections'];
-      const _entryKey=(e)=>(e&&typeof e==='object'&&(e.id||e.sent_at||e.rejected_at||e.at||e.ts))||JSON.stringify(e);
+      // rejections key deliberately ignores timestamps: the coach portal writes the decision
+      // server-first (apply_coach_art_decision stamps its own `at`) and then echoes a client save
+      // whose copy of the SAME rejection carries the browser's timestamp (and a richer per-garment
+      // `items` breakdown) — timestamp-keyed dedupe would keep both and show the coach's feedback
+      // twice. by+reason identifies the logical decision across both writes.
+      const _histKey=(c,e)=>{
+        if(!e||typeof e!=='object')return JSON.stringify(e);
+        if(c==='rejections')return (e.by||'')+'|'+(e.reason||'');
+        return e.id||e.sent_at||e.rejected_at||e.at||e.ts||JSON.stringify(e);
+      };
       let _histKept=0;
       jobRows.forEach((row,i)=>{
         const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
@@ -2094,9 +2103,14 @@ const _dbSaveSOInner = async (so) => {
         _HIST_COLS.forEach(c=>{
           if(!Array.isArray(db[c])||!db[c].length||!(c in row))return;
           const client=Array.isArray(row[c])?row[c]:[];
-          const seen=new Set(db[c].map(_entryKey));
-          const extra=client.filter(e=>!seen.has(_entryKey(e)));
-          if(client.length<db[c].length+extra.length){row[c]=[...db[c],...extra];_histKept++}
+          // DB order first; where the client holds its own copy of the same logical entry, the
+          // client's copy wins in place (it is at least as informative — e.g. the portal echo's
+          // rejection carries the per-garment breakdown the RPC's record lacks). Client-only
+          // entries append at the end, so a fresh reply still lands last.
+          const _cByKey=new Map(client.map(e=>[_histKey(c,e),e]));
+          const _dbKeys=new Set(db[c].map(e=>_histKey(c,e)));
+          const merged=[...db[c].map(e=>{const k=_histKey(c,e);return _cByKey.has(k)?_cByKey.get(k):e}),...client.filter(e=>!_dbKeys.has(_histKey(c,e)))];
+          if(merged.length!==client.length||merged.some((e,x)=>e!==client[x])){row[c]=merged;_histKept++}
         });
       });
       if(_histKept)console.warn('[DB] Merged',_histKept,'job history list(s) on',so.id,'that a stale save would have truncated (client job copy behind DB _version)');}
