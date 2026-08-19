@@ -466,7 +466,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All Years'],['thisyear','This Year'],['lastyear','Last Year']].map(([v,l])=><button key={v} className={`btn btn-sm ${yF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setYF(v)}>{l}</button>)}
       </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
-        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){const inv2=(invs||[]).find(x=>x.id===t.id)||t;onOpenInv(inv2)}}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
+        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){const inv2=t._hist?t:((invs||[]).find(x=>x.id===t.id)||t);onOpenInv(inv2)}}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
           <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
           <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
           <td style={{fontSize:11,color:'#64748b'}}>{_fmtDate(t.date)||'—'}</td>
@@ -1586,11 +1586,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div className="stat-card"><div className="stat-label">Avg Invoice</div><div className="stat-value">{fmt(avg)}</div></div>
           <div className="stat-card"><div className="stat-label">First → Last</div><div className="stat-value" style={{fontSize:13}}>{fmtD(first)} → {fmtD(last)}</div></div>
         </div>
-        {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} (revenue and dates only — no line items).</div>}
+        {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} — click any row to view the invoice with its items.</div>}
         {sortedInvs.length>0&&<div style={{marginTop:12}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,textTransform:'uppercase'}}>Invoices</div>
           <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>Date</th><th style={{textAlign:'left'}}>Invoice #</th>{isP&&<th style={{textAlign:'left'}}>Sub</th>}<th style={{textAlign:'left'}}>Memo</th><th style={{textAlign:'right'}}>Total</th><th>Source</th></tr></thead><tbody>
-            {sortedInvs.map((i,idx)=>{const d=pd(i.date);return<tr key={i.id+'-'+idx}>
+            {/* Open the invoice detail on click — it lazily loads NetSuite line items from
+                customer_invoice_lines (same data the Sales History page reads), so hist rows show
+                their real items there. Pass the _hist object itself, never a portal row that might
+                share its document number (the INV62383 shadow rule from InvoicesPage). */}
+            {sortedInvs.map((i,idx)=>{const d=pd(i.date);return<tr key={i.id+'-'+idx} style={{cursor:onOpenInv?'pointer':undefined}} onClick={()=>{if(!onOpenInv)return;onOpenInv(i._hist?i:((invs||[]).find(x=>x.id===i.id)||i))}}>
               <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtD(d)}</td>
               <td style={{fontWeight:700,color:'#1e40af'}}>{i.document_number||i.id}</td>
               {isP&&<td><span className="badge badge-gray">{gn(i.customer_id)}</span></td>}
