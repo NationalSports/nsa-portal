@@ -8,7 +8,7 @@ import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
 import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
-import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo } from './components';
+import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
 
@@ -386,6 +386,7 @@ export default function InvoicesPage(){
                   billing_name:inv.billing_name||'',
                   billing_address:inv.billing_address||'',
                   billing_custom:_billingCustom,
+                  bill_to_id:inv.bill_to_id||'',
                   shipping_name:inv.shipping_name||'',
                   shipping_address:inv.shipping_address||'',
                   shipping_custom:!!(inv.shipping_name||inv.shipping_address),
@@ -985,14 +986,18 @@ export default function InvoicesPage(){
                   const parentC=emCust?.parent_id?cust.find(c=>c.id===emCust.parent_id):emCust;
                   const altAddrs=(parentC?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
                   const defaultLabel='Customer default'+(emCust?.billing_address_line1?' — '+emCust.billing_address_line1+(emCust.billing_city?', '+emCust.billing_city:'')+(emCust.billing_state?' '+emCust.billing_state:''):' (no address on file)');
-                  const matchingAlt=em.billing_name&&!em.billing_custom?altAddrs.find(a=>(a.label||'')===em.billing_name):null;
+                  // Prefer the saved bill_to_id — it is exact. Invoices written before the id
+                  // existed only have the name, so keep the legacy label match as a fallback.
+                  const _btAlt=em.bill_to_id&&em.bill_to_id!=='default'&&em.bill_to_id!=='custom'
+                    ?altAddrs.find(a=>billToIdFor(emCust,cust,a)===em.bill_to_id):null;
+                  const matchingAlt=em.billing_custom?null:(_btAlt||(em.billing_name?altAddrs.find(a=>(a.label||'')===em.billing_name):null));
                   const selValue=em.billing_custom?'__custom__':matchingAlt?JSON.stringify(matchingAlt):'';
                   return<>
                     <select className="form-select" value={selValue} onChange={e=>{
                       const v=e.target.value;
-                      if(v==='__custom__')setInvEditModal(s=>({...s,billing_custom:true,billing_name:s.billing_name||emCust?.name||'',billing_address:s.billing_address||''}));
-                      else if(v==='')setInvEditModal(s=>({...s,billing_custom:false,billing_name:'',billing_address:''}));
-                      else{const a=JSON.parse(v);setInvEditModal(s=>({...s,billing_custom:false,billing_name:a.label||'',billing_address:[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}))}
+                      if(v==='__custom__')setInvEditModal(s=>({...s,billing_custom:true,bill_to_id:'custom',billing_name:s.billing_name||emCust?.name||'',billing_address:s.billing_address||''}));
+                      else if(v==='')setInvEditModal(s=>({...s,billing_custom:false,bill_to_id:'default',billing_name:'',billing_address:''}));
+                      else{const a=JSON.parse(v);setInvEditModal(s=>({...s,billing_custom:false,bill_to_id:billToIdFor(emCust,cust,a),billing_name:a.label||'',billing_address:[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}))}
                     }} style={{fontSize:12}}>
                       <option value="">{defaultLabel}</option>
                       {altAddrs.map((a,i)=><option key={i} value={JSON.stringify(a)}>{(a.label||'Alt '+(i+1))+' — '+[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}</option>)}
@@ -1075,6 +1080,7 @@ export default function InvoicesPage(){
                 po_number:em.po_number?em.po_number.trim():null,
                 billing_name:em.billing_name||null,
                 billing_address:em.billing_address||null,
+                bill_to_id:em.bill_to_id||null,
                 shipping_name:em.shipping_name||null,
                 shipping_address:em.shipping_address||null,
                 shipping:safeNum(em.shipping),
