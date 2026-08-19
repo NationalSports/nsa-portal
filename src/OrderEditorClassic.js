@@ -35,7 +35,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys } from './lib/syncJobsMatch';
@@ -9463,6 +9463,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
           +'. Another tab or session ordered them. Reload the page to pull in the latest POs, then order only what\'s still open.';
       };
+      // Local over-commit guard — _poFreshDupCheck only catches drift between the DB and this tab;
+      // this catches what the tab already KNOWS. The qty boxes default to the open count but accept
+      // any typed number, so an overage quietly re-orders units an existing PO covers (SO-1295:
+      // JW6602's 9 extra hoods went on a second PO a day after the first covered the line — both
+      // arrived, and the extras sat on the SO as a cost write-off). Returns a confirm message
+      // naming the POs that already hold the units, or null when the entries are clean.
+      const _poOverCommitMsg=(entries)=>{
+        const rows=[];
+        entries.forEach(({idx,sizes})=>{
+          const it=safeItems(o)[idx];if(!it)return;
+          poOverCommit(it,sizes).forEach(c=>rows.push((it.sku||('line '+(idx+1)))+' '+c.sz+': ordering '+c.qty+' but only '+c.open+' still open'+(c.pos.length?' — '+c.committed+' already on '+c.pos.join(', '):'')));
+        });
+        if(!rows.length)return null;
+        return '⚠️ This PO orders MORE than the order still needs:\n\n'+rows.join('\n')+'\n\nThe same units would be on two POs — both arrive, and the extras stay on this SO as a cost write-off. Create the PO anyway?';
+      };
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>x</button></div>
         <div className="modal-body">
@@ -9704,8 +9719,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+            const _entries=_poSubmitEntries();
+            // Over-commit confirm — ordering beyond the line's open count needs a deliberate yes.
+            const _overMsg=_poOverCommitMsg(_entries);
+            if(_overMsg&&!window.confirm(_overMsg)){_poCreatingRef.current=false;return}
             // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
-            const _dup=await _poFreshDupCheck(_poSubmitEntries());
+            const _dup=await _poFreshDupCheck(_entries);
             if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
             setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
@@ -9796,8 +9815,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+          const _entries=_poSubmitEntries();
+          // Over-commit confirm — ordering beyond the line's open count needs a deliberate yes.
+          const _overMsg=_poOverCommitMsg(_entries);
+          if(_overMsg&&!window.confirm(_overMsg)){_poCreatingRef.current=false;return}
           // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
-          const _dup=await _poFreshDupCheck(_poSubmitEntries());
+          const _dup=await _poFreshDupCheck(_entries);
           if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
           setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
