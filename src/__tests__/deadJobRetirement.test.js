@@ -89,11 +89,11 @@ const baseRules = ({ jobsInDb, liveArt, liveItems, liveDecos }) => [
   { table: 'so_items', sel: 'id,item_index,sku,color,product_id', resp: { data: [], error: null } },
   { table: 'so_art_files', sel: '*', resp: { data: [], error: null } },
   // the wipe branch's own read of existing jobs
-  { table: 'so_jobs', sel: 'id,key,art_status,art_file_id,_art_ids', resp: { data: jobsInDb, error: null } },
+  { table: 'so_jobs', sel: 'id,key,art_status,art_file_id,_art_ids,items', resp: { data: jobsInDb, error: null } },
   // DB-side liveness reads
-  { table: 'so_art_files', sel: 'id', resp: liveArt },
-  { table: 'so_items', sel: 'id', resp: liveItems },
-  { table: 'so_item_decorations', sel: 'id', resp: liveDecos },
+  { table: 'so_art_files', sel: 'id,deco_type', resp: liveArt },
+  { table: 'so_items', sel: 'id,item_index', resp: liveItems },
+  { table: 'so_item_decorations', sel: 'so_item_id,deco_index,kind,fulfillment,deco_po_id,deco_type,art_file_id,num_method,name_method', resp: liveDecos },
   // the new item row's insert returns its id
   { table: 'so_items', method: 'insert', sel: 'id', resp: { data: [{ id: 'new-1' }], error: null } },
 ];
