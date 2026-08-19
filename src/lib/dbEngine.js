@@ -332,6 +332,41 @@ const _sbGetMyProfile=async()=>{
   const{data}=await supabase.rpc('get_my_profile');
   return data?.[0]||null;
 };
+// Reshape one customer_invoices row into the read-only _hist invoice object the app merges into
+// allOrders — one mapper shared by the initial load and the poll's self-heal refetch below.
+const _mapHistInvoice=hi=>({
+  id:hi.document_number||hi.id,
+  _hist_id:hi.id,
+  customer_id:hi.customer_id,
+  date:hi.invoice_date,
+  total:hi.total!=null?Number(hi.total):null,
+  memo:hi.memo||'',
+  status:hi.status||'paid',
+  type:'invoice',
+  _hist:true,
+  netsuite_internal_id:hi.netsuite_internal_id,
+  document_number:hi.document_number,
+  subsidiary:hi.subsidiary,
+  rep_name:hi.rep_name,
+  subtotal:hi.subtotal!=null?Number(hi.subtotal):null,
+  tax:hi.tax!=null?Number(hi.tax):null,
+  raw_customer_nsid:hi.raw_customer_nsid,
+  raw_customer_name:hi.raw_customer_name,
+  invoice_type:hi.type,
+});
+// One-table refetch of the NetSuite invoice history, for the poll's self-heal. customer_invoices
+// is the only STAFF-GATED read in the whole load (RLS: authenticated + is_team_member(); every
+// other table is anon-readable) and it's fetched exactly once, at initial load. A tab whose
+// initial load ran without a live staff session (expired/refreshing token, tab opened at the
+// login screen) therefore loads the entire portal fine EXCEPT NetSuite invoices — and kept them
+// empty until a hard refresh, because polls never re-applied them. Returns the mapped list, or
+// null on a failed page ([] is authoritative for anon/coach tabs — the RLS-denied read).
+const _dbLoadHistInvoices=async()=>{
+  if(!supabase)return null;
+  const r=await _safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000});
+  if(r.error)return null;// a failed/partial page — don't apply (a stale _lastLoadTimedOut entry from a prior load can't be trusted here, so judge by this result alone)
+  return (r.data||[]).map(_mapHistInvoice);
+};
 const _dbLoad = async (opts={}) => {
   const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;
   if (!supabase) return null;
@@ -595,26 +630,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
       return{...inv,payments,items:items.length?items:undefined,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
-    const hist_invoices=d(rHistInvs).map(hi=>({
-      id:hi.document_number||hi.id,
-      _hist_id:hi.id,
-      customer_id:hi.customer_id,
-      date:hi.invoice_date,
-      total:hi.total!=null?Number(hi.total):null,
-      memo:hi.memo||'',
-      status:hi.status||'paid',
-      type:'invoice',
-      _hist:true,
-      netsuite_internal_id:hi.netsuite_internal_id,
-      document_number:hi.document_number,
-      subsidiary:hi.subsidiary,
-      rep_name:hi.rep_name,
-      subtotal:hi.subtotal!=null?Number(hi.subtotal):null,
-      tax:hi.tax!=null?Number(hi.tax):null,
-      raw_customer_nsid:hi.raw_customer_nsid,
-      raw_customer_name:hi.raw_customer_name,
-      invoice_type:hi.type,
-    }));
+    const hist_invoices=d(rHistInvs).map(_mapHistInvoice);
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
@@ -3550,6 +3566,7 @@ export {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadHistInvoices,
   _dbSeed,
   _truncatedTables,
   _authErrorDetected,

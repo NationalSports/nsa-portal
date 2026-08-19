@@ -423,6 +423,7 @@ import {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadHistInvoices,
   _dbSeed,
   _authErrorDetected,
   _bgSync,
@@ -2339,6 +2340,9 @@ export default function App(){
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
+  // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
+  const _histInvsCount=useRef(0);
+  React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
@@ -3139,6 +3143,17 @@ export default function App(){
         if(!d._coreOnly)_lastFullSyncAt=Date.now();
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
+        // Self-heal the NetSuite invoice history. It loads once, at initial load, and polls never
+        // re-apply it — but customer_invoices is the only staff-gated read in the load (RLS:
+        // is_team_member(); every other table is anon-readable), so a tab whose initial load ran
+        // without a live staff session got an empty NetSuite history while everything else looked
+        // fine, and kept it empty until a hard refresh ("no NetSuite invoices on customer pages").
+        // Retry on full syncs while state has none; for anon/coach tabs the refetch is one cheap
+        // page-0 query that stays empty, so this never hammers the DB.
+        if(!d._coreOnly&&_histInvsCount.current===0){
+          const _hh=await _dbLoadHistInvoices();
+          if(_hh&&_hh.length){setHistInvs(prev=>prev.length?prev:_hh);console.log('[DB] NetSuite invoice history recovered on poll ('+_hh.length+' invoices)')}
+        }
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
         const _pollMerge=(dbArr,snapKey)=>(_dbSaveFailedIds.size||_dbSavePendingIds.size)?dbArr.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e):dbArr;
