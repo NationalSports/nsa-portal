@@ -3709,6 +3709,16 @@ export default function App(){
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
         // moved on mid-save and r.idx now points at another garment — bail untouched.
         if(!_same(it,r))return s;
+        // kind 'po_merge': the save guard merged rolled-back warehouse receiving into a line this
+        // client already HOLDS (SO-1663 receiving wipe) — replace that line in place rather than
+        // appending a duplicate of a po_id the item already carries.
+        if(r.kind==='po_merge'){
+          const cur=Array.isArray(it.po_lines)?it.po_lines:[];
+          const li=cur.findIndex(l=>l&&l.po_id===r.line.po_id);
+          if(li<0)return s;// line vanished mid-save — bail untouched; the next save re-merges
+          if(JSON.stringify(cur[li])===JSON.stringify(r.line))continue;// already merged (raced save)
+          out[r.idx]={...it,po_lines:cur.map((l,j)=>j===li?r.line:l)};applied++;continue;
+        }
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);
