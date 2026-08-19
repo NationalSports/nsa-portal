@@ -22524,7 +22524,11 @@ export default function App(){
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(!_inFam(j,jj))return jj;
-        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // _art_moved marks this as a DELIBERATE status transition for dbEngine's art-status
+        // regression guard — a workboard drag may legitimately move a job backward (e.g. back to
+        // In Progress), which an unstamped save from a stale tab would otherwise defer to the DB.
+        // One-shot: dbEngine consumes it on the save that carries it, never persisted as a column.
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist,_art_moved:true};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
         // it set with art_status ahead is the SO-1199 contradictory shape.

@@ -694,3 +694,121 @@ describe('_dbSaveSOInner — version-conflict save with an in-place SKU change (
     expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
   });
 });
+
+// ── Art-status regression guard: a stale tab's whole-row so_jobs upsert must not un-approve art ──
+// (SO-1131, 2026-08-19: a warehouse tab open since before the rep's approval wrote
+// waiting_approval back over art_complete 17 minutes later, resurrecting the cleared
+// "Mockup ready for review" to-do.) A client whose job copy is behind the DB row's _version
+// may not move art_status BACKWARD; deliberate pull-backs pass via the one-shot
+// _coach_cleared / _art_moved markers, and forward moves always pass.
+describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-1131)', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  const dbJobRow = (over = {}) => ({
+    id: 'JOB-G-01', sent_to_coach_at: null, coach_approved_at: null,
+    coach_approval_comment: null, coach_rejected: null,
+    art_status: 'art_complete', _version: 5, ...over,
+  });
+  const soWith = (job) => ({
+    id: 'SO-GUARD-1', memo: 'm',
+    items: [{ sku: 'TEE', color: 'Red' }],
+    jobs: [job],
+  });
+  const responses = (dbRow) => ({
+    sales_orders: [
+      { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
+      { error: null }, // upsert
+    ],
+    so_items: [
+      { data: [], error: null },          // old items read (empty — nothing to wipe)
+      { data: [{ id: 'ni-1' }], error: null }, // new insert returns matching id count
+    ],
+    so_art_files: [{ data: [], error: null }],
+    so_item_po_lines: [
+      { data: [], error: null }, { data: [], error: null }, { data: [], error: null },
+    ],
+    so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+    so_jobs: [
+      { data: [dbRow], error: null },        // coach/art guard read
+      { error: null },                        // upsert
+      { data: [{ id: dbRow.id }], error: null }, // cleanup read (no deletes)
+    ],
+  });
+  const jobUpsertRows = (calls) => {
+    const up = calls.filter(c => c.table === 'so_jobs' && c.method === 'upsert');
+    expect(up.length).toBe(1);
+    return up[0].args[0];
+  };
+
+  test('stale client (version behind DB) writing an earlier art_status keeps the DB status', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-G-01', art_status: 'waiting_approval', _version: 3, items: [] };
+    const result = await _dbSaveSO(soWith(job));
+    expect(result).toBe(true);
+    expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_complete');
+    // The client copy rebases onto its own write (DB version + trigger bump).
+    expect(job._version).toBe(6);
+  });
+
+  test('a deliberate pull-back (_coach_cleared) passes even from a stale copy', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-G-01', art_status: 'art_requested', _version: 3, _coach_cleared: true, items: [] };
+    await _dbSaveSO(soWith(job));
+    expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_requested');
+    expect(job._coach_cleared).toBeUndefined(); // one-shot marker consumed
+  });
+
+  test('a deliberate workboard move (_art_moved) passes even from a stale copy', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-G-01', art_status: 'art_in_progress', _version: 3, _art_moved: true, items: [] };
+    await _dbSaveSO(soWith(job));
+    expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_in_progress');
+    expect(job._art_moved).toBeUndefined(); // one-shot marker consumed
+  });
+
+  test('a current client (version matches DB) may move art_status backward unstamped', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow());
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-G-01', art_status: 'waiting_approval', _version: 5, items: [] };
+    await _dbSaveSO(soWith(job));
+    expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('waiting_approval');
+  });
+
+  test('a stale client moving art_status FORWARD (an approval) always passes', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = responses(dbJobRow({ art_status: 'waiting_approval' }));
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const job = { id: 'JOB-G-01', art_status: 'art_complete', _version: 3, items: [] };
+    await _dbSaveSO(soWith(job));
+    expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_complete');
+  });
+});
+
+// ── Art-file conflict merge: prod_files_attached is a decision column — DB wins on conflict ──
+describe('_mergeArtConflict — prod_files_attached defers to the DB copy (SO-1131)', () => {
+  test('a stale client cannot un-confirm production files through the conflict merge', () => {
+    withSupabaseEnv();
+    jest.resetModules();
+    const { _mergeArtConflict } = require('../lib/dbEngine');
+    const dbRow = { id: 'af1', status: 'approved', prod_files_attached: true, name: 'Logo', _version: 9 };
+    const clientArt = { id: 'af1', status: 'approved', prod_files_attached: false, name: 'Logo renamed', _version: 3 };
+    const merged = _mergeArtConflict(clientArt, dbRow);
+    expect(merged.prod_files_attached).toBe(true);   // decision: DB wins
+    expect(merged.name).toBe('Logo renamed');        // typed content: client still wins
+    restoreEnv();
+    jest.resetModules();
+  });
+});

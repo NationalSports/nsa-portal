@@ -873,7 +873,12 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 // filtered out as "stale". Instead we 3-way-merge: start from the DB row (keeps concurrent approval/status/mockup
 // changes), overlay THIS client's user-authored content, and union file collections so neither side's uploads are
 // lost. _version itself is never written (the DB trigger owns it), so the merged row upserts cleanly.
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','notes','archived','prod_files_attached'];
+// prod_files_attached is deliberately NOT user-authored content: it is a review DECISION (the
+// production-files confirmation an approval stamps), sibling to `status` — and like status the DB
+// copy must win on conflict. Overlaying the client's value let a stale tab silently un-confirm a
+// just-approved design (SO-1131, 2026-08-19: a warehouse tab reverted prod_files_attached true→
+// false 17 minutes after the rep's approval set it, alongside the so_jobs art_status clobber).
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','notes','archived'];
 const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
@@ -2005,10 +2010,10 @@ const _dbSaveSOInner = async (so) => {
       // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
       // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
       // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
-      {const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
-      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected').eq('so_id',so.id);
+      const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
+      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version').eq('so_id',so.id);
       const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
-      let _preserved=0;
+      {let _preserved=0;
       jobRows.forEach((row,i)=>{
         if(dedupedJobs[i]._coach_cleared)return;
         const db=_dbCoachById.get(row.id);if(!db)return;
@@ -2016,6 +2021,26 @@ const _dbSaveSOInner = async (so) => {
         if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
       });
       if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
+      // Art-status regression guard (SO-1131, 2026-08-19): the same blind whole-row upsert lets a
+      // STALE tab (its so_jobs snapshot behind the DB row's _version) silently un-approve artwork —
+      // a warehouse tab open since before a rep's approval wrote waiting_approval back over
+      // art_complete 17 minutes later, resurrecting the "Mockup ready for review" to-do the rep had
+      // already cleared. A stale copy may never move art_status BACKWARD through the review
+      // pipeline; the DB's more-advanced status is kept instead. Deliberate pull-backs still pass:
+      // recall / send-back-to-artist / artist resubmit stamp _coach_cleared (ART_PULLBACK_CLEARS),
+      // and the art workboard's drag stamps _art_moved (both one-shot, consumed below on success).
+      // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
+      // rep wants persisted. The three production-files stages share one rank: which of them a job
+      // sits in is a per-deco routing detail, not review progress.
+      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
+      let _artKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
+        const db=_dbCoachById.get(row.id);if(!db||!db.art_status)return;
+        const _stale=(j._version||0)<(db._version||0);
+        if(_stale&&(_ART_RANK[row.art_status]??-1)<(_ART_RANK[db.art_status]??-1)){row.art_status=db.art_status;_artKept++}
+      });
+      if(_artKept)console.warn('[DB] Preserved',_artKept,'art status(es) on',so.id,'that a stale save would have regressed (client job copy behind DB _version)');}
       // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
       // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
       // client sends on every save (_draft, priced_separately, price_override, split_group) — one
@@ -2030,7 +2055,18 @@ const _dbSaveSOInner = async (so) => {
         if(!jobErr&&_dbNotify)_dbNotify(_schemaGapMsg('Jobs','so_jobs',jobDropped),'error');
       }
       if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
-      else dedupedJobs.forEach(j=>{if(j._coach_cleared)delete j._coach_cleared});// one-shot marker — consumed by the save that carried it
+      else dedupedJobs.forEach(j=>{
+        if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
+        if(j._art_moved)delete j._art_moved;
+        // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
+        // _version bump (same trick the art-file path plays with baseVersion+1). so_jobs versions
+        // were never rebased before, so after ONE save every tab read as "stale" forever — which
+        // would make the regression guard above block this tab's own later deliberate backward
+        // moves (order-page art heals, job merges). Single-writer tabs now stay current; only a
+        // copy genuinely behind ANOTHER client's write is treated as stale.
+        const _db=_dbCoachById.get(j.id);
+        j._version=((_db?_db._version:j._version)||0)+1;
+      });
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
