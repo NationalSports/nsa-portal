@@ -5757,9 +5757,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   reader.onload=ev=>importNamesCsv(ev.target.result);reader.readAsText(f)}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:11,fontWeight:600,color:'#92400e'}}>Drag CSV or enter names</span>
-                  <div style={{display:'flex',gap:4}}>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {/* Copy names from another item's Names deco — mirrors the number roster's "Copy from..." */}
+                    {(()=>{const otherNameDecos=[];safeItems(o).forEach((oit,oi)=>{if(oi===idx)return;safeDecos(oit).forEach(od=>{if(od.kind==='names'&&od.names&&Object.values(od.names).flat().some(v=>v&&String(v).trim())){otherNameDecos.push({sku:oit.sku,position:od.position,names:od.names})}})});
+                      return otherNameDecos.length>0&&<select className="form-select" style={{fontSize:9,padding:'2px 4px',width:'auto',background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e',fontWeight:600}} value="" onChange={e=>{const src=otherNameDecos[parseInt(e.target.value)];if(!src)return;
+                      // Scope to THIS garment's sizes, same as the numbers copy: a raw deep-copy plants the
+                      // source's size keys on a garment that doesn't have them, and those stale keys are
+                      // invisible here (slots render per own size) but duplicate every name on job displays
+                      // and billing counts (SO-1588). One-size garment (e.g. a bag) takes the whole list.
+                      const scoped=scopeRosterToSizes(src.names,item.sizes);
+                      const liveSzs=Object.entries(item.sizes||{}).filter(([,v])=>v>0);
+                      let nn2=scoped;
+                      if(!Object.values(scoped).flat().some(v=>v&&String(v).trim())&&liveSzs.length===1){
+                        const[sz,q]=liveSzs[0];nn2={[sz]:Object.values(src.names).flat().filter(v=>v&&String(v).trim()).slice(0,q)}}
+                      // Nothing landed (no shared sizes): leave the deco alone rather than blanking
+                      // whatever the rep already typed here.
+                      const _ct=Object.values(nn2).flat().filter(v=>v&&String(v).trim()).length;
+                      if(!_ct){nf('No names matched this garment\u2019s sizes','error');return}
+                      uD(idx,di,'names',JSON.parse(JSON.stringify(nn2)));nf(_ct+' name'+(_ct===1?'':'s')+' copied from '+src.sku)}}>
+                        <option value="">📋 Copy from...</option>
+                        {otherNameDecos.map((ndc,ni)=><option key={ni} value={ni}>{ndc.sku} — {ndc.position} ({Object.values(ndc.names).flat().filter(v=>v&&String(v).trim()).length} names)</option>)}
+                      </select>})()}
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{let csv='Size,Number,Name\n';sQ2.forEach(([sz,sq])=>{for(let i=0;i<sq;i++)csv+=sz+',,\n'});const b=new Blob([csv],{type:'text/csv'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='name_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(u)}}>📥 Template</button>
                     <label className="btn btn-sm btn-secondary" style={{fontSize:9,cursor:'pointer',margin:0}}>📤 Upload<input type="file" accept=".csv,text/csv" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>importNamesCsv(ev.target.result);reader.readAsText(f);e.target.value=''}}/></label>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{const t=prompt('Paste (Size,Name per line):\nM,Smith\nL,Jones');if(t)importNamesCsv(t)}}>📋 Paste</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'names',{});nf('Cleared')}}>Clear</button></div></div>
                 {sQ2.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes first</div>:
                 <div style={{display:'flex',flexDirection:'column',gap:2}}>
