@@ -495,6 +495,35 @@ describe('SO Status Calculation — calcSOStatus()', () => {
     expect(BL.calcSOStatus(ord)).toBe('items_received');
   });
 
+  test('drop-ship PO line: billed units count as fulfilled (vendor ships direct, never checked in) — SO-1727', () => {
+    const ord = {
+      items: [
+        // warehouse line, fully received
+        { sizes: { M: 3 }, pick_lines: [], po_lines: [{ M: 3, received: { M: 3 } }], decorations: [] },
+        // drop-ship line, billed by the vendor but received stays empty forever
+        { sizes: { L: 3, M: 6 }, pick_lines: [], po_lines: [{ L: 3, M: 6, drop_ship: true, received: {}, billed: { L: 3, M: 6 } }], decorations: [] }
+      ],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
+  test('drop-ship PO line not yet billed still reads waiting_receive', () => {
+    const ord = {
+      items: [{ sizes: { M: 3 }, pick_lines: [], po_lines: [{ M: 3, drop_ship: true, received: {}, billed: {} }], decorations: [] }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('waiting_receive');
+  });
+
+  test('drop-ship line over-billed (duplicate bill match) is clamped to ordered qty', () => {
+    const ord = {
+      items: [{ sizes: { L: 3, M: 6 }, pick_lines: [], po_lines: [{ L: 3, M: 6, drop_ship: true, received: {}, billed: { L: 6, M: 12 } }], decorations: [] }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
   test('Topstar DIGITIZING billing line does not hold the SO in need_order (its PO lives in deco_pos, not on the item)', () => {
     const ord = {
       items: [

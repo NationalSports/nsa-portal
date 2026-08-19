@@ -292,7 +292,10 @@ function calcSOStatus(ord) {
       const poOrd = safePOs(it).reduce((a, pk) => a + safeNum(pk[sz]) - safeNum((pk.cancelled || {})[sz]), 0);
       coveredSz += Math.min(v, picked + poOrd);
       const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
-      const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
+      // Drop-ship lines count billed units as fulfilled (vendor ships direct — the warehouse
+      // never checks them in, so `received` stays empty forever). max, not +, so a drop-ship
+      // line that also got checked in manually can't count twice. Mirrors safeHelpers.poLineFulfilledQty.
+      const rcvdQty = safePOs(it).reduce((a, pk) => a + (pk.drop_ship ? Math.max(safeNum((pk.received || {})[sz]), safeNum((pk.billed || {})[sz])) : safeNum((pk.received || {})[sz])), 0);
       fulfilledSz += Math.min(v, pulledQty + rcvdQty);
     });
   });

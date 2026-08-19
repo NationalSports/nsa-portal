@@ -51,7 +51,9 @@ function soFulfillment(so) {
       const poOrd = posOf(it).reduce((a, pk) => a + num(pk[sz]) - num((pk.cancelled || {})[sz]), 0);
       coveredSz += Math.min(v, picked + poOrd);
       const pulledQty = picksOf(it).filter((pk) => pk.status === 'pulled').reduce((a, pk) => a + num(pk[sz]), 0);
-      const rcvdQty = posOf(it).reduce((a, pk) => a + num((pk.received || {})[sz]), 0);
+      // Drop-ship lines count billed units as fulfilled (vendor ships direct — the warehouse
+      // never checks them in, so `received` stays empty forever). Mirrors safeHelpers.poLineFulfilledQty.
+      const rcvdQty = posOf(it).reduce((a, pk) => a + (pk.drop_ship ? Math.max(num((pk.received || {})[sz]), num((pk.billed || {})[sz])) : num((pk.received || {})[sz])), 0);
       fulfilledSz += Math.min(v, pulledQty + rcvdQty);
     });
   });
