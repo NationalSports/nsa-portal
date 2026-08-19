@@ -1484,15 +1484,19 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // (pending_payment — created before Stripe confirms) and cancelled orders,
       // which would otherwise inflate every store's Gross Sales and order count.
       // so_id rides along so the list can tell a closed store that's been fully
-      // processed (every order batched onto a Sales Order) from one still waiting.
+      // processed (every order batched onto a Sales Order) from one still waiting —
+      // and so a processed store can link straight to the SO(s) it was batched onto
+      // instead of showing a storefront URL nobody needs once the store is worked.
       const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt, so_id');
       const stats = {};
+      const soSets = {};
       (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
-        if (!stats[o.store_id]) stats[o.store_id] = { revenue: 0, orders: 0, batched: 0 };
+        if (!stats[o.store_id]) { stats[o.store_id] = { revenue: 0, orders: 0, batched: 0, soIds: [] }; soSets[o.store_id] = new Set(); }
         stats[o.store_id].revenue += Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
         stats[o.store_id].orders += 1;
-        if (o.so_id) stats[o.store_id].batched += 1;
+        if (o.so_id) { stats[o.store_id].batched += 1; soSets[o.store_id].add(o.so_id); }
       });
+      Object.keys(stats).forEach((sid) => { stats[sid].soIds = [...soSets[sid]].sort(); });
       setStoreStats(stats);
     }
     setLoading(false);
@@ -3968,7 +3972,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onOpenSO={onOpenSO} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onChangeCloseDate={changeCloseDate} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -4528,7 +4532,7 @@ const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#08
 const LS_STATUS_FILTER = 'nsa_ws_status_filter';
 const LS_REP_FILTER = 'nsa_ws_rep_filter';
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onOpenSO, onNew, onDuplicate, onChangeCloseDate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   // A rep opening this page almost always wants their own live stores, so the list
   // defaults to "Open" (which includes Closing soon) scoped to the signed-in rep.
@@ -4637,6 +4641,28 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const daysLeft = (s) => {
     if (!s.close_at) return null;
     return Math.ceil((new Date(s.close_at).getTime() - Date.now()) / 86400000);
+  };
+
+  // A processed store (Closed / Ordered) is done as a storefront — what a rep needs from the row
+  // is the Sales Order it was batched onto, not the /shop URL. One store can span several SOs
+  // (club stores batch per order), so this renders one clickable chip per SO.
+  const hasSoLinks = (ss) => (((ss && ss.soIds) || []).length > 0);
+  const soChips = (ss, { size = 12, max = 3 } = {}) => {
+    const ids = (ss && ss.soIds) || [];
+    if (ids.length === 0) return null;
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+        {ids.slice(0, max).map((soId) => (
+          <span
+            key={soId}
+            onClick={(e) => { e.stopPropagation(); if (onOpenSO) onOpenSO(soId); }}
+            title={`Open Sales Order ${soId}`}
+            style={{ fontFamily: 'monospace', fontSize: size, fontWeight: 700, color: '#0F6E56', background: '#D9EFE7', border: '1px solid #B7E0D2', borderRadius: 5, padding: '2px 7px', whiteSpace: 'nowrap', cursor: onOpenSO ? 'pointer' : 'default' }}
+          >{soId} ↗</span>
+        ))}
+        {ids.length > max && <span style={{ fontSize: 11, color: '#8A93A8', fontWeight: 600 }}>+{ids.length - max} more</span>}
+      </div>
+    );
   };
 
   const statusStyle = (st) => {
@@ -4849,7 +4875,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
                   <th onClick={() => setSort('orders')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Orders{sortArrow('orders')}</th>
                   <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Close{sortArrow('window')}</th>
-                  <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront</th>
+                  <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront / SO</th>
                   <th style={{ ...TH, width: 28 }}></th>
                 </tr>
               </thead>
@@ -4894,7 +4920,9 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                           <div style={{ fontSize: 12, color: wt.subColor, fontWeight: 600 }}>{wt.sub}</div>
                         </td>
                         <td style={{ ...TD, padding: '13px 16px 13px 12px' }}>
-                          <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#8A93A8', wordBreak: 'break-all' }}>/shop/{s.slug}</div>
+                          {st === CLOSED_ORDERED && hasSoLinks(ss)
+                            ? soChips(ss)
+                            : <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#8A93A8', wordBreak: 'break-all' }}>/shop/{s.slug}</div>}
                         </td>
                         <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
@@ -4950,8 +4978,12 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                               </div>
                               {/* Col 2: Store URL + quick links */}
                               <div>
-                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>Storefront</div>
-                                <div style={{ fontSize: 13.5, color: '#2A6FDB', fontFamily: 'monospace', marginBottom: 12, wordBreak: 'break-all' }}>/shop/{s.slug}</div>
+                                <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 12 }}>{st === CLOSED_ORDERED && hasSoLinks(ss) ? 'Sales Order' + ((ss.soIds || []).length > 1 ? 's' : '') : 'Storefront'}</div>
+                                <div style={{ marginBottom: 12 }}>
+                                  {st === CLOSED_ORDERED && hasSoLinks(ss)
+                                    ? soChips(ss, { size: 13, max: 6 })
+                                    : <div style={{ fontSize: 13.5, color: '#2A6FDB', fontFamily: 'monospace', wordBreak: 'break-all' }}>/shop/{s.slug}</div>}
+                                </div>
                                 <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 700, fontSize: 12, color: '#962C32', marginBottom: 8, marginTop: 4 }}>Links</div>
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                                   <a className="btn btn-sm btn-secondary" href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>View Storefront ↗</a>
