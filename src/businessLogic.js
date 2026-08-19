@@ -398,8 +398,11 @@ const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
 // _jobAllOutsourced), but boards that read stored jobs directly (Art Dashboard) need the same
 // answer WITHOUT waiting for a sync (SO-1009: a job moved to outside deco sat in Needs Approval).
 // Partial PO coverage — a transfers purchase on an item that keeps in-house work — does NOT count:
-// that job is still produced in-house. Missing item/deco pairs don't count as outside (deleted-line
-// snapshot preservation is the sync's business, not the board's).
+// that job is still produced in-house. Missing item/deco pairs are NEUTRAL — they can't be produced
+// in-house or outside, so they neither grant nor block "routed outside" (SO-1403: a released job
+// over an outside-routed tee plus a deleted-deco pant must read routed-outside, matching the sync's
+// retirement). A job with no live pairs at all reads false (deleted-line snapshot preservation is
+// the sync's business, not the board's).
 const jobAllRoutedOutside = (o, j, outByItem) => {
   const map = outByItem || outsourcedDecoTypes(o);
   const pairs = [];
@@ -413,11 +416,14 @@ const jobAllRoutedOutside = (o, j, outByItem) => {
     const ds = it ? safeDecos(it).filter(d => d && (d.kind === 'art' || d.kind === 'numbers' || d.kind === 'names')) : [];
     return ds.length > 0 && ds.every(d => isDecoOutsourced(o, ii, d, map));
   };
-  return pairs.every(([ii, di]) => {
-    const it = safeItems(o)[ii]; if (!it) return false;
-    const d = safeDecos(it)[di]; if (!d) return false;
-    return d.kind === 'outside_deco' || d.fulfillment === 'outside' || !!d.deco_po_id || _itemFullyOut(ii);
-  });
+  let out = 0;
+  for (const [ii, di] of pairs) {
+    const it = safeItems(o)[ii]; if (!it) continue;
+    const d = safeDecos(it)[di]; if (!d) continue;
+    if (d.kind === 'outside_deco' || d.fulfillment === 'outside' || !!d.deco_po_id || _itemFullyOut(ii)) out++;
+    else return false;
+  }
+  return out > 0;
 };
 
 // ── Underbase rule ── Screen-print on anything darker than white / light grey / vegas gold needs
