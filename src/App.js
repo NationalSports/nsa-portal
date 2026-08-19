@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -1814,22 +1814,6 @@ export { dashArtShots };
 // stays self-consistent; each caller multiplies by its own eq/qty. Manual links only; sell is
 // never combined (customer price / invoices stay per-order unless the rep edits sell).
 const _decoUnitCostComb=(d,q,af,localCq,comb)=>{const cc=(d&&d.kind==='art'&&d.art_file_id&&comb&&comb[d.art_file_id]>localCq)?comb[d.art_file_id]:localCq;return safeNum(dP(d,q,af,cc).cost)};
-
-// Match each invoice line back to its SO item so callers can re-attach whatever only the SO
-// knows — the size breakdown, decoration/number detail. Try the stored line key first, then
-// SKU, then a description prefix (mirrors the on-screen invoice view); matched SO items are
-// consumed so duplicate SKUs map 1:1. Returns one SO index per line (-1 when unmatched).
-function matchInvoiceLinesToSo(lineItems, soItems){
-  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
-  const usedSo=new Set();
-  return (lineItems||[]).map(li=>{
-    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
-    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
-    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
-    if(i>=0){usedSo.add(i);return i}
-    return -1;
-  });
-}
 
 // Build the line-item rows for an invoice PDF/print document. The invoice's own stored
 // line_items are the source of truth for price/qty so any per-line edits or overrides

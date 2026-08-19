@@ -19,7 +19,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -8180,26 +8180,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const soItems=irSO?safeItems(irSO):[];const soArt=irSO?safeArt(irSO):[];
         const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
         const isDeposit=ir.inv_type==='deposit';const depPct=isDeposit?(ir.deposit_pct||50)/100:1;
-        if(soItems.length>0){
-          soItems.forEach(it=>{
-            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
-            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-            if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-            if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-            rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-            safeDecos(it).forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
-              const artF=soArt.find(a2=>a2.id===d.art_file_id);
-              const decoLabel=pdfDecoLabel(d,artF);
-              const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-              rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-            });
+        // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+        // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+        // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+        // pricing basis so a partial never re-prices a decoration into a different tier.
+        const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice({inv_type:ir.inv_type,line_items:lineItems},soItems);
+        _scoped.forEach(it=>{
+          const qty=it._invQty;const pq=it._soQty;
+          const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+          if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+          if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+            const artF=soArt.find(a2=>a2.id===d.art_file_id);
+            const decoLabel=pdfDecoLabel(d,artF);
+            const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
           });
-        }else{
-          lineItems.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-        }
+        });
+        // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+        // document's subtotal won't reconcile to the invoice total.
+        _extra.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
         return{title:rBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,
           headerRight:'<div class="ta">'+_$(ir.total)+'</div>'
             +'<div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
@@ -8407,26 +8411,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const eSoItems=irSO?safeItems(irSO):[];const eSoArt=irSO?safeArt(irSO):[];
             const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
             const eIsDeposit=ir.inv_type==='deposit';const eDepPct=eIsDeposit?(ir.deposit_pct||50)/100:1;
-            if(eSoItems.length>0){
-              eSoItems.forEach(it=>{
-                const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-                const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
-                let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                eRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$e(unitPrice),style:'text-align:right'},{value:_$e(lineAmt),style:'text-align:right;font-weight:600'}]});
-                safeDecos(it).forEach(d=>{
-                  const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eSoArt,cq);
-                  const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
-                  const decoLabel=pdfDecoLabel(d,artF);
-                  const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
-                  eRows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
-                });
+            // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+            // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+            // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+            // pricing basis so a partial never re-prices a decoration into a different tier.
+            const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice({inv_type:ir.inv_type,line_items:lineItems},eSoItems);
+            _scoped.forEach(it=>{
+              const qty=it._invQty;const pq=it._soQty;
+              const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+              const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
+              let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+              if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+              if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+              eRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$e(unitPrice),style:'text-align:right'},{value:_$e(lineAmt),style:'text-align:right;font-weight:600'}]});
+              safeDecos(it).forEach(d=>{
+                const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:pq;const dp2=dP(d,pq,eSoArt,cq);
+                const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
+                const decoLabel=pdfDecoLabel(d,artF);
+                const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
+                eRows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
               });
-            }else{
-              lineItems.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-            }
+            });
+            // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+            // document's subtotal won't reconcile to the invoice total.
+            _extra.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
             const brevoAttachments=[];
             try{
               const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,css:PRINT_CSS,

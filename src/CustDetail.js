@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -2029,26 +2029,30 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const rows=[];let subTotal=0;
         const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
         const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
-        if(soItems.length>0){
-          soItems.forEach(it=>{
-            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
-            let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
-            if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
-            rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-            safeDecos(it).forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
-              const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-              const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-              rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-            });
+        // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+        // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+        // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+        // pricing basis so a partial never re-prices a decoration into a different tier.
+        const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice(inv,soItems);
+        _scoped.forEach(it=>{
+          const qty=it._invQty;const pq=it._soQty;
+          const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
+          if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+            const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
+            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
           });
-        }else{
-          // Some NetSuite-imported lines only carry an amount (no qty/rate/desc),
-          // so render those columns blank rather than a misleading 0 / $0.00.
-          (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty||'',style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:rate?_$(rate):'',style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
-        }
+        });
+        // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+        // document's subtotal won't reconcile to the invoice total. Some NetSuite-imported
+        // lines only carry an amount (no qty/rate/desc), so those columns render blank
+        // rather than a misleading 0 / $0.00.
+        _extra.forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty||'',style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:rate?_$(rate):'',style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
         const _ship=inv.shipping!=null?inv.shipping:(linkedSO?(linkedSO.shipping_type==='pct'?subTotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0)):0);
         const _tax=inv.tax||0;
         const billAddr=customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':'');
@@ -2097,7 +2101,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{fontSize:12,fontWeight:700,color:'#1e3a5f'}}>📦 Order Details — {linkedSO.memo||linkedSO.id}</div>
               <span style={{fontSize:10,color:'#64748b'}}>{linkedSO.id}</span>
             </div>
-            {safeItems(linkedSO).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+            {/* Scoped to the lines THIS invoice bills — a partial invoice used to list the
+                whole order here, so a customer billed for one line saw every line of the SO. */}
+            {scopeSoItemsToInvoice(inv,safeItems(linkedSO)).items.map((it,ii)=>{const qty=it._invQty;const sizes=Object.entries(it._invSizes||{}).filter(([,v])=>v>0);
               return<div key={ii} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                   <div>
@@ -2121,8 +2127,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>}
           </div>}
           {/* Invoice line items — only shown when there's no linked SO. When an SO is
-              linked, the Order Details section above already lists every item (with
-              correct pricing and sizes), so we don't repeat them here. */}
+              linked, the Order Details section above already lists the items THIS invoice
+              bills (with correct pricing and sizes), so we don't repeat them here. */}
           {inv.line_items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
             {inv.line_items.map((li,i)=>{const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):safeNum(li.qty)*rate;
