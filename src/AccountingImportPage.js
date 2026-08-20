@@ -198,11 +198,23 @@ export default function AccountingImportPage() {
       if (f.reportType !== 'chart_of_accounts' && f.reportType !== 'invoice_search') {
         const { data: accts } = await supabase.from('gl_accounts')
           .select('id,account_number,full_name,name,statement_group');
+        // Names are NOT unique in this chart of accounts: "Information
+        // Technology & Software" is both 14700 (Fixed Asset) and 65500
+        // (Expense); "Building Rent" is 53200 (COGS) and 69000 (Expense);
+        // "Leasehold Improvements" is 14300 and 65200. A plain Map keeps
+        // whichever was inserted last, so a name-only match can file
+        // depreciation under assets and quietly move money between statement
+        // groups. Ambiguous names are dropped instead of answered wrongly —
+        // the account number is unambiguous and is tried first anyway.
         const byFull = new Map(), byNum = new Map(), byName = new Map(), byComposed = new Map();
+        const putUnique = (map, key, a) => {
+          if (map.has(key)) { const cur = map.get(key); if (!cur || cur.id !== a.id) map.set(key, null); return; }
+          map.set(key, a);
+        };
         for (const a of accts || []) {
-          if (a.full_name) byFull.set(a.full_name.toLowerCase(), a);
+          if (a.full_name) putUnique(byFull, a.full_name.toLowerCase(), a);
           if (a.account_number) byNum.set(String(a.account_number), a);
-          if (a.name) byName.set(a.name.toLowerCase(), a);
+          if (a.name) putUnique(byName, a.name.toLowerCase(), a);
           // Accounts whose "number" is text rather than digits — Donation,
           // NP11, Viking Loan Liability — print in reports as "Donation -
           // Donation" and "NP11 - NS Undeposited Funds". The number is not

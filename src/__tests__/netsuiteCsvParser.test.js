@@ -691,3 +691,22 @@ describe('amount-only reports carry no balance check', () => {
     expect(res.warnings.some(w => /same row id/.test(w))).toBe(true);
   });
 });
+
+// Account names are not unique in this chart of accounts — "Information
+// Technology & Software" is both 14700 (Fixed Asset) and 65500 (Expense).
+// The COA parser must keep them as separate rows with their own groups so the
+// importer's account-number lookup can tell them apart.
+describe('duplicate account names in the chart of accounts', () => {
+  it('keeps same-named accounts distinct, each with its own statement group', () => {
+    const res = parseChartOfAccounts([
+      'National Sports Apparel LLC', '', '', '', '',
+      'Inactive,Delete,Summary,Internal ID,Number,Account,Type,Description,Balance',
+      'No,No,No,227,14700,Information Technology & Software,Fixed Asset,,$0.00',
+      'No,No,No,520,65500,Information Technology & Software,Expense,,$0.00',
+    ].join('\n'));
+    expect(res.rows.length).toBe(2);
+    const byNum = Object.fromEntries(res.rows.map(r => [r.account_number, r.statement_group]));
+    expect(byNum['14700']).toBe('asset');
+    expect(byNum['65500']).toBe('expense');
+  });
+});
