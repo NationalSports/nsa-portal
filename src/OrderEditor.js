@@ -5,8 +5,8 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -21,10 +21,10 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
@@ -170,7 +170,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -969,6 +969,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // product-PO open, so a plain product PO never spends one it doesn't use.
     useEffect(()=>{if(poDecoInline)_holdPoNumber2()},[poDecoInline,_holdPoNumber2]);
     const[pickDecoFor,setPickDecoFor]=useState(null);// item idx awaiting a decorator pick when first flagged Outside
+    const[markDeco,setMarkDeco]=useState(null);// {sel:{itemIdx:true},vendor} — Mark Deco module: bulk in-house ⇄ outside routing across all / some lines
     const[podOverrides,setPodOverrides]=useState({});// {soItemIdx:bool} — explicit deco-coverage picks; absent = mirror the product PO's item selection
     const[podType,setPodType]=useState('embroidery');const[podCost,setPodCost]=useState(null);// null = auto from decorator price list, string = manual override
     const[podDropShip,setPodDropShip]=useState(true);// inline deco PO — deco POs are always drop ship
@@ -1828,6 +1829,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       +') · '+Math.max(0,onHand-held)+' free to pull';
   };
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showCustNew,setShowCustNew]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[moreActionsFor,setMoreActionsFor]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
+
+  // ── + Size popover positioning ──
+  // The popover renders position:FIXED on purpose: its line item lives inside `.card`, which sets
+  // overflow:hidden (portal.css), so an absolutely-positioned popover would be clipped by the card's
+  // bottom edge. Fixed escapes that — but coordinates captured at click time then stranded it at the
+  // bottom of the screen once the page scrolled. This re-reads the trigger button's rect on scroll
+  // (capture: true, so any scrolling ancestor counts) and on resize, so the popover tracks its row.
+  const _szPickIdx=showSzPicker?showSzPicker.idx:null;
+  useEffect(()=>{
+    if(_szPickIdx==null)return;
+    const reposition=()=>{const b=document.getElementById('oe-szbtn-'+_szPickIdx);if(!b)return;const r=b.getBoundingClientRect();
+      setShowSzPicker(p=>(p&&p.idx===_szPickIdx)?{...p,top:r.bottom+4,left:r.left}:p)};
+    window.addEventListener('scroll',reposition,true);window.addEventListener('resize',reposition);
+    return()=>{window.removeEventListener('scroll',reposition,true);window.removeEventListener('resize',reposition)};
+  },[_szPickIdx]);
   const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
   // ─── Live S&S Product Search ───
@@ -2349,6 +2365,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
   const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
   const expandAllItems=()=>setCollapsedItems({});
+  // "+ Add Item" in the items toolbar — opens the Add Product search that lives at the BOTTOM of
+  // the list and scrolls it into view, so adding a line doesn't mean scrolling past every item.
+  const openAddItem=()=>{setShowAdd(true);setTimeout(()=>{const el=document.getElementById('oe-add-product-card');if(el)el.scrollIntoView({behavior:'smooth',block:'center'})},60)};
   const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Returns _deletedItemKeys with `it`'s OLD sku|color identity appended (deduped) — the same
   // session tombstone rmI stamps on a deletion, reused by every in-place re-key path (Change SKU
@@ -3027,12 +3046,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const setItemUnderbase=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,underbase:v,sell_override:null}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Routing (in-house ↔ outside) is an item-level soft flag on the art decos. 'outside' produces it
   // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
-  const setItemFulfillment=(ii,val,vendor,quiet)=>{setO(e=>{
+  // Bulk core: flip routing on MANY items in one state update (the Mark Deco module marks all /
+  // some lines at once). setItemFulfillment below is the single-item wrapper — one code path, so
+  // the bulk marker and the per-item toggle can never drift on vendor pricing or sell-override.
+  const setItemsFulfillment=(idxs,val,vendor,quiet)=>{const _sel=new Set(idxs);setO(e=>{
     const items=safeItems(e);const afx=e.art_files||[];
     // Combined art qty per art file (same basis as the live cost display) so the vendor tier matches.
     const artQ={};items.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)artQ[d.art_file_id]=(artQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)})});
     const dvRow=(val==='outside'&&vendor)?decoVendors.find(v=>v&&v.name===vendor):null;
-    return{...e,items:items.map((it,x)=>{if(x!==ii)return it;
+    return{...e,items:items.map((it,x)=>{if(!_sel.has(x))return it;
       const itQ=(Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0))||safeNum(it.est_qty)||0;
       return{...it,decorations:safeDecos(it).map(d=>{
         if(d.kind!=='art')return d;
@@ -3053,6 +3075,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       })};
     }),updated_at:new Date().toLocaleString()};
   });setDirty(true);const _wsSO=!!(o.webstore_id||o.source==='webstore');if(!quiet)nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(_wsSO?', deco charge stays $0 (included in the store price).':vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
+  const setItemFulfillment=(ii,val,vendor,quiet)=>setItemsFulfillment([ii],val,vendor,quiet);
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
@@ -3072,6 +3095,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // costs an extra hop; under-calling it strands the goods.
   const _itemInHouseDeco=ii=>{const it=safeItems(o)[ii];if(!it)return false;
     return safeDecos(it).length>0&&!_itemOutsideDeco(ii)};
+  // ── Mark Deco module ── bulk in-house ⇄ outside marking so a 13-line order isn't 13 toggle
+  // clicks. A line is MARKABLE when it carries art decoration (the routing flag cascades to art
+  // decos only, exactly as the per-item toggle does) or already sits on a garment deco PO.
+  const _markDecoRows=()=>safeItems(o).map((it,i)=>{
+    const artDecos=safeDecos(it).filter(d=>d&&d.kind==='art');
+    const dp=isSO?(o.deco_pos||[]).find(p=>p&&!p.topstar_service&&(p.item_idxs||[]).includes(i)):null;
+    return{it,i,artDecos,dp,markable:artDecos.length>0||!!dp,outside:!!dp||artDecos.some(d=>d.fulfillment==='outside')}});
+  const openMarkDeco=()=>{const sel={};_markDecoRows().forEach(r=>{if(r.markable)sel[r.i]=true});setMarkDeco({sel,vendor:_orderOutsideVendor()||''})};
+  // Apply the picked routing to every selected line in ONE state update. Deco-PO-covered lines can't
+  // be flipped back in-house here — they have to come off the PO first, the same guard the per-item
+  // In-house button enforces by disabling itself, so bulk marking can't silently break PO coverage.
+  const applyMarkDeco=val=>{if(!markDeco)return;
+    const picked=_markDecoRows().filter(r=>r.markable&&markDeco.sel[r.i]);
+    if(picked.length===0){nf('Pick at least one line to mark');return}
+    const blocked=val==='outside'?[]:picked.filter(r=>r.dp);
+    const targets=picked.filter(r=>!blocked.includes(r));
+    if(targets.length===0){nf('\u26A0 '+blocked.length+' selected line'+(blocked.length!==1?'s sit':' sits')+' on a Deco PO \u2014 remove '+(blocked.length!==1?'them':'it')+' from the PO to set back in-house');return}
+    setItemsFulfillment(targets.map(r=>r.i),val,val==='outside'?markDeco.vendor:undefined,true);
+    setMarkDeco(null);
+    const n=targets.length,ln=n+' line'+(n!==1?'s':'');
+    nf(val==='outside'
+      ?'\uD83C\uDFA8 '+ln+' marked Outside'+(markDeco.vendor?' \u00B7 '+markDeco.vendor:'')+(isSO?' \u2014 add a Deco PO to bundle & cost '+(n!==1?'them':'it')+'.':' \u2014 carries to the sales order, where you bundle the Deco PO.')
+      :'\uD83C\uDFED '+ln+' marked In-house'+(blocked.length?' \u00B7 '+blocked.length+' left on a Deco PO':''))};
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
@@ -3810,8 +3856,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (item_idx-sku) pairs already carried by this job's split-off slices. A garment a split moved
       // ENTIRELY off the parent is absent from existing.items, so without this it would be rebuilt here
       // at FULL quantity and land on BOTH the parent and its slice (the GM2365-on-both double-count).
-      const sliceOwned=new Set();
-      if(existing.id)safeJobs(o).forEach(sj=>{if(sj.split_from===existing.id&&!sj._merged&&!_isRel(sj))(sj.items||[]).forEach(gi=>sliceOwned.add(gi.item_idx+'-'+gi.sku))});
+      // TRANSITIVE across the family: a slice of a slice still owns its garments — scanning only
+      // direct children re-added a grandchild-owned garment to the family root on every sync
+      // (SO-1634: KC4512 lived on JOB-1634-01-B-B and got duplicated back onto JOB-1634-01).
+      const sliceOwned=existing.id?splitSliceOwnedKeys(safeJobs(o),existing.id,sj=>sj._merged||_isRel(sj)):new Set();
       let hasOverride=false;
       const rebuilt=[];
       nj.items.forEach(gi=>{
@@ -4636,6 +4684,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
             {isSO&&onCopySalesOrder&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this sales order?'))return;onCopySalesOrder(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
             {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
+            {/* Reopen — the way back out of an accidental close. Closing an SO (a Final invoice,
+                "Close Sales Order", the stepper's Complete chip) hides Create Invoice behind a
+                "✓ Sales Order Closed" badge, and the only undo used to be a small "Reset to Auto"
+                button in the status stepper that reps don't find (SO-1519). */}
+            {isSO&&o.status==='complete'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#166534',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              // 'complete' is the one manual pin on an otherwise auto-calculated ladder, so reopening
+              // means dropping the pin and letting the SO settle back on its auto status. An order
+              // whose AUTO status is already 'complete' — every job shipped, every unit fulfilled —
+              // has no pin to drop and would recompute straight back, so say so instead of no-oping.
+              // Compute the auto status with the pin already gone (status nulled, not just
+              // ignoreOverride): calcSOStatus's no-deco and promo branches read ord.status
+              // themselves, so a closed blanks order would otherwise keep answering 'complete'
+              // and Reopen would refuse an order that should land on Ready to Invoice.
+              const _auto=calcSOStatus({...o,status:null},{ignoreOverride:true});
+              const _lbl=SO_STATUS_LABELS[_auto]||_auto;
+              if(_auto==='complete'){nf(o.id+' calculates as Complete on its own — every job is shipped and every unit fulfilled. Reopen a job or add the remaining items before reopening the order.','error');return}
+              if(!window.confirm('Reopen sales order '+o.id+'? It goes back to "'+_lbl+'" and can be invoiced again.'))return;
+              // _status_reverted: this is the DELIBERATE reopen of a completed order, so dbEngine's
+              // header-decision guard must let the save pull 'complete' back open rather than
+              // treating it as a stale tab clobbering the close (same marker the invoice-delete
+              // reopen and "Reset to Auto" stamp). Session-only, consumed by the save that carries it.
+              const updated={...o,status:_auto,_status_reverted:true,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              // Tells the app the reopen was deliberate: the fully-invoiced auto-closer would
+              // otherwise slam a reopened ready_to_invoice order straight back to complete.
+              if(onSOReopened)onSOReopened(o,_auto);
+              nf(o.id+' reopened — status is now '+_lbl)}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Reopen Sales Order</button>}
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when the customer has drawable funds: a funded period (incl. a one-time
@@ -4937,7 +5012,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const autoSt=calcSOStatus(o,{ignoreOverride:true});
         // Auto-sync status
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
-        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         const displaySt=o.status==='complete'?'complete':autoSt;
         const _curIdx=statusFlow.indexOf(displaySt);
         return<div style={{marginTop:12,borderTop:'1px solid #EEF1F6',paddingTop:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
@@ -4947,11 +5021,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             return<React.Fragment key={sf}>
               <span className={'step'+(cur?' current':done?' done':'')+(sf==='complete'?' clickable':'')}
                 onClick={()=>{if(sf==='complete')sv('status','complete')}}
-                title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>{stLabels[sf]||sf}</span>
+                title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>{SO_STATUS_LABELS[sf]||sf}</span>
               {i<statusFlow.length-1&&<span className={'conn'+(done?' done':'')}/>}
             </React.Fragment>})}
           </div>
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
+          {/* _status_reverted: deliberate reopen of a completed order — lets the save past dbEngine's header-decision guard */}
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
         </div>})()}
       {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
@@ -4967,12 +5042,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
       {/* Items-list tools live in the tab row to keep one uniform strip */}
-      {tab==='items'&&safeItems(o).length>0&&<div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center',alignSelf:'center',paddingBottom:4}}>
-        <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={sortByDeco} title="Group line items together by their decoration">↕ Sort by Decoration</button>
+      {tab==='items'&&<div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center',alignSelf:'center',paddingBottom:4}}>
+        <button className="btn btn-sm btn-primary" style={{fontSize:12}} onClick={openAddItem} disabled={!cust} title={cust?'Add a product to this order':'Pick a customer first'}><Icon name="plus" size={12}/> Add Item</button>
+        {safeItems(o).length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={openMarkDeco} title="Mark all or some line items as in-house or outside decoration">🎨 Mark Deco</button>}
+        {safeItems(o).length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={sortByDeco} title="Group line items together by their decoration">↕ Sort by Decoration</button>}
         {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,background:'#FEF3C7',color:'#92400E',border:'1px solid #FDE68A'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
-        {safeItems(o).some((_,i)=>collapsedItems[i])
+        {safeItems(o).length>0&&(safeItems(o).some((_,i)=>collapsedItems[i])
           ?<button data-tour-id="oe-expand-all" className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
-          :<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
+          :<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>)}
       </div>}
     </div>
 
@@ -5248,7 +5325,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </>}
             {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
               if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
-            {!isQtyOnly&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
+            {!isQtyOnly&&<div style={{position:'relative',marginLeft:4}}><button id={'oe-szbtn-'+idx} className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
               {showSzPicker&&showSzPicker.idx===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'fixed',top:showSzPicker.top,left:showSzPicker.left,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:260,maxHeight:'70vh',overflowY:'auto'}}>
                 <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}}>
                   <span style={{fontSize:9,fontWeight:700,color:'#64748b'}}>Click multiple, then Done</span>
@@ -5881,7 +5958,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>)})}
     {/* ADD PRODUCT */}
-    <div className="card"><div style={{padding:'14px 18px'}}>
+    <div className="card" id="oe-add-product-card"><div style={{padding:'14px 18px'}}>
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" data-tour-id="oe-add-product" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>
@@ -8235,26 +8312,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const soItems=irSO?safeItems(irSO):[];const soArt=irSO?safeArt(irSO):[];
         const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
         const isDeposit=ir.inv_type==='deposit';const depPct=isDeposit?(ir.deposit_pct||50)/100:1;
-        if(soItems.length>0){
-          soItems.forEach(it=>{
-            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
-            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-            if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-            if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-            rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-            safeDecos(it).forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
-              const artF=soArt.find(a2=>a2.id===d.art_file_id);
-              const decoLabel=pdfDecoLabel(d,artF);
-              const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-              rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-            });
+        // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+        // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+        // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+        // pricing basis so a partial never re-prices a decoration into a different tier.
+        const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice({inv_type:ir.inv_type,line_items:lineItems},soItems);
+        _scoped.forEach(it=>{
+          const qty=it._invQty;const pq=it._soQty;
+          const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+          if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+          if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+            const artF=soArt.find(a2=>a2.id===d.art_file_id);
+            const decoLabel=pdfDecoLabel(d,artF);
+            const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
           });
-        }else{
-          lineItems.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-        }
+        });
+        // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+        // document's subtotal won't reconcile to the invoice total.
+        _extra.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
         return{title:rBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,
           headerRight:'<div class="ta">'+_$(ir.total)+'</div>'
             +'<div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
@@ -8462,26 +8543,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const eSoItems=irSO?safeItems(irSO):[];const eSoArt=irSO?safeArt(irSO):[];
             const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
             const eIsDeposit=ir.inv_type==='deposit';const eDepPct=eIsDeposit?(ir.deposit_pct||50)/100:1;
-            if(eSoItems.length>0){
-              eSoItems.forEach(it=>{
-                const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-                const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-                const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
-                let itemName=(it.name||'')+(it.color?' - '+it.color:'');
-                if(szStr)itemName+='<br/><span>'+szStr+'</span>';
-                if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
-                eRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$e(unitPrice),style:'text-align:right'},{value:_$e(lineAmt),style:'text-align:right;font-weight:600'}]});
-                safeDecos(it).forEach(d=>{
-                  const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eSoArt,cq);
-                  const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
-                  const decoLabel=pdfDecoLabel(d,artF);
-                  const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
-                  eRows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
-                });
+            // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+            // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+            // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+            // pricing basis so a partial never re-prices a decoration into a different tier.
+            const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice({inv_type:ir.inv_type,line_items:lineItems},eSoItems);
+            _scoped.forEach(it=>{
+              const qty=it._invQty;const pq=it._soQty;
+              const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+              const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
+              let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+              if(szStr)itemName+='<br/><span>'+szStr+'</span>';
+              if(it.notes&&String(it.notes).trim())itemName+='<br/><span style="color:#854d0e;font-style:italic">'+String(it.notes).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</span>';
+              eRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$e(unitPrice),style:'text-align:right'},{value:_$e(lineAmt),style:'text-align:right;font-weight:600'}]});
+              safeDecos(it).forEach(d=>{
+                const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:pq;const dp2=dP(d,pq,eSoArt,cq);
+                const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
+                const decoLabel=pdfDecoLabel(d,artF);
+                const posLabel=d.position?' — '+d.position:'';const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
+                eRows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right'},{value:_$e(decoAmt),style:'text-align:right'}]});
               });
-            }else{
-              lineItems.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
-            }
+            });
+            // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+            // document's subtotal won't reconcile to the invoice total.
+            _extra.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
             const brevoAttachments=[];
             try{
               const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',date:ir.date,css:PRINT_CSS,
@@ -9519,6 +9604,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
           +'. Another tab or session ordered them. Reload the page to pull in the latest POs, then order only what\'s still open.';
       };
+      // Local over-commit guard — _poFreshDupCheck only catches drift between the DB and this tab;
+      // this catches what the tab already KNOWS. The qty boxes default to the open count but accept
+      // any typed number, so an overage quietly re-orders units an existing PO covers (SO-1295:
+      // JW6602's 9 extra hoods went on a second PO a day after the first covered the line — both
+      // arrived, and the extras sat on the SO as a cost write-off). Returns a confirm message
+      // naming the POs that already hold the units, or null when the entries are clean.
+      const _poOverCommitMsg=(entries)=>{
+        const rows=[];
+        entries.forEach(({idx,sizes})=>{
+          const it=safeItems(o)[idx];if(!it)return;
+          poOverCommit(it,sizes).forEach(c=>rows.push((it.sku||('line '+(idx+1)))+' '+c.sz+': ordering '+c.qty+' but only '+c.open+' still open'+(c.pos.length?' — '+c.committed+' already on '+c.pos.join(', '):'')));
+        });
+        if(!rows.length)return null;
+        return '⚠️ This PO orders MORE than the order still needs:\n\n'+rows.join('\n')+'\n\nThe same units would be on two POs — both arrive, and the extras stay on this SO as a cost write-off. Create the PO anyway?';
+      };
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>x</button></div>
         <div className="modal-body">
@@ -9760,8 +9860,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+            const _entries=_poSubmitEntries();
+            // Over-commit confirm — ordering beyond the line's open count needs a deliberate yes.
+            const _overMsg=_poOverCommitMsg(_entries);
+            if(_overMsg&&!window.confirm(_overMsg)){_poCreatingRef.current=false;return}
             // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
-            const _dup=await _poFreshDupCheck(_poSubmitEntries());
+            const _dup=await _poFreshDupCheck(_entries);
             if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
             setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
@@ -9852,8 +9956,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+          const _entries=_poSubmitEntries();
+          // Over-commit confirm — ordering beyond the line's open count needs a deliberate yes.
+          const _overMsg=_poOverCommitMsg(_entries);
+          if(_overMsg&&!window.confirm(_overMsg)){_poCreatingRef.current=false;return}
           // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
-          const _dup=await _poFreshDupCheck(_poSubmitEntries());
+          const _dup=await _poFreshDupCheck(_entries);
           if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
           setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
@@ -12940,6 +13048,12 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
 // Seed only — recalcJobFulfillment below re-derives both from the live sizes/receipts (see the
 // Merge Jobs button); the summed gi.units/gi.fulfilled here are build-time snapshots.
 const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);let updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);
+// Re-parent the merged slice's own children onto the job it merged into — their split_from
+// would otherwise point at a job that no longer exists. An orphaned slice (a) becomes its own
+// family root in allocateJobFulfillment, double-counting the line's receipts against the real
+// family, and (b) drops out of the parent-rebuild's slice-owned walk, so the next sync re-adds
+// its garments to the parent at full quantity (the SO-1634 double-count through another door).
+updJobs=updJobs.map(jj=>jj.split_from===j.id?{...jj,split_from:j.split_from}:jj);
 // If the parent has no remaining split children it's one run again — drop the separate-pricing
 // flag so the design goes back to combined-tier billing (stampSplitRuns clears d.split_runs).
 if(!updJobs.some(jj=>jj.split_from===j.split_from))updJobs=updJobs.map(jj=>jj.id===j.split_from?{...jj,priced_separately:false,price_override:null}:jj);
@@ -14400,6 +14514,58 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         </div>
       </div></div>})()}
 
+    {/* Mark Deco — bulk in-house ⇄ outside routing across all / some line items. Same write path as
+        the per-item toggle (setItemsFulfillment), so vendor pricing and sell-overrides stay identical. */}
+    {markDeco&&(()=>{
+      const rows=_markDecoRows();const markable=rows.filter(r=>r.markable);
+      const selCount=markable.filter(r=>markDeco.sel[r.i]).length;
+      const setOnly=pred=>setMarkDeco(m=>{const sel={};markable.filter(pred).forEach(r=>{sel[r.i]=true});return{...m,sel}});
+      // Keep an already-chosen decorator selectable even if it has since been deactivated in the vendor list.
+      const DV=(()=>{const base=DECO_VENDORS.filter(v=>v!=='Other');if(markDeco.vendor&&!base.includes(markDeco.vendor))base.unshift(markDeco.vendor);return base})();
+      return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setMarkDeco(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:680}}>
+        <div className="modal-header"><h2 style={{fontSize:16}}>🎨 Mark Deco — In-house or Outside</h2><button className="modal-close" onClick={()=>setMarkDeco(null)}>x</button></div>
+        <div className="modal-body">
+          {markable.length===0
+            ?<div style={{fontSize:12,color:'#64748b'}}>No line on this {isSO?'sales order':'estimate'} carries art decoration yet — add art to a line first, then mark how it gets produced.</div>
+            :<>
+            <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+              <span style={{fontSize:11,fontWeight:700,color:'#5A6075'}}>Select</span>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setOnly(()=>true)}>All ({markable.length})</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setMarkDeco(m=>({...m,sel:{}}))}>None</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setOnly(r=>!r.outside)}>In-house now</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setOnly(r=>r.outside)}>Outside now</button>
+            </div>
+            <div style={{maxHeight:330,overflow:'auto',border:'1px solid #E2E6EF',borderRadius:8}}>
+              {rows.map(r=>{const it=r.it;const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
+                const on=!!markDeco.sel[r.i];
+                return<label key={r.i} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 11px',borderBottom:'1px solid #F2F4F9',cursor:r.markable?'pointer':'default',background:!r.markable?'#FAFBFD':on?'#F4F7FF':'#fff',opacity:r.markable?1:.6}}>
+                  <input type="checkbox" checked={on} disabled={!r.markable} onChange={e=>{const v=e.target.checked;setMarkDeco(m=>{const sel={...m.sel};if(v)sel[r.i]=true;else delete sel[r.i];return{...m,sel}})}}/>
+                  <span className="oe-num" style={{fontSize:11,fontWeight:700,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'2px 6px',borderRadius:4,whiteSpace:'nowrap'}}>{it.sku}</span>
+                  <span style={{fontSize:12,fontWeight:600,color:'#2A2F3E',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{it.name}{it.color?' · '+it.color:''}</span>
+                  <span style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap'}}>{q} pc</span>
+                  {r.markable
+                    ?<span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:5,whiteSpace:'nowrap',background:r.outside?'#f5f3ff':'#eff6ff',color:r.outside?'#6d28d9':'#1d4ed8',border:'1px solid '+(r.outside?'#ddd6fe':'#bfdbfe')}}>{r.outside?'🎨 Outside':'🏭 In-house'}</span>
+                    :<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>no art deco</span>}
+                  {r.dp&&<span title="On a Deco PO — remove it from the PO to set back in-house" style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:5,background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}}>▣ {r.dp.po_id||'on Deco PO'}</span>}
+                </label>})}
+            </div>
+            <div style={{marginTop:10,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontSize:11,fontWeight:700,color:'#5A6075'}}>Decorator</span>
+              <select className="form-select" style={{fontSize:12,maxWidth:230}} value={markDeco.vendor} onChange={e=>setMarkDeco(m=>({...m,vendor:e.target.value}))}>
+                <option value="">Decide on the PO…</option>
+                {DV.map(v=><option key={v} value={v}>{v}</option>)}
+              </select>
+              <span style={{fontSize:11,color:'#94a3b8'}}>Used when marking Outside — sets each deco charge off that decorator's price list.</span>
+            </div>
+          </>}
+        </div>
+        <div className="modal-footer" style={{alignItems:'center'}}>
+          <span style={{fontSize:11,color:'#64748b',marginRight:'auto'}}>{selCount} of {markable.length} line{markable.length!==1?'s':''} selected</span>
+          <button className="btn btn-sm btn-secondary" onClick={()=>setMarkDeco(null)}>Cancel</button>
+          <button className="btn btn-sm" disabled={selCount===0} style={{fontSize:12,fontWeight:700,background:selCount===0?'#E2E6EF':'#3b82f6',color:selCount===0?'#94a3b8':'#fff',border:'none'}} onClick={()=>applyMarkDeco(null)}>🏭 Mark In-house</button>
+          <button className="btn btn-sm" disabled={selCount===0} style={{fontSize:12,fontWeight:700,background:selCount===0?'#E2E6EF':'#7c3aed',color:selCount===0?'#94a3b8':'#fff',border:'none'}} onClick={()=>applyMarkDeco('outside')}>🎨 Mark Outside</button>
+        </div>
+      </div></div>})()}
     {/* Decorator picker — opens when the first item on the order is flagged Outside */}
     {pickDecoFor!=null&&(()=>{const DV=DECO_VENDORS.filter(v=>v!=='Other');return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setPickDecoFor(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
       <div className="modal-header"><h2 style={{color:'#7c3aed',fontSize:16}}>🎨 Send to which decorator?</h2><button className="modal-close" onClick={()=>setPickDecoFor(null)}>x</button></div>

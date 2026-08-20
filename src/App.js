@@ -22,8 +22,8 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -191,6 +191,18 @@ const computeOmgSoSync=(so)=>{
 // this long after the store was brought into the portal, remind accounting anyway so
 // the store is never forgotten. Shared by the reminder effect and the store card.
 const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000; // 6 weeks
+// ── Completed-job grace window for production surfaces ──
+// Invoicing / closing an SO sets sticky status='complete' — a FINANCIAL close that routinely
+// lands minutes after the decorator's Done click (SO-1512, 8/18: final invoice 5 minutes after
+// both jobs completed). Surfaces that treat "SO complete" as "goods out the door" were yanking
+// just-finished jobs off the Prod Board's Completed column and the deco Completed tabs before
+// shipping ever saw them. A job whose persisted completion stamp (completed_at, or the scan
+// station's decorated_at) is inside this window stays visible even once the order is complete;
+// unstamped legacy rows keep the old drop, so months of already-shipped history doesn't flood
+// back into the Completed views. Shipping the job (prod_status 'shipped') still clears it
+// immediately, grace or not.
+const JOB_COMPLETED_GRACE_MS=7*24*60*60*1000; // 7 days
+const jobRecentlyCompleted=(j)=>{const ts=j?.completed_at||j?.decorated_at;if(!ts)return false;const t=new Date(ts).getTime();return !Number.isNaN(t)&&(Date.now()-t)<JOB_COMPLETED_GRACE_MS};
 const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
 const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
@@ -1814,22 +1826,6 @@ export { dashArtShots };
 // stays self-consistent; each caller multiplies by its own eq/qty. Manual links only; sell is
 // never combined (customer price / invoices stay per-order unless the rep edits sell).
 const _decoUnitCostComb=(d,q,af,localCq,comb)=>{const cc=(d&&d.kind==='art'&&d.art_file_id&&comb&&comb[d.art_file_id]>localCq)?comb[d.art_file_id]:localCq;return safeNum(dP(d,q,af,cc).cost)};
-
-// Match each invoice line back to its SO item so callers can re-attach whatever only the SO
-// knows — the size breakdown, decoration/number detail. Try the stored line key first, then
-// SKU, then a description prefix (mirrors the on-screen invoice view); matched SO items are
-// consumed so duplicate SKUs map 1:1. Returns one SO index per line (-1 when unmatched).
-function matchInvoiceLinesToSo(lineItems, soItems){
-  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
-  const usedSo=new Set();
-  return (lineItems||[]).map(li=>{
-    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
-    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
-    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
-    if(i>=0){usedSo.add(i);return i}
-    return -1;
-  });
-}
 
 // Build the line-item rows for an invoice PDF/print document. The invoice's own stored
 // line_items are the source of truth for price/qty so any per-line edits or overrides
@@ -7196,6 +7192,19 @@ export default function App(){
     setESO(null);
     const c=cust.find(x=>x.id===targetEst.customer_id);setEEst(targetEst);setEEstC(c);setPg('estimates');
     nf(parentEst?`Reopened ${targetEst.id} from ${so.id} — SO deleted`:`${targetEst.id} created from ${so.id} — SO deleted`)};
+  // ── A closed sales order was reopened from the editor's Actions menu ──
+  // The editor writes the status change itself (through onSave, like every other action there);
+  // this hook covers the two things it can't reach. status='complete' is the one manual pin on an
+  // otherwise auto-calculated ladder, and it's easy to set by accident — a Final invoice where a
+  // Partial was meant closes the SO and hides "Create Invoice" behind a "✓ Sales Order Closed"
+  // badge (SO-1519, Aug 2026: "I accidentally closed this SO when invoicing. Is there a way to
+  // reopen it?"). Marking _autoClosedSOs keeps the fully-invoiced auto-closer above from slamming
+  // a reopened ready_to_invoice order straight back to complete on the next render.
+  const onSOReopened=(so,autoSt)=>{
+    if(!so)return;
+    _autoClosedSOs.current.add(so.id);
+    logChange('reopened','SO',so.id,'Reopened from Complete → '+(SO_STATUS_LABELS[autoSt]||autoSt));
+  };
   const aO=useMemo(()=>[
     ...ests.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const t=calcOrderTotals(e,c?.tax_rate||0).grand;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const t=calcOrderTotals(s,c?.tax_rate||0).grand;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
@@ -7976,7 +7985,9 @@ export default function App(){
           // No more invoices — SO goes back to ready_to_invoice. savSO (not a
           // bare setSOs) so this persists — same reasoning as the ShipStation
           // handlers above.
-          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
+          // _status_reverted marks this as the DELIBERATE reopen of a completed order for dbEngine's
+          // header-decision guard — without it a stale-flagged save may not pull 'complete' back open.
+          savSO({...so,status:'ready_to_invoice',_status_reverted:true,updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
@@ -10960,7 +10971,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -11025,7 +11036,7 @@ export default function App(){
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
-      const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const statusLabel=SO_STATUS_LABELS[displayStatus]||displayStatus.replace(/_/g,' ');
       const _openSO=()=>{setESO(so);setESOC(c)};const SL=({children})=><RowLink params={{so:so.id}} onOpen={_openSO}>{children}</RowLink>;return(<tr key={so.id} style={{cursor:'pointer'}}>
       <td style={{fontWeight:700,color:'#1e40af'}}><SL>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</SL></td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}><SL>{fmtCreatedAt(so.created_at)}</SL></td><td><SL>{c?.name||' '} <span className="badge badge-gray">{c?.alpha_tag}</span></SL></td><td style={{fontSize:12}}><SL>{so.memo||' '}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</SL></td><td><SL>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</SL></td>
       <td><SL><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></SL></td>
@@ -13114,17 +13125,20 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     // Once an order is closed out (final invoice / "Close Sales Order" / promo close → SO
-    // status='complete'), its decorated jobs are done and out the door. The shop rarely logs a
-    // separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board forever
-    // even though the order is finished. Treat a 'completed' job on a complete order like a shipped
-    // one and drop it from the production board. Display-only: prod_status is untouched, so the
-    // warehouse ship queue and shipped-unit math are unaffected. Completed jobs on orders that are
-    // NOT yet invoiced (ready_to_invoice, etc.) still show — those genuinely still need attention.
+    // status='complete'), its decorated jobs are USUALLY done and out the door. The shop rarely
+    // logs a separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board
+    // forever even though the order is finished. Treat a 'completed' job on a complete order like
+    // a shipped one and drop it from the production board — EXCEPT inside the completion grace
+    // window (jobRecentlyCompleted): invoicing is a financial close that can land minutes after
+    // the decorator's Done click (SO-1512), and dropping the job that instant made it vanish from
+    // the Completed column before shipping ever saw the handoff. Display-only: prod_status is
+    // untouched, so the warehouse ship queue and shipped-unit math are unaffected. Completed jobs
+    // on orders NOT yet invoiced (ready_to_invoice, etc.) still show — those still need attention.
     const _soCompleteCache={};
     const _isSOComplete=so=>{if(!so)return false;if(_soCompleteCache[so.id]===undefined)_soCompleteCache[so.id]=calcSOStatus(so)==='complete';return _soCompleteCache[so.id];};
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so)))
       .filter(j=>j.prod_status!=='shipped')
-      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)));
+      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)&&!jobRecentlyCompleted(j)));
     // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
     // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
@@ -16900,13 +16914,17 @@ export default function App(){
           if(decoTimeF==='ytd')return d.getFullYear()===now.getFullYear();
           return true;
         };
-        // Completed jobs
+        // Completed jobs. A complete SO no longer hides its jobs outright — invoicing is a
+        // financial close, and it can land minutes after the Done click; recently-stamped
+        // completions stay in the report (jobRecentlyCompleted), unstamped legacy rows drop
+        // as before.
         const completedDecoJobs=[];
-        sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+        sos.forEach(so=>{
+          const _st=calcSOStatus(so);if(_st==='booking')return;
           const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
           const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-          safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+          safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
             if(!decoInRange(j.completed_at||j.updated_at||so.updated_at))return;
             completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
               artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
@@ -22534,7 +22552,11 @@ export default function App(){
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(!_inFam(j,jj))return jj;
-        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // _art_moved marks this as a DELIBERATE status transition for dbEngine's art-status
+        // regression guard — a workboard drag may legitimately move a job backward (e.g. back to
+        // In Progress), which an unstamped save from a stale tab would otherwise defer to the DB.
+        // One-shot: dbEngine consumes it on the save that carries it, never persisted as a column.
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist,_art_moved:true};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
         // it set with art_status ahead is the SO-1199 contradictory shape.
@@ -24457,13 +24479,17 @@ export default function App(){
     const inProcessJobs=active.filter(t=>t.prodStatus==='in_process');
     const waitingJobs=active.filter(t=>!t.isReady&&t.prodStatus!=='in_process');
 
-    // Completed jobs for the Completed tab (not shipped — those auto-fall off)
+    // Completed jobs for the Completed tab (not shipped — those auto-fall off). Invoicing the
+    // SO (sticky status='complete') must not yank a just-decorated job off this tab — recently
+    // stamped completions stay through the grace window (jobRecentlyCompleted); unstamped
+    // legacy rows drop as before so old history doesn't flood in.
     const completedDecoJobs=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.forEach(so=>{
+      const _st=calcSOStatus(so);if(_st==='booking')return;
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-      safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+      safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
         completedDecoJobs.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,
           artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
           prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});

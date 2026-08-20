@@ -21,6 +21,21 @@
 - Keep changes focused and minimal.
 - Test that the app still runs after making changes.
 
+## Order editor: classic AND new, always
+
+`src/OrderEditorClassic.js` is the editor the team actually works in day to day — it is
+NOT deprecated and NOT frozen, whatever its file header once said. `src/OrderEditor.js`
+is the redesign, still rolling out behind the portal UI toggle.
+
+**Every change to one must be made in the other, in the same PR.** A fix that lands in
+only one file silently doesn't exist for half the users — and since classic is the
+default, "only the new editor" means effectively nobody sees it.
+
+- Port the *logic* verbatim; adapt only the styling to each file's own conventions
+  (classic uses fontSize 11 and a blue/slate palette; the redesign uses its `oe2` tokens).
+- Before pushing, diff the shared helpers between the two files and confirm they match.
+- The same applies to a bug found in either file: fix it in both.
+
 ## Operating Manual
 
 - Before starting any non-trivial task (multi-file change, ambiguous request, or anything

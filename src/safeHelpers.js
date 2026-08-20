@@ -335,6 +335,72 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
   return map;
 };
 
+// Match each invoice line back to its SO item so callers can re-attach whatever only the SO
+// knows — the size breakdown, decoration/number detail. Try the stored line key first, then
+// SKU, then a description prefix (mirrors the on-screen invoice view); matched SO items are
+// consumed so duplicate SKUs map 1:1. Returns one SO index per line (-1 when unmatched).
+export const matchInvoiceLinesToSo = (lineItems, soItems) => {
+  const items = safeArr(soItems);
+  const soByKey = {}; items.forEach((it, idx) => { soByKey[soLineKey(it, idx)] = idx });
+  const usedSo = new Set();
+  return safeArr(lineItems).map(li => {
+    if (li?._so_line_key != null && soByKey[li._so_line_key] != null && !usedSo.has(soByKey[li._so_line_key])) { const i = soByKey[li._so_line_key]; usedSo.add(i); return i }
+    let i = li?._sku ? items.findIndex((it, ix) => !usedSo.has(ix) && it?.sku === li._sku) : -1;
+    if (i < 0) i = items.findIndex((it, ix) => !usedSo.has(ix) && it?.sku && safeStr(li?.desc).startsWith(it.sku));
+    if (i >= 0) { usedSo.add(i); return i }
+    return -1;
+  });
+};
+
+// Total units on one SO line (sized lines by their size boxes, unsized ones by est_qty).
+export const soLineQty = (it) => {
+  const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+  return sq > 0 ? sq : safeNum(it?.est_qty);
+};
+
+// ── Scope a sales order's items to what ONE invoice actually bills ──
+// Every invoice document (portal PDF, emailed PDF, order-editor review, coach portal)
+// walks the SALES ORDER, because that's where the size breakdown and decoration detail
+// live. Walking it raw prints the whole order on a partial invoice: INV-63640 billed 94
+// hoodies for $3,487.52 and printed all 8 lines of SO-1101 with a $14,117.45 subtotal.
+// Returns:
+//   items      — the SO items this invoice bills, in SO order, each carrying
+//                `_invQty` (units billed here) and `_invSizes` (the SO size map when the
+//                whole line is billed, else null — the invoice never records WHICH sizes
+//                were billed, so a short line prints no breakdown rather than one that
+//                doesn't add up). Pricing must still be looked up at the SO line's own
+//                quantity, so `_soQty` carries it, and `_soIdx` keeps the line's original
+//                position in the SO for callers that key off it.
+//   extraLines — invoice lines with no SO match (hand-added lines, NetSuite imports).
+//                Callers render these as plain rows so the document's subtotal still
+//                reconciles to the invoice.
+// Deposits bill a percentage of the entire order, so they keep every line. So does an
+// invoice with no stored line_items (legacy rows) — there's nothing to scope by.
+export const scopeSoItemsToInvoice = (inv, soItems) => {
+  const items = safeArr(soItems);
+  const lines = safeArr(inv?.line_items);
+  const all = () => items.map((it, idx) => ({ ...it, _soIdx: idx, _invQty: soLineQty(it), _soQty: soLineQty(it), _invSizes: safeSizes(it) })).filter(it => it._invQty > 0);
+  if (!items.length) return { items: [], extraLines: lines };
+  if (inv?.inv_type === 'deposit' || !lines.length) return { items: all(), extraLines: [] };
+  const idxByLine = matchInvoiceLinesToSo(lines, items);
+  const qtyByIdx = new Map(); const extraLines = [];
+  lines.forEach((li, i) => {
+    const idx = idxByLine[i];
+    if (idx < 0) { extraLines.push(li); return }
+    qtyByIdx.set(idx, (qtyByIdx.get(idx) || 0) + safeNum(li?.qty));
+  });
+  const scoped = items.map((it, idx) => {
+    const q = qtyByIdx.get(idx);
+    if (!(q > 0)) return null;
+    const soQty = soLineQty(it);
+    return { ...it, _soIdx: idx, _invQty: q, _soQty: soQty, _invSizes: q === soQty ? safeSizes(it) : null };
+  }).filter(Boolean);
+  // Every line matched to a zero-qty / missing SO item: fall back to the full order rather
+  // than printing an invoice with no items at all.
+  if (!scoped.length && !extraLines.length) return { items: all(), extraLines: [] };
+  return { items: scoped, extraLines };
+};
+
 // Sum of paid-but-non-unit-billing invoice amounts on an SO (deposits today).
 // These don't lock specific units but represent $ already collected, so the
 // next invoice should credit them against the remaining balance.

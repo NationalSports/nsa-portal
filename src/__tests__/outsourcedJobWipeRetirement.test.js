@@ -84,7 +84,7 @@ const DB_ITEMS = { data: [{ id: 'it-0', item_index: 0 }, { id: 'it-7', item_inde
 const outsideDeco = (over) => ({ data: [{ so_item_id: 'it-0', deco_index: 0, kind: 'art', fulfillment: 'outside', deco_po_id: null, deco_type: null, art_file_id: 'af1', num_method: null, name_method: null, ...over }], error: null });
 
 const baseRules = ({ jobsInDb, liveDecos, poLines }) => [
-  { table: 'sales_orders', sel: 'updated_at,deco_pos,created_at', resp: { data: { updated_at: 'x', deco_pos: null, created_at: '5/20/2026, 11:04:22 AM' }, error: null } },
+  { table: 'sales_orders', sel: 'updated_at,deco_pos,created_at,status,po_number', resp: { data: { updated_at: 'x', deco_pos: null, created_at: '5/20/2026, 11:04:22 AM' }, error: null } },
   { table: 'so_items', sel: 'id,item_index,sku,color,product_id', resp: { data: [], error: null } },
   { table: 'so_art_files', sel: '*', resp: { data: [], error: null } },
   { table: 'so_jobs', sel: 'id,key,art_status,art_file_id,_art_ids,items', resp: { data: jobsInDb, error: null } },

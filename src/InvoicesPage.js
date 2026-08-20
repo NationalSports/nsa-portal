@@ -61,6 +61,20 @@ export default function InvoicesPage(){
     React.useEffect(()=>{if(!_siToKey)return;
       setInvSendModalDirect(s=>s?{...s,msg:withGreeting(s.msg,greetLine(_siToKey.split('|'),s.sendContacts))}:s)},[_siToKey,setInvSendModalDirect]);
 
+    // Heal a NetSuite invoice opened as a bare object that lost its _hist flag (rows rebuilt
+    // field-by-field, stale client copies, deep links). Without this the render-level guard below
+    // shows the read-only record but the line-item fetch never fires — it keys on _hist — so the
+    // page still reads "No line items recorded" (INV60425). Swapping state to the real record makes
+    // that fetch run. Only when NO portal invoice owns the id, so a portal row is never displaced;
+    // once swapped, _hist is set and this no-ops (no loop).
+    React.useEffect(()=>{
+      const iv=viewInvoice;
+      if(!iv||iv._hist||!iv.id)return;
+      if(invs.some(i=>i.id===iv.id))return;
+      const h=(histInvs||[]).find(x=>x.id===iv.id);
+      if(h)setViewInvoice(h);
+    },[viewInvoice,invs,histInvs,setViewInvoice]);
+
     // NetSuite-imported (_hist) invoices load header-only — their lines live in
     // customer_invoice_lines. Fetch them when one is opened so the detail page shows the real
     // items instead of "No line items recorded" (same lazy load the coach-portal view does).
@@ -141,7 +155,12 @@ export default function InvoicesPage(){
       // A NetSuite (_hist) invoice is keyed by its document number, which can collide with a row in
       // the portal `invoices` table — never let that row stand in for it here (INV62383 rendered as
       // $0 with no lines because a header-only shell had been minted under the same number).
-      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||viewInvoice);
+      // The reverse guard too: when the object handed in LOST its _hist flag (a stale client-state
+      // copy, a stripped search/deep-link record) and NO portal invoice exists under that id, resolve
+      // to the NetSuite record from histInvs — otherwise the page renders it as an editable $0 portal
+      // invoice with "No line items recorded" (INV60425), and Edit/Delete on it endanger the real
+      // NetSuite record.
+      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||(histInvs||[]).find(h=>h.id===viewInvoice.id)||viewInvoice);
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
       // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
