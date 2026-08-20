@@ -1,15 +1,19 @@
 /* ═══════════════════════════════════════════════════════════════
-   ORDER EDITOR — CLASSIC (frozen snapshot)
-   Byte-for-byte copy of main's OrderEditor.js, rendered when the
-   portal-wide UI toggle is on "classic" so the team keeps the exact
-   editor they use in production during the redesign rollout.
+   ORDER EDITOR — CLASSIC
+   Rendered when the portal-wide UI toggle is on "classic", which is
+   where the team actually works. This file is LIVE, not frozen.
 
-   ⚠ RE-SYNC ON EVERY MERGE. This file does NOT auto-track main: any
-   PR that changes src/OrderEditor.js must be copied here too, or
-   classic users silently lose that fix. Re-freeze with:
-     git show origin/main:src/OrderEditor.js > src/OrderEditorClassic.js
-   (then re-add this header). Snapshot base: main @ 843092c.
-   Do NOT develop here. Delete this file when the toggle retires.
+   ⚠ DEVELOP HERE TOO. Every change to src/OrderEditor.js (the
+   redesign) must land in this file in the SAME PR, and vice versa —
+   a fix in only one is invisible to half the users, and since classic
+   is the default, "only the new editor" means effectively nobody.
+   Port the logic verbatim; adapt only styling to this file's own
+   conventions (fontSize 11, the blue/slate palette). Diff the shared
+   helpers between the two files before pushing.
+
+   Do NOT re-freeze this file by copying OrderEditor.js over it — the
+   two have diverged in styling and that would revert classic's look.
+   Delete this file only when the toggle retires.
    ═══════════════════════════════════════════════════════════════ */
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
