@@ -61,6 +61,20 @@ export default function InvoicesPage(){
     React.useEffect(()=>{if(!_siToKey)return;
       setInvSendModalDirect(s=>s?{...s,msg:withGreeting(s.msg,greetLine(_siToKey.split('|'),s.sendContacts))}:s)},[_siToKey,setInvSendModalDirect]);
 
+    // Heal a NetSuite invoice opened as a bare object that lost its _hist flag (rows rebuilt
+    // field-by-field, stale client copies, deep links). Without this the render-level guard below
+    // shows the read-only record but the line-item fetch never fires — it keys on _hist — so the
+    // page still reads "No line items recorded" (INV60425). Swapping state to the real record makes
+    // that fetch run. Only when NO portal invoice owns the id, so a portal row is never displaced;
+    // once swapped, _hist is set and this no-ops (no loop).
+    React.useEffect(()=>{
+      const iv=viewInvoice;
+      if(!iv||iv._hist||!iv.id)return;
+      if(invs.some(i=>i.id===iv.id))return;
+      const h=(histInvs||[]).find(x=>x.id===iv.id);
+      if(h)setViewInvoice(h);
+    },[viewInvoice,invs,histInvs,setViewInvoice]);
+
     // NetSuite-imported (_hist) invoices load header-only — their lines live in
     // customer_invoice_lines. Fetch them when one is opened so the detail page shows the real
     // items instead of "No line items recorded" (same lazy load the coach-portal view does).
