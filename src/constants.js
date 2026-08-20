@@ -595,6 +595,12 @@ export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':
   'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA',
   'LGT':'LT','XXLT':'2XLT'};   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
 
+// Statuses where offering "ship this order" makes sense: production has started, so there are
+// goods to put in a box. Includes 'complete' on purpose — a closed order can still owe a shipment
+// (an accidental Final invoice, a promo order closed before its blanks went out), and the shipping
+// cost only lands on the order when the package is created.
+export const SHIPPABLE_STATUSES=new Set(['in_production','ready_to_invoice','complete']);
+
 // SO status labels — one map, shared by the SO detail stepper, the orders list and the
 // reopen action, so a renamed status doesn't have to be chased across three inline literals.
 export const SO_STATUS_LABELS={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
