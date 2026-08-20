@@ -120,6 +120,19 @@ describe('account classification', () => {
     expect(classifyAccount('', '5100')).toEqual({ group: 'cogs', verified: false });
     expect(classifyAccount('', 'no-number')).toEqual({ group: null, verified: false });
   });
+
+  // NSA's chart of accounts is five digits wide. A 1000-9999 range check
+  // classified none of it, so the fallback was dead for this company.
+  it('classifies the five-digit account numbers NSA actually uses', () => {
+    expect(classifyAccount('', '10100').group).toBe('asset');    // Checking
+    expect(classifyAccount('', '11000').group).toBe('asset');    // Accounts Receivable
+    expect(classifyAccount('', '21000').group).toBe('liability');// Accounts Payable
+    expect(classifyAccount('', '30000').group).toBe('equity');
+    expect(classifyAccount('', '40000').group).toBe('income');   // Sales
+    expect(classifyAccount('', '51300').group).toBe('cogs');     // Purchases
+    expect(classifyAccount('', '60000').group).toBe('expense');  // Salaries and Wages
+    expect(classifyAccount('', '78300').group).toBe('expense');  // Taxes and Licenses
+  });
 });
 
 describe('name helpers', () => {
@@ -132,6 +145,20 @@ describe('name helpers', () => {
   it('splits leading account numbers off names', () => {
     expect(splitNumberName('4000 Sales')).toEqual({ number: '4000', name: 'Sales' });
     expect(splitNumberName('Sales')).toEqual({ number: '', name: 'Sales' });
+  });
+
+  // The real 2025/2026 exports separate number from name with a spaced dash.
+  it('drops the spaced separator NSA exports put between number and name', () => {
+    expect(splitNumberName('10100 - First Foundation Checking'))
+      .toEqual({ number: '10100', name: 'First Foundation Checking' });
+    expect(splitNumberName('40000 - Sales')).toEqual({ number: '40000', name: 'Sales' });
+    expect(splitNumberName('21000 - Accounts Payable - Trade'))
+      .toEqual({ number: '21000', name: 'Accounts Payable - Trade' });
+    expect(splitNumberName('51300 : Purchases')).toEqual({ number: '51300', name: 'Purchases' });
+  });
+
+  it('keeps a dash that is part of the account number itself', () => {
+    expect(splitNumberName('1000-01 Operating')).toEqual({ number: '1000-01', name: 'Operating' });
   });
 
   it('parses NetSuite US dates and ISO dates', () => {

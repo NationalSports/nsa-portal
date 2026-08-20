@@ -28,6 +28,38 @@ memos. Those numbers are real and the export is genuinely worth running.
 
 ---
 
+## 0b. What the first real export run produced (2026-08-20)
+
+Two of the fourteen files in §4 have now been run and parsed: `gl_detail_2025.csv`
+(90,251 ledger rows) and `gl_detail_2026_ytd.csv` (41,583 rows). **Both balance to the
+cent** — $57,834,570.76 and $29,047,176.93, debits equal credits — so both are complete
+exports. The parser read them with zero warnings.
+
+Two parser bugs only a real file could have exposed, both now fixed:
+
+- `groupFromNumber` classified on a 1000–9999 range. NSA's chart of accounts is **five
+  digits** (`10100` Checking, `40000` Sales, `51300` Purchases), so the fallback returned
+  `null` for every account in the company. It now keys on the leading digit.
+- `splitNumberName` expected `"4000 Sales"`. The real exports write
+  `"10100 - First Foundation Checking"`, so every account name kept a leading `"- "`
+  (84,868 of 90,251 rows in the 2025 file).
+
+**The exports were run without four of the columns §5.2 asks for** — the header is
+`Account, Type, Date, Document Number, Name, Debit, Credit, Balance`, missing `Period`,
+`Memo`, `Internal ID` and the optional segment columns. Two consequences worth a re-run:
+
+| Missing column | Consequence |
+|---|---|
+| `Period` | Fiscal year has to be inferred from the transaction date. The 2025 file contains **61 rows dated in 2026** carrying **$114,470.17 of revenue** that NetSuite books to FY2025 — they would land in the wrong tax year. (Checked: none of the 61 also appear in the YTD file, so there is no double-count, only misattribution.) |
+| `Internal ID` | `gl_entries.netsuite_internal_id` is null on every row, so re-imports can only dedupe on the synthesized `gl-<date>-<doc>-<account>-<rowindex>` id. That id is stable only while the file is byte-identical; a re-run of the report in a different row order would insert duplicates rather than update. |
+
+Three accounts in the ledger **have no account number at all** — `Viking Loan Liability`,
+`NP11 - NS Undeposited Funds` and `Donation` ($158,891.42 of 2025 activity between them).
+No number means no number-range fallback, so these cannot be assigned to a statement group
+without file 1, `coa.csv`. **The chart of accounts is not optional.**
+
+---
+
 ## 1. The mission in one paragraph
 
 National Sports Apparel runs its books in **NetSuite** (they are migrating to QuickBooks

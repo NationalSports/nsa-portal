@@ -247,16 +247,23 @@ const ACCOUNT_TYPE_GROUP = {
 
 // Number-range fallback, used only when Type is absent. This is the guessing
 // the handoff doc §5.1 warns about — callers surface it as `unverified`.
+// Keyed on the leading digit, not a fixed range: National Sports Apparel's
+// chart of accounts is five digits (10100 Checking, 40000 Sales, 51300
+// Purchases), and a 1000-9999 range check returns null for every one of them.
+// Leading-digit keeps the four-digit behaviour identical and extends it to
+// any width.
 const groupFromNumber = (num) => {
-  const n = parseInt(String(num || '').replace(/\D/g, ''), 10);
-  if (!isFinite(n) || !n) return null;
-  if (n >= 1000 && n < 2000) return 'asset';
-  if (n >= 2000 && n < 3000) return 'liability';
-  if (n >= 3000 && n < 4000) return 'equity';
-  if (n >= 4000 && n < 5000) return 'income';
-  if (n >= 5000 && n < 6000) return 'cogs';
-  if (n >= 6000 && n < 10000) return 'expense';
-  return null;
+  const digits = String(num || '').replace(/\D/g, '');
+  if (!digits) return null;
+  switch (digits[0]) {
+    case '1': return 'asset';
+    case '2': return 'liability';
+    case '3': return 'equity';
+    case '4': return 'income';
+    case '5': return 'cogs';
+    case '6': case '7': case '8': case '9': return 'expense';
+    default: return null;
+  }
 };
 
 const classifyAccount = (accountType, accountNumber) => {
@@ -288,9 +295,14 @@ const splitFullName = (full) => {
 };
 
 // "4000 Sales" → { number: '4000', name: 'Sales' }
+// "10100 - First Foundation Checking" → { number: '10100', name: 'First
+// Foundation Checking' } — NSA's exports separate number from name with a
+// spaced dash, and leaving it attached puts "- Sales" in gl_accounts.name.
+// A dash *inside* the number ("1000-01 Operating") has no surrounding space,
+// so it stays part of the number.
 const splitNumberName = (label) => {
   const s = String(label || '').trim();
-  const m = /^(\d[\d.\-]*)\s+(.*)$/.exec(s);
+  const m = /^(\d[\d.]*(?:-\d[\d.]*)*)\s+(?:[-–—:]+\s*)?(.*)$/.exec(s);
   if (m) return { number: m[1], name: m[2].trim() };
   return { number: '', name: s };
 };
