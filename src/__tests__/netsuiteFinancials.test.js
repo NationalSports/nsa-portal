@@ -251,6 +251,42 @@ describe('buildIncomeStatement', () => {
   });
 });
 
+describe('statements built from the gl_account_totals RPC', () => {
+  // PostgREST serialises Postgres NUMERIC as a STRING, so the rows the
+  // Accounting page feeds the builders look like {"amount": "-1000.00"}, not
+  // {amount: -1000}. Verified against the live RPC. String arithmetic would
+  // silently concatenate instead of adding, so the builders must coerce.
+  const rpcRows = [
+    { account_full_name: 'Assets : Cash',          account_name: 'Cash',          account_number: '1000', statement_group: 'asset',   amount: '450.00',    entry_count: 1 },
+    { account_full_name: 'Income : Apparel Sales', account_name: 'Apparel Sales', account_number: '4000', statement_group: 'income',  amount: '-1000.00',  entry_count: 12 },
+    { account_full_name: 'COGS : Garments',        account_name: 'Garments',      account_number: '5000', statement_group: 'cogs',    amount: '400.00',    entry_count: 3 },
+    { account_full_name: 'Expense : Rent',         account_name: 'Rent',          account_number: '6000', statement_group: 'expense', amount: '150.00',    entry_count: 1 },
+  ];
+
+  test('string amounts produce the same figures as numbers', () => {
+    const is = buildIncomeStatement(rpcRows);
+    expect(is.totals.revenue).toBe(1000);
+    expect(is.totals.grossProfit).toBe(600);
+    expect(is.totals.netIncome).toBe(450);
+    expect(is.checkNetIncome).toBe(450);
+  });
+
+  test('a pre-aggregated entry_count is carried, not overwritten with 1', () => {
+    // gl_account_totals already counted the postings behind each account.
+    // Counting input rows instead would report every account as "1 entry".
+    const is = buildIncomeStatement(rpcRows);
+    expect(is.sections.income[0].entry_count).toBe(12);
+    expect(is.entryCount).toBe(3);
+  });
+
+  test('the trial balance still balances off string input', () => {
+    const tb = buildTrialBalance(rpcRows);
+    expect(tb.totals.debit).toBe(1000);
+    expect(tb.totals.credit).toBe(1000);
+    expect(tb.isBalanced).toBe(true);
+  });
+});
+
 describe('buildBalanceSheet', () => {
   test('liabilities and equity read positive', () => {
     const bs = buildBalanceSheet([
@@ -323,8 +359,17 @@ describe('parseInvoiceTotals', () => {
 
   test('the internal id is the idempotency key', () => {
     const { invoices } = parseInvoiceTotals(rows);
-    expect(invoices[0].id).toBe('101');
     expect(invoices[0].netsuite_internal_id).toBe('101');
+  });
+
+  test('the row id matches the existing loader scheme', () => {
+    // customer_invoices already holds 9,082 rows written by
+    // scripts/load-netsuite-invoices.py as f"inv-ns-{internal_id}". Emitting a
+    // bare internal id here would insert duplicates rather than update, then
+    // fail against the unique index on netsuite_internal_id.
+    const { invoices } = parseInvoiceTotals(rows);
+    expect(invoices[0].id).toBe('inv-ns-101');
+    expect(invoices[1].id).toBe('inv-ns-102');
   });
 });
 

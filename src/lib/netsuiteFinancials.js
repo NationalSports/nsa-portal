@@ -492,7 +492,12 @@ export const parseInvoiceTotals = (rows, opts = {}) => {
     const tax = parseMoney(pick(row, map, 'tax'));
 
     invoices.push({
-      id: nsid,
+      // MUST match the id scheme the original loader used
+      // (scripts/load-netsuite-invoices.py: f"inv-ns-{ns_txn_id}"). A bare
+      // internal id here would insert 9,082 duplicate rows instead of updating
+      // the existing ones — and then fail against the unique index on
+      // netsuite_internal_id. Writes upsert on netsuite_internal_id, not id.
+      id: `inv-ns-${nsid}`,
       netsuite_internal_id: nsid,
       raw_customer_nsid: String(pick(row, map, 'customer_nsid') || '').trim() || null,
       raw_customer_name: String(pick(row, map, 'customer_name') || '').trim() || null,
@@ -530,7 +535,10 @@ const groupByAccount = (entries) => {
     });
     const a = acc.get(key);
     a.amount = round2(a.amount + (Number(e.amount) || 0));
-    a.entry_count++;
+    // Rows may arrive raw (one posting each) or pre-aggregated by the
+    // gl_account_totals RPC, which already carries its own entry_count.
+    // Counting rows blindly would report every account as "1 entry".
+    a.entry_count += Number(e.entry_count) || 1;
     if (!a.statement_group && e.statement_group) a.statement_group = e.statement_group;
   }
   return [...acc.values()];
