@@ -141,7 +141,12 @@ export default function InvoicesPage(){
       // A NetSuite (_hist) invoice is keyed by its document number, which can collide with a row in
       // the portal `invoices` table — never let that row stand in for it here (INV62383 rendered as
       // $0 with no lines because a header-only shell had been minted under the same number).
-      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||viewInvoice);
+      // The reverse guard too: when the object handed in LOST its _hist flag (a stale client-state
+      // copy, a stripped search/deep-link record) and NO portal invoice exists under that id, resolve
+      // to the NetSuite record from histInvs — otherwise the page renders it as an editable $0 portal
+      // invoice with "No line items recorded" (INV60425), and Edit/Delete on it endanger the real
+      // NetSuite record.
+      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||(histInvs||[]).find(h=>h.id===viewInvoice.id)||viewInvoice);
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
       // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
