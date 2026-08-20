@@ -433,7 +433,14 @@ const jobAllRoutedOutside = (o, j, outByItem) => {
 // a white underbase (NSA rule). Returns true when the garment color needs one; blank color → false
 // (unknown, don't auto-charge). Used to auto-apply the underbase upcharge on pricing lookups.
 const _LIGHT_GARMENT = /white|vegas|(?:light|lt)[\s.]*gr[ae]y/i;
-const garmentNeedsUnderbase = (color) => { const c = safeStr(color).trim(); return c ? !_LIGHT_GARMENT.test(c) : false; };
+// Catalog colors name the BODY first and the trim/logo second ("Black/White", "Team Power Red/ White",
+// "Black/White (JX4452)"), so the light test must read the body token ALONE. Testing the whole string
+// let every dark two-tone garment escape the underbase upcharge on the "/White" half of its own name —
+// EST-2139 priced one screen at $4.90/pc on a Black/White tee and $5.60/pc on a Black one. Strips a
+// trailing "(SKU)" note, then keeps everything before the first slash; falls back to the full string
+// when that leaves nothing (a color written as "/White").
+const _garmentBody = (c) => c.replace(/\s*\([^)]*\)\s*$/, '').split('/')[0].trim() || c;
+const garmentNeedsUnderbase = (color) => { const c = safeStr(color).trim(); return c ? !_LIGHT_GARMENT.test(_garmentBody(c)) : false; };
 
 // ── ONE asset resolver (Layer 3 of the one-process art model) ──
 // Resolve a design's image for a given color way, keyed on the STABLE `color_way_id` (never the CW
