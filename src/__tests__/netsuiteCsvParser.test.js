@@ -563,3 +563,84 @@ describe('report-type detection', () => {
     expect(detectReportType('a,b,c\n1,2,3', 'export.csv')).toBeNull();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Regressions from the first real export (account 6108444, 2026-08-20).
+// The header below is byte-for-byte the one NetSuite produced. Three of its
+// fifteen columns are called "Internal ID", the pre-tax field is called
+// "Amount (Net of Tax)" and is BLANK on non-taxable documents, and the real
+// sales tax lives in "Amount (Transaction Tax Total)".
+// ─────────────────────────────────────────────────────────────────────────
+describe('invoice search — the real NetSuite export shape', () => {
+  const REAL_HEADER =
+    'Internal ID,Date,Type,Period,Document Number,Internal ID,Name,Internal ID,Status,' +
+    'Amount (Net of Tax),Amount (Transaction Tax Total),Amount,Subsidiary,Sales Rep,Memo';
+  const realFile = (...lines) => [REAL_HEADER, ...lines].join('\n');
+
+  it('binds the real tax column instead of reporting no tax at all', () => {
+    const res = parseInvoiceSearch(realFile(
+      '10609,7/1/2024,Invoice,Jul 2024,52766,10609,J Serra Baseball,2956,Paid In Full,2230.72,168.56,2399.28,NSA LLC,Chase Koissian,returners',
+    ));
+    expect(res.summary.hasTax).toBe(true);
+    expect(res.rows[0].tax).toBe(168.56);
+    expect(res.rows[0].subtotal).toBe(2230.72);
+    expect(res.rows[0].total).toBe(2399.28);
+  });
+
+  it('prefers "Amount (Transaction Tax Total)" over the zero-filled "Tax Total"', () => {
+    const res = parseInvoiceSearch([
+      'Internal ID,Date,Type,Document Number,Name,Amount (Net of Tax),Tax Total,Amount (Transaction Tax Total),Amount',
+      '1,1/2/2025,Invoice,INV1,Acme,100.00,0.00,8.25,108.25',
+    ].join('\n'));
+    expect(res.rows[0].tax).toBe(8.25);
+  });
+
+  it('warns when the only tax column present is populated but all zero', () => {
+    const res = parseInvoiceSearch([
+      'Internal ID,Date,Type,Document Number,Name,Amount (Net of Tax),Tax Total,Amount',
+      '1,1/2/2025,Invoice,INV1,Acme,100.00,0.00,108.25',
+    ].join('\n'));
+    expect(res.warnings.some(w => /zero on every one of them/.test(w))).toBe(true);
+  });
+
+  it('never binds subtotal to "Amount (Net)", which returns the gross figure', () => {
+    const res = parseInvoiceSearch([
+      'Internal ID,Date,Type,Document Number,Name,Amount (Net),Amount',
+      '1,1/2/2025,Invoice,INV1,Acme,108.25,108.25',
+    ].join('\n'));
+    expect(res.summary.hasSubtotal).toBe(false);
+    expect(res.rows[0].subtotal).toBeNull();
+    expect(res.warnings.some(w => /NO "Subtotal" COLUMN/.test(w))).toBe(true);
+  });
+
+  it('treats a blank pre-tax amount as non-taxable, not as zero', () => {
+    const res = parseInvoiceSearch(realFile(
+      '1,1/2/2025,Invoice,Jan 2025,INV1,1,Taxable Co,10,Paid In Full,100.00,8.25,108.25,NSA LLC,Rep,',
+      '2,1/3/2025,Invoice,Jan 2025,INV2,2,Non-taxable Co,11,Paid In Full,,,250.00,NSA LLC,Rep,',
+    ));
+    expect(res.rows[1].subtotal).toBe(250.00);
+    expect(res.rows[1].tax).toBeNull();
+    expect(res.summary.subtotalFromGross).toBe(1);
+    // subtotal + tax must still reconcile to the gross total across the file
+    const sub = res.rows.reduce((a, r) => a + r.subtotal, 0);
+    const tax = res.rows.reduce((a, r) => a + (r.tax || 0), 0);
+    const tot = res.rows.reduce((a, r) => a + r.total, 0);
+    expect(Number((sub + tax).toFixed(2))).toBe(Number(tot.toFixed(2)));
+  });
+
+  it('resolves the customer Internal ID from the third same-named column', () => {
+    const res = parseInvoiceSearch(realFile(
+      '10609,7/1/2024,Invoice,Jul 2024,52766,10609,J Serra Baseball,2956,Paid In Full,2230.72,168.56,2399.28,NSA LLC,Rep,',
+    ));
+    expect(res.summary.hasCustomerInternalId).toBe(true);
+    expect(res.rows[0].netsuite_internal_id).toBe('10609');
+    expect(res.rows[0].raw_customer_nsid).toBe('2956');
+  });
+
+  it('flags a blank pre-tax amount that still carries tax', () => {
+    const res = parseInvoiceSearch(realFile(
+      '1,1/2/2025,Invoice,Jan 2025,INV1,1,Odd Co,10,Open,,8.25,108.25,NSA LLC,Rep,',
+    ));
+    expect(res.warnings.some(w => /contradicts NetSuite's own invariant/.test(w))).toBe(true);
+  });
+});

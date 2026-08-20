@@ -692,8 +692,19 @@ const INV_SPEC = {
   name: ['Name', 'Customer', 'Entity'],
   customerInternalId: ['Customer : Internal ID', 'Customer Internal ID', 'Entity Internal ID', 'Customer/Project : Internal ID'],
   status: ['Status'],
-  subtotal: ['Subtotal', 'Sub Total', 'Amount (Net)'],
-  tax: ['Tax Total', 'Tax', 'Tax Amount', 'Sales Tax'],
+  // NetSuite has no field named "Subtotal". The pre-tax figure exports as
+  // "Amount (Net of Tax)" (Transaction_NETAMOUNTNOTAX). Do NOT list
+  // "Amount (Net)" here: that is Transaction_NETAMOUNT, which returns the
+  // GROSS total and is indistinguishable from `Amount` in the data. Binding
+  // it would populate subtotal with tax-inclusive figures and report the
+  // sales-tax gap as fixed. Better to leave subtotal unbound and warn.
+  subtotal: ['Amount (Net of Tax)', 'Amount Net of Tax', 'Subtotal', 'Sub Total'],
+  // The two tax fields are labelled backwards from their internal names.
+  // The column displayed as "Tax Total" (Transaction_TRANTAXTOTAL) is
+  // populated on every row and zero on every row. Real sales tax lives in
+  // "Amount (Transaction Tax Total)" (Transaction_TAXTOTAL), so it must be
+  // tried FIRST — an export carrying both would otherwise bind the zeroes.
+  tax: ['Amount (Transaction Tax Total)', 'Amount Transaction Tax Total', 'Tax Total', 'Tax Amount', 'Sales Tax', 'Tax'],
   amount: ['Amount', 'Total', 'Amount (Gross)', 'Total Amount'],
   subsidiary: ['Subsidiary'],
   salesRep: ['Sales Rep', 'Sales Representative', 'Rep'],
@@ -724,6 +735,19 @@ const parseInvoiceSearch = (text) => {
   const header = rows[hIdx];
   const col = mapColumns(header, INV_SPEC);
 
+  // NetSuite exports "Customer : Internal ID" with its join prefix stripped,
+  // so the file carries three separate columns all headed "Internal ID"
+  // (transaction id, transaction id again, customer id). Header-name lookup
+  // can only ever find the first, and any parser building a dict from the
+  // header keeps only the last. Resolve the customer one by position: it is
+  // the first unclaimed "Internal ID" appearing after the Name column.
+  if (col.customerInternalId < 0 && col.name >= 0) {
+    const claimed = new Set(Object.values(col).filter(i => i >= 0));
+    const found = header.findIndex((h, i) =>
+      i > col.name && !claimed.has(i) && norm(h) === 'internalid');
+    if (found !== -1) col.customerInternalId = found;
+  }
+
   // These two are the entire reason the export is being re-run (handoff §6).
   if (col.subtotal < 0) warnings.push('NO "Subtotal" COLUMN — this export does not fix the missing pre-tax revenue. Re-run the saved search with Subtotal included (handoff §5.6).');
   if (col.tax < 0) warnings.push('NO "Tax Total" COLUMN — this export does not fix the missing sales-tax figure. Re-run the saved search with Tax Total included (handoff §5.6).');
@@ -735,6 +759,11 @@ const parseInvoiceSearch = (text) => {
   const byYear = {};
   let dupes = 0;
   let missingInternalId = 0;
+  let subtotalFromGross = 0;
+  let taxOnBlankSubtotal = 0;
+  let taxPopulated = 0;
+  let taxSumCents = 0;
+  let taxableRows = 0;
 
   for (let r = hIdx + 1; r < rows.length; r++) {
     const row = rows[r];
@@ -750,8 +779,23 @@ const parseInvoiceSearch = (text) => {
 
     const docType = normalizeDocType(cell(row, col.type));
     const totalCents = toCents(cell(row, col.amount));
-    const subtotalCents = col.subtotal >= 0 && !isBlankMoney(cell(row, col.subtotal)) ? toCents(cell(row, col.subtotal)) : null;
     const taxCents = col.tax >= 0 && !isBlankMoney(cell(row, col.tax)) ? toCents(cell(row, col.tax)) : null;
+    // "Amount (Net of Tax)" is BLANK, not zero, on non-taxable documents, and
+    // the tax cell is blank on exactly the same rows. On those the gross
+    // Amount already IS the pre-tax figure. Treating blank as 0 understates
+    // the pre-tax total by the entire non-taxable population — $1,757,945.13
+    // across the 984 such rows in the 2024-2026 export.
+    let subtotalCents = null;
+    if (col.subtotal >= 0) {
+      if (!isBlankMoney(cell(row, col.subtotal))) {
+        subtotalCents = toCents(cell(row, col.subtotal));
+      } else {
+        subtotalCents = totalCents;
+        subtotalFromGross++;
+        if (taxCents) taxOnBlankSubtotal++;
+      }
+    }
+    if (taxCents !== null) { taxPopulated++; taxSumCents += taxCents; }
 
     // Consistency check per document — subtotal + tax should equal total.
     if (subtotalCents !== null && taxCents !== null) {
@@ -762,6 +806,8 @@ const parseInvoiceSearch = (text) => {
         warnings.push(`Doc ${docNumber || internalId}: subtotal ${centsToNum(subtotalCents).toFixed(2)} + tax ${centsToNum(taxCents).toFixed(2)} = ${centsToNum(subtotalCents + taxCents).toFixed(2)}, but Amount is ${centsToNum(totalCents).toFixed(2)} (off by ${centsToNum(diff).toFixed(2)}).`);
       }
     }
+
+    if (subtotalCents !== null && subtotalCents !== totalCents) taxableRows++;
 
     const key = internalId || `doc-${docNumber}`;
     if (seen.has(key)) { dupes++; continue; }
@@ -802,6 +848,14 @@ const parseInvoiceSearch = (text) => {
     });
   }
 
+  // The mislabelled-tax-field trap: a bound tax column that is populated but
+  // sums to exactly zero, while documents plainly carry tax, is NetSuite's
+  // Transaction_TRANTAXTOTAL rather than the real figure.
+  if (col.tax >= 0 && taxPopulated > 0 && taxSumCents === 0 && taxableRows > 0) {
+    warnings.push(`The tax column ("${String(header[col.tax] || '').trim()}") is populated on ${taxPopulated} row(s) and zero on every one of them, yet ${taxableRows} document(s) have a pre-tax subtotal below their total. This is NetSuite's mislabelled "Tax Total" field — re-run the search selecting "Amount (Transaction Tax Total)" instead.`);
+  }
+  if (subtotalFromGross) warnings.push(`${subtotalFromGross} document(s) have a blank pre-tax amount (non-taxable) — their gross Amount was used as the subtotal, per the verified NetSuite rule. Blank is not zero.`);
+  if (taxOnBlankSubtotal) warnings.push(`${taxOnBlankSubtotal} document(s) have a blank pre-tax amount but a non-zero tax figure. That contradicts NetSuite's own invariant — check these before loading.`);
   if (dupes) warnings.push(`${dupes} duplicate Internal ID row(s) collapsed — first occurrence kept.`);
   if (missingInternalId) warnings.push(`${missingInternalId} row(s) have a blank Internal ID and cannot be written (the column is NOT NULL) — they will be skipped on import. Re-run the search so every document carries its Internal ID.`);
   if (!byType.credit_memo) warnings.push('No credit memos in this export. Handoff §6 says zero credit memos have ever been imported and the saved search must use "Type is any of Invoice, Credit Memo" — check that criterion before loading.');
@@ -824,6 +878,9 @@ const parseInvoiceSearch = (text) => {
     loadable: col.internalId >= 0,
     hasSubtotal: col.subtotal >= 0,
     hasTax: col.tax >= 0,
+    subtotalFromGross,
+    taxTotal: centsToNum(taxSumCents),
+    hasCustomerInternalId: col.customerInternalId >= 0,
   };
   return { rows: out, warnings, header, summary };
 };
