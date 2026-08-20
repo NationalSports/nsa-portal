@@ -603,3 +603,42 @@ export function mergeJobsArtState(sources) {
     coachApproved,
   };
 }
+
+/**
+ * (item_idx-sku) keys of the garments owned by the split slices under `parentId` —
+ * TRANSITIVELY across the whole split family, not just direct children.
+ *
+ * syncJobs uses this to keep the parent's rebuild from re-adding a garment a split
+ * carved off. Scanning only direct children (`split_from === parentId`) misses a
+ * slice of a slice: SO-1634 split KC4512 off to JOB-1634-01-B, then split it again
+ * to JOB-1634-01-B-B — the grandchild's garment matched no direct child, so every
+ * sync re-added the full 27-unit line to JOB-1634-01 and the family double-counted
+ * the joggers (0/27 on both jobs, 29→56 units on the board).
+ *
+ * `excludeSlice(job)` marks slices whose claims are preserved elsewhere this pass
+ * (released/merged snapshots hold their garments via frozenItemDecos, so those rows
+ * never reach the rebuild and must not be treated as slice-owned here). Excluded
+ * slices still link the family walk — a slice under a merged slice still owns its
+ * garments.
+ *
+ * The walk is cycle-safe: `fam` only grows, so a corrupted split_from loop simply
+ * stops adding members.
+ */
+export function splitSliceOwnedKeys(jobs, parentId, excludeSlice) {
+  const owned = new Set();
+  if (!parentId) return owned;
+  const list = (jobs || []).filter((j) => j && j.id);
+  const fam = new Set([parentId]);
+  for (let grew = true; grew;) {
+    grew = false;
+    list.forEach((j) => {
+      if (j.split_from && fam.has(j.split_from) && !fam.has(j.id)) { fam.add(j.id); grew = true; }
+    });
+  }
+  list.forEach((j) => {
+    if (j.id === parentId || !fam.has(j.id)) return;
+    if (excludeSlice && excludeSlice(j)) return;
+    (j.items || []).forEach((gi) => owned.add(gi.item_idx + '-' + gi.sku));
+  });
+  return owned;
+}
