@@ -35,10 +35,10 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
@@ -3830,8 +3830,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (item_idx-sku) pairs already carried by this job's split-off slices. A garment a split moved
       // ENTIRELY off the parent is absent from existing.items, so without this it would be rebuilt here
       // at FULL quantity and land on BOTH the parent and its slice (the GM2365-on-both double-count).
-      const sliceOwned=new Set();
-      if(existing.id)safeJobs(o).forEach(sj=>{if(sj.split_from===existing.id&&!sj._merged&&!_isRel(sj))(sj.items||[]).forEach(gi=>sliceOwned.add(gi.item_idx+'-'+gi.sku))});
+      // TRANSITIVE across the family: a slice of a slice still owns its garments — scanning only
+      // direct children re-added a grandchild-owned garment to the family root on every sync
+      // (SO-1634: KC4512 lived on JOB-1634-01-B-B and got duplicated back onto JOB-1634-01).
+      const sliceOwned=existing.id?splitSliceOwnedKeys(safeJobs(o),existing.id,sj=>sj._merged||_isRel(sj)):new Set();
       let hasOverride=false;
       const rebuilt=[];
       nj.items.forEach(gi=>{
@@ -4686,7 +4688,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const _lbl=SO_STATUS_LABELS[_auto]||_auto;
               if(_auto==='complete'){nf(o.id+' calculates as Complete on its own — every job is shipped and every unit fulfilled. Reopen a job or add the remaining items before reopening the order.','error');return}
               if(!window.confirm('Reopen sales order '+o.id+'? It goes back to "'+_lbl+'" and can be invoiced again.'))return;
-              const updated={...o,status:_auto,updated_at:new Date().toLocaleString()};
+              // _status_reverted: this is the DELIBERATE reopen of a completed order, so dbEngine's
+              // header-decision guard must let the save pull 'complete' back open rather than
+              // treating it as a stale tab clobbering the close (same marker the invoice-delete
+              // reopen and "Reset to Auto" stamp). Session-only, consumed by the save that carries it.
+              const updated={...o,status:_auto,_status_reverted:true,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
               // Tells the app the reopen was deliberate: the fully-invoiced auto-closer would
               // otherwise slam a reopened ready_to_invoice order straight back to complete.
@@ -4969,7 +4975,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               onClick={()=>{if(sf==='complete')sv('status','complete')}}
               title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>
               {SO_STATUS_LABELS[sf]||sf}</span>})}
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
+          {/* _status_reverted: deliberate reopen of a completed order — lets the save past dbEngine's header-decision guard */}
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
         <div style={{marginTop:10}}>
@@ -9491,6 +9498,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           +Object.entries(bySku).map(([sku,pos])=>sku+(pos.length?' (on '+pos.join(', ')+')':'')).join(', ')
           +'. Another tab or session ordered them. Reload the page to pull in the latest POs, then order only what\'s still open.';
       };
+      // Local over-commit guard — _poFreshDupCheck only catches drift between the DB and this tab;
+      // this catches what the tab already KNOWS. The qty boxes default to the open count but accept
+      // any typed number, so an overage quietly re-orders units an existing PO covers (SO-1295:
+      // JW6602's 9 extra hoods went on a second PO a day after the first covered the line — both
+      // arrived, and the extras sat on the SO as a cost write-off). Returns a confirm message
+      // naming the POs that already hold the units, or null when the entries are clean.
+      const _poOverCommitMsg=(entries)=>{
+        const rows=[];
+        entries.forEach(({idx,sizes})=>{
+          const it=safeItems(o)[idx];if(!it)return;
+          poOverCommit(it,sizes).forEach(c=>rows.push((it.sku||('line '+(idx+1)))+' '+c.sz+': ordering '+c.qty+' but only '+c.open+' still open'+(c.pos.length?' — '+c.committed+' already on '+c.pos.join(', '):'')));
+        });
+        if(!rows.length)return null;
+        return '⚠️ This PO orders MORE than the order still needs:\n\n'+rows.join('\n')+'\n\nThe same units would be on two POs — both arrive, and the extras stay on this SO as a cost write-off. Create the PO anyway?';
+      };
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null);setPodLinkId(null)}}>x</button></div>
         <div className="modal-body">
@@ -9732,8 +9754,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
             const podRes=poDecoInline?buildInlineDecoPO():null;
             if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+            const _entries=_poSubmitEntries();
+            // Over-commit confirm — ordering beyond the line's open count needs a deliberate yes.
+            const _overMsg=_poOverCommitMsg(_entries);
+            if(_overMsg&&!window.confirm(_overMsg)){_poCreatingRef.current=false;return}
             // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
-            const _dup=await _poFreshDupCheck(_poSubmitEntries());
+            const _dup=await _poFreshDupCheck(_entries);
             if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
             setTimeout(()=>{_poCreatingRef.current=false},1500);
             // Build batch PO entry
@@ -9824,8 +9850,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const _attnFinal=poAttention.trim()||(poDecoInline&&!podLink?_podPoIdNow():_poAutoAttn);
           const podRes=poDecoInline?buildInlineDecoPO():null;
           if(podRes&&podRes.error){_poCreatingRef.current=false;nf(podRes.error,'error');return}
+          const _entries=_poSubmitEntries();
+          // Over-commit confirm — ordering beyond the line's open count needs a deliberate yes.
+          const _overMsg=_poOverCommitMsg(_entries);
+          if(_overMsg&&!window.confirm(_overMsg)){_poCreatingRef.current=false;return}
           // Server-truth duplicate check — the DB may hold PO lines this tab never loaded.
-          const _dup=await _poFreshDupCheck(_poSubmitEntries());
+          const _dup=await _poFreshDupCheck(_entries);
           if(_dup){_poCreatingRef.current=false;nf(_poDupMsg(_dup),'error');return}
           setTimeout(()=>{_poCreatingRef.current=false},1500);
           // Preexisting PO numbers are typed by hand, so the same real PO can be entered with
@@ -12908,6 +12938,12 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
 // Seed only — recalcJobFulfillment below re-derives both from the live sizes/receipts (see the
 // Merge Jobs button); the summed gi.units/gi.fulfilled here are build-time snapshots.
 const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);let updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);
+// Re-parent the merged slice's own children onto the job it merged into — their split_from
+// would otherwise point at a job that no longer exists. An orphaned slice (a) becomes its own
+// family root in allocateJobFulfillment, double-counting the line's receipts against the real
+// family, and (b) drops out of the parent-rebuild's slice-owned walk, so the next sync re-adds
+// its garments to the parent at full quantity (the SO-1634 double-count through another door).
+updJobs=updJobs.map(jj=>jj.split_from===j.id?{...jj,split_from:j.split_from}:jj);
 // If the parent has no remaining split children it's one run again — drop the separate-pricing
 // flag so the design goes back to combined-tier billing (stampSplitRuns clears d.split_runs).
 if(!updJobs.some(jj=>jj.split_from===j.split_from))updJobs=updJobs.map(jj=>jj.id===j.split_from?{...jj,priced_separately:false,price_override:null}:jj);
@@ -14050,7 +14086,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     if(rl.ln.lineIdx===activeLine.lineIdx&&rl.ln.poIdx===activeLine.poIdx)activeUpdatedPO=updatedPO;
                     updatedItems=updatedItems.map((it2,i)=>i===rl.ln.lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===rl.ln.poIdx?updatedPO:p)}:it2);
                   });
-                  const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
+                  // Deliberate receipt edit can REDUCE received units — stamp the session tombstone so the
+                  // save engine's receiving-rollback guard honors the reduction instead of restoring it.
+                  const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),_receiptEditedPoIds:[...new Set([...(o._receiptEditedPoIds||[]),...receiptLines.map(rl=>rl.pl.po_id)])].filter(Boolean),updated_at:new Date().toLocaleString()};
                   setO(updated);onSave(updated);setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});nf('Receipt updated'+(receiptLines.length>1?' — '+receiptLines.length+' items':''));notifyDecoReady(o.jobs,updated.jobs);
                 }}>Save</button>
                 <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
@@ -14066,7 +14104,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     if(rl.ln.lineIdx===activeLine.lineIdx&&rl.ln.poIdx===activeLine.poIdx)activeUpdatedPO=updatedPO;
                     updatedItems=updatedItems.map((it2,i)=>i===rl.ln.lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===rl.ln.poIdx?updatedPO:p)}:it2);
                   });
-                  const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
+                  // Deliberate receipt delete reduces received units — stamp the tombstone (see edit above).
+                  const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),_receiptEditedPoIds:[...new Set([...(o._receiptEditedPoIds||[]),...receiptLines.map(rl=>rl.pl.po_id)])].filter(Boolean),updated_at:new Date().toLocaleString()};
                   setO(updated);onSave(updated);setEditPO({...editPO,po:activeUpdatedPO||editPO.po,_editShipIdx:null});nf('Receipt deleted'+(receiptLines.length>1?' — '+receiptLines.length+' items':''));
                 }}><Icon name="trash" size={10}/> Delete</button>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditPO(p=>({...p,_editShipIdx:null}))}>Cancel</button>
@@ -15046,7 +15085,9 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
               const updatedPO={...pl,received:newReceived,shipments:newShipments,status:newStatus};
               const updatedItems=o.items.map((it2,i)=>i===lineIdx?{...it2,po_lines:it2.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it2);
-              const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};
+              // Shipment-history edit/delete can REDUCE received units — stamp the session tombstone so
+              // the save engine's receiving-rollback guard honors the reduction instead of restoring it.
+              const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),_receiptEditedPoIds:[...new Set([...(o._receiptEditedPoIds||[]),pl.po_id])].filter(Boolean),updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);notifyDecoReady(o.jobs,updated.jobs);
               // If the active editPO row is this one, refresh its snapshot too
               setPoFullPage(prev=>prev?{...prev,po:lineIdx===prev.allLines?.[0]?.lineIdx?updatedPO:prev.po,_editShip:null}:prev);

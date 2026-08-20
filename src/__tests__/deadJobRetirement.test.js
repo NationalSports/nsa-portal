@@ -84,7 +84,7 @@ const wipeSO = () => ({
 // Baseline rules every case shares. The liveness reads are the per-test variables and are passed in.
 const baseRules = ({ jobsInDb, liveArt, liveItems, liveDecos }) => [
   // identity probe: same created_at → same document, no collision handling engaged
-  { table: 'sales_orders', sel: 'updated_at,deco_pos,created_at', resp: { data: { updated_at: 'x', deco_pos: null, created_at: '5/20/2026, 11:04:22 AM' }, error: null } },
+  { table: 'sales_orders', sel: 'updated_at,deco_pos,created_at,status,po_number', resp: { data: { updated_at: 'x', deco_pos: null, created_at: '5/20/2026, 11:04:22 AM' }, error: null } },
   // pre-save reads of existing children (all empty — nothing to guard)
   { table: 'so_items', sel: 'id,item_index,sku,color,product_id', resp: { data: [], error: null } },
   { table: 'so_art_files', sel: '*', resp: { data: [], error: null } },

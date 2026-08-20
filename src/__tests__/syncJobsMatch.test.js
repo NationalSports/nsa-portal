@@ -13,6 +13,7 @@ import {
   isPureArtExpansion,
   matchExistingJob,
   splitClosedJobAdditions,
+  splitSliceOwnedKeys,
 } from '../lib/syncJobsMatch';
 
 const pantsRejection = {
@@ -535,5 +536,86 @@ describe('splitClosedJobAdditions', () => {
     expect(splitClosedJobAdditions(null, null)).toEqual({ keep: [], added: [] });
     expect(splitClosedJobAdditions([null, reprint], undefined).added).toEqual([reprint]);
     expect(splitClosedJobAdditions(shipped, [null]).added).toEqual(shipped);
+  });
+});
+
+describe('splitSliceOwnedKeys (SO-1634 grandchild double-count)', () => {
+  // SO-1634's real shape: KC4512 was split off the parent to -B, then split AGAIN to -B-B.
+  // The grandchild owns the garment; the parent's rebuild must not re-add it.
+  const isRel = (j) => !!j._released || (j.key || '').startsWith('released_');
+  const exclude = (j) => j._merged || isRel(j);
+  const family = [
+    { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+    { id: 'JOB-1634-01-B', split_from: 'JOB-1634-01', items: [{ item_idx: 12, sku: 'JW6595' }] },
+    { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01-B', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    { id: 'JOB-1634-01-C2', split_from: 'JOB-1634-01', items: [{ item_idx: 1, sku: 'KB9091' }] },
+  ];
+
+  test('a direct child owns its garments', () => {
+    const owned = splitSliceOwnedKeys(family, 'JOB-1634-01', exclude);
+    expect(owned.has('12-JW6595')).toBe(true);
+  });
+
+  test('a grandchild slice owns its garments too — the SO-1634 regression', () => {
+    const owned = splitSliceOwnedKeys(family, 'JOB-1634-01', exclude);
+    expect(owned.has('7-KC4512')).toBe(true);
+  });
+
+  test('the parent job itself contributes nothing', () => {
+    const owned = splitSliceOwnedKeys(family, 'JOB-1634-01', exclude);
+    expect(owned.has('1-KB9091')).toBe(true); // via C2, a slice — not via the parent
+    expect(splitSliceOwnedKeys(family.slice(0, 3), 'JOB-1634-01', exclude).has('1-KB9091')).toBe(false);
+  });
+
+  test('an unrelated family is not scanned', () => {
+    const jobs = [...family, { id: 'JOB-1634-02-C1', split_from: 'JOB-1634-02', items: [{ item_idx: 5, sku: 'JX4472' }] }];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', exclude);
+    expect(owned.has('5-JX4472')).toBe(false);
+  });
+
+  test('merged/released slices are excluded (their claims are frozen elsewhere) but still link deeper slices', () => {
+    const jobs = [
+      { id: 'P', split_from: null, items: [] },
+      { id: 'P-B', split_from: 'P', _merged: true, items: [{ item_idx: 3, sku: 'AAA' }] },
+      { id: 'P-B-B', split_from: 'P-B', items: [{ item_idx: 4, sku: 'BBB' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'P', exclude);
+    expect(owned.has('3-AAA')).toBe(false); // merged slice: preserved via frozenItemDecos, not here
+    expect(owned.has('4-BBB')).toBe(true); // grandchild under the merged slice still owns its row
+  });
+
+  test('cycle-safe: a corrupted split_from loop terminates', () => {
+    const jobs = [
+      { id: 'A', split_from: 'B', items: [{ item_idx: 0, sku: 'X' }] },
+      { id: 'B', split_from: 'A', items: [{ item_idx: 1, sku: 'Y' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'A', exclude);
+    expect(owned.has('1-Y')).toBe(true);
+    expect(owned.has('0-X')).toBe(false);
+  });
+});
+
+describe('splitSliceOwnedKeys — orphaned slices', () => {
+  // An orphaned slice (split_from pointing at a job that no longer exists) is unreachable
+  // from the family root, so its garments are NOT counted as slice-owned. This is why the
+  // Merge Back handler re-parents the merged slice's children instead of leaving them
+  // orphaned — an orphan would get its garments re-added to the parent on the next sync.
+  test('a slice whose parent link is broken is not reachable from the root', () => {
+    const jobs = [
+      { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+      // JOB-1634-01-B was merged back and removed; B-B was left pointing at it.
+      { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01-B', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', () => false);
+    expect(owned.has('7-KC4512')).toBe(false);
+  });
+
+  test('after Merge Back re-parents the child, its garments are owned again', () => {
+    const jobs = [
+      { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+      { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', () => false);
+    expect(owned.has('7-KC4512')).toBe(true);
   });
 });

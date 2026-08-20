@@ -3693,6 +3693,16 @@ export default function App(){
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
         // moved on mid-save and r.idx now points at another garment — bail untouched.
         if(!_same(it,r))return s;
+        // kind 'po_merge': the save guard merged rolled-back warehouse receiving into a line this
+        // client already HOLDS (SO-1663 receiving wipe) — replace that line in place rather than
+        // appending a duplicate of a po_id the item already carries.
+        if(r.kind==='po_merge'){
+          const cur=Array.isArray(it.po_lines)?it.po_lines:[];
+          const li=cur.findIndex(l=>l&&l.po_id===r.line.po_id);
+          if(li<0)return s;// line vanished mid-save — bail untouched; the next save re-merges
+          if(JSON.stringify(cur[li])===JSON.stringify(r.line))continue;// already merged (raced save)
+          out[r.idx]={...it,po_lines:cur.map((l,j)=>j===li?r.line:l)};applied++;continue;
+        }
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);
@@ -7963,7 +7973,9 @@ export default function App(){
           // No more invoices — SO goes back to ready_to_invoice. savSO (not a
           // bare setSOs) so this persists — same reasoning as the ShipStation
           // handlers above.
-          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
+          // _status_reverted marks this as the DELIBERATE reopen of a completed order for dbEngine's
+          // header-decision guard — without it a stale-flagged save may not pull 'complete' back open.
+          savSO({...so,status:'ready_to_invoice',_status_reverted:true,updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
@@ -22521,7 +22533,11 @@ export default function App(){
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(!_inFam(j,jj))return jj;
-        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // _art_moved marks this as a DELIBERATE status transition for dbEngine's art-status
+        // regression guard — a workboard drag may legitimately move a job backward (e.g. back to
+        // In Progress), which an unstamped save from a stale tab would otherwise defer to the DB.
+        // One-shot: dbEngine consumes it on the save that carries it, never persisted as a column.
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist,_art_moved:true};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
         // it set with art_status ahead is the SO-1199 contradictory shape.
