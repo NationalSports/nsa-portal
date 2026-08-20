@@ -187,6 +187,41 @@ export const shippedSizesByLine = (shipments) => {
   return m;
 };
 
+// ── Units pulled from the warehouse but not yet shipped ──
+// "Does this order still have shipping to do?" cannot be answered from jobs alone: a no-deco /
+// blanks line never creates a job, so a closed blanks order with a pulled-but-unshipped box looks
+// finished and drops out of the warehouse queues (which is where packages and their costs are
+// created). Counts pulled units per sku|color against what the shipment records already cover,
+// with a running tally so two lines sharing a sku|color don't each subtract the full shipped qty
+// (mirrors buildWarehouseData's soShipConsumed).
+// Drop-ship lines never get pulled — the vendor ships direct — so they contribute 0 and can never
+// hold a closed order in the queue forever.
+export const unshippedPulledUnits = (so) => {
+  const shipped = shippedSizesByLine(so?._shipments);
+  const used = {};
+  let open = 0;
+  safeItems(so).forEach((it) => {
+    const szKeys = Object.keys(safeSizes(it));
+    const pulled = safePicks(it).filter((pk) => pk?.status === 'pulled')
+      .reduce((a, pk) => a + szKeys.reduce((b, sz) => b + safeNum(pk[sz]), 0), 0);
+    if (pulled <= 0) return;
+    const key = safeStr(it?.sku) + '|' + safeStr(it?.color);
+    const shippedQty = Object.values(shipped[key] || {}).reduce((a, v) => a + safeNum(v), 0);
+    const already = used[key] || 0;
+    const credit = Math.min(pulled, Math.max(0, shippedQty - already));
+    used[key] = already + credit;
+    open += pulled - credit;
+  });
+  return open;
+};
+
+// True when a sales order still has warehouse work worth showing, whatever its status says.
+// A closed SO is normally hidden from the warehouse queues; these are the two ways one can still
+// owe a shipment — a job that has not shipped, or pulled units no shipment record covers.
+export const soHasOpenShipWork = (so) =>
+  safeJobs(so).some((j) => j.prod_status !== 'shipped' && j.prod_status !== 'draft')
+  || unshippedPulledUnits(so) > 0;
+
 // How many of THIS job's units have shipped? Crediting a job with its line's whole
 // sku|color shipped count over-credits art-split slices: sibling designs partition the
 // same line, so design A's shipped box would read as covering design B too — flipping B

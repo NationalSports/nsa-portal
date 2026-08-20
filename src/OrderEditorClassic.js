@@ -22,7 +22,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -697,7 +697,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       onOpenPOConsumed&&onOpenPOConsumed();
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[addShp,setAddShp]=useState(null);// Tracking tab: manual outbound shipment entry (null = form closed)
     // Auto-open a send flow when navigated here from a dashboard follow-up "Send" button.
     // {kind:'doc'} opens the estimate/SO SendModal; {kind:'coach',jobId} opens Send-to-Coach for
     // that job (deferred like scrollToJobRef so the post-sync job list has committed).
@@ -4495,7 +4495,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <strong>Shipped:</strong> Tracking #{o._tracking_number} via {o._carrier} on {o._ship_date}
             {o._tracking_url&&<a href={o._tracking_url} target="_blank" rel="noreferrer" style={{marginLeft:8}}>Track Package</a>}
           </div>}
-          {isSO&&o.status==='in_production'&&!o._shipped&&ssConnected&&onShipSS&&<div style={{display:'flex',gap:8,marginTop:8}}>
+          {/* Shipping doesn't stop when the paperwork does. This was gated to status==='in_production'
+              alone, which hid the button on a closed order with a box still on the floor — and on
+              ready_to_invoice too. Gate on "production has started or later" instead; _shipped still
+              hides it once everything is actually out the door. */}
+          {isSO&&SHIPPABLE_STATUSES.has(o.status)&&!o._shipped&&ssConnected&&onShipSS&&<div style={{display:'flex',gap:8,marginTop:8}}>
             <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',fontSize:11}} onClick={()=>onShipSS(o)} disabled={ssShipping}>
               {ssShipping?'Submitting...':'Ship via ShipStation'}
             </button>
@@ -7068,13 +7072,60 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <h2 style={{margin:0,color:'#166534'}}>Outbound Shipments</h2>
               {allOutbound.length>0&&<span className="badge badge-green" style={{fontSize:11}}>{allOutbound.length} package{allOutbound.length!==1?'s':''} · {totalShippedUnits} units</span>}
+              {/* Record a package that went out some other way — a rep drop-off, a courier, a box
+                  shipped after the order was already closed and invoiced. The warehouse Ready-to-Ship
+                  flow is still the main path (it knows which units are in the box); this is the escape
+                  hatch for everything else, and it is what gets the shipping COST onto the order. */}
+              {canEditCost&&<button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11}}
+                onClick={()=>setAddShp(addShp?null:{tracking:'',carrier:'',date:new Date().toLocaleDateString(),cost:'',notes:''})}>
+                {addShp?'Cancel':'+ Add Shipment'}</button>}
             </div>
           </div>
           <div className="card-body">
-            {allOutbound.length===0?<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>
+            {addShp&&<div style={{marginBottom:12,padding:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8}}>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}}>
+                <div><label className="form-label" style={{fontSize:10}}>Tracking #</label>
+                  <input className="form-input" style={{width:190,fontSize:12}} value={addShp.tracking} onChange={e=>setAddShp(a=>({...a,tracking:e.target.value}))} placeholder="1Z... / 9400... (optional)"/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Carrier</label>
+                  <select className="form-input" style={{width:130,fontSize:12}} value={addShp.carrier} onChange={e=>setAddShp(a=>({...a,carrier:e.target.value}))}>
+                    <option value="">—</option><option value="ups">UPS</option><option value="fedex">FedEx</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="courier">Courier / Other</option></select></div>
+                <div><label className="form-label" style={{fontSize:10}}>Ship Date</label>
+                  <input className="form-input" style={{width:120,fontSize:12}} value={addShp.date} onChange={e=>setAddShp(a=>({...a,date:e.target.value}))}/></div>
+                <div><label className="form-label" style={{fontSize:10}}>Shipping Cost</label>
+                  <input className="form-input" style={{width:100,fontSize:12}} value={addShp.cost} onChange={e=>setAddShp(a=>({...a,cost:e.target.value}))} placeholder="0.00"/></div>
+                <div style={{flex:1,minWidth:160}}><label className="form-label" style={{fontSize:10}}>Notes</label>
+                  <input className="form-input" style={{width:'100%',fontSize:12}} value={addShp.notes} onChange={e=>setAddShp(a=>({...a,notes:e.target.value}))} placeholder="e.g. rep dropped off, shipped after close"/></div>
+                <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
+                  const _tn=(addShp.tracking||'').trim();
+                  const _cost=safeNum(parseFloat(addShp.cost))||0;
+                  if(!_tn&&!_cost&&!(addShp.notes||'').trim()){nf('Add a tracking number, a cost, or a note before saving','error');return}
+                  const rec={id:'SHP-'+Date.now(),tracking_number:_tn,carrier:addShp.carrier||'',
+                    ship_date:(addShp.date||'').trim()||new Date().toLocaleDateString(),
+                    tracking_url:_tn?trackUrl(_tn):'',items:[],shipping_cost:_cost,
+                    notes:(addShp.notes||'').trim()||'Added manually from the order',
+                    created_by:cu?.id||'',created_at:new Date().toLocaleString(),manual:true};
+                  const updated=[...(o._shipments||[]),rec];
+                  // Accumulate the cost the way the warehouse ship flow does (existing + new) rather
+                  // than recomputing from the records — an order can carry shipping cost that never
+                  // came from a _shipments row (ShipStation, prior-shipping carry) and a recompute
+                  // would silently erase it.
+                  const _newCost=Math.round((safeNum(o._shipping_cost||o._shipstation_cost||0)+_cost)*100)/100;
+                  const updatedSO={...o,_shipments:updated,
+                    _tracking_number:o._tracking_number||rec.tracking_number,
+                    _carrier:o._carrier||rec.carrier,_ship_date:o._ship_date||rec.ship_date,
+                    _tracking_url:o._tracking_url||rec.tracking_url,
+                    _shipping_status:o._shipping_status||'partial',
+                    ...(_newCost>0?{_shipping_cost:_newCost,_shipstation_cost:_newCost}:{}),
+                    updated_at:new Date().toLocaleString()};
+                  setO(updatedSO);onSave(updatedSO);setDirty(false);setAddShp(null);
+                  nf('Shipment added'+(_cost>0?' — $'+_cost.toFixed(2)+' shipping cost recorded':''));
+                }}>Save Shipment</button>
+              </div>
+            </div>}
+            {allOutbound.length===0&&!addShp?<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>
               <div style={{fontSize:32,marginBottom:8}}>📦</div>
               <div style={{fontSize:13,fontWeight:600}}>No outbound shipments yet</div>
-              <div style={{fontSize:11,marginTop:4}}>Packages are created from the Warehouse → Ready to Ship tab</div>
+              <div style={{fontSize:11,marginTop:4}}>Packages normally come from Warehouse → Ready to Ship — use + Add Shipment for one that went out another way</div>
             </div>:
             <div style={{display:'grid',gap:12}}>
               {allOutbound.map((shp,si)=>{
