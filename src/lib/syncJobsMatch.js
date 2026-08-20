@@ -642,3 +642,79 @@ export function splitSliceOwnedKeys(jobs, parentId, excludeSlice) {
   });
   return owned;
 }
+
+/** Ids of every job in `jobId`'s split family — its root and all descendants (cycle-safe). */
+export function splitFamilyMembers(jobs, jobId) {
+  const list = (jobs || []).filter((j) => j && j.id);
+  const byId = new Map(list.map((j) => [j.id, j]));
+  let cur = byId.get(jobId);
+  const seen = new Set();
+  while (cur && cur.split_from && byId.has(cur.split_from) && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    cur = byId.get(cur.split_from);
+  }
+  const fam = new Set([(cur && cur.id) || jobId]);
+  for (let grew = true; grew;) {
+    grew = false;
+    list.forEach((j) => {
+      if (j.split_from && fam.has(j.split_from) && !fam.has(j.id)) { fam.add(j.id); grew = true; }
+    });
+  }
+  return fam;
+}
+
+/** Slices quiet enough to prune — nobody has taken them to the floor yet. */
+export const SLICE_PRUNE_STATUSES = new Set(['', 'draft', 'hold', 'ready']);
+
+/**
+ * Drop stale garment rows from PRESERVED split slices.
+ *
+ * The parent's rebuild drops rows a slice owns (see `splitSliceOwnedKeys`), but slices
+ * themselves are preserved verbatim and never rebuilt — so a row that another member of
+ * the family has since taken over sits on the slice forever. SO-1110: JN3647 was carved
+ * onto JOB-1110-02-A by the closed-job addition rule while JOB-1110-02-S-S already held
+ * it, leaving a 1-unit phantom job on the production board that no sync could clear.
+ *
+ * The stale signature is narrow on purpose: a row with NO per-size allocation (a
+ * whole-line claim, the shape a rebuild produces) for a garment that ANOTHER job in the
+ * same split family holds WITH an explicit per-size allocation. Every real split stamps
+ * sizes on both halves (splitCustom / splitByReceived) or moves the row outright
+ * (splitBySku), so a legitimate partial claim is never sizes-less while a sibling is
+ * sized — which is what keeps a genuine size-partitioned split from being pruned.
+ *
+ * A slice whose every row is stale is a phantom and is dropped entirely. Slices already
+ * in production (`SLICE_PRUNE_STATUSES`) are never touched — once work has started, the
+ * row stays and a human decides.
+ */
+export function pruneStaleSliceRows(slices, allJobs) {
+  const list = (allJobs || []).filter((j) => j && j.id);
+  const num = (v) => (typeof v === 'number' && !isNaN(v) ? v : 0);
+  const rowKey = (gi) => gi.item_idx + '-' + gi.sku;
+  const isSized = (gi) => !!(gi && gi.sizes && Object.keys(gi.sizes).length > 0);
+  const out = [];
+  (slices || []).forEach((sj) => {
+    if (!sj) return;
+    if (!SLICE_PRUNE_STATUSES.has(sj.prod_status || '')) { out.push(sj); return; }
+    const rows = sj.items || [];
+    if (!rows.some((gi) => gi && !isSized(gi))) { out.push(sj); return; }
+    const fam = splitFamilyMembers(list, sj.id);
+    const sizedElsewhere = new Set();
+    list.forEach((j) => {
+      if (!fam.has(j.id) || j.id === sj.id) return;
+      (j.items || []).forEach((gi) => { if (isSized(gi)) sizedElsewhere.add(rowKey(gi)); });
+    });
+    const kept = rows.filter((gi) => isSized(gi) || !sizedElsewhere.has(rowKey(gi)));
+    if (kept.length === rows.length) { out.push(sj); return; }
+    if (!kept.length) return; // every row was stale — the slice is a phantom
+    const total = kept.reduce((a, gi) => a + num(gi.units), 0);
+    const ful = kept.reduce((a, gi) => a + num(gi.fulfilled), 0);
+    out.push({
+      ...sj,
+      items: kept,
+      total_units: total,
+      fulfilled_units: ful,
+      item_status: ful >= total && total > 0 ? 'items_received' : ful > 0 ? 'partially_received' : 'need_to_order',
+    });
+  });
+  return out;
+}

@@ -24,7 +24,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
@@ -3950,8 +3950,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
     // input, so any such duplicate compounds exponentially on every render — that's the runaway
     // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
-      .map(j=>({...j,items:(j.items||[]).map(_refreshGarmentIdentity)}));
+    // Preserved slices are never rebuilt, so a garment another family member has since taken
+    // over sits on them forever — pruneStaleSliceRows drops those whole-line leftovers (and
+    // retires a slice left with nothing), the slice-side counterpart to the sliceOwned drop
+    // the parent's rebuild does above. SO-1110's phantom 1-unit JOB-1110-02-A came from this.
+    const splitJobs=pruneStaleSliceRows(
+      safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
+        .map(j=>({...j,items:(j.items||[]).map(_refreshGarmentIdentity)})),
+      safeJobs(o));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
