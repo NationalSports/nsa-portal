@@ -4951,7 +4951,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {i<statusFlow.length-1&&<span className={'conn'+(done?' done':'')}/>}
             </React.Fragment>})}
           </div>
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
+          {/* _status_reverted: deliberate reopen of a completed order — lets the save past dbEngine's header-decision guard */}
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
         </div>})()}
       {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}

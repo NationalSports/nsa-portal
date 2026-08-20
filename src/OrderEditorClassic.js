@@ -4947,7 +4947,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               onClick={()=>{if(sf==='complete')sv('status','complete')}}
               title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>
               {stLabels[sf]||sf}</span>})}
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
+          {/* _status_reverted: deliberate reopen of a completed order — lets the save past dbEngine's header-decision guard */}
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>{sv('_status_reverted',true);sv('status',autoSt)}}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
         <div style={{marginTop:10}}>
