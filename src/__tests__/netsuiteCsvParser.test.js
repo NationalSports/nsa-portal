@@ -644,3 +644,50 @@ describe('invoice search — the real NetSuite export shape', () => {
     expect(res.warnings.some(w => /contradicts NetSuite's own invariant/.test(w))).toBe(true);
   });
 });
+
+describe('amount-only reports carry no balance check', () => {
+  // A NetSuite balance sheet exports one Amount column and prints liabilities
+  // and equity as POSITIVE figures, so a debit/credit split derived from the
+  // sign is meaningless and the two sides will never agree.
+  const BS = [
+    'National Sports Apparel LLC', 'Balance Sheet', 'End of Dec 2025', '', '',
+    'Financial Row ,Amount ',
+    'ASSETS,',
+    '10100 - First Foundation Checking,"$514,706.00"',
+    '11000 - Accounts Receivable,"$1,104,548.09"',
+    'Total Bank,"$1,619,254.09"',
+    'LIABILITIES AND EQUITY,',
+    '21000 - Accounts Payable - Trade,"$1,271,470.36"',
+    'Net Income,"$698,952.42"',
+  ].join('\n');
+
+  it('reports hasDebitCredit false so the UI does not cry "out of balance"', () => {
+    const res = parseBalanceSheet(BS, { fiscalYear: 2025 });
+    expect(res.totals.hasDebitCredit).toBe(false);
+    expect(res.totals.netIncome).toBe(698952.42);
+    expect(res.rows.length).toBe(3);
+  });
+
+  it('still reports hasDebitCredit true for a real trial balance', () => {
+    const tb = [
+      'National Sports Apparel LLC', 'Trial Balance', 'End of Dec 2025', '', '',
+      'Account ,Debit ,Credit ',
+      '10100 - First Foundation Checking,"$514,706.00",',
+      '40000 - Sales,,"$514,706.00"',
+    ].join('\n');
+    const res = parseTrialBalance(tb, { fiscalYear: 2025 });
+    expect(res.totals.hasDebitCredit).toBe(true);
+    expect(res.totals.balanced).toBe(true);
+  });
+
+  it('warns when two account names collapse to the same row id', () => {
+    const long = 'A'.repeat(70);
+    const res = parseBalanceSheet([
+      'Balance Sheet', '', '', '', '',
+      'Financial Row ,Amount ',
+      `${long}B,"$1.00"`,
+      `${long}C,"$2.00"`,
+    ].join('\n'), { fiscalYear: 2025 });
+    expect(res.warnings.some(w => /same row id/.test(w))).toBe(true);
+  });
+});

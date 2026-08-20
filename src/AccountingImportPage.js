@@ -247,10 +247,19 @@ export default function AccountingImportPage() {
           written += part.length;
         }
       } else if (target.mode === 'replace_by_key') {
-        // Unique index is (report_type, fiscal_year, period, account_full_name).
+        // The unique index on this table is an EXPRESSION index —
+        //   (report_type, fiscal_year, COALESCE(period,''), COALESCE(account_full_name, account_name))
+        // — because `period` is nullable and NULL never equals NULL in a plain
+        // unique index. PostgREST can only infer a conflict target from a bare
+        // column list, so naming those four columns raises
+        //   "there is no unique or exclusion constraint matching the ON CONFLICT
+        //    specification"
+        // and every balance report fails to import. Conflict on the primary key
+        // instead: the parser builds `id` from exactly those same four values,
+        // so upserting on it has identical semantics and does match an index.
         for (const part of chunked(clean.map(r => ({ ...r, source_file: f.name, import_batch_id: batchId })), CHUNK)) {
           const { error } = await supabase.from(target.table)
-            .upsert(part, { onConflict: 'report_type,fiscal_year,period,account_full_name' });
+            .upsert(part, { onConflict: 'id' });
           if (error) throw error;
           written += part.length;
         }
@@ -360,7 +369,14 @@ export default function AccountingImportPage() {
         const p = f.parsed;
         const t = p && p.totals;
         const blocked = blockReason(f);
-        const unbalanced = t && t.balanced === false;
+        // A balance sheet and an income statement export with a single Amount
+        // column, so their debit/credit split is derived from the sign of that
+        // amount and comparing the two sides is meaningless — NetSuite prints
+        // liabilities and equity as positive figures. Only a trial balance and
+        // a GL carry real Debit/Credit columns. Calling the others "out of
+        // balance" reads as corrupt data when the file is perfectly correct.
+        const amountOnly = t && t.hasDebitCredit === false;
+        const unbalanced = t && t.balanced === false && !amountOnly;
         return (
           <div className="card" key={f.key} style={{ marginBottom: 12 }}>
             <div className="card-body">
@@ -399,12 +415,22 @@ export default function AccountingImportPage() {
               {t && (t.debit !== undefined) && (
                 <div style={{
                   marginTop: 10, padding: '8px 10px', borderRadius: 6, fontSize: 12,
-                  background: unbalanced ? '#fef2f2' : '#f0fdf4',
-                  color: unbalanced ? '#991b1b' : '#166534',
-                  border: `1px solid ${unbalanced ? '#fecaca' : '#bbf7d0'}`,
+                  background: amountOnly ? '#f8fafc' : unbalanced ? '#fef2f2' : '#f0fdf4',
+                  color: amountOnly ? '#334155' : unbalanced ? '#991b1b' : '#166534',
+                  border: `1px solid ${amountOnly ? '#e2e8f0' : unbalanced ? '#fecaca' : '#bbf7d0'}`,
                 }}>
-                  <b>{unbalanced ? 'Out of balance' : 'Balanced'}</b> — debits {money(t.debit)} vs credits {money(t.credit)}
-                  {unbalanced && <> · difference <b>{money(t.difference)}</b></>}
+                  {amountOnly ? (
+                    <>
+                      <b>Amount-only report</b> — NetSuite exports this one without Debit/Credit
+                      columns, so there is nothing to balance here
+                      {t.netIncome != null && <> · net income <b>{money(t.netIncome)}</b></>}
+                    </>
+                  ) : (
+                    <>
+                      <b>{unbalanced ? 'Out of balance' : 'Balanced'}</b> — debits {money(t.debit)} vs credits {money(t.credit)}
+                      {unbalanced && <> · difference <b>{money(t.difference)}</b></>}
+                    </>
+                  )}
                   {t.netIncome !== null && t.netIncome !== undefined && <> · net income {money(t.netIncome)}</>}
                 </div>
               )}

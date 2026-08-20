@@ -589,6 +589,7 @@ const parseBalanceReport = (text, reportType, opts) => {
   const period = options.period || null;
   const out = [];
   const seen = new Set();
+  const idsSeen = new Map();
   let debitCents = 0, creditCents = 0;
   let netIncomeCents = null;
 
@@ -637,8 +638,18 @@ const parseBalanceReport = (text, reportType, opts) => {
     }
     seen.add(key);
 
+    // The row id encodes exactly (report_type, fiscal_year, period, full name),
+    // which is what the upsert conflicts on. slug() truncates, so two very long
+    // account names could in principle collapse to one id and silently
+    // overwrite each other — say so rather than losing a row quietly.
+    const rowId = `bal-${slug(reportType, 20)}-${fy || 'na'}-${slug(period || '', 12)}-${slug(fullName, 60)}`;
+    if (idsSeen.has(rowId) && idsSeen.get(rowId) !== fullName) {
+      warnings.push(`"${fullName}" and "${idsSeen.get(rowId)}" both reduce to the same row id (${rowId}) — one would overwrite the other. Shorten one of the account names in NetSuite before importing.`);
+    }
+    idsSeen.set(rowId, fullName);
+
     out.push({
-      id: `bal-${slug(reportType, 20)}-${fy || 'na'}-${slug(period || '', 12)}-${slug(fullName, 60)}`,
+      id: rowId,
       account_id: null,
       account_number: sp.number || null,
       account_name: sp.name || leaf || null,
@@ -666,7 +677,7 @@ const parseBalanceReport = (text, reportType, opts) => {
     warnings,
     header,
     totals: {
-      debitCents, creditCents, balanced,
+      debitCents, creditCents, balanced, hasDebitCredit,
       debit: centsToNum(debitCents), credit: centsToNum(creditCents),
       difference: centsToNum(debitCents - creditCents),
       netIncome: netIncomeCents === null ? null : centsToNum(netIncomeCents),
