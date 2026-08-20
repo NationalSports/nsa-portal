@@ -252,6 +252,7 @@
    "coach_approved_mocks",
    "coach_email_opened_at",
    "coach_rejected",
+   "completed_at",
    "created_at",
    "deco_type",
    "deco_types",

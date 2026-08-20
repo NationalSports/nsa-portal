@@ -191,6 +191,18 @@ const computeOmgSoSync=(so)=>{
 // this long after the store was brought into the portal, remind accounting anyway so
 // the store is never forgotten. Shared by the reminder effect and the store card.
 const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000; // 6 weeks
+// ── Completed-job grace window for production surfaces ──
+// Invoicing / closing an SO sets sticky status='complete' — a FINANCIAL close that routinely
+// lands minutes after the decorator's Done click (SO-1512, 8/18: final invoice 5 minutes after
+// both jobs completed). Surfaces that treat "SO complete" as "goods out the door" were yanking
+// just-finished jobs off the Prod Board's Completed column and the deco Completed tabs before
+// shipping ever saw them. A job whose persisted completion stamp (completed_at, or the scan
+// station's decorated_at) is inside this window stays visible even once the order is complete;
+// unstamped legacy rows keep the old drop, so months of already-shipped history doesn't flood
+// back into the Completed views. Shipping the job (prod_status 'shipped') still clears it
+// immediately, grace or not.
+const JOB_COMPLETED_GRACE_MS=7*24*60*60*1000; // 7 days
+const jobRecentlyCompleted=(j)=>{const ts=j?.completed_at||j?.decorated_at;if(!ts)return false;const t=new Date(ts).getTime();return !Number.isNaN(t)&&(Date.now()-t)<JOB_COMPLETED_GRACE_MS};
 const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
 const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
@@ -13116,17 +13128,20 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     // Once an order is closed out (final invoice / "Close Sales Order" / promo close → SO
-    // status='complete'), its decorated jobs are done and out the door. The shop rarely logs a
-    // separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board forever
-    // even though the order is finished. Treat a 'completed' job on a complete order like a shipped
-    // one and drop it from the production board. Display-only: prod_status is untouched, so the
-    // warehouse ship queue and shipped-unit math are unaffected. Completed jobs on orders that are
-    // NOT yet invoiced (ready_to_invoice, etc.) still show — those genuinely still need attention.
+    // status='complete'), its decorated jobs are USUALLY done and out the door. The shop rarely
+    // logs a separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board
+    // forever even though the order is finished. Treat a 'completed' job on a complete order like
+    // a shipped one and drop it from the production board — EXCEPT inside the completion grace
+    // window (jobRecentlyCompleted): invoicing is a financial close that can land minutes after
+    // the decorator's Done click (SO-1512), and dropping the job that instant made it vanish from
+    // the Completed column before shipping ever saw the handoff. Display-only: prod_status is
+    // untouched, so the warehouse ship queue and shipped-unit math are unaffected. Completed jobs
+    // on orders NOT yet invoiced (ready_to_invoice, etc.) still show — those still need attention.
     const _soCompleteCache={};
     const _isSOComplete=so=>{if(!so)return false;if(_soCompleteCache[so.id]===undefined)_soCompleteCache[so.id]=calcSOStatus(so)==='complete';return _soCompleteCache[so.id];};
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so)))
       .filter(j=>j.prod_status!=='shipped')
-      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)));
+      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)&&!jobRecentlyCompleted(j)));
     // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
     // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
@@ -16902,13 +16917,17 @@ export default function App(){
           if(decoTimeF==='ytd')return d.getFullYear()===now.getFullYear();
           return true;
         };
-        // Completed jobs
+        // Completed jobs. A complete SO no longer hides its jobs outright — invoicing is a
+        // financial close, and it can land minutes after the Done click; recently-stamped
+        // completions stay in the report (jobRecentlyCompleted), unstamped legacy rows drop
+        // as before.
         const completedDecoJobs=[];
-        sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+        sos.forEach(so=>{
+          const _st=calcSOStatus(so);if(_st==='booking')return;
           const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
           const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-          safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+          safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
             if(!decoInRange(j.completed_at||j.updated_at||so.updated_at))return;
             completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
               artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
@@ -24463,13 +24482,17 @@ export default function App(){
     const inProcessJobs=active.filter(t=>t.prodStatus==='in_process');
     const waitingJobs=active.filter(t=>!t.isReady&&t.prodStatus!=='in_process');
 
-    // Completed jobs for the Completed tab (not shipped — those auto-fall off)
+    // Completed jobs for the Completed tab (not shipped — those auto-fall off). Invoicing the
+    // SO (sticky status='complete') must not yank a just-decorated job off this tab — recently
+    // stamped completions stay through the grace window (jobRecentlyCompleted); unstamped
+    // legacy rows drop as before so old history doesn't flood in.
     const completedDecoJobs=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.forEach(so=>{
+      const _st=calcSOStatus(so);if(_st==='booking')return;
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-      safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+      safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
         completedDecoJobs.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,
           artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
           prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
