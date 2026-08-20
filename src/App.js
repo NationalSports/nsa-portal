@@ -435,6 +435,7 @@ import {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadHistInvoices,
   _dbSeed,
   _authErrorDetected,
   _bgSync,
@@ -2351,6 +2352,9 @@ export default function App(){
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
+  // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
+  const _histInvsCount=useRef(0);
+  React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
@@ -3151,6 +3155,17 @@ export default function App(){
         if(!d._coreOnly)_lastFullSyncAt=Date.now();
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
+        // Self-heal the NetSuite invoice history. It loads once, at initial load, and polls never
+        // re-apply it — but customer_invoices is the only staff-gated read in the load (RLS:
+        // is_team_member(); every other table is anon-readable), so a tab whose initial load ran
+        // without a live staff session got an empty NetSuite history while everything else looked
+        // fine, and kept it empty until a hard refresh ("no NetSuite invoices on customer pages").
+        // Retry on full syncs while state has none; for anon/coach tabs the refetch is one cheap
+        // page-0 query that stays empty, so this never hammers the DB.
+        if(!d._coreOnly&&_histInvsCount.current===0){
+          const _hh=await _dbLoadHistInvoices();
+          if(_hh&&_hh.length){setHistInvs(prev=>prev.length?prev:_hh);console.log('[DB] NetSuite invoice history recovered on poll ('+_hh.length+' invoices)')}
+        }
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
         const _pollMerge=(dbArr,snapKey)=>(_dbSaveFailedIds.size||_dbSavePendingIds.size)?dbArr.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e):dbArr;
@@ -3706,6 +3721,16 @@ export default function App(){
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
         // moved on mid-save and r.idx now points at another garment — bail untouched.
         if(!_same(it,r))return s;
+        // kind 'po_merge': the save guard merged rolled-back warehouse receiving into a line this
+        // client already HOLDS (SO-1663 receiving wipe) — replace that line in place rather than
+        // appending a duplicate of a po_id the item already carries.
+        if(r.kind==='po_merge'){
+          const cur=Array.isArray(it.po_lines)?it.po_lines:[];
+          const li=cur.findIndex(l=>l&&l.po_id===r.line.po_id);
+          if(li<0)return s;// line vanished mid-save — bail untouched; the next save re-merges
+          if(JSON.stringify(cur[li])===JSON.stringify(r.line))continue;// already merged (raced save)
+          out[r.idx]={...it,po_lines:cur.map((l,j)=>j===li?r.line:l)};applied++;continue;
+        }
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);
@@ -7963,7 +7988,9 @@ export default function App(){
           // No more invoices — SO goes back to ready_to_invoice. savSO (not a
           // bare setSOs) so this persists — same reasoning as the ShipStation
           // handlers above.
-          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
+          // _status_reverted marks this as the DELIBERATE reopen of a completed order for dbEngine's
+          // header-decision guard — without it a stale-flagged save may not pull 'complete' back open.
+          savSO({...so,status:'ready_to_invoice',_status_reverted:true,updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
@@ -22528,7 +22555,11 @@ export default function App(){
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(!_inFam(j,jj))return jj;
-        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // _art_moved marks this as a DELIBERATE status transition for dbEngine's art-status
+        // regression guard — a workboard drag may legitimately move a job backward (e.g. back to
+        // In Progress), which an unstamped save from a stale tab would otherwise defer to the DB.
+        // One-shot: dbEngine consumes it on the save that carries it, never persisted as a column.
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist,_art_moved:true};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
         // it set with art_status ahead is the SO-1199 contradictory shape.

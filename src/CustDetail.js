@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -354,7 +354,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const st=calcSOStatus(so);const stL={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
         // Count units from the size grid; for qty-only lines (no size breakdown) the count lives in est_qty.
-        safeItems(so).forEach(it=>{const _szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);if(_szEntries.length){_szEntries.forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})}else{totalU+=safeNum(it.est_qty)}});
+        safeItems(so).forEach(it=>{const _szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);if(_szEntries.length){_szEntries.forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+poLineFulfilledQty(pk,sz),0);fulU+=Math.min(v,pQ+rQ)})}else{totalU+=safeNum(it.est_qty)}});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];

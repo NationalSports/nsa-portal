@@ -101,6 +101,43 @@ function dP(d, q, artFiles, cq) {
 // produce a negative committed count — negative quantities are invalid, not credits.
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
 
+// ── PO over-commit check ──
+// Sizes about to go on a NEW PO for `item` that exceed what the line still has OPEN
+// (line qty − picked − already PO-committed, same math as the PO form's open counts).
+// The PO form's qty boxes default to the open count but accept any typed number, so a
+// typo — or a rep re-ordering a line whose PO they didn't spot — puts the same units
+// on two POs. Both get received, and the extras sit on the SO as a cost write-off
+// (SO-1295: JW6602's 9 extra hoods on PO 3371 a day after PO 3345 covered the line).
+// Returns one row per over-committed size: { sz, qty, open, committed, pos } where
+// `pos` names the PO lines already holding units of that size, so the caller can show
+// exactly which PO the units are on before asking the rep to confirm. Empty array = OK.
+// qty_only lines (no size grid) track their count under 'QTY', mirroring poCommitted's
+// callers (openSizesFor / allocateJobFulfillment).
+const poOverCommit = (item, sizes) => {
+  const out = [];
+  if (!item) return out;
+  const szMap = safeSizes(item);
+  const hasSizes = Object.values(szMap).some(v => safeNum(v) > 0);
+  Object.keys(sizes || {}).forEach(sz => {
+    const qty = safeNum((sizes || {})[sz]);
+    if (!(qty > 0)) return;
+    const lineQty = hasSizes ? safeNum(szMap[sz]) : (sz === 'QTY' ? safeNum(item.est_qty) : 0);
+    const picked = safePicks(item).reduce((a, pk) => a + safeNum(pk[sz]), 0);
+    const committed = poCommitted(safePOs(item), sz);
+    const open = Math.max(0, lineQty - picked - committed);
+    if (qty > open) {
+      const pos = [];
+      safePOs(item).forEach(pl => {
+        if (!pl || !(safeNum(pl[sz]) > 0)) return;
+        const pid = pl.po_id || 'PO';
+        if (pos.indexOf(pid) === -1) pos.push(pid);
+      });
+      out.push({ sz, qty, open, committed, pos });
+    }
+  });
+  return out;
+};
+
 // ── Accepted-overage ordered-qty ceiling ──
 // When a human accepts a flagged over-billing, the bill wizard raises the po_line's ORDERED
 // qty to the billed total so the extra units are accounted for. That is right only when the
@@ -292,7 +329,10 @@ function calcSOStatus(ord) {
       const poOrd = safePOs(it).reduce((a, pk) => a + safeNum(pk[sz]) - safeNum((pk.cancelled || {})[sz]), 0);
       coveredSz += Math.min(v, picked + poOrd);
       const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
-      const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
+      // Drop-ship lines count billed units as fulfilled (vendor ships direct — the warehouse
+      // never checks them in, so `received` stays empty forever). max, not +, so a drop-ship
+      // line that also got checked in manually can't count twice. Mirrors safeHelpers.poLineFulfilledQty.
+      const rcvdQty = safePOs(it).reduce((a, pk) => a + (pk.drop_ship ? Math.max(safeNum((pk.received || {})[sz]), safeNum((pk.billed || {})[sz])) : safeNum((pk.received || {})[sz])), 0);
       fulfilledSz += Math.min(v, pulledQty + rcvdQty);
     });
   });
@@ -1490,7 +1530,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Booking orders

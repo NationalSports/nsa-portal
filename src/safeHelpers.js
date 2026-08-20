@@ -12,6 +12,20 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── PO-line fulfilled units for one size ──
+// Drop-ship PO lines never get a warehouse check-in (the vendor ships direct to the
+// customer), so their `received` map stays empty forever and receipt-only fulfillment
+// counters hold the SO at partial for life (SO-1727: 71% with every warehouse line in).
+// Credit a drop-ship line's billed quantities as fulfilled — the vendor bill is the
+// ship signal, the same rule the inbound-tracking board uses to call a drop-ship PO
+// "shipped". max (not +) so a drop-ship line that somehow also got checked in manually
+// can never count the same units twice. Mirrored in businessLogic.js (test mirror of
+// calcSOStatus) and lib/opsRecap.js (standalone CommonJS for the Netlify digest).
+export const poLineFulfilledQty = (pk, sz) => {
+  const rcvd = safeNum((pk?.received || {})[sz]);
+  return pk?.drop_ship ? Math.max(rcvd, safeNum((pk?.billed || {})[sz])) : rcvd;
+};
+
 // ── Roster scoping ──
 // A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
 // "copy numbers from another item" brings the source's whole size curve, and a line's

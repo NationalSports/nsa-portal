@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
@@ -550,7 +550,8 @@ function calcSOStatus(ord,opts){
       const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       coveredSz+=Math.min(v,picked+poOrd);
       const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-      const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      // Drop-ship lines count billed units as fulfilled (vendor ships direct — never checked in). See safeHelpers.poLineFulfilledQty.
+      const rcvdQty=safePOs(it).reduce((a,pk)=>a+poLineFulfilledQty(pk,sz),0);
       fulfilledSz+=Math.min(v,pulledQty+rcvdQty);
     });
   });
