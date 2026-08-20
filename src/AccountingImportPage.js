@@ -198,16 +198,27 @@ export default function AccountingImportPage() {
       if (f.reportType !== 'chart_of_accounts' && f.reportType !== 'invoice_search') {
         const { data: accts } = await supabase.from('gl_accounts')
           .select('id,account_number,full_name,name,statement_group');
-        const byFull = new Map(), byNum = new Map(), byName = new Map();
+        const byFull = new Map(), byNum = new Map(), byName = new Map(), byComposed = new Map();
         for (const a of accts || []) {
           if (a.full_name) byFull.set(a.full_name.toLowerCase(), a);
           if (a.account_number) byNum.set(String(a.account_number), a);
           if (a.name) byName.set(a.name.toLowerCase(), a);
+          // Accounts whose "number" is text rather than digits — Donation,
+          // NP11, Viking Loan Liability — print in reports as "Donation -
+          // Donation" and "NP11 - NS Undeposited Funds". The number is not
+          // numeric, so it never parses out of the label and none of the three
+          // lookups above can reach them. Compose the same string from the COA
+          // and match on that, rather than loosening the label parser and
+          // mis-splitting an account genuinely named "Travel - Meals".
+          if (a.account_number && a.name) {
+            byComposed.set(`${a.account_number} - ${a.name}`.toLowerCase(), a);
+          }
         }
         rows = rows.map(r => {
           const hit = (r.account_full_name && byFull.get(String(r.account_full_name).toLowerCase()))
             || (r.account_number && byNum.get(String(r.account_number)))
             || (r.account_name && byName.get(String(r.account_name).toLowerCase()))
+            || (r.account_full_name && byComposed.get(String(r.account_full_name).toLowerCase()))
             || null;
           return { ...r, account_id: hit ? hit.id : null, statement_group: hit ? hit.statement_group : null };
         });
