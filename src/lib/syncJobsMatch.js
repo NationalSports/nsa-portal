@@ -685,8 +685,22 @@ export const SLICE_PRUNE_STATUSES = new Set(['', 'draft', 'hold', 'ready']);
  * A slice whose every row is stale is a phantom and is dropped entirely. Slices already
  * in production (`SLICE_PRUNE_STATUSES`) are never touched — once work has started, the
  * row stays and a human decides.
+ *
+ * `resolveLine(item_idx)` — optional — reports the SO line behind a row as
+ * `{ units, received }` (live quantity, and units received or pulled), or null when there
+ * is no such line. It adds a SECOND stale signature: a row whose line still EXISTS but has
+ * been zeroed to nothing, with no receipts and nothing fulfilled on the row. A slice's
+ * quantities are frozen by design (`_refreshGarmentIdentity` refreshes identity only), so
+ * zeroing a line — or swapping its garment onto another line — used to strand the slice's
+ * claim forever. SO-1048: 29 KV2197 tees were swapped to KV4651 on another line, and
+ * JOB-1048-04-S kept showing a 29-unit screen-print job for a garment the order no longer
+ * carries, while the real 29 units ran on JOB-1048-05.
+ *
+ * A line that is GONE entirely (no entry at that index) is left alone — index drift must
+ * never silently delete work, the same rule allocateJobFulfillment follows. Receipts also
+ * hold a row: goods in hand are a human's call, not a sync's (the absorb write-off case).
  */
-export function pruneStaleSliceRows(slices, allJobs) {
+export function pruneStaleSliceRows(slices, allJobs, resolveLine) {
   const list = (allJobs || []).filter((j) => j && j.id);
   const num = (v) => (typeof v === 'number' && !isNaN(v) ? v : 0);
   const rowKey = (gi) => gi.item_idx + '-' + gi.sku;
@@ -696,14 +710,22 @@ export function pruneStaleSliceRows(slices, allJobs) {
     if (!sj) return;
     if (!SLICE_PRUNE_STATUSES.has(sj.prod_status || '')) { out.push(sj); return; }
     const rows = sj.items || [];
-    if (!rows.some((gi) => gi && !isSized(gi))) { out.push(sj); return; }
+    // A row whose line was zeroed out is stale whatever its shape, so the sizes-less
+    // shortcut below can only skip the family walk when no row is dead-lined either.
+    const deadLine = (gi) => {
+      if (!resolveLine || !gi) return false;
+      if (num(gi.fulfilled) > 0) return false;
+      const line = resolveLine(gi.item_idx);
+      return !!line && num(line.units) === 0 && num(line.received) === 0;
+    };
+    if (!rows.some((gi) => (gi && !isSized(gi)) || deadLine(gi))) { out.push(sj); return; }
     const fam = splitFamilyMembers(list, sj.id);
     const sizedElsewhere = new Set();
     list.forEach((j) => {
       if (!fam.has(j.id) || j.id === sj.id) return;
       (j.items || []).forEach((gi) => { if (isSized(gi)) sizedElsewhere.add(rowKey(gi)); });
     });
-    const kept = rows.filter((gi) => isSized(gi) || !sizedElsewhere.has(rowKey(gi)));
+    const kept = rows.filter((gi) => !deadLine(gi) && (isSized(gi) || !sizedElsewhere.has(rowKey(gi))));
     if (kept.length === rows.length) { out.push(sj); return; }
     if (!kept.length) return; // every row was stale — the slice is a phantom
     const total = kept.reduce((a, gi) => a + num(gi.units), 0);

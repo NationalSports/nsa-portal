@@ -3957,7 +3957,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const splitJobs=pruneStaleSliceRows(
       safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
         .map(j=>({...j,items:(j.items||[]).map(_refreshGarmentIdentity)})),
-      safeJobs(o));
+      safeJobs(o),
+      // Live line behind a slice row — lets the prune retire a claim whose garment was zeroed
+      // off the order (a stock sub moved to another line, a cancelled size run). Receipts keep
+      // the row: goods in hand are a human's call. A missing line reports null and is left alone.
+      ix=>{const it=safeItems(o)[ix];if(!it)return null;
+        const _sz=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        const _rcv=safePOs(it).reduce((a,pl)=>a+Object.values(pl?.received||{}).reduce((b,v)=>b+safeNum(v),0),0)
+          +safePicks(it).filter(pk=>pk?.status==='pulled').reduce((a,pk)=>a+Object.entries(pk).reduce((b,[k,v])=>b+(k==='status'?0:safeNum(v)),0),0);
+        return{units:_sz>0?_sz:safeNum(it.est_qty),received:_rcv}});
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
