@@ -595,6 +595,10 @@ export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':
   'MEDIU':'M','EXTRA':'XL','DOUBL':'2XL','TRIPL':'3XL','ONE S':'OSFA',
   'LGT':'LT','XXLT':'2XLT'};   // round-2: Under Armour tall labels (Large Tall, 2XL Tall)
 
+// SO status labels — one map, shared by the SO detail stepper, the orders list and the
+// reopen action, so a renamed status doesn't have to be chased across three inline literals.
+export const SO_STATUS_LABELS={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+
 // Status color/label map
 export const SC={
   // SO statuses (5)
