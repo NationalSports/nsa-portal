@@ -451,7 +451,8 @@ export function createQBSyncEngine(ctx){
           safeDecos(it).forEach(d=>{
             const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
             const dp=dP(d,qty,saf,cq);
-            if(dp.sell>0){decoTotal+=qty*dp.sell;decoDescs.push((d.position||d.deco_type||d.kind||'Art')+' @$'+dp.sell.toFixed(2))}
+            const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
+            if(dp.sell>0){decoTotal+=eq*dp.sell;decoDescs.push((d.position||d.deco_type||d.kind||'Art')+' @$'+dp.sell.toFixed(2))}
           });
           const lineAmt=qty*(it.unit_sell||0)+decoTotal;
           const desc=it.sku+' '+it.name+(it.color?' - '+it.color:'')+(decoDescs.length?' + '+decoDescs.join(', '):'');

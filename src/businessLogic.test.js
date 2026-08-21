@@ -296,11 +296,43 @@ describe('Pricing Functions', () => {
       expect(result.cost).toBe(3);
     });
 
-    test('names with actual names calculates per-unit', () => {
+    test('names price per name, billed at the name count via _nq', () => {
       const d = { kind: 'names', sell_each: 6, cost_each: 3, names: { S: ['Smith', 'Jones'], M: ['Brown'] } };
       const result = dP(d, 24, [], 24);
-      // 3 names * $6 / 24 units = $0.75
-      expect(result.sell).toBe(rQ(3 * 6 / 24));
+      // 3 names on a 24-pc line: the rate is the per-NAME price and _nq is the application
+      // count, so a deco walk bills 3 x $6 = $18 -- the same total the old per-unit spread
+      // produced here, but the rate now reads $6.00 instead of $0.75 on the estimate.
+      expect(result.sell).toBe(6);
+      expect(result.cost).toBe(3);
+      expect(result._nq).toBe(3);
+      expect(result._nq * result.sell).toBe(18);
+    });
+
+    test('one name on a 24-pc line bills $5, not $6 (EST-2126)', () => {
+      // rQ(1 * 5 / 24) = $0.25, and 24 x $0.25 = $6.00 -- the old spread quarter-rounded a
+      // $5 charge up to $6 and printed a $0.25 rate the rep never typed.
+      const d = { kind: 'names', sell_override: 5, sell_each: 6, cost_each: 3, names: { S: ['SPARTANS'] } };
+      const result = dP(d, 24, [], 24);
+      expect(result.sell).toBe(5);
+      expect(result._nq).toBe(1);
+      expect(result._nq * result.sell).toBe(5);
+      expect(result._nq * result.cost).toBe(3);
+    });
+
+    test('names with no roster still bill the full garment count', () => {
+      const d = { kind: 'names', sell_each: 6, cost_each: 3, names: {} };
+      const result = dP(d, 24, [], 24);
+      expect(result.sell).toBe(6);
+      expect(result._nq).toBe(24);
+      expect(result._nq * result.sell).toBe(144);
+    });
+
+    test('reversible names double the application count', () => {
+      const d = { kind: 'names', sell_each: 6, cost_each: 3, reversible: true, names: { S: ['Smith', 'Jones'] } };
+      const result = dP(d, 24, [], 24);
+      expect(result.sell).toBe(6);
+      expect(result._nq).toBe(4);
+      expect(result._nq * result.sell).toBe(24);
     });
 
     test('outside_deco uses sell_each and cost_each', () => {

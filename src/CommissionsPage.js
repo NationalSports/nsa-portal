@@ -277,7 +277,7 @@ export default function CommissionsPage(){
         const outByItem=outsourcedDecoTypes(so);
         safeItems(so).forEach((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
-          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=qty*_decoUnitCostComb(d,qty,af,cq,_comb)});
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
         });
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
@@ -320,7 +320,7 @@ export default function CommissionsPage(){
           if(it.is_promo){
             productCost+=qty*safeNum(it.nsa_cost);
             const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
-            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=qty*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=qty*rQ(dp2.sell*1.25)});
+            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=eq*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=eq*rQ(dp2.sell*1.25)});
           }
         });
         // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
