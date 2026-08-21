@@ -23,7 +23,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -7978,6 +7978,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Per-SO-item invoiced qty across prior invoices for this SO — used to prevent double-billing the same line
       const _priorInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
       const invoicedQtyMap=buildInvoicedQtyMap(o,_priorInvs);
+      // Lines already billed on this SO that no longer exist on it — the order was edited
+      // after invoicing. Their qty is excluded from every "remaining" figure below, so the
+      // rep has to be told rather than left to reconcile a paid invoice against an order
+      // that no longer matches it (SO-1804).
+      const _invOrphans=invoicedLineOrphans(o,_priorInvs);
+      const _invOrphanAmt=_invOrphans.reduce((a,l)=>a+safeNum(l.amount),0);
       const depositCredit=sumDepositInvoiced(_priorInvs);
       // Compute per-item totals — for promo orders, only non-promo items are invoiceable.
       // For non-deposit invoices, the effective qty drops to the remaining-to-invoice
@@ -8071,6 +8077,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {isPromoOrder&&<div style={{marginBottom:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
             <div style={{fontWeight:700,color:'#92400e',fontSize:13,marginBottom:4}}>Promo Order</div>
             <div style={{fontSize:12,color:'#78350f'}}>{invTotal===0?'This order is fully covered by promo funds. No payment is due from the customer.':'Promo covers $'+safeNum(o.promo_amount).toLocaleString()+'. Customer pays $'+invTotal.toFixed(2)+' for the non-promo portion.'}</div>
+          </div>}
+
+          {/* Order edited after invoicing: billed lines that are no longer on the SO.
+              Never auto-credited — a swap owes nothing, a genuine removal owes a refund,
+              and only a human can tell those apart. */}
+          {_invOrphans.length>0&&<div style={{marginBottom:12,padding:12,background:'#fff7ed',border:'1px solid #fdba74',borderRadius:8}}>
+            <div style={{fontWeight:700,color:'#9a3412',fontSize:13,marginBottom:4}}>This order changed after it was invoiced</div>
+            <div style={{fontSize:12,color:'#7c2d12',marginBottom:6}}>
+              {_invOrphans.length} already-billed line{_invOrphans.length===1?' is':'s are'} no longer on {o.id}, totaling <strong>${_invOrphanAmt.toFixed(2)}</strong>. That amount was charged to the customer but is <strong>not</strong> counted in the remaining-to-invoice figures below.
+            </div>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+              <tbody>{_invOrphans.map((l,li2)=><tr key={li2}>
+                <td style={{padding:'1px 6px',fontWeight:700,color:'#9a3412'}}>{l.invoice_id}</td>
+                <td style={{padding:'1px 6px',color:'#7c2d12'}}>{l.desc||l.sku}</td>
+                <td style={{padding:'1px 6px',textAlign:'right',color:'#7c2d12'}}>{l.qty} x</td>
+                <td style={{padding:'1px 6px',textAlign:'right',fontWeight:600,color:'#7c2d12'}}>${safeNum(l.amount).toFixed(2)}</td>
+              </tr>)}</tbody>
+            </table>
+            <div style={{fontSize:11,color:'#9a3412',marginTop:6}}>If these were swapped for what is on the order now, close the SO instead of billing again. If they were dropped, the customer may be owed a credit.</div>
           </div>}
 
           {/* Invoice type */}
