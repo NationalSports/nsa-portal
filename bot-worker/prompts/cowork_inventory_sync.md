@@ -8,6 +8,27 @@ One row per SKU+size with:
 - `future_delivery_qty` — projected available-to-promise for that date  ← (new)
 - `last_synced`, `source`
 
+## Executable runner
+
+The version-controlled runner is `scripts/adidas-cowork-sync.js`. It uses the
+confirmed catalog + `materials/information` APIs and defaults to a **full sweep**
+of every active Adidas product whose `inventory_source` is CLICK (anything other
+than `agron`). Do not replace this with the retired DOM/table scraper: that path
+cannot reliably see sold-out size runs or restock dates.
+
+For a fast recovery of known missing styles:
+
+```bash
+ADIDAS_SKUS=KD5431,KD5434 COWORK_HEADLESS=false \
+  node scripts/adidas-cowork-sync.js
+```
+
+The runner upserts each SKU immediately and reads the written sizes back before
+moving on. A missing map, database-guard drop, expired CLICK session, or API
+failure therefore produces a non-zero exit instead of a misleading successful
+sync. After the targeted recovery, run the default full sweep with
+`ADIDAS_SKUS` unset.
+
 The portal display and the order screen already read all of these; the only gap
 today is `future_delivery_qty` (always null), plus `future_delivery_date` being
 saved only on the out-of-stock branch.
@@ -41,7 +62,8 @@ carried". So:
    up automatically on the next run. (~4,000 SKUs currently; only ~2,100 have
    rows today — close that gap.)
 2. **Cadence:** inventory is the daily job; discovery and backfill are monthly.
-   - **Daily:** stock sync only (prioritized subset is fine).
+   - **Daily:** full stock sync. A prioritized subset may be used only as an
+     additional intra-day refresh; it does not replace the complete daily pass.
    - **Weekly:** full-catalog stock sweep — every SKU re-checked, no time filters.
    - **Monthly:** full-range discovery (new SKUs on Cowork → create rows) and
      image/description backfill. Backfill is fill-empties-only, so it is
