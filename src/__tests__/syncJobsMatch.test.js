@@ -807,3 +807,82 @@ describe('pruneStaleSliceRows (SO-1110 phantom slice)', () => {
     expect(() => pruneStaleSliceRows(cyc, cyc)).not.toThrow();
   });
 });
+
+describe('pruneStaleSliceRows — zeroed line (SO-1048 stock swap)', () => {
+  // SO-1048: 29 KV2197 tees were swapped to KV4651 on a different line. Item 2 went to all
+  // zeros with no PO and no receipts, but JOB-1048-04-S kept its frozen 29-unit claim — a
+  // phantom screen-print job for a garment the order no longer carries, while the real 29
+  // units ran on JOB-1048-05. Slice quantities are frozen by design, so nothing healed it.
+  const so1048 = () => [
+    { id: 'JOB-1048-04', split_from: null, prod_status: 'in_process', items: [{ item_idx: 25, sku: 'AT101', units: 6, fulfilled: 6, sizes: { S: 2, M: 2, L: 2 } }] },
+    { id: 'JOB-1048-04-S', split_from: 'JOB-1048-04', prod_status: 'hold', total_units: 29, fulfilled_units: 0,
+      items: [{ item_idx: 2, sku: 'KV2197', units: 29, fulfilled: 0, sizes: { XS: 1, S: 13, M: 12, L: 1, XL: 2 } }] },
+  ];
+  // item 2 zeroed, nothing received; the live replacement lives on another line entirely.
+  const lines = { 2: { units: 0, received: 0 }, 25: { units: 6, received: 6 } };
+  const resolve = (ix) => (Object.prototype.hasOwnProperty.call(lines, ix) ? lines[ix] : null);
+
+  test('the phantom slice is retired once its line is zeroed', () => {
+    const jobs = so1048();
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve);
+    expect(out).toEqual([]);
+  });
+
+  test('without the resolver the row is kept — the sized claim alone is not stale', () => {
+    const jobs = so1048();
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs);
+    expect(out.map((j) => j.id)).toEqual(['JOB-1048-04-S']);
+  });
+
+  test('receipts hold the row — an absorbed write-off is a human call, not a sync', () => {
+    const jobs = so1048();
+    const held = (ix) => (ix === 2 ? { units: 0, received: 29 } : resolve(ix));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, held).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a fulfilled row is never dead-lined even if the line reads zero', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, items: [{ ...j.items[0], fulfilled: 29 }] } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('unallocated aggregate fulfillment holds the slice when row counts are stale', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, fulfilled_units: 1 } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a MISSING line (index drift) is left alone — never silently delete work', () => {
+    const jobs = so1048();
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, () => null).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a slice already in production keeps its zeroed row', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, prod_status: 'in_process' } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a live line keeps its slice untouched', () => {
+    const jobs = so1048();
+    const live = (ix) => (ix === 2 ? { units: 29, received: 0 } : resolve(ix));
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, live);
+    expect(out[0].items).toHaveLength(1);
+  });
+
+  test('mixed slice drops only the dead-lined row and re-totals', () => {
+    const jobs = [
+      { id: 'P', split_from: null, prod_status: 'hold', items: [] },
+      { id: 'P-S', split_from: 'P', prod_status: 'hold', total_units: 9, fulfilled_units: 3,
+        items: [{ item_idx: 2, sku: 'DEAD', units: 4, fulfilled: 0, sizes: { M: 4 } },
+                { item_idx: 5, sku: 'LIVE', units: 5, fulfilled: 3, sizes: { M: 5 } }] },
+    ];
+    const r = (ix) => (ix === 2 ? { units: 0, received: 0 } : { units: 5, received: 3 });
+    const out = pruneStaleSliceRows([jobs[1]], jobs, r);
+    expect(out[0].items.map((g) => g.sku)).toEqual(['LIVE']);
+    expect(out[0].total_units).toBe(5);
+    expect(out[0].fulfilled_units).toBe(3);
+  });
+});
