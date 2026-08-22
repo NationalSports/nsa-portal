@@ -9748,7 +9748,35 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
     for (const s of sizes) { const v = sizeCost[s]; if (v !== '' && v != null && !Number.isNaN(Number(v))) size_costs[s] = Number(v); }
     const row = { id, vendor_id: vendorId || null, sku: finalSku, name: name.trim(), brand: brand.trim() || null, color: color.trim() || null, category: category.trim() || null, retail_price: Number(price) || 0, nsa_cost: cost === '' ? null : (Number(cost) || 0), available_sizes: sizes, size_costs: Object.keys(size_costs).length ? size_costs : null, image_front_url: image || null, image_back_url: imageBack || null, is_active: reusable, is_archived: false, inventory_source: 'manual', catalog_sell_price: Number(price) || null };
     const { error } = await supabase.from('products').insert(row);
-    if (error) { setSaving(false); setErr('Could not save: ' + error.message); return; }
+    if (error) {
+      setSaving(false);
+      // A SKU collision is by far the common failure here, and the raw Postgres text
+      // ("duplicate key … products_sku_unique") tells the user nothing: not which item
+      // already owns the SKU, nor why they can't find it in the picker to add instead.
+      // The conflict is often an existing colorway that's simply out of stock (hidden by
+      // "In stock only"), inactive (a one-time item), or archived. Name it and say what to do.
+      const isDupSku = error.code === '23505' || /products_sku_unique|duplicate key/i.test(error.message || '');
+      if (isDupSku) {
+        let msg = `SKU ${finalSku} is already used by another product. Add that item from the catalog instead of creating a duplicate, or use a different SKU.`;
+        try {
+          const { data: dup } = await supabase.from('products').select('name,brand,color,is_active,is_archived').eq('sku', finalSku).limit(1);
+          const p = dup && dup[0];
+          if (p) {
+            const desc = [p.name, p.brand, p.color].filter(Boolean).join(' · ') || finalSku;
+            const why = p.is_archived
+              ? ' It’s archived, so it won’t show in the picker.'
+              : (p.is_active === false
+                ? ' It’s a one-time (store-only) item, so it won’t show in the shared picker.'
+                : ' If it’s not showing, turn off “In stock only” in the picker — it’s likely just out of stock.');
+            msg = `SKU ${finalSku} is already used by “${desc}”.${why} Add that item instead, or use a different SKU.`;
+          }
+        } catch (e) { /* keep the generic duplicate message */ }
+        setErr(msg);
+        return;
+      }
+      setErr('Could not save: ' + error.message);
+      return;
+    }
     // Seed in-house warehouse stock so the item shows as fulfillable right away.
     const invRows = sizes.map((s) => ({ product_id: id, size: s, quantity: Math.max(0, Math.floor(Number(sizeQty[s]) || 0)) })).filter((r) => r.quantity > 0);
     if (invRows.length) { try { await supabase.from('product_inventory').insert(invRows); } catch (e) { /* non-fatal */ } }
