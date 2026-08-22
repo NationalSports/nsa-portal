@@ -539,10 +539,21 @@ export const legacyMockKeyOf = (it) => {
 // or the buckets are split. It never makes an order worse than it is now.
 export const itemMockFiles = (mocks, it, sub) => {
   const m = safeObj(mocks);
-  const own = safeArr(m[garmentMockKey(it) + (sub || '')]);
-  if (own.length > 0) return own;
+  const ownKey = garmentMockKey(it) + (sub || '');
+  const own = safeArr(m[ownKey]);
+  // Presence is intentional even when the bucket is empty: removing the last file leaves []
+  // behind. Falling through in that state would resurrect the pre-fix shared mockup the user
+  // just removed and could let it satisfy the approval gate again. Only orders that have never
+  // written this garment's own key should read the legacy shared bucket.
+  if (Object.prototype.hasOwnProperty.call(m, ownKey)) return own;
   const lk = legacyMockKeyOf(it);
-  return lk ? safeArr(m[lk + (sub || '')]) : own;
+  const legacyKey = lk && (lk + (sub || ''));
+  if (legacyKey && Object.prototype.hasOwnProperty.call(m, legacyKey)) return safeArr(m[legacyKey]);
+  // The oldest orders used a bare SKU bucket. It was only ever a primary/front bucket, never
+  // a color-way, numbers or names sub-slot. Keep that final compatibility read centralized here
+  // so every caller honors the empty-own-bucket tombstone above.
+  if (!sub && it?.sku != null && Object.prototype.hasOwnProperty.call(m, it.sku)) return safeArr(m[it.sku]);
+  return own;
 };
 // Resolve the root source key this garment is linked to, or null when unlinked.
 export const resolveMockLink = (anchorArts, sku, color) => {
@@ -907,10 +918,7 @@ export const nnMockCounts = (artFiles, it) => {
 export const slotMockFiles = (slot, slots, it) => {
   const art = slot?.artFile;
   const mocks = safeObj(art?.item_mockups);
-  const bareRead = () => {
-    const v = itemMockFiles(mocks, it);
-    return v.length > 0 ? v : safeArr(mocks[it?.sku]);
-  };
+  const bareRead = () => itemMockFiles(mocks, it);
   if (slot?.primary) return bareRead();
   // Sub-key slots read through the same legacy fallback: the sub-key part (`|<cwid>`, `|numbers`)
   // hangs off whichever base the mock was written under.
@@ -1011,7 +1019,7 @@ export const skusMissingMockups = (job, so) => {
       // Look the source's mocks up across ALL the job's art (the source garment may pull
       // its art from a different file than this garment's anchors).
       const allAnchors = [...new Set([...linkAnchors, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
-      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mSku) missing.push(mLabel);
+      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mLabel) missing.push(mLabel);
       return;
     }
     // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
@@ -1020,10 +1028,8 @@ export const skusMissingMockups = (job, so) => {
     // one garment's mockup satisfied this gate for every other custom garment of that color
     // and unmocked garments went to the coach (SO-2063). Older data may use a plain SKU key
     // or the legacy shared bucket — accept either.
-    const mockKey = garmentMockKey(mLine);
     const perSku = artFiles.flatMap(a => {
-      const byKey = itemMockFiles(a?.item_mockups, mLine);
-      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
+      return itemMockFiles(a?.item_mockups, mLine);
     });
     if (perSku.length > 0) {
       // Primary mock present — additionally require every slot a REVERSIBLE decoration
@@ -1034,10 +1040,14 @@ export const skusMissingMockups = (job, so) => {
       // mockup_files bucket (handled below) are left alone.
       const _idxs = jobItemDecoIdxs(gi);
       const anchors = [...new Set([...artFiles, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      const mockKey = garmentMockKey(mLine);
       const missSlots = mockSlotKeys(mockKey, safeDecos(it))
         .filter(s => s.reversible && !s.primary && (!_idxs || _idxs.includes(s.di)))
-        .filter(s => !anchors.some(a => safeArr(a?.item_mockups?.[s.key]).length > 0));
-      if (missSlots.length > 0 && mSku) {
+        .filter(s => {
+          const sub = safeStr(s.key).startsWith(mockKey) ? safeStr(s.key).slice(mockKey.length) : '';
+          return !anchors.some(a => itemMockFiles(a?.item_mockups, mLine, sub).length > 0);
+        });
+      if (missSlots.length > 0 && mLabel) {
         missing.push(mLabel + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
       }
       return;
@@ -1060,7 +1070,7 @@ export const skusMissingMockups = (job, so) => {
     // art its two compliant paths (reuse an approved prior mock, or send to the artist
     // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
     // so approval screens still show what exists — it just can't pass the gate.
-    if (mSku) missing.push(mLabel);
+    if (mLabel) missing.push(mLabel);
   });
   return missing;
 };
