@@ -9,7 +9,7 @@
 // deliberately left unchanged, the test PINS it with a comment explaining
 // the concern, so any future change is a visible, deliberate diff.
 // ═══════════════════════════════════════════════
-const { buildInvoicedQtyMap, sumDepositInvoiced, rekeyGarmentMocks, soLineKey } = require('../safeHelpers');
+const { buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, rekeyGarmentMocks, soLineKey } = require('../safeHelpers');
 
 const makeSO = (overrides = {}) => ({
   id: 'SO-1',
@@ -111,5 +111,77 @@ describe('Gap 14: rekeyGarmentMocks with a blank fromSku/fromColor identity', ()
     // genuine no-op case, distinct from the blank-to-populated rekey above.
     const result = rekeyGarmentMocks(artFiles, '', '', '', '');
     expect(result).toBe(artFiles);
+  });
+});
+
+// ─────────────────────────────────────────────
+// invoicedLineOrphans — billed lines the SO no longer carries
+// ─────────────────────────────────────────────
+describe('invoicedLineOrphans — an SO edited after it was invoiced', () => {
+  // SO-1804: invoiced 8/4 for four lines, then edited 8/17 — KF5972 and KD3000 were
+  // removed and AT315 added. The two removed lines were billed AND paid, but no longer
+  // match anything on the SO, so buildInvoicedQtyMap drops their qty entirely.
+  const so1804 = { items: [
+    { sku: 'KE6407', color: 'None', sizes: { L: 1, XL: 1 } },
+    { sku: 'KE6404', color: 'None', sizes: { L: 1, XL: 1 } },
+    { sku: 'AT315', color: 'Black/ White', sizes: { L: 2 } },
+  ] };
+  const inv63414 = [{ id: 'INV-63414', so_id: 'SO-1804', inv_type: 'full', line_items: [
+    { qty: 2, _sku: 'KF5972', _color: 'None', desc: 'KF5972 adidas Entrada 26 Shorts - Black — None', rate: 25, amount: 50 },
+    { qty: 2, _sku: 'KD3000', _color: 'Dark Green', desc: 'KD3000 adidas Mens 3 Stripe Polo - Green — Dark Green', rate: 40, amount: 80 },
+    { qty: 2, _sku: 'KE6407', _color: 'None', desc: 'KE6407 adidas Woven Pant - Black — None', rate: 55, amount: 110 },
+    { qty: 2, _sku: 'KE6404', _color: 'None', desc: 'KE6404 adidas Woven Top - Black — None', rate: 60, amount: 120 },
+  ] }];
+
+  test('reports the two billed lines that are no longer on the SO, with their dollars', () => {
+    const orphans = invoicedLineOrphans(so1804, inv63414);
+    expect(orphans.map(o => o.sku).sort()).toEqual(['KD3000', 'KF5972']);
+    expect(orphans.reduce((a, o) => a + o.amount, 0)).toBe(130);
+    expect(orphans[0].invoice_id).toBe('INV-63414');
+  });
+
+  test('the lines still on the SO are matched, not reported as orphans', () => {
+    const map = buildInvoicedQtyMap(so1804, inv63414);
+    expect(map.get(soLineKey(so1804.items[0], 0))).toBe(2); // KE6407 fully invoiced
+    expect(map.get(soLineKey(so1804.items[1], 1))).toBe(2); // KE6404 fully invoiced
+    expect(map.get(soLineKey(so1804.items[2], 2))).toBe(0); // AT315 never invoiced
+  });
+
+  test('an SO whose invoice still matches it reports no orphans', () => {
+    const so = { items: [{ sku: 'AAA', color: 'Red', sizes: { L: 2 } }] };
+    const invs = [{ id: 'INV-1', inv_type: 'full', line_items: [
+      { qty: 2, _sku: 'AAA', _color: 'Red', desc: 'AAA Thing — Red', amount: 40 },
+    ] }];
+    expect(invoicedLineOrphans(so, invs)).toEqual([]);
+  });
+
+  test('deposit invoices are skipped — they bill a %, not specific units', () => {
+    const so = { items: [{ sku: 'AAA', color: 'Red', sizes: { L: 2 } }] };
+    const invs = [{ id: 'INV-D', inv_type: 'deposit', line_items: [
+      { qty: 2, _sku: 'GONE', _color: '', desc: 'GONE Removed Thing', amount: 999 },
+    ] }];
+    expect(invoicedLineOrphans(so, invs)).toEqual([]);
+  });
+
+  test('non-positive line quantities are ignored, not reported as orphans', () => {
+    const so = { items: [{ sku: 'AAA', color: 'Red', sizes: { L: 2 } }] };
+    const invs = [{ id: 'INV-1', inv_type: 'full', line_items: [
+      { qty: 0, _sku: 'GONE', desc: 'GONE Zero Line', amount: 0 },
+      { qty: -3, _sku: 'ALSOGONE', desc: 'ALSOGONE Negative Line', amount: -60 },
+    ] }];
+    expect(invoicedLineOrphans(so, invs)).toEqual([]);
+  });
+
+  test('a stale _so_line_key still falls back to sku matching before being called an orphan', () => {
+    const so = { items: [{ sku: 'AAA', color: 'Red', sizes: { L: 2 } }] };
+    const invs = [{ id: 'INV-1', inv_type: 'full', line_items: [
+      { qty: 2, _so_line_key: 'stale-key-from-an-older-shape', _sku: 'AAA', _color: 'Red', desc: 'AAA Thing — Red', amount: 40 },
+    ] }];
+    expect(invoicedLineOrphans(so, invs)).toEqual([]);
+    expect(buildInvoicedQtyMap(so, invs).get(soLineKey(so.items[0], 0))).toBe(2);
+  });
+
+  test('buildInvoicedQtyMap still returns a Map — the orphan split did not change its contract', () => {
+    expect(buildInvoicedQtyMap(so1804, inv63414)).toBeInstanceOf(Map);
   });
 });

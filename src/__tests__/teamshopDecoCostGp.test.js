@@ -98,7 +98,9 @@ describe('numbers/names sell_override=0 is honored (nullish, all dP copies)', ()
   test('decoPricing: names sell 0, cost stays real', () => {
     const r = DECO.dP(DECO.DEFAULTS, namesDeco, 12);
     expect(r.sell).toBe(0);
-    expect(r.cost).toBe(DECO.rQ(2 * 3 / 12)); // 2 names × $3 cost, prorated
+    expect(r.cost).toBe(3);        // per-NAME cost of record, not prorated over the 12 pcs
+    expect(r._nq).toBe(2);         // 2 names applied
+    expect(r._nq * r.cost).toBe(6); // same $6 a cost walk billed under the old prorated form
   });
 
   test('decoPricing: numbers sell 0, cost stays real', () => {
@@ -114,7 +116,9 @@ describe('numbers/names sell_override=0 is honored (nullish, all dP copies)', ()
 
   test('names default is preserved when sell_override is null/absent', () => {
     const r = DECO.dP(DECO.DEFAULTS, { ...namesDeco, sell_override: null }, 12);
-    expect(r.sell).toBe(DECO.rQ(2 * 6 / 12)); // falls back to sell_each 6
+    expect(r.sell).toBe(6);          // falls back to sell_each 6, as the per-name rate
+    expect(r._nq).toBe(2);
+    expect(r._nq * r.sell).toBe(12); // same $12 the old prorated form billed
   });
 
   test('App.js numbers/names branches use the nullish form (source-text pin)', () => {

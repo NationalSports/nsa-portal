@@ -11,7 +11,9 @@ import {
   inheritJobWorkflowFields,
   isClosedJob,
   isPureArtExpansion,
+  jobDecoClaimKeys,
   matchExistingJob,
+  reparentOrphanSplitJobs,
   splitClosedJobAdditions,
   splitSliceOwnedKeys,
   splitFamilyMembers,
@@ -127,6 +129,69 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(inheritJobWorkflowFields(existing).sent_history).toEqual(solo.sent_history);
   });
 
+  test('SO-2106: assigning art after a split keeps the original parent via decoration claims', () => {
+    const parent = {
+      id: 'JOB-2106-01',
+      key: 'screen_print::art_unassigned@Front Center',
+      art_file_id: null,
+      items: [{ item_idx: 1, sku: 'IW2442', deco_idx: 0, deco_idxs: [0] }],
+    };
+    const child = {
+      id: 'JOB-2106-01-B',
+      key: 'screen_print::art_unassigned@Front Center__split__B',
+      art_file_id: null,
+      split_from: 'JOB-2106-01',
+      items: [{ item_idx: 0, sku: 'IM9857', deco_idx: 0, deco_idxs: [0] }],
+    };
+    const built = {
+      key: 'screen_print::art_af-clark@Front Center',
+      art_file_id: 'af-clark',
+      items: [
+        { item_idx: 0, sku: 'IM9857', deco_idx: 0, deco_idxs: [0] },
+        { item_idx: 1, sku: 'IW2442', deco_idx: 0, deco_idxs: [0] },
+      ],
+    };
+    const { existing, matchedBy } = matchExistingJob(
+      built,
+      buildExistingJobLookups([parent, child]),
+      new Set(),
+    );
+    expect(matchedBy).toBe('deco_claim');
+    expect(existing).toBe(parent);
+    expect(jobDecoClaimKeys(built)).toEqual(['0::0', '1::0']);
+  });
+
+  test('decoration-claim fallback refuses a build spanning multiple old root jobs', () => {
+    const first = { id: 'J1', key: 'old-1', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const second = { id: 'J2', key: 'old-2', items: [{ item_idx: 1, deco_idx: 0 }] };
+    const built = { key: 'consolidated', items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }] };
+    const { existing, matchedBy } = matchExistingJob(
+      built,
+      buildExistingJobLookups([first, second]),
+      new Set(),
+    );
+    expect(matchedBy).toBeNull();
+    expect(existing).toBeNull();
+  });
+
+  test('decoration-claim fallback refuses a partly ambiguous claim set', () => {
+    const first = {
+      id: 'J1', key: 'old-1',
+      items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }],
+    };
+    const duplicate = { id: 'J2', key: 'old-2', items: [{ item_idx: 1, deco_idx: 0 }] };
+    const built = {
+      key: 'rebuilt',
+      items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }],
+    };
+    const lookups = buildExistingJobLookups([first, duplicate]);
+    expect(lookups.existingByDecoClaim['0::0']).toBe(first);
+    expect(lookups.ambiguousDecoClaims.has('1::0')).toBe(true);
+    const { existing, matchedBy } = matchExistingJob(built, lookups, new Set());
+    expect(matchedBy).toBeNull();
+    expect(existing).toBeNull();
+  });
+
   test('art-id fallback refuses an already-claimed job in the same pass', () => {
     const a = { id: 'JOB-A', key: 'k-a', art_file_id: 'af-unique' };
     const lookups = buildExistingJobLookups([a]);
@@ -201,6 +266,43 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(pantsMatch.existing.rejections[0].reason).toMatch(/pants will be blank/i);
     expect(hoodieMatch.existing.rejections).toBeNull();
     expect(hoodieMatch.existing.art_status).toBe('art_complete');
+  });
+});
+
+describe('reparentOrphanSplitJobs (SO-2106 merge-back repair)', () => {
+  test('re-points an orphaned split child to the one root that covers its decoration claim', () => {
+    const root = {
+      id: 'JOB-2106-02',
+      items: [
+        { item_idx: 0, sku: 'IM9857', deco_idx: 0 },
+        { item_idx: 1, sku: 'IW2442', deco_idx: 0 },
+      ],
+    };
+    const child = {
+      id: 'JOB-2106-01-B',
+      split_from: 'JOB-2106-01',
+      items: [{ item_idx: 0, sku: 'IM9857', deco_idx: 0 }],
+    };
+    const repaired = reparentOrphanSplitJobs([root, child]);
+    expect(repaired.find((j) => j.id === child.id).split_from).toBe(root.id);
+  });
+
+  test('leaves a valid parent link unchanged', () => {
+    const parent = { id: 'P', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const child = { id: 'P-B', split_from: 'P', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const repaired = reparentOrphanSplitJobs([parent, child]);
+    expect(repaired[1]).toBe(child);
+  });
+
+  test('does not guess when two roots cover the orphan claim', () => {
+    const roots = [
+      { id: 'A', items: [{ item_idx: 0, deco_idx: 0 }] },
+      { id: 'B', items: [{ item_idx: 0, deco_idx: 0 }] },
+    ];
+    const child = { id: 'OLD-B', split_from: 'OLD', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const repaired = reparentOrphanSplitJobs([...roots, child]);
+    expect(repaired[2]).toBe(child);
+    expect(repaired[2].split_from).toBe('OLD');
   });
 });
 
@@ -741,6 +843,12 @@ describe('pruneStaleSliceRows — zeroed line (SO-1048 stock swap)', () => {
 
   test('a fulfilled row is never dead-lined even if the line reads zero', () => {
     const jobs = so1048().map((j) => (j.split_from ? { ...j, items: [{ ...j.items[0], fulfilled: 29 }] } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('unallocated aggregate fulfillment holds the slice when row counts are stale', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, fulfilled_units: 1 } : j));
     expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
       .toEqual(['JOB-1048-04-S']);
   });

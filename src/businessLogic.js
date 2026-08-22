@@ -88,7 +88,13 @@ function dP(d, q, artFiles, cq) {
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
-  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
+  // Names bill per NAME, not per garment: return the true per-name rate and hand the
+  // application count out as _nq, exactly like the numbers branch above. The old form
+  // baked the count into the rate (rQ(nc*se/q)), so one $5 name on a 24-pc line printed
+  // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
+  // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
+  // is unchanged everywhere nc*se/q happened to land on an exact quarter.
+  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
@@ -1061,7 +1067,7 @@ function createInvoice(o, invSelItems, cust, artQty) {
         decoRev += (dp._nq != null ? dp._nq : qty) * dp.sell;
       } else if (d.kind === 'names') {
         const dp = dP(d, qty, [], qty);
-        decoRev += qty * dp.sell;
+        decoRev += (dp._nq != null ? dp._nq : qty) * dp.sell;
       } else if (d.kind === 'outside_deco') {
         const dp = dP(d, qty, [], qty);
         decoRev += qty * dp.sell;
