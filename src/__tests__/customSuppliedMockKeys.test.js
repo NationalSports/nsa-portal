@@ -99,6 +99,33 @@ describe('slotMockFiles — the SO-2063 red long sleeve / short sleeve pair', ()
     expect(urls(slotFor(art, LS_RED))).toEqual(['legacy.png']);
   });
 
+  test('an explicitly emptied own bucket does not resurrect the shared mockup', () => {
+    const art = {
+      id: 'af-old',
+      item_mockups: {
+        'CUST-SUPPLIED|Red': [{ url: 'legacy.png' }],
+        [garmentMockKey(SS_RED)]: [],
+      },
+    };
+    expect(slotFor(art, SS_RED)).toEqual([]);
+  });
+
+  test('an explicitly emptied own bucket also blocks the oldest bare-SKU fallback', () => {
+    const art = {
+      id: 'af-oldest',
+      item_mockups: {
+        'CUST-SUPPLIED': [{ url: 'bare-legacy.png' }],
+        [garmentMockKey(SS_RED)]: [],
+      },
+    };
+    expect(slotFor(art, SS_RED)).toEqual([]);
+  });
+
+  test('the oldest bare-SKU bucket still renders when no garment bucket was ever written', () => {
+    const art = { id: 'af-oldest', item_mockups: { 'CUST-SUPPLIED': [{ url: 'bare-legacy.png' }] } };
+    expect(urls(slotFor(art, SS_RED))).toEqual(['bare-legacy.png']);
+  });
+
   test('itemMockFiles reads slot sub-keys through the same fallback', () => {
     const m = { 'CUST-SUPPLIED|Red|numbers': [{ url: 'back.png' }] };
     expect(itemMockFiles(m, LS_RED, '|numbers')).toHaveLength(1);
@@ -140,6 +167,33 @@ describe('skusMissingMockups — an unmocked custom garment can no longer pass t
       }],
     };
     expect(skusMissingMockups(job, so2)).toEqual([]);
+  });
+
+  test('a named custom line with a blank SKU is still blocked when unmocked', () => {
+    const blank = { sku: '', color: 'Red', name: 'Uncatalogued Rally Towel', decorations: [{ kind: 'art', art_file_id: 'af-blank' }] };
+    const blankSo = { items: [blank], art_files: [{ id: 'af-blank', item_mockups: {} }] };
+    const blankJob = { art_file_id: 'af-blank', _art_ids: ['af-blank'], items: [{ item_idx: 0, sku: '', color: 'Red', name: blank.name, deco_idxs: [0] }] };
+    expect(skusMissingMockups(blankJob, blankSo)).toEqual(['Uncatalogued Rally Towel']);
+  });
+
+  test('legacy reversible sub-slots still satisfy the gate before migration', () => {
+    const reversible = {
+      ...LS_RED,
+      decorations: [{ kind: 'art', art_file_id: 'af-rev', reversible: true, color_way_id: 'cwA', color_way_id_b: 'cwB' }],
+    };
+    const legacyBase = legacyMockKeyOf(reversible);
+    const revSo = {
+      items: [reversible],
+      art_files: [{
+        id: 'af-rev',
+        item_mockups: {
+          [legacyBase]: [{ url: 'side-a.png' }],
+          [legacyBase + '|cwB']: [{ url: 'side-b.png' }],
+        },
+      }],
+    };
+    const revJob = { art_file_id: 'af-rev', _art_ids: ['af-rev'], items: [{ item_idx: 0, ...LS_RED, deco_idxs: [0] }] };
+    expect(skusMissingMockups(revJob, revSo)).toEqual([]);
   });
 });
 
