@@ -24,7 +24,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { downloadSoPlayerReport, omgCodeFromMemo } from './lib/soPlayerReport';
 import { closeOpenArtRequests } from './lib/artRequests';
@@ -3474,6 +3474,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // decorations no longer exist on any line (the orphan-preservation branch below). Auto-sync
   // never passes it, so the bad-save safety net still holds between explicit user syncs.
   const syncJobs=useCallback((opts)=>{
+    // Heal a narrowly identifiable legacy split corruption before rebuilding: assigning art could
+    // mint a new root id while its child kept the retired parent id. Using the repaired source for
+    // every lookup lets the normal slice-ownership pass remove the duplicated garment and makes
+    // Merge Back usable again (SO-2106).
+    const _sourceJobs=reparentOrphanSplitJobs(safeJobs(o));
     // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'). Computed up front
     // because it gates BOTH which decorations spawn in-house jobs (itemSigs, below) AND whether a
     // frozen released/merged job is retired. A deco PO whose type matches none of an item's
@@ -3543,7 +3548,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // produces this, and it's the one drift signal a legit merge never creates — so it safely gates
     // the ambiguous jobs below.
     const _liveItemCount=safeItems(o).length;
-    const _frozenIdxDrift=safeJobs(o).some(j=>j&&(_isRel(j)||j._merged||j.split_from)&&(j.items||[]).some(gi=>safeNum(gi.item_idx)>=_liveItemCount));
+    const _frozenIdxDrift=_sourceJobs.some(j=>j&&(_isRel(j)||j._merged||j.split_from)&&(j.items||[]).some(gi=>safeNum(gi.item_idx)>=_liveItemCount));
     // A frozen job is SINGLE-METHOD by construction unless it was hand-merged (or split off a merge):
     // a released/auto job carries exactly one deco_type. For those, ANY claim that positively resolves
     // to a different method is drift and is released even when indices stay IN BOUNDS — closing the gap
@@ -3603,13 +3608,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       for(const aid of _hIds){const artF=af.find(a=>a.id===aid);if(!artF)return r.job;const st=_artStForFile(artF,r.job.deco_type);if(st!=='art_complete')worst=st}
       return worst!==r.job.art_status?{...r.job,art_status:worst}:r.job;
     };
-    const _relRaw=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
+    const _relRaw=_sourceJobs.filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
       .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
-    const _mrgRaw=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
+    const _mrgRaw=_sourceJobs.filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
       .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     // ── One garment, one job ── The frozen claims above lock the auto-builder out of a garment's
     // OTHER decorations, so releasing (say) the chest logo leaves the back numbers to form a second
@@ -3635,7 +3640,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // every pass, so quietly moving their decorations into a frozen job would restructure work that
     // is staging / on press / finished. Leave them exactly where they are.
     const _startedPairs=new Set();
-    safeJobs(o).forEach(j=>{
+    _sourceJobs.forEach(j=>{
       if(!j||_isRel(j)||j._merged)return;
       if(['','draft','hold','ready'].includes(j.prod_status||''))return;
       (j.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);
@@ -3793,7 +3798,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // job matching one steals its id, and the dedupe-by-id at the return then drops the preserved
     // snapshot — its frozen claims, coach send and approval history die with it (SO-1664).
     const _preservedJobIds=new Set([...releasedJobs,...mergedJobs].map(j=>j.id).filter(Boolean));
-    const _jobLookups=buildExistingJobLookups(safeJobs(o),_preservedJobIds);
+    const _jobLookups=buildExistingJobLookups(_sourceJobs,_preservedJobIds);
     const {existingJobMap,existingByArtId}=_jobLookups;
     const _claimedExistingIds=new Set();
     const soNum=o.id?.replace('SO-','')||'0';
@@ -3802,10 +3807,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // wrong job. _reserved holds every id an existing job legitimately owns so freshly
     // minted ids never steal one; _usedIds tracks ids handed out this pass so a
     // preserved id that's already taken (pre-existing corruption) gets re-minted.
-    const _reserved=new Set(safeJobs(o).map(j=>j.id).filter(Boolean));
+    const _reserved=new Set(_sourceJobs.map(j=>j.id).filter(Boolean));
     const _usedIds=new Set();
     let jIdx=1;
     const _nextJobId=()=>{let id;do{id='JOB-'+soNum+'-'+String(jIdx).padStart(2,'0');jIdx++}while(_reserved.has(id)||_usedIds.has(id));_usedIds.add(id);return id};
+    const _matchedExistingById=new Map();
     const newJobs=Object.values(jobMap).map(j=>{
       const {existing}=matchExistingJob(j,_jobLookups,_claimedExistingIds);
       const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
@@ -3815,6 +3821,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
       let id=existing?.id;
       if(!id||_usedIds.has(id))id=_nextJobId();else _usedIds.add(id);
+      if(existing)_matchedExistingById.set(id,existing);
       // Reused/pre-approved art must be CONFIRMED by the rep for THIS order before it reads as
       // approved. A brand-new job whose art is already approved (status carried in from another
       // order) lands at 'waiting_approval' — not yet sent to coach — so the rep gets a one-click
@@ -3858,7 +3865,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     newJobs.forEach(nj=>{
       // Prefer key; unique-art fallback only (same rule as matchExistingJob — do not pull
       // size overrides from a sibling that merely shares the logo).
-      const existing=existingJobMap[nj.key]||(nj.art_file_id&&existingByArtId[nj.art_file_id]?existingByArtId[nj.art_file_id]:null);
+      const existing=_matchedExistingById.get(nj.id)||existingJobMap[nj.key]||(nj.art_file_id&&existingByArtId[nj.art_file_id]?existingByArtId[nj.art_file_id]:null);
       if(!existing||!Array.isArray(existing.items))return;
       // (item_idx-sku) pairs already carried by this job's split-off slices. A garment a split moved
       // ENTIRELY off the parent is absent from existing.items, so without this it would be rebuilt here
@@ -3866,7 +3873,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // TRANSITIVE across the family: a slice of a slice still owns its garments — scanning only
       // direct children re-added a grandchild-owned garment to the family root on every sync
       // (SO-1634: KC4512 lived on JOB-1634-01-B-B and got duplicated back onto JOB-1634-01).
-      const sliceOwned=existing.id?splitSliceOwnedKeys(safeJobs(o),existing.id,sj=>sj._merged||_isRel(sj)):new Set();
+      const sliceOwned=existing.id?splitSliceOwnedKeys(_sourceJobs,existing.id,sj=>sj._merged||_isRel(sj)):new Set();
       let hasOverride=false;
       const rebuilt=[];
       nj.items.forEach(gi=>{
@@ -3962,9 +3969,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // retires a slice left with nothing), the slice-side counterpart to the sliceOwned drop
     // the parent's rebuild does above. SO-1110's phantom 1-unit JOB-1110-02-A came from this.
     const splitJobs=pruneStaleSliceRows(
-      safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
+      _sourceJobs.filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
         .map(j=>({...j,items:(j.items||[]).map(_refreshGarmentIdentity)})),
-      safeJobs(o));
+      _sourceJobs);
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
@@ -4123,7 +4130,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // jobs match the lines", so a job whose garments/decorations were deliberately removed must
     // retire — otherwise the button visibly does nothing (SO-2031: the Dolphin screen-print job
     // survived every sync after its shirt lines were deleted, frozen at 0/11).
-    const orphanedSubmitted=opts?.retireOrphans?[]:safeJobs(o).filter(j=>{
+    const orphanedSubmitted=opts?.retireOrphans?[]:_sourceJobs.filter(j=>{
       if(!j||_isRel(j)||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
       if(_isCarryOver(j))return false;// stale job from a prior order that reused this SO number
@@ -4174,7 +4181,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // consolidation was computed and then silently discarded here. Claims only change on a real
     // structural heal and every one of them converges, so this can't ping-pong.
     const _decoSig=gi=>gi.item_idx+'.'+(Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[])).join('-');
-    const _claimSig=js=>js.map(j=>(j.id||j.key)+':'+(j.items||[]).map(_decoSig).sort().join('|')).sort().join(',');
+    const _claimSig=js=>js.map(j=>(j.id||j.key)+'@'+(j.split_from||'')+':'+(j.items||[]).map(_decoSig).sort().join('|')).sort().join(',');
     const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
     const _claimsChanged=_claimSig(currentJobs)!==_claimSig(synced);
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)||_claimsChanged){

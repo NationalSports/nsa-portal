@@ -2,8 +2,9 @@
  * syncJobs existing-job matching.
  *
  * Jobs are primarily matched by stable decoration signature (`job.key`). When a
- * key changes (regroup / position rename), we fall back to `art_file_id` so
- * workflow fields aren't lost.
+ * key changes (regroup / position rename / assigning real art to an unassigned
+ * decoration), we fall back to the live item+decoration claims and then to
+ * `art_file_id` so workflow fields and split lineage aren't lost.
  *
  * That fallback is unsafe when multiple jobs share one art file. Copying the
  * first job registered for that art id bleeds `rejections` / `coach_rejected` /
@@ -13,9 +14,23 @@
  *
  * Rules:
  *  1. Prefer exact key match.
- *  2. Art-id fallback only when exactly one non-split existing job owns that art id.
- *  3. Never hand the same existing job to two rebuilt jobs in one sync pass.
+ *  2. Claim fallback only when every overlapping claim points to one non-split job.
+ *  3. Art-id fallback only when exactly one non-split existing job owns that art id.
+ *  4. Never hand the same existing job to two rebuilt jobs in one sync pass.
  */
+
+/** Stable item+decoration claims carried by a job snapshot. */
+export function jobDecoClaimKeys(job) {
+  const keys = new Set();
+  (job?.items || []).forEach((gi) => {
+    if (!gi || gi.item_idx == null) return;
+    const dis = Array.isArray(gi.deco_idxs) && gi.deco_idxs.length
+      ? gi.deco_idxs
+      : (gi.deco_idx != null ? [gi.deco_idx] : []);
+    dis.forEach((di) => keys.add(String(gi.item_idx) + '::' + String(di)));
+  });
+  return [...keys];
+}
 
 /** Count how many non-split jobs reference each art id. */
 export function countJobsByArtId(existingJobs) {
@@ -52,17 +67,29 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
   );
   const existingJobMap = {};
   const existingByArtId = {};
+  const existingByDecoClaim = {};
   const artIdCounts = countJobsByArtId(pool);
+  const claimOwners = {};
+  pool.forEach((j) => {
+    if (!j || j.split_from) return;
+    jobDecoClaimKeys(j).forEach((claim) => {
+      if (!claimOwners[claim]) claimOwners[claim] = [];
+      claimOwners[claim].push(j);
+    });
+  });
   pool.forEach((j) => {
     if (!j || j.split_from) return;
     existingJobMap[j.key || j.id] = j;
+    jobDecoClaimKeys(j).forEach((claim) => {
+      if (claimOwners[claim]?.length === 1) existingByDecoClaim[claim] = j;
+    });
     const ids = j._art_ids || [j.art_file_id].filter(Boolean);
     ids.forEach((aid) => {
       if (!aid || artIdCounts[aid] !== 1) return;
       if (!existingByArtId[aid]) existingByArtId[aid] = j;
     });
   });
-  return { existingJobMap, existingByArtId, artIdCounts };
+  return { existingJobMap, existingByArtId, existingByDecoClaim, artIdCounts };
 }
 
 /**
@@ -70,16 +97,31 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
  * @param {{key?:string, art_file_id?:string|null}} built
  * @param {{existingJobMap:object, existingByArtId:object}} lookups
  * @param {Set<string>} claimedIds — existing job ids already matched this pass
- * @returns {{existing: object|null, matchedBy: 'key'|'art_file_id'|null}}
+ * @returns {{existing: object|null, matchedBy: 'key'|'deco_claim'|'art_file_id'|null}}
  */
 export function matchExistingJob(built, lookups, claimedIds = new Set()) {
-  const { existingJobMap, existingByArtId } = lookups || {};
+  const { existingJobMap, existingByArtId, existingByDecoClaim } = lookups || {};
   if (!built) return { existing: null, matchedBy: null };
 
   const byKey = built.key != null ? existingJobMap?.[built.key] : null;
   if (byKey) {
     if (byKey.id) claimedIds.add(byKey.id);
     return { existing: byKey, matchedBy: 'key' };
+  }
+
+  // Assigning artwork changes the signature from an unassigned token to the real art id.
+  // The item_idx+deco_idx claim does not change, so it is the safest identity fallback. Only
+  // accept one unambiguous owner: a newly consolidated build can overlap several old jobs,
+  // and arbitrarily stealing one of those ids would lose the others' workflow history.
+  const claimMatches = [...new Set(jobDecoClaimKeys(built)
+    .map((claim) => existingByDecoClaim?.[claim])
+    .filter(Boolean))];
+  if (claimMatches.length === 1) {
+    const byClaim = claimMatches[0];
+    if (!byClaim.id || !claimedIds.has(byClaim.id)) {
+      if (byClaim.id) claimedIds.add(byClaim.id);
+      return { existing: byClaim, matchedBy: 'deco_claim' };
+    }
   }
 
   const aid = built.art_file_id;
@@ -91,6 +133,36 @@ export function matchExistingJob(built, lookups, claimedIds = new Set()) {
 
   if (byArt.id) claimedIds.add(byArt.id);
   return { existing: byArt, matchedBy: 'art_file_id' };
+}
+
+/**
+ * Repair a split child whose stored parent id no longer exists.
+ *
+ * A regroup used to mint a new root id when art was assigned after a by-SKU split. The
+ * child kept pointing at the retired root, so the rebuilt root reclaimed the child's
+ * garment at full quantity and Merge Back failed with "Parent job ... not found". When
+ * exactly one current root covers every decoration claim carried by the orphan, that root
+ * is the displaced parent. Re-point the child; ambiguous/no-claim cases remain untouched.
+ */
+export function reparentOrphanSplitJobs(jobs) {
+  const list = (jobs || []).filter(Boolean);
+  const ids = new Set(list.map((j) => j.id).filter(Boolean));
+  const roots = list.filter((j) => j.id && !j.split_from);
+  const rootClaims = new Map(roots.map((j) => [j.id, new Set(jobDecoClaimKeys(j))]));
+  let changed = false;
+  const repaired = list.map((j) => {
+    if (!j?.split_from || ids.has(j.split_from)) return j;
+    const claims = jobDecoClaimKeys(j);
+    if (!claims.length) return j;
+    const candidates = roots.filter((root) => {
+      const owned = rootClaims.get(root.id);
+      return claims.every((claim) => owned.has(claim));
+    });
+    if (candidates.length !== 1) return j;
+    changed = true;
+    return { ...j, split_from: candidates[0].id };
+  });
+  return changed ? repaired : list;
 }
 
 /**
