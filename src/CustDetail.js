@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
+import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -1820,7 +1820,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const j=portalJobView.job;const so=portalJobView.so;
       const af2=safeArt(so).find(a=>a.id===j.art_file_id);
       const _jAF2=[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
-      const _jSkus2=new Set((j.items||[]).map(gi=>gi.sku).filter(Boolean));
+      // Both key forms: a garment's own mock sku (the line NAME for customer-supplied lines,
+      // which all share the SKU 'CUST-SUPPLIED') and the raw SKU its pre-fix bucket used.
+      const _jSkus2=new Set((j.items||[]).flatMap(gi=>[mockSkuOf(safeItems(so)[gi.item_idx]||gi),gi.sku]).filter(Boolean));
       const _mf2Seen=new Set();
       const _mockupFilesBase2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
       // The normal lookup misses two cases the approval gate (skusMissingMockups) already
@@ -1832,8 +1834,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const seen=new Set();const out=[];
         (j.items||[]).forEach(gi=>{
           const it=safeItems(so)[gi.item_idx];
-          const gSku=it?.sku||gi.sku||'';const gColor=it?.color||gi.color||'';
-          const srcKey=resolveMockLink(_jAF2,gSku,gColor);
+          const gColor=it?.color||gi.color||'';
+          const srcKey=resolveMockLink(_jAF2,mockSkuOf(it||gi),gColor);
           if(!srcKey)return;
           mockLinkSourceFiles(_jAF2,srcKey).forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return;seen.add(u);out.push(f)});
         });

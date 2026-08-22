@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -2382,21 +2382,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // re-keying through partial values breaks the migration chain the moment one step is
   // skipped (e.g. another line momentarily sharing the old key). fromSku/fromColor are
   // the identity captured when editing began (focus time).
-  const _rekeyLineMocks=(i,fromSku,fromColor)=>{setO(e=>{const items=safeItems(e);const cur=items[i];if(!cur)return e;
-    if(String(fromSku||'')===String(cur.sku||'')&&String(fromColor||'')===String(cur.color||''))return e;
+  const _rekeyLineMocks=(i,fromSku,fromColor,fromName)=>{setO(e=>{const items=safeItems(e);const cur=items[i];if(!cur)return e;
+    // Placeholder-SKU lines (customer-supplied / custom) key their mockups on the line NAME via
+    // garmentMockKey, since they all share the SKU 'CUST-SUPPLIED' — so a RENAME moves the bucket
+    // exactly like a sku/color edit does, or the mock strands under the old name.
+    const _from={sku:fromSku,color:fromColor,name:fromName===undefined?cur.name:fromName};
+    const _idChanged=String(fromSku||'')!==String(cur.sku||'')||String(fromColor||'')!==String(cur.color||'');
+    const _fromKey=garmentMockKey(_from);
+    if(!_idChanged&&_fromKey===garmentMockKey(cur))return e;
     // Session tombstone for the engine's data-loss guards: an in-place sku/color edit removes the
     // line's OLD sku|color key from the item list exactly like a deletion does, so record it the
     // same way rmI does. Without it, a save landing after the server version moved treats the old
     // DB row as another session's line and hard-blocks ("Save blocked — … was changed in another
     // session (<old sku> would be dropped)", SO-2021 2026-08-17).
-    const _tombs=_stampRekeyTomb(e,{sku:fromSku,color:fromColor});
+    // Only a real sku/color change is a tombstone — that's the identity the save guard tracks.
+    const _tombs=_idChanged?_stampRekeyTomb(e,{sku:fromSku,color:fromColor}):(e._deletedItemKeys||[]);
     // Another line still on the old key keeps the bucket — identical lines share it by design.
-    const stillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||'')&&(it2.color||'')===(fromColor||''));
+    const stillUsed=items.some((it2,x2)=>x2!==i&&garmentMockKey(it2)===_fromKey);
     if(stillUsed)return{...e,_deletedItemKeys:_tombs};
     // The legacy bare-sku bucket serves every color of the SKU — only move it when no
     // other line carries the old SKU in ANY color.
     const skuStillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||''));
-    const arts=rekeyGarmentMocks(safeArr(e.art_files),fromSku,fromColor,cur.sku,cur.color,{moveBareSku:!skuStillUsed});
+    const arts=rekeyGarmentMocks(safeArr(e.art_files),mockSkuOf(_from),fromColor,mockSkuOf(cur),cur.color,{moveBareSku:!skuStillUsed});
     return arts===e.art_files?{...e,_deletedItemKeys:_tombs}:{...e,_deletedItemKeys:_tombs,art_files:arts,updated_at:new Date().toLocaleString()}});setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}
     // Jobs and deco POs reference lines by INDEX; deleting a middle line shifts every later
     // line down. Auto jobs rebuild from lines, but FROZEN jobs (released/merged/split) carry
@@ -4284,13 +4291,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const primaryId=_declaredArtIds[0]||artIds[0];
       const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
       const garments=[];const seenG=new Set();
-      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=sku+'|'+color;if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
+      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const sku=it0.sku||full?.sku||'';const color=it0.color||full?.color||'';const key=garmentMockKey(full||it0);if(seenG.has(key))return;seenG.add(key);garments.push({key,sku,color,name:it0.name||full?.name||'',frontUrl:full?_itemImg(full):'',backUrl:full?_back(full):''})});
       // Map each art file in the job to the garment keys (sku|color) it actually decorates, read
       // from each item's own decorations. Without this the builder would show/save every art for
       // every garment, so a job mixing different art per item (e.g. a crest on one tee, a flag on
       // another) put the wrong art on a garment and left some garments with no mockup at all.
       const artGarmentKeys={};const artPos={};
-      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const key=(it0.sku||full?.sku||'')+'|'+(it0.color||full?.color||'');
+      (j2.items||[]).forEach(it0=>{const full=safeItems(o)[it0.item_idx];const key=garmentMockKey(full||it0);
         const artDecos=full?safeDecos(full).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'&&artIds.includes(d.art_file_id)):[];
         artDecos.forEach(d=>{if(d.position&&!artPos[d.art_file_id])artPos[d.art_file_id]=d.position});
         const ids=[...new Set(artDecos.map(d=>d.art_file_id))];
@@ -5138,7 +5145,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   if(!artDecos.length)return<span style={{fontSize:11,color:'#94a3b8',fontWeight:600}}>🎨 {item.no_deco?'No decoration':'No deco assigned'}</span>;
                   return artDecos.map(({d,di})=>{
                     const artF=af.find(f=>f.id===d.art_file_id);
-                    const _itemMock=(artF?.item_mockups||{})[item.sku+'|'+(item.color||'')];
+                    const _itemMock=itemMockFiles(artF?.item_mockups,item);
                     const _itemMockUrl=_itemMock&&_itemMock.length>0?(typeof _itemMock[0]==='string'?_itemMock[0]:(_itemMock[0]?.url||'')):'';
                     const _thumb=_itemMockUrl||(artF?pickCwAsset(artF,{kind:'web_logo',colorWayId:d.color_way_id}):'')||d.web_url||'';
                     const icon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'🎨';
@@ -5201,7 +5208,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)}
                     style={{fontWeight:700,color:_bad?'#b91c1c':'#192853',background:_bad?'#fef2f2':'#EEF1F6',padding:'3px 10px',borderRadius:5,fontSize:15,width:100,border:'1px solid '+(_bad?'#fca5a5':'#DCE2EE')}}/>;})()
                   :<span className="oe-num oe-dt" style={{fontWeight:700,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'3px 10px',borderRadius:5,fontSize:15}}>{item.sku}</span>}
-                {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
+                {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevName=item.name||''}} onBlur={e=>{const _pn=e.currentTarget.dataset.prevName;if(_pn!==undefined)_rekeyLineMocks(idx,item.sku,item.color,_pn);if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>{const _pSku=item.sku||'',_pCol=item.color||'';uI(idx,'color',e.target.value);_rekeyLineMocks(idx,_pSku,_pCol)}}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontSize:12,width:100}} placeholder="Color"/>
@@ -5516,7 +5523,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const decoCostTotal=_est>0?_est:decoCostAt(deco,qty,af,cq,costArtQty);const decoUnitCost=eq>0?decoCostTotal/eq:dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
             const decoCardStyle={padding:'9px 12px',marginBottom:8,borderRadius:7,background:'#F9FAFC',border:'1px solid #E2E6EF',borderLeft:'3px solid '+(deco.kind==='art'?'#192853':deco.kind==='numbers'?'#1E7A46':deco.kind==='names'?'#B45309':deco.kind==='outside_deco'?'#6D28D9':deco.kind==='twill'?'#0d9488':'#9aa0ad')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
-              const _itemMock=(artF?.item_mockups||{})[item.sku+'|'+(item.color||'')];const _itemMockUrl=_itemMock&&_itemMock.length>0?(typeof _itemMock[0]==='string'?_itemMock[0]:(_itemMock[0]?.url||'')):'';const _thumb=_itemMockUrl||(artF?pickCwAsset(artF,{kind:'web_logo',colorWayId:deco.color_way_id}):'')||deco.web_url||'';
+              const _itemMock=itemMockFiles(artF?.item_mockups,item);const _itemMockUrl=_itemMock&&_itemMock.length>0?(typeof _itemMock[0]==='string'?_itemMock[0]:(_itemMock[0]?.url||'')):'';const _thumb=_itemMockUrl||(artF?pickCwAsset(artF,{kind:'web_logo',colorWayId:deco.color_way_id}):'')||deco.web_url||'';
               return(<div key={di} style={decoCardStyle}>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   {(!deco.art_file_id||deco.art_file_id==='__tbd')&&<div style={{width:36,height:36,borderRadius:6,background:'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🎨</div>}
@@ -11358,9 +11365,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // mockup as another garment. Mirrors the Art Dashboard modal.
                 const _jobArts=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                 const _linkArtId=j.art_file_id||(_jobArts[0]&&_jobArts[0].id)||null;
-                const _linkOfR=gi=>resolveMockLink(_jobArts,gi.sku,gi.color);
-                const _depsOfR=gi=>mockLinkDependents(_jobArts,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
-                const _hasOwnMockR=g=>{const k=g.sku+'|'+(g.color||'');return _jobArts.some(a=>{const im=a?.item_mockups||{};return _filterDisplayable(im[k]&&im[k].length>0?im[k]:(im[g.sku]||[])).length>0})};
+                const _linkOfR=gi=>resolveMockLink(_jobArts,mockSkuOf(gi),gi.color);
+                const _depsOfR=gi=>mockLinkDependents(_jobArts,mockSkuOf(gi),gi.color).filter(k=>itemDetails.some(g=>garmentMockKey(g)===k));
+                const _hasOwnMockR=g=>_jobArts.some(a=>{const im=a?.item_mockups||{};const v=itemMockFiles(im,g);return _filterDisplayable(v.length>0?v:(im[g.sku]||[])).length>0});
                 // "Use same mockup as …" chips — one per other garment, single click to link.
                 // The visible label carries the COLOR, not just the sku: a Navy and a White PA100
                 // render as distinct chips, and a cross-color link (which linkSwappedGarmentMock
@@ -11370,12 +11377,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // _lbl overrides the lead-in text: the empty-state renders "or use the same mockup as:"
                 // (an alternative to uploading), the squash picker on an already-mocked card renders
                 // "Squash into the mockup for:" (dropping a redundant proof).
-                const _linkChipsR=(gi,_lbl)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=gi.sku+'|'+(gi.color||'');
-                  const others=itemDetails.filter(g=>(g.sku+'|'+(g.color||''))!==myKey);
+                const _linkChipsR=(gi,_lbl)=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=garmentMockKey(gi);
+                  const others=itemDetails.filter(g=>garmentMockKey(g)!==myKey);
                   if(others.length===0)return null;
                   return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
                     <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{_lbl||'or use the same mockup as:'}</span>
-                    {others.map((g,oi)=>{const theirKey=g.sku+'|'+(g.color||'');const hasMock=_hasOwnMockR(g);
+                    {others.map((g,oi)=>{const theirKey=garmentMockKey(g);const hasMock=_hasOwnMockR(g);
                       const colorMatch=(g.color||'')===(gi.color||'');
                       return<button key={oi} onClick={()=>{
                           if(!colorMatch&&!window.confirm('That mockup is on '+(g.color||'no color')+' '+g.sku+' — this garment is '+(gi.color||'no color')+' '+gi.sku+'.\n\nLink it anyway? The coach will see the '+(g.color||'other')+' mockup for this garment.'))return;
@@ -11439,14 +11446,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     // Mockups: per-item (scoped to this SKU), then general (only if no per-item mockups exist for this SKU).
                     const _seen=new Set();
-                    const _mk=gi.sku+'|'+(gi.color||'');
+                    // Key off the LIVE line: every customer-supplied garment carries the SKU
+                    // 'CUST-SUPPLIED', so garmentMockKey keys them on their name instead — without it
+                    // one custom garment's mockup rendered on every custom garment of that colour
+                    // (SO-2063). _mkL is the pre-fix shared bucket, still read as a fallback.
+                    const _line=it||gi;const _mk=garmentMockKey(_line);const _mkL=legacyMockKeyOf(_line);
+                    const _mkPfx=k=>k.startsWith(_mk+'|')||(!!_mkL&&k.startsWith(_mkL+'|'));
                     // Scope the mock lookup to the decorations THIS job owns (deco_idxs), same as the spec
                     // rows below. On an art-split line the sibling designs (Friars / 2 Col) sit on the same
                     // garment but belong to other jobs — without this scope, _gf's base-key fallback pulled a
                     // sibling design's mock onto this job's garment (the 2-Col logo rendering under the Attack
                     // Everything job on a shared JX4452 line, SO-1023). Each deco keeps its index in the FULL
                     // art-deco list (ai) so the positional discriminator key ('d1','d2') is unchanged.
-const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return dedupeMockDupes(v&&v.length>0?v:(im[gi.sku]||[]))})).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
+const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);return dedupeMockDupes(v.length>0?v:(im[gi.sku]||[]))})).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
                     const _genPack=perSkuMocks.length===0?(()=>{const _g=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so show it rather than a dead 'No mockup uploaded yet' */return _g.length>0?{files:_g,proof:false}:{files:_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.prod_files||[])),proof:true}})():{files:[],proof:false};
                     const generalMocks=_genPack.files;
                     // Everything shown is a prod-file sew-out proof, not a garment mockup. Label it,
@@ -11515,7 +11527,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px '+(_proofOnly?'dashed':'solid')+' '+_mkBd,overflow:'hidden',background:'white',opacity:_proofOnly?0.92:1}}>
                               {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
-                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{sku:gi.sku,color:gi.color,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
+                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{item:_line,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
                               <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
                               {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                               :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
@@ -11553,8 +11565,8 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                         return<div style={{margin:'0 10px 10px',padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8}}>
                           <div style={{fontSize:10,fontWeight:800,color:'#6d28d9',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}} title="This decoration is routed to an outside vendor — shown for context, it is not part of this approval">🏭 Also on this garment — outside vendor</div>
                           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                            {_ctx.map((ol,ci)=>{const im=ol.art?.item_mockups||{};const _mk2=gi.sku+'|'+(gi.color||'');
-                              const _own=_filterDisplayable(im[_mk2]&&im[_mk2].length?im[_mk2]:(im[gi.sku]||[]));
+                            {_ctx.map((ol,ci)=>{const im=ol.art?.item_mockups||{};const _v2=itemMockFiles(im,_line);
+                              const _own=_filterDisplayable(_v2.length?_v2:(im[gi.sku]||[]));
                               const _pool=_own.length?_own:_filterDisplayable([...(ol.art?.mockup_files||ol.art?.files||[]),...(ol.art?.prod_files||[])]);
                               const f=_pool[0]||null;const url=f?(typeof f==='string'?f:(f?.url||'')):'';
                               return<div key={ci} style={{width:150,borderRadius:8,border:'2px solid #c4b5fd',overflow:'hidden',background:'white'}}>
@@ -11739,8 +11751,8 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 // Mock links render read-only here (art is already approved): a linked garment
                 // references its source garment's mock instead of repeating the image.
                 const _jArts2=[..._jArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
-                const _linkOf2=gi=>resolveMockLink(_jArts2,gi.sku,gi.color);
-                const _depsOf2=gi=>mockLinkDependents(_jArts2,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
+                const _linkOf2=gi=>resolveMockLink(_jArts2,mockSkuOf(gi),gi.color);
+                const _depsOf2=gi=>mockLinkDependents(_jArts2,mockSkuOf(gi),gi.color).filter(k=>itemDetails.some(g=>garmentMockKey(g)===k));
                 return<div style={{margin:'8px 20px'}}>
                   {itemDetails.map((gi,gii)=>{
                     const _myLinkSrc=_linkOf2(gi);
@@ -11750,14 +11762,19 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                     const _useIds=itemArtIds.length>0?itemArtIds:[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))];
                     const itemArtFiles=_useIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
                     const _seen=new Set();
-                    const _mk=gi.sku+'|'+(gi.color||'');
+                    // Key off the LIVE line: every customer-supplied garment carries the SKU
+                    // 'CUST-SUPPLIED', so garmentMockKey keys them on their name instead — without it
+                    // one custom garment's mockup rendered on every custom garment of that colour
+                    // (SO-2063). _mkL is the pre-fix shared bucket, still read as a fallback.
+                    const _line=it||gi;const _mk=garmentMockKey(_line);const _mkL=legacyMockKeyOf(_line);
+                    const _mkPfx=k=>k.startsWith(_mk+'|')||(!!_mkL&&k.startsWith(_mkL+'|'));
                     // Scope the mock lookup to the decorations THIS job owns (deco_idxs), same as the spec
                     // rows below. On an art-split line the sibling designs (Friars / 2 Col) sit on the same
                     // garment but belong to other jobs — without this scope, _gf's base-key fallback pulled a
                     // sibling design's mock onto this job's garment (the 2-Col logo rendering under the Attack
                     // Everything job on a shared JX4452 line, SO-1023). Each deco keeps its index in the FULL
                     // art-deco list (ai) so the positional discriminator key ('d1','d2') is unchanged.
-const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return dedupeMockDupes(v&&v.length>0?v:(im[gi.sku]||[]))})).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
+const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);return dedupeMockDupes(v.length>0?v:(im[gi.sku]||[]))})).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
                     const _genPack=perSkuMocks.length===0?(()=>{const _g=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so show it rather than a dead 'No mockup uploaded yet' */return _g.length>0?{files:_g,proof:false}:{files:_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.prod_files||[])),proof:true}})():{files:[],proof:false};
                     const generalMocks=_genPack.files;
                     // Proof-only garments: label the files as sew-out proofs and drop the × —
@@ -11810,7 +11827,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=_proofOnly?('Production reference — '+([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name)):([_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name);
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px '+(_proofOnly?'dashed':'solid')+' '+_mkBd,overflow:'hidden',background:'white',opacity:_proofOnly?0.92:1}}>
                               {_proofOnly&&<span style={{position:'absolute',top:6,left:6,zIndex:2,fontSize:9,fontWeight:800,textTransform:'uppercase',letterSpacing:0.4,color:'#475569',background:'rgba(241,245,249,0.95)',border:'1px solid #cbd5e1',borderRadius:4,padding:'1px 6px'}}>Proof · not a mockup</span>}
-                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{sku:gi.sku,color:gi.color,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
+                              {!_proofOnly&&<button title="Remove this mockup" onClick={e=>{e.stopPropagation();if(window.confirm('Remove this mockup from the job?\n\n'+_cap))removeMockupUrl(url,{item:_line,artFileIds:itemArtFiles.map(a=>a.id)})}} style={{position:'absolute',top:6,right:6,zIndex:2,width:24,height:24,borderRadius:'50%',border:'none',background:'rgba(220,38,38,0.92)',color:'#fff',fontSize:14,lineHeight:'24px',cursor:'pointer',padding:0,boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}>×</button>}
                               <div style={{cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
                               {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:_mkH,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                               :_isPdfUrl(url,f)?<div style={{position:'relative',height:_mkH,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
@@ -11839,7 +11856,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                           back at all. Same check the job sheet prints (nnMockCounts), so the order page and
                           the floor document agree on what is missing. */}
                       {!_myLinkSrc&&(numDecos.length>0||nameDecos.length>0)&&(()=>{
-                        const _nn=nnMockCounts(itemArtFiles,gi.sku,gi.color);const _miss=[];
+                        const _nn=nnMockCounts(itemArtFiles,_line);const _miss=[];
                         if(numDecos.length>0&&_nn.numbers===0)_miss.push('numbers');
                         if(nameDecos.length>0&&_nn.names===0)_miss.push('names');
                         if(_miss.length===0)return null;
@@ -12248,10 +12265,10 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
         // Garments read from the LIVE SO line (sku/color can be swapped without rebuilding
         // so.jobs), deduped — two lines sharing sku|color are one garment to the mock keying.
         const _grpG=[];
-        (j2.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';const key=sku+'|'+color;if(!sku||_grpG.some(g=>g.key===key))return;_grpG.push({key,sku,color,name:it.name||gi.name||''})});
+        (j2.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';const key=garmentMockKey(it);if(!sku||_grpG.some(g=>g.key===key))return;_grpG.push({key,sku,color,name:it.name||gi.name||''})});
         // Pre-tick an existing group so reopening the modal shows live state, not a blank slate
         // that would read as "not grouped".
-        const _grpDefault=(()=>{for(const g of _grpG){const deps=mockLinkDependents(_grpArts,g.sku,g.color).filter(k=>_grpG.some(x=>x.key===k));if(deps.length>0)return _grpG.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]})();
+        const _grpDefault=(()=>{for(const g of _grpG){const deps=mockLinkDependents(_grpArts,mockSkuOf(g),g.color).filter(k=>_grpG.some(x=>x.key===k));if(deps.length>0)return _grpG.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]})();
         const _grpSel=artReqModal.group||_grpDefault;
         const _grpLabel=k=>{const g=_grpG.find(x=>x.key===k);return g?((g.color?g.color+' ':'')+g.sku):k};
         const _grpColors=sel=>new Set(sel.map(k=>(_grpG.find(g=>g.key===k)||{}).color||'')).size;
@@ -13355,10 +13372,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         // Garments read from the LIVE SO line (sku/color can be swapped without rebuilding
         // so.jobs), deduped — two lines sharing sku|color are one garment to the mock keying.
         const _grpG=[];
-        (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';const key=sku+'|'+color;if(!sku||_grpG.some(g=>g.key===key))return;_grpG.push({key,sku,color,name:it.name||gi.name||''})});
+        (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';const key=garmentMockKey(it);if(!sku||_grpG.some(g=>g.key===key))return;_grpG.push({key,sku,color,name:it.name||gi.name||''})});
         // Pre-tick an existing group so reopening the modal shows live state, not a blank slate
         // that would read as "not grouped".
-        const _grpDefault=(()=>{for(const g of _grpG){const deps=mockLinkDependents(_grpArts,g.sku,g.color).filter(k=>_grpG.some(x=>x.key===k));if(deps.length>0)return _grpG.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]})();
+        const _grpDefault=(()=>{for(const g of _grpG){const deps=mockLinkDependents(_grpArts,mockSkuOf(g),g.color).filter(k=>_grpG.some(x=>x.key===k));if(deps.length>0)return _grpG.filter(x=>x.key===g.key||deps.includes(x.key)).map(x=>x.key)}return[]})();
         const _grpSel=artReqModal.group||_grpDefault;
         const _grpLabel=k=>{const g=_grpG.find(x=>x.key===k);return g?((g.color?g.color+' ':'')+g.sku):k};
         const _grpColors=sel=>new Set(sel.map(k=>(_grpG.find(g=>g.key===k)||{}).color||'')).size;
