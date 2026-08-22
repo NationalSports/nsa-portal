@@ -78,6 +78,32 @@ export const BASKETBALL_4R3CHB_PRESETS = BASKETBALL_4R3CHB_DESIGNS.map(([slug, n
     },
   },
 }));
+
+// Exact Momentec/Russell 4R3CHA production atlases. These files are authored
+// against the 4R3CHA GLB's own UV layout; they are not interchangeable with
+// the similarly named 4R3CHB reversible cut. `colors` is the number of named
+// supplier inks present in the SVG (body + accents), which keeps the editor
+// from showing color controls that the selected design does not use.
+export const MOMENTEC_4R3CHA_DESIGNS = [
+  ['all_star', 'All Star', 3], ['arizona', 'Arizona', 3], ['atlanta', 'Atlanta', 4],
+  ['big_m', 'Big M', 4], ['brooklyn', 'Brooklyn', 5], ['cameron_classic', 'Cameron Classic', 3],
+  ['cameron_classic_new_x3F_', 'Cameron Classic New', 3], ['chicago', 'Chicago', 4],
+  ['custom_design_line', 'Custom Design Line', 1], ['digital_wave', 'Digital Wave', 4],
+  ['dominant', 'Dominant', 3], ['drive', 'Drive', 4], ['fast_break', 'Fast Break', 5],
+  ['hardwood_pinstripe', 'Hardwood Pinstripe', 3], ['indiana', 'Indiana', 4],
+  ['mardi_gras', 'Mardi Gras', 4], ['miami', 'Miami', 3], ['nyc', 'NYC', 3],
+  ['okc', 'OKC', 4], ['orlando', 'Orlando', 3], ['overtime', 'Overtime', 3],
+  ['pace', 'Pace', 3], ['portland', 'Portland', 3], ['retro', 'Retro', 2],
+  ['seattle', 'Seattle', 3], ['skyline', 'Skyline', 3], ['swish', 'Swish', 5],
+  ['title_shot', 'Title Shot', 3], ['uconn', 'UConn', 3],
+];
+
+const momentec4r3chaAtlas = (slug = 'all_star', name = 'All Star', colors = 3) => ({
+  color: '#005B9B', color2: '#68737A', color3: '#F1582A', color4: '#009949', color5: '#16246E',
+  pattern: 'custom', patternImage: `/uniform/designs/4r3cha/${slug}.svg`, patternName: name,
+  patternTint: true, patternTintMode: 'atlas', patternColorCount: colors,
+});
+
 export const DEFAULT_PRESETS = [
   {
     id: 'AYSONSA', name: 'AYSONSA', sports: ['soccer'],
@@ -85,8 +111,8 @@ export const DEFAULT_PRESETS = [
     config: {
       neckStyle: 'ayson', numberColor: '#FFFFFF',
       sections: {
-        body: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
-        sleeves: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
+        body: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=6', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
+        sleeves: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=6', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
         collar: sec('#870064'),
       },
     },
@@ -117,6 +143,21 @@ export const DEFAULT_PRESETS = [
         body: sec('#FFFFFF'),
         sleeves: sec('#192853'),
         collar: sec('#192853'),
+      },
+    },
+  },
+  {
+    id: 'BB-MOMENTEC-4R3CHA', name: '4R3CHA Elite', sports: ['basketball'],
+    thumbnail: '/uniform/designs/4r3cha/all_star.svg',
+    config: {
+      neckStyle: 'momentec4r3cha', numberColor: '#FFFFFF',
+      sections: {
+        // The GLB has two authored surfaces: exterior `main` and interior
+        // `reverse`. The complete supplier atlas colors the exterior shell;
+        // no projected or guessed panel masks are involved.
+        body: momentec4r3chaAtlas(),
+        sleeves: sec('#005B9B'),
+        collar: sec('#68737A'),
       },
     },
   },
@@ -184,7 +225,7 @@ function cleanPresets(raw) {
         sports: Array.isArray(p.sports) ? p.sports.filter((x) => typeof x === 'string') : [],
         ...(typeof p.thumbnail === 'string' && /^\/uniform\/(?:[a-z0-9._-]+\/)*[a-z0-9._-]+$/i.test(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
         config: {
-          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'ayson', 'newbase', 'sahrul2', 'vikram', 'flag228187', 'basketball4r3chb'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
+          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'ayson', 'newbase', 'sahrul2', 'vikram', 'flag228187', 'basketball4r3chb', 'momentec4r3cha'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
           numberColor: HEX_RE.test(p.config.numberColor || '') ? p.config.numberColor : '#FFFFFF',
           sections: {
             body: zone(S.body, sec('#192853')),

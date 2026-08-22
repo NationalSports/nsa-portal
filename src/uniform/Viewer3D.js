@@ -19,6 +19,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { STUDIO_DEFAULTS, resolveStudioProfile } from './studioProfiles';
 import { makePatternTile, tintedTile } from './patterns';
 import { fontShorthand } from './fonts';
 import { drawAthleticText, measureAthleticText } from './lettering';
@@ -279,7 +280,40 @@ function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
       texture.userData.shared = true;
       return texture;
     };
-    const pair = { front: make(frontImage, frontUrl), back: make(backImage, backUrl) };
+    // Build a seamless motif tile from the supplied vector-derived elevation.
+    // Mirroring the crop makes both texture edges identical, so cylindrical
+    // sampling can wrap the torso without introducing another painted seam.
+    const markerTile = document.createElement('canvas');
+    markerTile.width = markerTile.height = 512;
+    const markerContext = markerTile.getContext('2d');
+    const sourceW = frontImage.naturalWidth || frontImage.width;
+    const sourceH = frontImage.naturalHeight || frontImage.height;
+    // Crop wholly inside the repeat field (below the center-body boundary).
+    // Including that boundary in the tile creates broad dark bars once the
+    // image repeats around the garment.
+    const sx = sourceW * 0.29, sy = sourceH * 0.78;
+    const sw = sourceW * 0.28, sh = sourceH * 0.12;
+    const drawQuarter = (x, y, flipX, flipY) => {
+      markerContext.save();
+      markerContext.translate(x + (flipX ? 256 : 0), y + (flipY ? 256 : 0));
+      markerContext.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+      markerContext.drawImage(frontImage, sx, sy, sw, sh, 0, 0, 256, 256);
+      markerContext.restore();
+    };
+    drawQuarter(0, 0, false, false);
+    drawQuarter(256, 0, true, false);
+    drawQuarter(0, 256, false, true);
+    drawQuarter(256, 256, true, true);
+    const coloredTile = tintedTile(markerTile, `${frontUrl}#seamless`, colors[0], colors[1], colors[2], colors[3], 'atlas', colors[4]);
+    const pattern = new THREE.CanvasTexture(coloredTile);
+    pattern.wrapS = pattern.wrapT = THREE.RepeatWrapping;
+    pattern.colorSpace = THREE.SRGBColorSpace;
+    pattern.generateMipmaps = true;
+    pattern.minFilter = THREE.LinearMipmapLinearFilter;
+    pattern.magFilter = THREE.LinearFilter;
+    pattern.anisotropy = 16;
+    pattern.userData.shared = true;
+    const pair = { front: make(frontImage, frontUrl), back: make(backImage, backUrl), pattern };
     _aysonProjectionTextures[key] = pair;
     onReady(pair);
   }).catch(() => {});
@@ -294,7 +328,7 @@ function applyAysonSurface(st, mat, tpl, zone, meshName) {
   const geometryX = isBody ? { min: -0.212, max: 0.212 } : { min: bounds.xMin, max: bounds.xMax };
   const fixedSide = meshName === 'body_front' ? 1 : meshName === 'body_back' ? 0 : -1;
   const base = new THREE.Color(textileAlbedo(ds.toHex(zone.color, '#31132a')));
-  const data = mat.userData.nsaAyson || { base, front: null, back: null, shader: null };
+  const data = mat.userData.nsaAyson || { base, front: null, back: null, pattern: null, shader: null };
   data.base.copy(base);
   mat.userData.nsaAyson = data;
   if (!mat.userData.nsaAysonInstalled) {
@@ -303,6 +337,7 @@ function applyAysonSurface(st, mat, tpl, zone, meshName) {
       shader.uniforms.nsaAysonBase = { value: data.base };
       shader.uniforms.nsaAysonFront = { value: data.front };
       shader.uniforms.nsaAysonBack = { value: data.back };
+      shader.uniforms.nsaAysonPattern = { value: data.pattern };
       shader.uniforms.nsaAysonBounds = { value: new THREE.Vector4(geometryX.min, geometryX.max, bounds.yMin, bounds.yMax) };
       shader.uniforms.nsaAysonSourceU = { value: new THREE.Vector4(sourceU.frontMin, sourceU.frontMax, sourceU.backMin, sourceU.backMax) };
       shader.uniforms.nsaAysonDepth = { value: bounds.depthCenter || 0 };
@@ -311,38 +346,34 @@ function applyAysonSurface(st, mat, tpl, zone, meshName) {
         .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNsaAysonPosition = position;');
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;\nuniform vec3 nsaAysonBase;\nuniform sampler2D nsaAysonFront;\nuniform sampler2D nsaAysonBack;\nuniform vec4 nsaAysonBounds;\nuniform vec4 nsaAysonSourceU;\nuniform float nsaAysonDepth;\nuniform float nsaAysonSide;')
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;\nuniform vec3 nsaAysonBase;\nuniform sampler2D nsaAysonFront;\nuniform sampler2D nsaAysonBack;\nuniform sampler2D nsaAysonPattern;\nuniform vec4 nsaAysonBounds;\nuniform vec4 nsaAysonSourceU;\nuniform float nsaAysonDepth;\nuniform float nsaAysonSide;')
         .replace('#include <color_fragment>', `#include <color_fragment>
           float nsaAysonX = clamp((vNsaAysonPosition.x - nsaAysonBounds.x) / max(0.00001, nsaAysonBounds.y - nsaAysonBounds.x), 0.0, 1.0);
           float nsaAysonY = clamp((vNsaAysonPosition.y - nsaAysonBounds.z) / max(0.00001, nsaAysonBounds.w - nsaAysonBounds.z), 0.0, 1.0);
           bool nsaAysonIsFront = nsaAysonSide > 0.5 || (nsaAysonSide < -0.5 && vNsaAysonPosition.z >= nsaAysonDepth);
-          float nsaAysonAngleX = nsaAysonIsFront
-            ? (atan(vNsaAysonPosition.x, vNsaAysonPosition.z) + 1.5707963) / 3.1415926
-            : (atan(-vNsaAysonPosition.x, -vNsaAysonPosition.z) + 1.5707963) / 3.1415926;
-          float nsaAysonEdge = smoothstep(0.55, 0.85, abs(nsaAysonX * 2.0 - 1.0));
-          float nsaAysonWrappedX = mix(nsaAysonX, clamp(nsaAysonAngleX, 0.0, 1.0), nsaAysonEdge * step(-0.5, nsaAysonSide));
-          // Match source pixels to garment dimensions so circular artwork
-          // stays circular instead of being compressed into wide diamonds.
-          float nsaAysonSourceY = nsaAysonY;
-          if (nsaAysonSide > 0.5) nsaAysonSourceY = mix(0.100, 0.856, nsaAysonY);
-          else if (nsaAysonSide > -0.5) nsaAysonSourceY = mix(0.062, 0.818, nsaAysonY);
-          vec2 nsaAysonUv = vec2(
-            nsaAysonIsFront ? mix(nsaAysonSourceU.x, nsaAysonSourceU.y, nsaAysonWrappedX) : mix(nsaAysonSourceU.z, nsaAysonSourceU.w, nsaAysonWrappedX),
-            nsaAysonSourceY
-          );
-          vec4 nsaAysonInk = nsaAysonIsFront ? texture2D(nsaAysonFront, nsaAysonUv) : texture2D(nsaAysonBack, nsaAysonUv);
-          diffuseColor.rgb = mix(nsaAysonBase, nsaAysonInk.rgb, step(0.04, nsaAysonInk.a));`);
+          // A continuous analytic boundary replaces the disconnected front and
+          // back UV masks: low across the center and rising at both side seams.
+          float nsaAysonEdge = smoothstep(0.52, 0.94, abs(nsaAysonX * 2.0 - 1.0));
+          float nsaAysonArtTop = mix(0.285, 0.585, nsaAysonEdge);
+          float nsaAysonArt = 1.0 - smoothstep(nsaAysonArtTop - 0.012, nsaAysonArtTop + 0.012, nsaAysonY);
+          // Cylindrical U plus world-height V gives the motif one consistent
+          // scale around the body. The mirrored source tile is seamless.
+          float nsaAysonCircumference = atan(vNsaAysonPosition.x, vNsaAysonPosition.z) / 6.2831853 + 0.5;
+          vec4 nsaAysonInk = texture2D(nsaAysonPattern, vec2(nsaAysonCircumference * 1.20, nsaAysonY * 2.50));
+          diffuseColor.rgb = mix(nsaAysonBase, nsaAysonInk.rgb, nsaAysonArt);`);
       data.shader = shader;
     };
-    mat.customProgramCacheKey = () => `nsa-ayson-projection-v4-${fixedSide}`;
+    mat.customProgramCacheKey = () => `nsa-ayson-projection-v5-${fixedSide}`;
   }
   mat.color.set('#ffffff');
   mat.needsUpdate = true;
   aysonProjectionTextures(tpl.projectionFront, tpl.projectionBack, zone, (pair) => {
     data.front = pair.front; data.back = pair.back;
+    data.pattern = pair.pattern;
     if (data.shader) {
       data.shader.uniforms.nsaAysonFront.value = pair.front;
       data.shader.uniforms.nsaAysonBack.value = pair.back;
+      data.shader.uniforms.nsaAysonPattern.value = pair.pattern;
       data.shader.uniforms.nsaAysonBase.value.copy(data.base);
     }
     mat.needsUpdate = true;
@@ -497,18 +528,6 @@ function heatherFleckTexture() {
 // builder with ?studio=1 shows a slider panel that edits these live on the
 // real garment. "Copy values" exports the JSON so winning numbers can be baked
 // in here as the shipped defaults.
-export const STUDIO_DEFAULTS = {
-  key: 0.94,      // main top-front light; kept below clipping for white fabric
-  fill: 0.08,     // restrained fill preserves folds instead of flattening them
-  back: 0.34,     // rear light (back-view color read)
-  hemi: 0.06,     // low ambient keeps white knit and under-sleeve shape visible
-  exposure: 0.82, // leaves highlight headroom while preserving brand colors
-  env: 0.08,      // subtle environment reflections
-  sheen: 0.08,    // fabric grazing-angle glow
-  aoRadius: 0.075,// tighter AO keeps seams crisp rather than muddy
-  aoScale: 2.8,   // stronger contact definition on white garments
-  bg: 0.92,       // soft off-white wall separates white cloth without looking gray
-};
 const STUDIO_LS_KEY = 'nsa_uniform_studio_v3';
 export function loadStudioProfile() {
   try {
@@ -521,6 +540,16 @@ export function loadStudioProfile() {
   } catch (_e) { return { ...STUDIO_DEFAULTS }; }
 }
 function saveStudioProfile(p) { try { localStorage.setItem(STUDIO_LS_KEY, JSON.stringify(p)); } catch (_e) { /* quota */ } }
+
+function currentRenderMode() {
+  try { return new URLSearchParams(window.location.search).get('render') || ''; }
+  catch (_e) { return ''; }
+}
+
+function initialStudioProfile() {
+  const mode = currentRenderMode();
+  return mode ? resolveStudioProfile(mode) : loadStudioProfile();
+}
 
 // Push a profile onto a live scene (lights, tone mapping, materials, AO).
 function applyStudioProfile(st, p) {
@@ -680,7 +709,7 @@ function applyDesign(st, rawSpec, liningColor = null) {
     const meshName = String(entry.mesh.name || '').toLowerCase();
     const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
     if (mat.map) { if (!(mat.map.userData && mat.map.userData.shared)) mat.map.dispose(); mat.map = null; }
-    if (tpl.proceduralLayout === 'ayson' && ['body_front', 'body_back', 'sleeve_left', 'sleeve_right'].includes(meshName)) {
+    if (tpl.artworkProjection === 'ayson-elevation' && pat === 'custom' && zone === 'body') {
       entry._patGen = (entry._patGen || 0) + 1;
       applyAysonSurface(st, mat, tpl, zs, meshName);
     } else if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
@@ -1088,7 +1117,8 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
   const specRef = useRef(spec); specRef.current = spec;
   const autoRotateRef = useRef(autoRotate); autoRotateRef.current = autoRotate;
   const [status, setStatus] = useState('loading');
-  const [studio, setStudio] = useState(loadStudioProfile);
+  const renderMode = currentRenderMode();
+  const [studio, setStudio] = useState(initialStudioProfile);
   const studioRef = useRef(studio); studioRef.current = studio;
   const studioOpen = typeof window !== 'undefined' && /[?&]studio=1/.test(window.location.search);
 
@@ -1101,7 +1131,10 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true }); }
     catch (_e) { setStatus('error'); return undefined; }
     renderer.setSize(W, H);
-    renderer.setPixelRatio(Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1));
+    // The comparison profile gets a little more sampling headroom on HiDPI
+    // displays. Production remains capped at 2x to protect lower-end devices.
+    const pixelRatioCap = renderMode === 'lacoste' ? 2.5 : 2;
+    renderer.setPixelRatio(Math.min(pixelRatioCap, (typeof window !== 'undefined' && window.devicePixelRatio) || 1));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     // Khronos PBR-neutral tone mapping: built for product configurators — keeps
     // saturated brand colors true. ACES filmic skewed deep reds (maroon) toward
@@ -1534,8 +1567,8 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
   useEffect(() => {
     const st = stateRef.current;
     if (st) applyStudioProfile(st, studio);
-    saveStudioProfile(studio);
-  }, [studio]);
+    if (!renderMode) saveStudioProfile(studio);
+  }, [studio, renderMode]);
 
   // re-color on spec change
   useEffect(() => {
