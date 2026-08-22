@@ -58,6 +58,7 @@ const SCREENS = [
   { id: 'team', label: 'Team', desc: 'The internal team directory of staff members.' },
   { id: 'products', label: 'Products', desc: 'The product catalog — items, colors, and images.' },
   { id: 'inventory', label: 'Inventory', desc: 'Stock levels and inventory information.' },
+  { id: 'accounting', label: 'Accounting', desc: 'Financial statements, sales & AR, and tax exports built from imported NetSuite ledger data.' },
   { id: 'reports', label: 'Reports', desc: 'Reports and analytics.' },
   { id: 'marketing', label: 'Marketing', desc: 'Marketing tools and activity.' },
   { id: 'commissions', label: 'Commissions', desc: 'Sales rep commission tracking.' },
