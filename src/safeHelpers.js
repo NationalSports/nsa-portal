@@ -301,8 +301,12 @@ export const poIdMissingFromOrder = (o, poId) => {
 // color metadata. Deposit invoices bill a percentage of the whole order and
 // do NOT lock specific units, so their line qty is intentionally ignored
 // here — callers should credit the deposit amount as $ paid instead.
-export const buildInvoicedQtyMap = (so, invoicesForSO) => {
+// Core reconciliation of "how much of each SO line has already been invoiced".
+// Returns the per-line qty map AND the invoice lines that matched no SO line at all
+// (`orphans`) — see invoicedLineOrphans below for why those matter.
+const _reconcileInvoicedQty = (so, invoicesForSO) => {
   const map = new Map();
+  const orphans = [];
   const items = safeItems(so);
   // Pre-seed all keys to 0 so callers can read .get(key) || 0
   items.forEach((it, idx) => map.set(soLineKey(it, idx), 0));
@@ -364,11 +368,38 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
         || skuColorBuckets.get(sku+'|')
         || skuBuckets.get(sku)
         || [];
+      // Nothing on the SO carries this sku any more — the line was billed and then the
+      // order was edited out from under it. Record it instead of dropping it on the
+      // floor; pourInto() would silently discard the qty (empty bucket = early return),
+      // which is how SO-1804 ended up showing "Ready to Invoice" with $130 of paid,
+      // billed goods invisible to the remaining-to-invoice math.
+      if (bucket.length === 0) {
+        orphans.push({
+          invoice_id: safeStr(inv?.id),
+          inv_type: safeStr(inv?.inv_type),
+          sku, color, desc,
+          qty: q,
+          amount: safeNum(li?.amount),
+        });
+        return;
+      }
       pourInto(bucket, q);
     });
   });
-  return map;
+  return { map, orphans };
 };
+
+export const buildInvoicedQtyMap = (so, invoicesForSO) =>
+  _reconcileInvoicedQty(so, invoicesForSO).map;
+
+// Invoice lines already billed against this SO that no longer match any line ON the SO.
+// A non-empty result means the order was edited after it was invoiced: those goods were
+// charged (and possibly paid) but are no longer part of the order, so every "remaining to
+// invoice" figure silently excludes them. Never auto-credit this — whether a removed line
+// was a swap (nothing more owed) or a genuine reduction (a refund) is a human call. Surface
+// it so the rep sees the divergence before billing again.
+export const invoicedLineOrphans = (so, invoicesForSO) =>
+  _reconcileInvoicedQty(so, invoicesForSO).orphans;
 
 // Match each invoice line back to its SO item so callers can re-attach whatever only the SO
 // knows — the size breakdown, decoration/number detail. Try the stored line key first, then

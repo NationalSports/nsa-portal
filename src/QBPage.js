@@ -139,7 +139,8 @@ export default function QBPage(){
           const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
           const dp=dP(d,qty,saf,cq);
           const sell=dp.sell;
-          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
+          const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);
+          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),qty:eq,rate:sell,amount:eq*sell,account:qbConfig.mapping.income_account});
         });
       });
       return{docType:'SalesOrder',docNumber:so.id,customerRef:c?.name||'Unknown',date:so.created_at,memo:so.memo,lines,total:lines.reduce((a,l)=>a+l.amount,0)};

@@ -1802,7 +1802,13 @@ function dP(d,q,artFiles,cq){
     if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
     const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
+  // Names bill per NAME, not per garment: return the true per-name rate and hand the
+  // application count out as _nq, exactly like the numbers branch above. The old form
+  // baked the count into the rate (rQ(nc*se/q)), so one $5 name on a 24-pc line printed
+  // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
+  // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
+  // is unchanged everywhere nc*se/q happened to land on an exact quarter.
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(d.dtf_size,true),cost:twaP(d.dtf_size,false)};
