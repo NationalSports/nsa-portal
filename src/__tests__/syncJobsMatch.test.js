@@ -174,6 +174,24 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(existing).toBeNull();
   });
 
+  test('decoration-claim fallback refuses a partly ambiguous claim set', () => {
+    const first = {
+      id: 'J1', key: 'old-1',
+      items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }],
+    };
+    const duplicate = { id: 'J2', key: 'old-2', items: [{ item_idx: 1, deco_idx: 0 }] };
+    const built = {
+      key: 'rebuilt',
+      items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }],
+    };
+    const lookups = buildExistingJobLookups([first, duplicate]);
+    expect(lookups.existingByDecoClaim['0::0']).toBe(first);
+    expect(lookups.ambiguousDecoClaims.has('1::0')).toBe(true);
+    const { existing, matchedBy } = matchExistingJob(built, lookups, new Set());
+    expect(matchedBy).toBeNull();
+    expect(existing).toBeNull();
+  });
+
   test('art-id fallback refuses an already-claimed job in the same pass', () => {
     const a = { id: 'JOB-A', key: 'k-a', art_file_id: 'af-unique' };
     const lookups = buildExistingJobLookups([a]);

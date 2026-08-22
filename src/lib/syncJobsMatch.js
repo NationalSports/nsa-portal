@@ -68,6 +68,7 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
   const existingJobMap = {};
   const existingByArtId = {};
   const existingByDecoClaim = {};
+  const ambiguousDecoClaims = new Set();
   const artIdCounts = countJobsByArtId(pool);
   const claimOwners = {};
   pool.forEach((j) => {
@@ -82,6 +83,7 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
     existingJobMap[j.key || j.id] = j;
     jobDecoClaimKeys(j).forEach((claim) => {
       if (claimOwners[claim]?.length === 1) existingByDecoClaim[claim] = j;
+      else if (claimOwners[claim]?.length > 1) ambiguousDecoClaims.add(claim);
     });
     const ids = j._art_ids || [j.art_file_id].filter(Boolean);
     ids.forEach((aid) => {
@@ -89,7 +91,7 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
       if (!existingByArtId[aid]) existingByArtId[aid] = j;
     });
   });
-  return { existingJobMap, existingByArtId, existingByDecoClaim, artIdCounts };
+  return { existingJobMap, existingByArtId, existingByDecoClaim, ambiguousDecoClaims, artIdCounts };
 }
 
 /**
@@ -100,7 +102,7 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
  * @returns {{existing: object|null, matchedBy: 'key'|'deco_claim'|'art_file_id'|null}}
  */
 export function matchExistingJob(built, lookups, claimedIds = new Set()) {
-  const { existingJobMap, existingByArtId, existingByDecoClaim } = lookups || {};
+  const { existingJobMap, existingByArtId, existingByDecoClaim, ambiguousDecoClaims } = lookups || {};
   if (!built) return { existing: null, matchedBy: null };
 
   const byKey = built.key != null ? existingJobMap?.[built.key] : null;
@@ -113,10 +115,12 @@ export function matchExistingJob(built, lookups, claimedIds = new Set()) {
   // The item_idx+deco_idx claim does not change, so it is the safest identity fallback. Only
   // accept one unambiguous owner: a newly consolidated build can overlap several old jobs,
   // and arbitrarily stealing one of those ids would lose the others' workflow history.
-  const claimMatches = [...new Set(jobDecoClaimKeys(built)
+  const builtClaims = jobDecoClaimKeys(built);
+  const hasAmbiguousClaim = builtClaims.some((claim) => ambiguousDecoClaims?.has(claim));
+  const claimMatches = [...new Set(builtClaims
     .map((claim) => existingByDecoClaim?.[claim])
     .filter(Boolean))];
-  if (claimMatches.length === 1) {
+  if (!hasAmbiguousClaim && claimMatches.length === 1) {
     const byClaim = claimMatches[0];
     if (!byClaim.id || !claimedIds.has(byClaim.id)) {
       if (byClaim.id) claimedIds.add(byClaim.id);
