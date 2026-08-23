@@ -13858,8 +13858,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {po.po_type!=='outside_deco'&&decoReadyBanner(allLines.map(ln=>ln.lineIdx))}
           {/* Vendor — who this PO is written to */}
           {(()=>{
-            const _vRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
-            const _vName=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(po.vendor||_vRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'');
+            const _poVendorRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===po.vendor);
+            const _vRec=_poVendorRec||(po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id));
+            // po.vendor is often a stored id (ns_34 / v1), so resolve it before falling back to the raw value.
+            const _vName=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(_poVendorRec?.name||_vRec?.name||D_V.find(v=>v.id===(po.vendor||item?.vendor_id))?.name||po.vendor||item?.brand||'');
             const _vEmail=_vRec?.contact_email||'';
             return<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',letterSpacing:0.5}}>Written to</span>
