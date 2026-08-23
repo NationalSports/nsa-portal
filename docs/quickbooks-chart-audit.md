@@ -1,48 +1,50 @@
 # QuickBooks chart-of-accounts audit
 
-Source reviewed: `National_Sports Apparel LLC.csv` supplied from QBO, 107 accounts.
+Source of truth reviewed: `National_Sports Apparel LLC.csv`, exported from the connected QBO company.
 
-## Portal mappings verified
+## Approved portal posting matrix
 
-| Portal item / control | Account | QBO name | QBO account type | Result |
-|---|---:|---|---|---|
-| Customer sales and customer-billed shipping | 40000 | Sales | Income | Verified |
-| Vendor freight in | 51000 | Cost of Goods Sold:Freight In | Cost of Goods Sold | Verified |
-| Outside decoration vendor bills | 52000 | Outside Decoration | Cost of Goods Sold | Verified |
-| Sports Inc fee | 58000 | Sports Inc Fee | Cost of Goods Sold | Verified |
-| Inventory asset | 12000 | Inventory Asset | Other Current Assets | Verified |
-| Inventory loss/adjustment | 52400 | Inventory Loss | Expenses | Verified |
-| Accounts Receivable control | 11000 | Accounts Receivable (A/R) | Accounts receivable (A/R) | Verified |
-| Customer payment deposit | 11010 | Undeposited Funds | Other Current Assets | Verified |
-| Accounts Payable control | 21100 | Accounts Payable (A/P) | Accounts payable (A/P) | Verified |
-| Sales tax payable | 25201 | Sales Tax Payables | Other Current Liabilities | Verified; locked/QBO-managed |
-| Vendor merchandise bills | 51300 | Purchases | Expenses | Verified against the requested bill mapping; reporting decision noted below |
-| Inventory-item cost on sale | 50000 | Cost of Goods Sold | Cost of Goods Sold | Verified |
+| Synced item type | Account | Posting behavior |
+|---|---:|---|
+| Customer merchandise, decoration, and customer-billed freight | 40000 Sales | Credit; invoice control side is 11000 A/R |
+| Customer discounts | 40200 Sales:Discounts | Negative revenue / debit |
+| Apparel or equipment bought for a sales order | 51300 Purchases | Debit through a QBO NonInventory item; bill control side is 21100 A/P |
+| Supplies with no SKU | 51300 Purchases | Account-based debit; bill control side is 21100 A/P |
+| Freight on a vendor bill | 51000 Freight In | Debit; bill control side is 21100 A/P |
+| Outside-decoration vendor bill | 52000 Outside Decoration | Debit; vendor category is authoritative |
+| Sports Inc fee on a vendor bill | 58000 Sports Inc Fee | Debit; bill control side is 21100 A/P |
+| Outbound UPS/FedEx shipping cost | 67000 Freight Expenses | Debit when a future Connect expense source is implemented |
+| Customer payment | 11010 Undeposited Funds | Debit; 11000 A/R is credited |
+| CA / AZ / CO / NV / TX / WA sales tax | 25200 / 25205 / 25215 / 25220 / 25225 / 25230 | State liability; the portal supplies the exact tax amount |
+| Quarterly sales-tax payment | Matching state subaccount | Reduces the individual state balance, not only parent 25201 |
 
-No duplicate account numbers or account names were present in the export.
+Account 40100 Shipping Expense is not used by the portal. Account 21000 Accounts Payable - Trade is not the QBO bill control account; QBO bills use 21100 Accounts Payable (A/P).
 
-## Merchandise reporting decision
+## Required QBO correction before any live write
 
-The supplied worksheet described 51300 as Cost of Goods Sold, but the live QBO export classifies 51300 Purchases as an Expense account with detail type Supplies & Materials. Account 50000 is the actual Cost of Goods Sold account with detail type Supplies & Materials - COGS.
+The QBO export currently classifies 51300 Purchases as **Expenses / Supplies & Materials**. Accounting confirmed that it should be **Cost of Goods Sold** and may already have changed it in QBO. The preflight intentionally expects Cost of Goods Sold and blocks every transaction if the live QBO account still has the old type. It never substitutes 50000 or another account.
 
-The portal now keeps these two roles separate: vendor merchandise bill lines use 51300, exactly as requested, while QBO inventory items use 50000 as their Cost of Goods Sold account. The owner/accountant should confirm whether that is the intended accounting model or choose one of these alternatives:
+## Product and inventory model
 
-1. keep merchandise at 51300 and intentionally report it as operating expense;
-2. route merchandise to 50000 Cost of Goods Sold; or
-3. reclassify 51300 in QBO to Cost of Goods Sold, if the accountant confirms that change is appropriate.
+- Create or reuse exactly one active QBO **NonInventory** item per normalized SKU.
+- All portal size/color variants of that SKU map to the same QBO item.
+- QBO POs and vendor bills carry total quantity per SKU; sizes remain only in the portal.
+- The QBO item's purchase account is 51300 and income account is 40000.
+- The portal does not send quantity on hand, initial quantity, inventory adjustments, or inventory valuation to QBO.
+- Accounts 12000 Inventory Asset, 50000 Cost of Goods Sold, and 52400 Inventory Loss are therefore not used by the portal sync.
 
-The portal validates 51300 as Expense and 50000 as Cost of Goods Sold. It will never silently substitute one for the other. If all merchandise purchases should hit gross-profit COGS immediately, the bill mapping must be changed deliberately rather than by fallback.
+This follows accounting's instruction that QBO will not track inventory items or per-size stock and that purchases go straight to 51300 under COGS.
 
-## Sales-tax warning
+## Sales-tax gate
 
-25201 is marked locked in the QBO export. It is suitable as the sales-tax liability control account, but the portal must not create a generic invoice line or generic expense line directly against it. Taxable invoices require QBO tax-code/TxnTaxDetail mapping, and quarterly remittances require the QBO sales-tax payment workflow. Both remain gated until the live QBO Sales Tax Center setup is inspected.
+The state account numbers are approved, but a taxable QBO invoice still needs the live company's QBO TaxCode/TxnTaxDetail configuration. Until the live Sales Tax Center IDs and behavior are inspected, taxable invoice writes remain blocked. The sync must not book tax as 40000 revenue or fake it as a normal line to 25201.
 
-## Other chart items to review with the accountant
+## Remaining source gap
 
-These accounts are not used by the proposed portal sync, but their QBO detail types look unusual:
+The current Connect sync has no UPS/FedEx/outbound-shipping expense feed. Account 67000 is validated and reserved, but no transaction is created from it yet. We need to identify the portal record or carrier integration that supplies those charges before wiring that posting.
 
-- 25215 Sales Tax Payables:CO uses detail type Payroll Tax Payable, while the other states use Sales Tax Payable.
-- 14700 Property & Equipment:Information Technology & Software uses detail type Vehicles.
-- 13000 Bad Debt is an account type Bank / detail type Checking rather than an expense or contra-receivable account.
+## Chart observations that do not block the portal
 
-No portal routing depends on these three accounts; they are audit observations only.
+- 25215 CO has QBO detail type Payroll Tax Payable even though its account type is Other Current Liabilities. Accounting said no change is required.
+- 14700 IT & Software uses Vehicles detail type. Accounting said no change is required.
+- 13000 Bad Debt is Bank/Checking. Accounting said no change is required; the separate bad-debt expense account is used for expense reporting.
