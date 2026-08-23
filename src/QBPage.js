@@ -215,6 +215,8 @@ export default function QBPage(){
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
     const migrationUnlocked=qbConfig.initialMigrationApproved===true;
+    const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
+    const livePreflightReady=qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
 
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
@@ -354,7 +356,12 @@ export default function QBPage(){
                 </div>
               </div>
               {!migrationUnlocked&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:10}}>
-                Initial-migration safety lock is active. Run the read-only live preflight, then use selected canaries. Bulk and automatic writes stay locked until the canary read-back and your QBO screenshots are approved.
+                <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the Supplier Bills “Test up to 3” button. Verified bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
+                <button className="btn btn-sm btn-secondary" style={{marginTop:8}} disabled={!livePreflightReady||verifiedCanaryBills<3}
+                  title={!livePreflightReady?'Run a successful live preflight first':verifiedCanaryBills<3?'At least three live canaries must pass API read-back first':''}
+                  onClick={()=>{if(window.confirm('I reviewed the verified canary bills in the correct QuickBooks company, checked the screenshots/transaction details and account impact, and approve 20-record production batches.'))setQBConfig(prev=>({...prev,initialMigrationApproved:true,autoSync:'manual'}))}}>
+                  Approve Reviewed Canaries &amp; Unlock Batches
+                </button>
               </div>}
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
@@ -363,7 +370,6 @@ export default function QBPage(){
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncInvoices}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncBillsFromQB}>Bills from QB</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncInventory}>QBO Items</button>
               </div>
@@ -374,10 +380,10 @@ export default function QBPage(){
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs bidirectionally (QB ↔ portal)</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) to QB; bill costs auto-pull from QB back to portal POs</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Bill Costs (QB → Portal)</strong> — bills received in QB matched to POs push costs back to portal daily</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total to 40000; payments follow in a balance-based pass to avoid retry duplicates</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — total quantity per SKU plus outside-decoration lines</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — parsed portal vendor bills push to QBO only after account, item, total, and duplicate checks</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Bill direction</strong> — the initial migration does not auto-pull QBO bills back into portal POs</div>
               <div>&#8226; <strong>Products</strong> — one QBO NonInventory item per SKU; size/color inventory remains in the portal</div>
             </div>
           </div>
