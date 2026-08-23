@@ -2,40 +2,112 @@
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
+import { useState } from 'react';
 import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
 import { createQBSyncEngine } from './qbSyncEngine';
+import {
+  QB_ACCOUNT_MAPPING_DEFAULTS,
+  QB_ACCOUNT_POSTING_MATRIX,
+  QB_ACCOUNT_SPECS,
+  buildVendorBillLines,
+  loadQBAccounts,
+  manualBillAccountKey,
+  resolveQBAccountRefs,
+} from './qbAccountMappings';
+
+const QB_MAPPING_FIELDS = [
+  ['income_account', 'Customer sales + shipping'],
+  ['purchases_account', 'Vendor merchandise purchases'],
+  ['cogs_account', 'Inventory item COGS'],
+  ['freight_account', 'Vendor freight in'],
+  ['sports_inc_fee_account', 'Sports Inc fee'],
+  ['deco_account', 'Outside decoration'],
+  ['inventory_asset_account', 'Inventory asset'],
+  ['inventory_adjustment_account', 'Inventory loss / adjustment'],
+  ['ar_account', 'Accounts Receivable'],
+  ['payment_deposit_account', 'Payment deposit'],
+  ['ap_account', 'Accounts Payable'],
+  ['tax_account', 'Sales tax payable'],
+];
 
 export default function QBPage(){
-  const {connectQB,cust,disconnectQB,invAdjLog,invPOs,invs,nf,prod,qbApi,qbBillAmount,qbBillDate,qbBillFile,qbBillMemo,qbBillUploading,qbBillVendor,qbConfig,qbSyncing,qbTab,setInvPOs,setInvs,setQBConfig,setQbBillAmount,setQbBillDate,setQbBillFile,setQbBillMemo,setQbBillUploading,setQbBillVendor,setQbSyncing,setQbTab,setSOs,setSubmittedBatches,setVend,sos,submittedBatches,vend}=useAppData();
+  const {connectQB,cust,decoVendors,disconnectQB,invAdjLog,invPOs,invs,nf,prod,qbApi,qbBillAmount,qbBillDate,qbBillFile,qbBillMemo,qbBillUploading,qbBillVendor,qbConfig,qbSyncing,qbTab,setInvPOs,setInvs,setQBConfig,setQbBillAmount,setQbBillDate,setQbBillFile,setQbBillMemo,setQbBillUploading,setQbBillVendor,setQbSyncing,setQbTab,setSOs,setSubmittedBatches,setVend,sos,submittedBatches,vend}=useAppData();
+  const [qbBillFreight,setQbBillFreight]=useState('');
+  const [qbBillSportsFee,setQbBillSportsFee]=useState('');
+  const [qbCanaryMode,setQbCanaryMode]=useState(true);
+  const [qbPreflighting,setQbPreflighting]=useState(false);
 
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
     const {syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
+    // Read-only live-company inspection. This is the mandatory first step and
+    // performs no QBO create/update calls.
+    const runQBPreflight=async()=>{
+      setQbPreflighting(true);
+      const log={ts:new Date().toLocaleString(),type:'live_preflight',status:'success',details:[]};
+      try{
+        const [company,accounts]=await Promise.all([qbApi('company_info',{}),loadQBAccounts(qbApi)]);
+        const refs=resolveQBAccountRefs(accounts,qbConfig.mapping,Object.keys(QB_ACCOUNT_SPECS));
+        const ci=company?.CompanyInfo;
+        log.details.push('READ ONLY — no QuickBooks records were created or changed');
+        log.details.push('Company: '+(ci?.CompanyName||qbConfig.companyName||'Unknown')+' · Realm: '+(qbConfig.realm_id||'unknown'));
+        Object.entries(refs).forEach(([key,ref])=>log.details.push(key+' → '+ref.accountNumber+' '+ref.name+' (QB #'+ref.value+')'));
+        const entities=['Customer','Vendor','Item','Invoice','Bill','PurchaseOrder','Payment'];
+        for(const entity of entities){
+          try{
+            const res=await qbApi('query',{query:'SELECT count(*) FROM '+entity});
+            const count=res?.QueryResponse?.totalCount;
+            log.details.push(entity+' records currently in QBO: '+(count==null?'count unavailable':count));
+          }catch(e){log.details.push(entity+' count unavailable: '+e.message);log.status='partial'}
+        }
+        setQBConfig(prev=>({...prev,preflight:{status:log.status,at:new Date().toISOString(),company:ci?.CompanyName||prev.companyName,realm_id:prev.realm_id,accounts:Object.fromEntries(Object.entries(refs).map(([key,ref])=>[key,{id:ref.value,number:ref.accountNumber,name:ref.name}]))},syncLog:[log,...prev.syncLog].slice(0,100)}));
+        nf('Live QBO preflight complete — no records changed');
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Preflight failed');
+        setQBConfig(prev=>({...prev,preflight:{status:'error',at:new Date().toISOString(),error:e.message},syncLog:[log,...prev.syncLog].slice(0,100)}));
+        nf('Live QBO preflight failed — '+(e.message||'setup error'),'error');
+      }finally{setQbPreflighting(false)}
+    };
+
     // ── BILL UPLOAD — upload vendor bill to QB ──
     const uploadBill=async()=>{
+      if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before any test bill','error');return}
       if(!qbBillVendor){nf('Select a vendor','error');return}
       if(!qbBillAmount||parseFloat(qbBillAmount)<=0){nf('Enter bill amount','error');return}
       setQbBillUploading(true);
       const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',details:[]};
 
-      // Find or create vendor in QB
-      const vendor=vend.find(v=>v.id===qbBillVendor)||D_V.find(v=>v.id===qbBillVendor)||{name:qbBillVendor};
+      // Decoration-vendor category is authoritative: every vendor in that category
+      // routes to 52000. Merchandise vendors route to 51300.
+      const isDecoVendor=manualBillAccountKey(qbBillVendor)==='deco_account';
+      const selectedVendorId=qbBillVendor.replace(/^(deco|vendor):/,'');
+      const vendor=isDecoVendor
+        ?(decoVendors||[]).find(v=>String(v.id)===selectedVendorId)
+        :(vend.find(v=>String(v.id)===selectedVendorId)||D_V.find(v=>String(v.id)===selectedVendorId));
+      if(!vendor){nf('Selected vendor is no longer available','error');setQbBillUploading(false);return}
       let qbVendorId=vendor.qb_vendor_id;
       if(!qbVendorId){
-        // Try to create vendor
-        const vRes=await qbApi('upsert_vendor',{vendor:{
+        // Reuse an existing QBO vendor before attempting a create, so a decoration
+        // vendor stored in its own portal table cannot create duplicates.
+        let vRes=null;
+        try{
+          const qRes=await qbApi('query',{query:"SELECT Id, DisplayName FROM Vendor WHERE DisplayName = '"+String(vendor.name||'').replace(/'/g,"\\'")+"' MAXRESULTS 1"});
+          const existing=qRes?.QueryResponse?.Vendor?.[0];
+          if(existing?.Id)vRes={Vendor:existing};
+        }catch(e){console.warn('[QB] Existing vendor lookup failed:',e)}
+        if(!vRes?.Vendor?.Id)vRes=await qbApi('upsert_vendor',{vendor:{
           DisplayName:vendor.name,CompanyName:vendor.name,
           ...(vendor.contact_email?{PrimaryEmailAddr:{Address:vendor.contact_email}}:{}),
         }});
         if(vRes?.Vendor?.Id){
           qbVendorId=vRes.Vendor.Id;
-          setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
-          log.details.push('Created vendor: '+vendor.name+' → QB #'+qbVendorId);
+          if(!isDecoVendor)setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
+          log.details.push('Resolved vendor: '+vendor.name+' → QB #'+qbVendorId);
         }else{
           log.details.push('Vendor creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));
           log.status='error';
@@ -44,29 +116,40 @@ export default function QBPage(){
         }
       }
 
-      // Create bill in QB — look up account ID for AccountRef
-      let billAcctRef={name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'};
+      // Resolve every required account by AcctNum. Missing, inactive, duplicated,
+      // or wrong-type accounts block the bill; there is no first-account fallback.
+      const amt=parseFloat(qbBillAmount);
+      const freight=parseFloat(qbBillFreight)||0;
+      const sportsFee=parseFloat(qbBillSportsFee)||0;
+      if(freight<0||sportsFee<0||freight+sportsFee>=amt){
+        nf('Freight and Sports Inc fee must be positive and less than the bill total','error');setQbBillUploading(false);return;
+      }
+      if(isDecoVendor&&sportsFee>0){nf('Sports Inc fee cannot be added to an outside-decoration bill','error');setQbBillUploading(false);return}
+      let billLines,apAccountRef;
       try{
-        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
-        const accts=acctRes?.QueryResponse?.Account||[];
-        const acctName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
-        const match=accts.find(a=>a.Name===acctName)||accts.find(a=>a.Name.toLowerCase()===acctName.toLowerCase())||accts[0];
-        if(match)billAcctRef={value:match.Id,name:match.Name};
-      }catch(e){console.warn('[QB] Account query failed:',e)}
-      if(!billAcctRef.value){
-        log.details.push('Could not resolve QB expense account — no matching account found');
+        const accounts=await loadQBAccounts(qbApi);
+        const keys=[manualBillAccountKey(qbBillVendor),'ap_account'];
+        if(freight>0)keys.push('freight_account');
+        if(sportsFee>0)keys.push('sports_inc_fee_account');
+        const refs=resolveQBAccountRefs(accounts,qbConfig.mapping,keys);
+        apAccountRef=refs.ap_account;
+        billLines=buildVendorBillLines({
+          kind:isDecoVendor?'decoration':'goods',supplier:vendor.name,doc_total:amt,
+          merchandise_total:amt-freight-sportsFee,freight,si_upcharge:sportsFee,items:[],po_number:qbBillMemo||'manual',
+        },refs).lines;
+      }catch(e){
+        log.details.push(e.message||'Could not resolve QB accounts');
         log.status='error';
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
-        nf('Could not resolve QB expense account — check QuickBooks connection and account mapping','error');
+        nf(e.message||'Could not resolve QB accounts','error');
         setQbBillUploading(false);return;
       }
-      const amt=parseFloat(qbBillAmount);
       const qbBill={
         VendorRef:{value:qbVendorId},
+        APAccountRef:apAccountRef,
         TxnDate:qbBillDate,
-        Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:amt,Description:qbBillMemo||'Vendor bill from '+vendor.name,
-          AccountBasedExpenseLineDetail:{AccountRef:billAcctRef}}],
-        ...(qbBillMemo?{PrivateNote:qbBillMemo}:{}),
+        Line:billLines,
+        ...(((qbCanaryMode||!migrationUnlocked)||qbBillMemo)?{PrivateNote:[(qbCanaryMode||!migrationUnlocked)?'NSA-QB-CANARY:'+new Date().toISOString():'',qbBillMemo].filter(Boolean).join(' | ')}:{}),
       };
       const billRes=await qbApi('upsert_bill',{bill:qbBill});
       if(!billRes?.Bill?.Id){
@@ -77,7 +160,7 @@ export default function QBPage(){
         setQbBillUploading(false);return;
       }
       const billId=billRes.Bill.Id;
-      log.details.push('Bill created: '+vendor.name+' $'+amt.toFixed(2)+' → QB Bill #'+billId);
+      log.details.push(((qbCanaryMode||!migrationUnlocked)?'CANARY — ':'')+'Bill created: '+vendor.name+' $'+amt.toFixed(2)+' → QB Bill #'+billId);
 
       // Upload attachment if file selected
       if(qbBillFile){
@@ -102,7 +185,7 @@ export default function QBPage(){
 
       setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf('Bill $'+amt.toFixed(2)+' uploaded to QB for '+vendor.name);
-      setQbBillFile(null);setQbBillVendor('');setQbBillAmount('');setQbBillMemo('');
+      setQbBillFile(null);setQbBillVendor('');setQbBillAmount('');setQbBillMemo('');setQbBillFreight('');setQbBillSportsFee('');
       setQbBillUploading(false);
     };
 
@@ -124,6 +207,7 @@ export default function QBPage(){
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
+    const migrationUnlocked=qbConfig.initialMigrationApproved===true;
 
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
@@ -151,7 +235,7 @@ export default function QBPage(){
       const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
       return{docType:'PurchaseOrder',docNumber:pl.po_id,vendorRef:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,
         date:pl.created_at,soRef:so.id,lines:[{desc:it.sku+' '+it.name,qty,rate,amount:qty*rate}],
-        account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account,
+        account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.purchases_account,
         total:qty*rate};
     };
 
@@ -252,19 +336,23 @@ export default function QBPage(){
                 <label className="form-label">Sync Mode</label>
                 <div style={{display:'flex',gap:4}}>
                   {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
-                    <button key={v} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                    <button key={v} disabled={!migrationUnlocked&&v!=='manual'} title={!migrationUnlocked&&v!=='manual'?'Enabled only after canary approval':''} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
                       onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
                 </div>
               </div>
+              {!migrationUnlocked&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:10}}>
+                Initial-migration safety lock is active. Run the read-only live preflight, then use selected canaries. Bulk and automatic writes stay locked until the canary read-back and your QBO screenshots are approved.
+              </div>}
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                <button className="btn btn-primary" style={{flex:1}} disabled={qbSyncing} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPaidFromQB}>Sync Paid</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncBillsFromQB}>Bills from QB</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
+                <button className="btn btn-primary" style={{flex:1,background:'#0369a1'}} disabled={qbPreflighting||qbSyncing} onClick={runQBPreflight}>{qbPreflighting?'Reading live QBO...':'Read-Only Live Preflight'}</button>
+                <button className="btn btn-primary" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncSalesOrders}>Sales Orders</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncBillsFromQB}>Bills from QB</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPurchaseOrders}>POs</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncInventory}>Inventory</button>
               </div>
             </div>
           </div>
@@ -277,7 +365,7 @@ export default function QBPage(){
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) to QB; bill costs auto-pull from QB back to portal POs</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bill Costs (QB → Portal)</strong> — bills received in QB matched to POs push costs back to portal daily</div>
-              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
+              <div>&#8226; <strong>Inventory</strong> — quantity and value using 12000 Inventory Asset, 50000 COGS, and 52400 Inventory Loss</div>
             </div>
           </div>
         </div>
@@ -285,13 +373,28 @@ export default function QBPage(){
         <div className="card">
           <div className="card-header"><h2>🗂️ Account Mapping</h2></div>
           <div className="card-body">
-            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA line items to your QB Chart of Accounts</div>
-            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable'],['tax_account','Sales Tax Payable','Sales Tax Payable']].map(([key,label,def])=>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Account numbers are matched to QBO AcctNum and validated before every posting transaction.</div>
+            {QB_MAPPING_FIELDS.map(([key,label])=>
               <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
                 <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
-                <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||def}
+                <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||QB_ACCOUNT_MAPPING_DEFAULTS[key]}
                   onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
               </div>)}
+          </div>
+        </div>
+
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>Approved Posting Matrix</h2></div>
+          <div className="card-body" style={{padding:0,overflowX:'auto'}}>
+            <table style={{fontSize:11}}>
+              <thead><tr><th>Synced item type</th><th>Portal mapping</th><th>Posting</th><th>Other side / note</th></tr></thead>
+              <tbody>{QB_ACCOUNT_POSTING_MATRIX.map(row=><tr key={row.itemType}>
+                <td style={{fontWeight:600}}>{row.itemType}</td><td>{row.account}</td><td>{row.posting}</td><td style={{color:'#64748b'}}>{row.control}</td>
+              </tr>)}</tbody>
+            </table>
+            <div style={{padding:'8px 12px',fontSize:10,color:'#92400e',background:'#fffbeb'}}>
+              QBO Estimates and Purchase Orders are non-posting. 21100 A/P and 11000 A/R are control-account sides created by QBO, not bill or invoice line categories. Taxable-invoice tax codes and quarterly tax-payment automation remain deployment prerequisites and are not silently guessed.
+            </div>
           </div>
         </div>
 
@@ -329,7 +432,7 @@ export default function QBPage(){
                   <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Invoice</span></td>
                   <td style={{fontWeight:700,color:'#166534'}}>{inv.id}</td>
                   <td>{qb.customerRef}</td><td style={{fontSize:10,color:'#64748b'}}>{qb.soRef}</td>
-                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.ar_account}</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.income_account} / {qbConfig.mapping.ar_account}</td>
                   <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${(Number(qb.amount)||0).toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
@@ -430,8 +533,16 @@ export default function QBPage(){
                 <label className="form-label">Vendor *</label>
                 <select className="form-input" value={qbBillVendor} onChange={e=>setQbBillVendor(e.target.value)}>
                   <option value="">Select vendor...</option>
-                  {vend.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                  <optgroup label="Merchandise — 51300 Purchases">
+                    {vend.filter(v=>v.is_active!==false&&!(decoVendors||[]).some(d=>d.is_active!==false&&d.vendor_id===v.id)).map(v=><option key={'vendor:'+v.id} value={'vendor:'+v.id}>{v.name}</option>)}
+                  </optgroup>
+                  <optgroup label="Decoration Vendors — 52000 Outside Decoration">
+                    {(decoVendors||[]).filter(v=>v.is_active!==false).map(v=><option key={'deco:'+v.id} value={'deco:'+v.id}>{v.name}</option>)}
+                  </optgroup>
                 </select>
+                {qbBillVendor&&<div style={{fontSize:10,marginTop:4,color:qbBillVendor.startsWith('deco:')?'#7c3aed':'#166534',fontWeight:600}}>
+                  Auto-routes to {qbBillVendor.startsWith('deco:')?'52000 Outside Decoration':'51300 Purchases'} based on vendor category
+                </div>}
               </div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
                 <div>
@@ -441,6 +552,18 @@ export default function QBPage(){
                 <div>
                   <label className="form-label">Bill Date</label>
                   <input className="form-input" type="date" value={qbBillDate} onChange={e=>setQbBillDate(e.target.value)}/>
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                <div>
+                  <label className="form-label">Freight included (optional)</label>
+                  <input className="form-input" type="number" min="0" step="0.01" placeholder="0.00" value={qbBillFreight} onChange={e=>setQbBillFreight(e.target.value)}/>
+                  <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Splits to 51000 Freight In</div>
+                </div>
+                <div>
+                  <label className="form-label">Sports Inc fee included (optional)</label>
+                  <input className="form-input" type="number" min="0" step="0.01" placeholder="0.00" value={qbBillSportsFee} onChange={e=>setQbBillSportsFee(e.target.value)} disabled={qbBillVendor.startsWith('deco:')}/>
+                  <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Splits to 58000 Sports Inc Fee</div>
                 </div>
               </div>
               <div style={{marginBottom:10}}>
@@ -457,8 +580,12 @@ export default function QBPage(){
                     <div style={{color:'#94a3b8',fontSize:12}}>Click to select file (optional)</div>}
                 </div>
               </div>
+              <label style={{display:'flex',gap:8,alignItems:'flex-start',padding:10,marginBottom:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,color:'#1e3a8a'}}>
+                <input type="checkbox" checked={qbCanaryMode||!migrationUnlocked} disabled={!migrationUnlocked} onChange={e=>setQbCanaryMode(e.target.checked)}/>
+                <span><strong>Live canary test</strong><br/>Tags this real QBO bill with NSA-QB-CANARY for your screenshot review. Required until the initial migration is approved.</span>
+              </label>
               <button className="btn btn-primary" style={{width:'100%'}} disabled={qbBillUploading} onClick={uploadBill}>
-                {qbBillUploading?'Uploading to QuickBooks...':'Upload Bill to QuickBooks'}
+                {qbBillUploading?'Uploading to QuickBooks...':(qbCanaryMode||!migrationUnlocked)?'Push One Live Canary Bill':'Upload Bill to QuickBooks'}
               </button>
             </div>
           </div>
@@ -520,11 +647,11 @@ export default function QBPage(){
           <div className="card">
             <div className="card-header"><h2>Account Mapping</h2></div>
             <div className="card-body">
-              <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA data to your QB Chart of Accounts</div>
-              {[['income_account','Income / Revenue','Sales'],['cogs_account','Cost of Goods Sold','Cost of Goods Sold'],['deco_account','Decoration Expense','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable']].map(([key,label,def])=>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Editable account numbers. Each is matched and type-checked against QBO before use.</div>
+              {QB_MAPPING_FIELDS.map(([key,label])=>
                 <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:11,fontWeight:600,color:'#475569',width:150}}>{label}</span>
-                  <input className="form-input" style={{flex:1,fontSize:11,padding:'4px 8px'}} value={qbConfig.mapping[key]||def}
+                  <input className="form-input" style={{flex:1,fontSize:11,padding:'4px 8px'}} value={qbConfig.mapping[key]||QB_ACCOUNT_MAPPING_DEFAULTS[key]}
                     onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
                 </div>)}
             </div>

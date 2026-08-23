@@ -7,12 +7,34 @@
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
+import { loadQBAccounts, resolveQBAccountRefs } from './qbAccountMappings';
 
 // ctx: every piece of app state/setters the routines touch, plus qbApi/nf/dP —
 // passed fresh by the caller (QBPage per render; App per interval fire).
 export function createQBSyncEngine(ctx){
   const {cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,
     setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}=ctx;
+
+    let accountCache=null;
+    const requiredAccountRefs=async(keys)=>{
+      if(!accountCache)accountCache=await loadQBAccounts(qbApi);
+      return resolveQBAccountRefs(accountCache,qbConfig.mapping,keys);
+    };
+    // Invoices/estimates must carry an ItemRef for their income account to be
+    // deterministic. This service item is the controlled fallback when a portal
+    // product does not yet have its own QBO item.
+    const ensurePortalSalesItem=async(incomeAccountRef)=>{
+      const name='NSA Portal Sales';
+      const qRes=await qbApi('query',{query:"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 1"});
+      const existing=qRes?.QueryResponse?.Item?.[0];
+      if(existing?.Id&&String(existing.IncomeAccountRef?.value||'')===String(incomeAccountRef.value))return String(existing.Id);
+      const item=existing?.Id
+        ?{Id:existing.Id,SyncToken:existing.SyncToken,sparse:true,Name:name,IncomeAccountRef:incomeAccountRef}
+        :{Name:name,Type:'Service',Description:'Portal sales and customer-billed shipping — 40000 Sales',IncomeAccountRef:incomeAccountRef};
+      const res=await qbApi('upsert_item',{item});
+      if(!res?.Item?.Id)throw new Error(res?.Fault?.Error?.[0]?.Detail||'Could not create or update the NSA Portal Sales item');
+      return String(res.Item.Id);
+    };
 
     // ── SYNC: Customers (name + totals) ──
     const syncCustomers=async()=>{
@@ -82,18 +104,34 @@ export function createQBSyncEngine(ctx){
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
       const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
+      let invoiceRefs,salesItemId;
+      try{
+        invoiceRefs=await requiredAccountRefs(['income_account','ar_account','payment_deposit_account']);
+        salesItemId=await ensurePortalSalesItem(invoiceRefs.income_account);
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Required invoice account could not be resolved');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Invoice sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+      }
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
         const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
         if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
-        const so=sos.find(s=>s.id===inv.sales_order_id);
+        const so=sos.find(s=>s.id===(inv.so_id||inv.sales_order_id));
         const invPaid=(inv.payments||[]).reduce((a,p)=>a+safeNum(p.amount),0);
+        // A taxable QBO invoice needs the company's QBO TaxCode/TxnTaxDetail,
+        // not a made-up revenue or liability line. Until that mapping exists,
+        // fail this invoice closed so tax is never credited to 40000 by mistake.
+        if(safeNum(inv.tax)>0){
+          log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax requires a QBO tax-code mapping. It was not posted to 40000 or guessed into 25201.');
+          log.status='partial';continue;
+        }
         const qbInvoice={
           DocNumber:inv.display_id||inv.id,
           TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
           CustomerRef:{value:cQBId},
+          ARAccountRef:invoiceRefs.ar_account,
           Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total??0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
-            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total??0}}],
+            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total??0,ItemRef:{value:salesItemId,name:'NSA Portal Sales'}}}],
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         let res=await qbApi('upsert_invoice',{invoice:qbInvoice});
@@ -113,7 +151,7 @@ export function createQBSyncEngine(ctx){
           // Sync payments if any
           if(invPaid>0&&inv.payments?.length){
             for(const pmt of inv.payments){
-              const qbPmt={CustomerRef:{value:cQBId},TotalAmt:pmt.amount,
+              const qbPmt={CustomerRef:{value:cQBId},DepositToAccountRef:invoiceRefs.payment_deposit_account,TotalAmt:pmt.amount,
                 Line:[{Amount:pmt.amount,LinkedTxn:[{TxnId:res.Invoice.Id,TxnType:'Invoice'}]}]};
               await qbApi('upsert_payment',{payment:qbPmt});
             }
@@ -135,6 +173,14 @@ export function createQBSyncEngine(ctx){
       // Include all QB-linked invoices (not just unpaid) so portal-paid invoices can push to QB
       const linkedInvs=invs.filter(i=>i.qb_invoice_id);
       if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No invoices to sync');setQbSyncing(false);return}
+      let paidRefs,salesItemId;
+      try{
+        paidRefs=await requiredAccountRefs(['income_account','ar_account','payment_deposit_account']);
+        salesItemId=await ensurePortalSalesItem(paidRefs.income_account);
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Required payment account could not be resolved');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Paid sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+      }
       try{
         // Query QB for all invoices and their balance
         const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
@@ -152,8 +198,9 @@ export function createQBSyncEngine(ctx){
           // (this run's Balance was computed against the old total).
           const portalTotal=safeNum(inv.total);
           if(portalTotal>0&&Math.abs(portalTotal-qbTotal)>0.005){
+            if(safeNum(inv.tax)>0){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: taxable invoice needs QBO tax-code mapping');log.status='partial';continue}
             const upd=await qbApi('upsert_invoice',{invoice:{Id:inv.qb_invoice_id,SyncToken:qbInv.SyncToken,sparse:true,
-              Line:[{DetailType:'SalesItemLineDetail',Amount:portalTotal,Description:'Invoice '+(inv.display_id||inv.id),SalesItemLineDetail:{Qty:1,UnitPrice:portalTotal}}]}});
+              Line:[{DetailType:'SalesItemLineDetail',Amount:portalTotal,Description:'Invoice '+(inv.display_id||inv.id),SalesItemLineDetail:{Qty:1,UnitPrice:portalTotal,ItemRef:{value:salesItemId,name:'NSA Portal Sales'}}}]}});
             if(upd?.Invoice?.Id){log.details.push((inv.display_id||inv.id)+' — QB total corrected $'+qbTotal.toFixed(2)+' → $'+portalTotal.toFixed(2)+' (paid re-checks next run)');updated++}
             else{log.details.push((inv.display_id||inv.id)+' — total correction FAILED: '+(upd?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
             continue;
@@ -172,7 +219,7 @@ export function createQBSyncEngine(ctx){
             const cQBId=inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id];
             if(cQBId){
               try{
-                const qbPmt={CustomerRef:{value:cQBId},TotalAmt:diff,
+                const qbPmt={CustomerRef:{value:cQBId},DepositToAccountRef:paidRefs.payment_deposit_account,TotalAmt:diff,
                   Line:[{Amount:diff,LinkedTxn:[{TxnId:inv.qb_invoice_id,TxnType:'Invoice'}]}]};
                 await qbApi('upsert_payment',{payment:qbPmt});
                 log.details.push((inv.display_id||inv.id)+' — pushed $'+diff.toFixed(2)+' payment to QB');updated++;
@@ -309,45 +356,19 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    // ── SYNC: Inventory (totals per product as non-inventory items) ──
+    // ── SYNC: Inventory (12000 asset / 50000 COGS / 52400 adjustments) ──
     const syncInventory=async()=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
       let synced=0;
-      // Look up QB account IDs by name (required by QB API)
-      let incomeAcctRef=null,expenseAcctRef=null;let acctLookupError=null;
+      let incomeAcctRef,expenseAcctRef,assetAcctRef,inventoryAdjustmentAcctRef;
       try{
-        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
-        const accts=acctRes?.QueryResponse?.Account||[];
-        const incomeName=qbConfig.mapping.income_account||'Sales of Product Income';
-        const expenseName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
-        // For Inventory items, QB requires Income account with subtype SalesOfProductIncome
-        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountSubType==='SalesOfProductIncome')||accts.find(a=>a.AccountType==='Income');
-        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountSubType==='SuppliesMaterialsCogs')||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
-        if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
-        if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
-        if(!incomeAcct||!expenseAcct){
-          const availNames=accts.map(a=>a.Name+' ('+a.AccountType+')').join(', ');
-          acctLookupError='Found '+accts.length+' accounts but none matched. Looking for Income="'+incomeName+'" and Expense="'+expenseName+'". Available: '+(availNames||'none')+'. Update your QB Account Mapping in settings to match your Chart of Accounts.';
-        }
-      }catch(e){console.error('[QB] Account lookup failed:',e);acctLookupError='QB API error during account lookup: '+e.message}
-      if(!incomeAcctRef||!expenseAcctRef){
-        log.status='error';log.details.push(acctLookupError||'Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return{};
-      }
-      // Look up asset account for Inventory type items
-      let assetAcctRef=null;
-      try{
-        const aRes=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE AccountType='Other Current Asset' AND AccountSubType='Inventory' MAXRESULTS 10"});
-        const aa=(aRes?.QueryResponse?.Account||[])[0];
-        if(aa)assetAcctRef={value:aa.Id,name:aa.Name};
-      }catch{}
-      if(!assetAcctRef){// fallback: search by name
-        try{
-          const aRes2=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE Name='Inventory Asset' MAXRESULTS 1"});
-          const aa2=(aRes2?.QueryResponse?.Account||[])[0];
-          if(aa2)assetAcctRef={value:aa2.Id,name:aa2.Name};
-        }catch{}
+        const refs=await requiredAccountRefs(['income_account','cogs_account','inventory_asset_account','inventory_adjustment_account']);
+        incomeAcctRef=refs.income_account;expenseAcctRef=refs.cogs_account;
+        assetAcctRef=refs.inventory_asset_account;inventoryAdjustmentAcctRef=refs.inventory_adjustment_account;
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Required inventory account could not be resolved');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return{};
       }
       // Query existing QB items to match by name and avoid duplicates
       let existingQBItems=[];
@@ -383,7 +404,6 @@ export function createQBSyncEngine(ctx){
         // Type / TrackQtyOnHand / QtyOnHand / InvStartDate / AssetAccountRef are
         // write-once at create. For updates we send only mutable fields; quantity
         // changes go through the InventoryAdjustment call below.
-        const useInventoryType=!!assetAcctRef;
         const qbItem={
           Name:itemName,
           Description:cleanName+(cleanColor?' - '+cleanColor:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
@@ -393,22 +413,20 @@ export function createQBSyncEngine(ctx){
           ExpenseAccountRef:expenseAcctRef,
           ...(isUpdate
             ?{Id:qbId,SyncToken:syncToken,sparse:true}
-            :(useInventoryType
-              ?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}
-              :{Type:'NonInventory'})),
+            :{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}),
         };
         const res=await qbApi('upsert_item',{item:qbItem});
         if(res?.Item?.Id){
           prodQBMap[p.id]=res.Item.Id;
           log.details.push(p.sku+' '+p.name+' → QB Item #'+res.Item.Id+' (qty: '+totalQty+', val: $'+totalValue.toFixed(2)+')');synced++;
           // For existing items, also adjust qty via InventoryAdjustment if needed
-          if(qbId&&useInventoryType){
+          if(qbId){
             const currentQBQty=existingQBItems.find(i=>i.Id===(res.Item.Id||qbId))?.QtyOnHand||0;
             const qtyDiff=totalQty-currentQBQty;
             if(qtyDiff!==0){
               await qbApi('inventory_adjustment',{adjustment:{
                 AdjDate:today,
-                AdjustAccountRef:expenseAcctRef,
+                AdjustAccountRef:inventoryAdjustmentAcctRef,
                 Line:[{ItemRef:{value:String(res.Item.Id||qbId),name:itemName},
                   QtyDiff:qtyDiff,DetailType:'ItemAdjustmentLineDetail',
                   ItemAdjustmentLineDetail:{Qty:qtyDiff}}]
@@ -435,6 +453,14 @@ export function createQBSyncEngine(ctx){
         const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
         return hasItems&&!soMap[so.id];
       });
+      let fallbackSalesItemId;
+      try{
+        const refs=await requiredAccountRefs(['income_account']);
+        fallbackSalesItemId=await ensurePortalSalesItem(refs.income_account);
+      }catch(e){
+        log.status='error';log.details.push(e.message||'40000 Sales could not be resolved');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Sales-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+      }
       for(const so of toSync){
         const c=cust.find(x=>x.id===so.customer_id);
         const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
@@ -458,7 +484,7 @@ export function createQBSyncEngine(ctx){
           const desc=it.sku+' '+it.name+(it.color?' - '+it.color:'')+(decoDescs.length?' + '+decoDescs.join(', '):'');
           lines.push({DetailType:'SalesItemLineDetail',Amount:lineAmt,
             Description:desc,
-            SalesItemLineDetail:{Qty:qty,UnitPrice:lineAmt/qty,...(itemQBId?{ItemRef:{value:String(itemQBId)}}:{})}});
+            SalesItemLineDetail:{Qty:qty,UnitPrice:lineAmt/qty,ItemRef:{value:String(itemQBId||fallbackSalesItemId)}}});
         });
         if(!lines.length)continue;
         const qbEstimate={
@@ -495,17 +521,20 @@ export function createQBSyncEngine(ctx){
         existingQBVendors=vRes?.QueryResponse?.Vendor||[];
       }catch(e){console.warn('[QB] Vendor query failed:',e)}
       const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
-      // Look up expense accounts for PO line items
-      let acctMap={};
+      // POs do not post to the GL, but every line still carries the approved
+      // category so the PO-to-bill workflow remains deterministic.
+      let poAccountRefs;
       try{
-        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
-        (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
-      }catch(e){console.warn('[QB] Account query failed:',e)}
+        poAccountRefs=await requiredAccountRefs(['purchases_account','deco_account']);
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Required purchase-order account could not be resolved');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
+      }
       // Group PO lines by po_id so we push one QB PO with all line items
       const poGroupMap={};
       sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
         if(!poMap[pl.po_id]){
-          if(!poGroupMap[pl.po_id])poGroupMap[pl.po_id]={poId:pl.po_id,entries:[],vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,created_at:pl.created_at,account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account};
+          if(!poGroupMap[pl.po_id])poGroupMap[pl.po_id]={poId:pl.po_id,entries:[],vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,created_at:pl.created_at,accountKey:pl.po_type==='outside_deco'?'deco_account':'purchases_account'};
           poGroupMap[pl.po_id].entries.push({pl,so,it});
         }
       })})});
@@ -534,7 +563,7 @@ export function createQBSyncEngine(ctx){
           const rate=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(i.nsa_cost);
           return{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
             Description:i.sku+' '+i.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+s.id+')',
-            AccountBasedExpenseLineDetail:{AccountRef:acctMap[group.account]||Object.values(acctMap)[0]||{name:group.account||'Expenses'}}};
+            AccountBasedExpenseLineDetail:{AccountRef:poAccountRefs[group.accountKey]}};
         });
         const totalAmount=qbLines.reduce((a,l)=>a+l.Amount,0);
         const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');
