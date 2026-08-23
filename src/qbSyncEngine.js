@@ -711,7 +711,6 @@ export function createQBSyncEngine(ctx){
       await syncSalesOrders(custQBMap,prodQBMap);
       await syncInvoices(custQBMap,prodQBMap);
       await syncPaidFromQB();
-      await syncBillsFromQB();
       await syncPurchaseOrders(prodQBMap);
       setQbSyncing(false);
     };
