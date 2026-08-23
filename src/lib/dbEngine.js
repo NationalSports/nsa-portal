@@ -2824,6 +2824,13 @@ const _isAuthError=(err)=>{
   const m=(err.message||'').toLowerCase();
   return m.includes('row-level security')||m.includes('jwt expired')||m.includes('jwt is expired')||m.includes('invalid jwt')||m.includes('not authenticated')||m.includes('no api key');
 };
+// A stored session object is not proof that the user is authenticated: supabase-js can
+// leave the expired object in storage after refreshSession() rejects a dead/rotated refresh token.
+// Only a token with a real, future expiry may short-circuit recovery or the page-load login guard.
+const _isLiveSession=(session,nowSeconds=Math.floor(Date.now()/1000))=>{
+  const expiresAt=Number(session?.expires_at);
+  return !!session?.access_token&&Number.isFinite(expiresAt)&&expiresAt>nowSeconds;
+};
 // Classify a refreshSession() outcome. 'ok' = refreshed; 'transient' = a network/blip failure — retry
 // and DO NOT sign the user out; 'fatal' = the refresh token itself was rejected (invalid / already-used
 // / expired), the ONLY case that should force a re-login. A thrown error is transient (it is almost
@@ -2861,7 +2868,7 @@ const _recoverSession=async()=>{
   // is actually healthy. A transient/network failure never latches dead: the caller keeps the entity
   // queued and we retry on the next save / poll / tab-focus instead of forcing a login.
   if(res&&res.fatal){
-    try{const{data:{session}}=await supabase.auth.getSession();if(session){_sessionDead=false;return true}}catch(_){}
+    try{const{data:{session}}=await supabase.auth.getSession();if(_isLiveSession(session)){_sessionDead=false;return true}}catch(_){}
     _sessionDead=true;
     // Telemetry: the rep is about to be bounced to the login screen. The session is dead here, so
     // send asAnon — explicitly under the anon key, which the anon INSERT whitelist accepts
@@ -2956,7 +2963,7 @@ const _verifyPermDenialHasSession=async(id)=>{
   if(!supabase||_sessionDead)return;
   try{
     const{data:{session}}=await supabase.auth.getSession();
-    if(session&&!(session.expires_at&&session.expires_at<=Math.floor(Date.now()/1000)))return;// real session behind the write — genuine denial
+    if(_isLiveSession(session))return;// real, unexpired session behind the write — genuine denial
     if(id)_recordSaveError(id,'session expired — sign in again to save');
     _recoverSession();// no live session behind the "denial" — it's a dead login; refresh or bounce to the login screen
   }catch(_){/* can't tell — keep the permission-denied classification rather than churn recovery */}
@@ -2997,8 +3004,8 @@ const _ensureFreshSession=async()=>{
     // write about to go out will be sent as the anon role and rejected by RLS. Run recovery NOW so a
     // truly-dead login latches _sessionDead and bounces to re-login (outbox keeps the edit) instead of
     // burning the attempt on a doomed anon write. Coach-portal saves (no nsa_user) are untouched.
-    if(!session){if(_expectsStaffSession())await _recoverSession();return}
-    if(session.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
+    if(!_isLiveSession(session)){if(_expectsStaffSession())await _recoverSession();return}
+    if(session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
   }catch{}
 };
 const _dbSaveCustomer = (c) => _outboxWrap('customers', c, _dbSaveCustomerInner(c));
@@ -3837,6 +3844,7 @@ export {
   _isNetErr,
   _retryNet,
   _isAuthError,
+  _isLiveSession,
   _isPermissionDenied,
   _classifyRefresh,
   _expectsStaffSession,

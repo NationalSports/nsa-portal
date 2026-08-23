@@ -456,6 +456,7 @@ import {
   _onEstStatusMerge,
   _forceReauth,
   _sessionDead,
+  _isLiveSession,
   _ensureFreshSession,
   _dbSaveCustomer,
   _dbSavePromoProgram,
@@ -6168,7 +6169,7 @@ export default function App(){
       // boot the user to login while the session is still being restored.
       for(let i=0;i<30&&!cancelled;i++){
         const{data}=await supabase.auth.getSession();
-        if(data?.session)return;
+        if(_isLiveSession(data?.session))return;
         await new Promise(r=>setTimeout(r,300));
       }
       if(cancelled)return;
@@ -6182,7 +6183,7 @@ export default function App(){
       if(cancelled)return;
       let _finalSession=null;
       try{const{data:_fd}=await supabase.auth.getSession();_finalSession=_fd?.session||null}catch(_){}
-      if(_finalSession||cancelled)return;
+      if(_isLiveSession(_finalSession)||cancelled)return;
       console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
       window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before unmount
       setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
