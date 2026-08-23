@@ -35,6 +35,8 @@ export function createQBSyncEngine(ctx){
     const ensurePortalSalesItem=async(incomeAccountRef)=>{
       const name='NSA Portal Sales';
       const qRes=await qbApi('query',{query:"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 1"});
+      const qFault=qRes?.Fault?.Error?.[0];
+      if(qFault)throw new Error(qFault.Detail||qFault.Message||'Could not inspect the QBO portal sales item');
       const existing=qRes?.QueryResponse?.Item?.[0];
       if(existing?.Id&&String(existing.IncomeAccountRef?.value||'')===String(incomeAccountRef.value))return String(existing.Id);
       const item=existing?.Id
@@ -55,7 +57,10 @@ export function createQBSyncEngine(ctx){
       let existingQBCusts=[];
       try{
         existingQBCusts=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, SyncToken',1000);
-      }catch(e){console.warn('[QB] Customer query failed:',e)}
+      }catch(e){
+        log.status='error';log.details.push('Customer duplicate preflight failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Customer sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
+      }
       const activeCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at);
       const customersToSync=[...activeCustomers].sort((a,b)=>{
         const aLinked=!!(a.qb_customer_id||(qbConfig.custQBMap||{})[a.id]);
@@ -72,8 +77,9 @@ export function createQBSyncEngine(ctx){
         // Match existing QB customer by name if we don't already have a QB ID
         let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
         if(!qbId){
-          const match=existingQBCusts.find(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
-          if(match){qbId=match.Id;syncToken=match.SyncToken}
+          const matches=existingQBCusts.filter(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
+          if(matches.length>1){log.details.push(c.name+' — BLOCKED: multiple QBO customers match this name');log.status='partial';continue}
+          const match=matches[0];if(match){qbId=match.Id;syncToken=match.SyncToken}
         }else{
           const match=existingQBCusts.find(q=>q.Id===qbId);
           if(match)syncToken=match.SyncToken;
@@ -161,7 +167,11 @@ export function createQBSyncEngine(ctx){
         // same-number invoice that could belong to a different transaction.
         if(!res?.Invoice?.Id&&(res?.Fault?.Error?.[0]?.code==='6140'||/duplicate/i.test(res?.Fault?.Error?.[0]?.Detail||''))){
           const docNum=inv.display_id||inv.id;
-          const lookup=await qbApi('query',{query:"SELECT Id, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+String(docNum).replace(/'/g,"\\'")+"'"});
+          let lookup;
+          try{lookup=await qbApi('query',{query:"SELECT Id, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+String(docNum).replace(/'/g,"\\'")+"'"})}
+          catch(e){log.details.push(docNum+' — BLOCKED: duplicate lookup failed: '+e.message);log.status='partial';continue}
+          const lookupFault=lookup?.Fault?.Error?.[0];
+          if(lookupFault){log.details.push(docNum+' — BLOCKED: duplicate lookup failed: '+(lookupFault.Detail||lookupFault.Message||'QBO query error'));log.status='partial';continue}
           const matches=(lookup?.QueryResponse?.Invoice||[]).filter(existing=>
             String(existing.CustomerRef?.value||'')===String(cQBId)
             &&Math.abs(safeNum(existing.TotalAmt)-invoiceTotal)<0.005
@@ -415,7 +425,10 @@ export function createQBSyncEngine(ctx){
       let existingQBItems=[];
       try{
         existingQBItems=await loadAllQBEntities(qbApi,'Item','Id, Name, Sku, Type, SyncToken, Active',1000);
-      }catch(e){console.warn('[QB] Item query failed:',e)}
+      }catch(e){
+        log.status='error';log.details.push('Item duplicate preflight failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Product item sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
+      }
       const prodQBMap={...(qbConfig.prodQBMap||{})};
       const skuGroups=new Map();
       prod.filter(p=>p.is_active!==false&&String(p.sku||'').trim()).forEach(p=>{
@@ -495,7 +508,10 @@ export function createQBSyncEngine(ctx){
       const toSync=allToSync.slice(0,QB_SYNC_BATCH_SIZE);
       let existingQBEstimates=[];
       try{existingQBEstimates=await loadAllQBEntities(qbApi,'Estimate','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500)}
-      catch(e){console.warn('[QB] Estimate preflight query failed:',e)}
+      catch(e){
+        log.status='error';log.details.push('Estimate duplicate preflight failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Sales-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
+      }
       let fallbackSalesItemId;
       try{
         const refs=await requiredAccountRefs(['income_account']);
@@ -577,10 +593,16 @@ export function createQBSyncEngine(ctx){
       let existingQBVendors=[];
       try{
         existingQBVendors=await loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, SyncToken',500);
-      }catch(e){console.warn('[QB] Vendor query failed:',e)}
+      }catch(e){
+        log.status='error';log.details.push('Vendor duplicate preflight failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — QBO vendor preflight failed','error');setQbSyncing(false);return;
+      }
       let existingQBPOs=[];
       try{existingQBPOs=await loadAllQBEntities(qbApi,'PurchaseOrder','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500)}
-      catch(e){console.warn('[QB] Purchase-order preflight query failed:',e)}
+      catch(e){
+        log.status='error';log.details.push('Purchase-order duplicate preflight failed: '+e.message);
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return;
+      }
       const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
       // POs do not post to the GL, but every line still carries the approved
       // category so the PO-to-bill workflow remains deterministic.
@@ -611,7 +633,9 @@ export function createQBSyncEngine(ctx){
         let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
         if(!qbVendorId){
           // Check existing QB vendors by name
-          const match=existingQBVendors.find(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+          const vendorMatches=existingQBVendors.filter(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+          if(vendorMatches.length>1){log.details.push(group.poId+' — BLOCKED: multiple QBO vendors exactly match "'+vendorName+'"');log.status='partial';continue}
+          const match=vendorMatches[0];
           if(match){qbVendorId=match.Id}
           else{
             let vRes;
