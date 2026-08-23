@@ -29233,14 +29233,26 @@ export default function App(){
     // Push bills to QuickBooks — SAME pile as the Portal button (Matched = matched + clean),
     // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
-      if(qbConfig.initialMigrationApproved!==true){nf('Bulk QuickBooks bill push is locked until the live canary and read-back review are approved. Use QuickBooks → Bill Upload for one tagged canary bill.','error');return}
+      if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
         .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&!row.qbStatus);
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
-      // Posting transactions are intentionally sequential and capped at 20. Every
-      // completed row is persisted, so the next click resumes the remaining rows
-      // instead of holding one browser/server request open for the full backlog.
-      const batch=selectedEntries.slice(0,20);
+      const canaryMode=qbConfig.initialMigrationApproved!==true;
+      const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
+      const canaryRemaining=Math.max(0,5-completedCanaries.size);
+      if(canaryMode&&!canaryRemaining){nf('Five QBO canary bills are complete. Review them in QuickBooks and approve the migration before any production batch.','error');return}
+      // Before approval, send no more than three explicitly confirmed canaries at
+      // once and no more than five total. After approval, use resumable batches of
+      // 20. Posting transactions stay sequential in both modes.
+      const batchLimit=canaryMode?Math.min(3,canaryRemaining):20;
+      const batch=selectedEntries.slice(0,batchLimit);
+      if(canaryMode){
+        const preview=batch.map(({row})=>{
+          const bill=row.parsed||{};
+          return '• '+(bill.doc_number||row.id||'no document #')+' — '+(bill.supplier||'unknown vendor')+' — $'+safeNum(bill.doc_total).toFixed(2);
+        }).join('\n');
+        if(!window.confirm('TEST MODE — send only these '+batch.length+' bill(s) to the live QBO company?\n\n'+preview+'\n\nThe full push stays locked until you review the QBO records and approve it.'))return;
+      }
       const selectedIndexes=new Set(batch.map(entry=>entry.index));
       const remainingAfterBatch=Math.max(0,selectedEntries.length-batch.length);
       setBillImport(x=>({...x,uploading:true}));
@@ -29328,7 +29340,7 @@ export default function App(){
           const txnDate=_qbDate(bill.doc_date)||new Date().toISOString().slice(0,10);
           const billDocNumber=String(bill.doc_number||b.id||'').trim();
           if(!billDocNumber)throw new Error('Bill has no vendor document number or portal source ID; no QBO bill was sent.');
-          const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
+          const memo=[canaryMode?'NSA-QB-CANARY:'+String(b.id||bill.doc_number||bi):'','PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
           const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:billRefs.ap_account,TxnDate:txnDate,
             DueDate:_qbDate(bill.due_date),DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
 
@@ -29375,7 +29387,9 @@ export default function App(){
           if(portalApplied){
             setQBConfig(prev=>{
               const ids=new Set((prev._syncedBillIds||[]).map(String));ids.add(String(qboBillId));
-              return {...prev,_syncedBillIds:[...ids],syncLog:[log,...prev.syncLog].slice(0,100)};
+              const canaryIds=new Set((prev._qbCanaryBillIds||[]).map(String));
+              if(canaryMode)canaryIds.add(String(qboBillId));
+              return {...prev,_syncedBillIds:[...ids],_qbCanaryBillIds:[...canaryIds],syncLog:[log,...prev.syncLog].slice(0,100)};
             });
           }else{
             setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
@@ -29400,7 +29414,7 @@ export default function App(){
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
       });
-      nf(success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?' · '+remainingAfterBatch+' ready for the next batch':''));
+      nf((canaryMode?'TEST: ':'')+success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?(canaryMode?' · full push remains locked for review':' · '+remainingAfterBatch+' ready for the next batch'):''));
     };
     // Import sub-tabs visible per role. Admins see everything; reps and CSRs
     // see only the NetSuite order import; accounting also gets supplier bills.
@@ -30469,7 +30483,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+ready.filter(b=>!b.qbStatus).length+' to QuickBooks'})}
+                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test up to 3 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
