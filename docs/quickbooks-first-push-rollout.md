@@ -1,104 +1,80 @@
 # QuickBooks first-push rollout plan
 
-## Goal
+## Non-negotiable controls
 
-Prove the chart-of-accounts routing with a tiny, reviewable sample, then move the full backlog with resumable batches. No browser tab, function timeout, rate limit, duplicate click, or partial failure may cause a duplicate transaction or lose the run's position.
+- Read the connected company and live QBO chart before writing anything.
+- Fail if any required account number is missing, inactive, duplicated, or the wrong account type.
+- Use the portal document ID/number plus stored QBO ID as the idempotency key.
+- Never mark a portal transaction applied until the QBO create/update succeeds or an exact existing QBO record is verified.
+- Reconcile every bill's categorized lines to its document total before sending.
+- Keep taxable invoices blocked until live QBO tax-code behavior is verified.
 
-## Stage 0 — deployment prerequisites
+## 1. Read-only preflight
 
-1. Apply and verify `supabase/migrations/00134_qb_oauth_tokens.sql` before connecting QBO. The application expects server-side OAuth token storage.
-2. Connect the intended QBO company and record the company/realm ID in the run manifest.
-3. Run account preflight. Every required account number must exist exactly once, be active, and have the expected QBO account type.
-4. Resolve the taxable-invoice design before enabling taxable invoice pushes. A QBO TaxCode/TxnTaxDetail mapping is required; 25201 must not be faked as a sales line.
-5. Confirm opening-balance/cutover dates so historical and portal-created transactions cannot overlap.
+The first action makes zero QBO changes. It records the company name and realm ID, resolves every approved account by account number, counts relevant QBO entities, and checks existing customers, vendors, items, document numbers, and stored QBO links.
 
-## Stage 1 — dry run (zero QBO writes)
+Preflight must specifically confirm that 51300 is now a Cost of Goods Sold account. If QBO still reports it as Expense, stop and ask Andrea to correct it.
 
-The UI should create an immutable preflight manifest with a run ID and show:
+## 2. Dry-run manifest
 
-- source counts by entity and transaction type;
-- exact debit/credit account preview for every posting type;
-- QBO IDs already linked in the portal;
-- duplicate source IDs, duplicate document numbers, and duplicate QBO candidates;
-- missing customers, vendors, items, PO/SO links, account mappings, or dates;
-- bill line-to-document-total discrepancies;
-- taxable invoices blocked pending QBO tax-code mapping;
-- estimated API call count, batch count, and completion time range.
+Run the complete backlog through the same builders and validators used for live writes, but stop before each API write. The report should contain source ID, document number, customer/vendor, date, total, every account/item line, dependency status, duplicate candidates, and the exact blocking error.
 
-Dry run is the default action. It must use the same payload builders and validators as the real push; it may only replace the final API write with a recorded preview.
+The dry run should report counts for:
 
-## Stage 2 — controlled canary
+- QBO NonInventory items by SKU;
+- customers and vendors;
+- estimates and purchase orders;
+- invoices, bills, and payments;
+- blocked taxable invoices;
+- bills with missing SKUs or total discrepancies;
+- duplicate source IDs or QBO document numbers.
 
-The approved first test is a live-company canary of 3–5 explicitly selected real records, but only after the portal has read the live company, account list, vendors, customers, items, and likely duplicate document numbers with zero writes. A sandbox rehearsal remains optional if the live preflight exposes setup uncertainty.
+## 3. Live canary
 
-The live canary should include, when available:
+Select 3–5 real, easy-to-recognize records:
 
-- one merchandise bill with freight and Sports Inc fee;
-- one outside-decoration bill with freight;
-- one tax-exempt invoice that includes customer-billed shipping;
-- one inventory item/adjustment;
-- one customer payment.
+1. one merchandise bill with SKU quantity, freight, and a Sports Inc fee;
+2. one outside-decoration bill with freight;
+3. one tax-exempt invoice containing customer shipping;
+4. one payment linked to that invoice;
+5. one QBO NonInventory SKU item and, if useful, its PO.
 
-Every canary transaction carries `NSA-QB-CANARY:<run_id>` in its memo/private note and its normal portal source ID as the idempotency key. Successful real canaries are marked complete and excluded from the later full run. After pushing, the UI reads each transaction back from QBO and compares total, vendor/customer, date, document number, line accounts, A/R or A/P side, and payment deposit account.
+Tag them `NSA-QB-CANARY:<run_id>`. Read each record back from QBO and compare document number, vendor/customer, date, total, SKU quantity, account lines, A/R or A/P control account, and payment deposit account.
 
-The portal pauses after the canary. The operator opens each record in QuickBooks and supplies screenshots/photos of the transaction detail and account impact. The operator must explicitly approve both the API read-back report and the visual QBO review before the production queue can start. Canary approval never auto-starts the full run.
+Pause. The operator opens the records in QBO and sends screenshots/photos. Production remains locked until the API read-back and visual review are both approved.
 
-## Stage 3 — production queue
-
-### Durable job model
-
-Add durable `qb_sync_runs` and `qb_sync_run_items` tables. A run item contains source entity/type/ID, payload hash, dependency IDs, state, attempt count, next-attempt time, QBO ID, last error, and timestamps. Use a unique constraint on `(qbo_realm_id, entity_type, source_id)`.
-
-The browser creates, pauses, resumes, and monitors a run. A server-side worker performs writes. Closing the tab cannot stop or lose the migration.
-
-### Ordering and batches
+## 4. Resumable production batches
 
 Process dependencies in this order:
 
-1. account and connection preflight;
-2. customers and vendors;
-3. QBO items/inventory setup;
-4. estimates and purchase orders (non-posting);
-5. invoices and bills;
-6. payments and inventory adjustments;
-7. read-back reconciliation.
+1. customers and vendors;
+2. NonInventory SKU items;
+3. estimates and purchase orders;
+4. invoices and bills;
+5. payments;
+6. read-back reconciliation.
 
-Start with batches of 20 and concurrency of 2. Make both settings configurable without a deploy. Each worker invocation claims only enough work for a short execution window, checkpoints every item, and schedules the next invocation. This avoids relying on a single long-running Netlify request.
+Start with 20 records per batch and concurrency 1 for posting transactions. Persist success or failure after every record. A new run skips exact verified successes and resumes the remaining records. A browser retry or duplicate click must query QBO by stored ID or document number before creating anything.
 
-### Idempotency and retry rules
+After a clean 20-record pilot, continue in batches of 20. Increase concurrency only for independent non-posting records and only after error/rate-limit results are clean. Do not depend on one long browser request to process the entire migration.
 
-- Query by stored QBO ID or portal document number before every create retry.
-- Persist the QBO ID immediately after a successful create, before advancing the queue.
-- A repeated click or worker retry must return the existing result, never create a second transaction.
-- Honor QBO `Retry-After` on rate limits. Retry 429 and transient 5xx/network failures with exponential backoff and jitter.
-- Refresh OAuth once on an authentication failure, then retry. Pause the run if refresh still fails.
-- Do not retry account, payload, tax, duplicate, or other validation 4xx responses automatically. Move them to `needs_review` with the exact QBO error.
-- Cap automatic attempts and support operator retry after correction.
+Retry 429 and transient network/5xx errors with bounded exponential backoff and jitter. Respect `Retry-After`. Do not automatically retry account, tax, duplicate-conflict, or payload validation errors; mark them for review.
 
-### Operator controls
-
-- Dry run / canary / production modes are visibly distinct.
-- Show queued, running, succeeded, needs-review, retrying, and remaining counts.
-- Pause stops new claims but lets in-flight requests finish.
-- Resume continues from checkpoints.
-- Cancel never deletes QBO records; it only prevents remaining queue items from starting.
-- Export a final CSV/JSON reconciliation report containing source ID, QBO ID, amount, accounts, status, attempts, and error.
-
-## Stage 4 — completion gates
+## 5. Completion checks
 
 The migration is complete only when:
 
-- every queued item is succeeded or explicitly dispositioned;
-- source totals equal QBO totals by transaction type and account;
+- every source record is succeeded, intentionally excluded, or explicitly in needs-review;
 - no duplicate portal source IDs or QBO document numbers exist;
-- all successful transactions pass read-back checks;
-- A/R, A/P, inventory asset, purchases, freight, outside decoration, Sports Inc fee, inventory loss, sales, deposits, and sales-tax liability reports agree with the approved manifest;
-- the final report and run configuration are retained for audit.
+- QBO read-back totals equal portal totals by transaction type;
+- 40000, 40200, 51000, 51300, 52000, 58000, 67000, 11000, 11010, 21100, and the state tax balances agree with the approved manifest;
+- all successful canary and production records retain their QBO IDs;
+- the final reconciliation report is saved for audit.
 
-## Recommended rollout sizes
+## Still needed before the full historical push
 
-1. Dry run: full population, no writes.
-2. Canary: 3–5 selected records.
-3. Pilot: 20 records, concurrency 1.
-4. Ramp: 100 records, batches of 20, concurrency 2.
-5. Full: continue batches of 20; increase concurrency only after rate-limit and error metrics remain clean.
+- the official portal/QBO cutover date;
+- exact scope for closed history, paid historical invoices, unpaid bills, and payments;
+- live QBO TaxCode/TxnTaxDetail results;
+- the portal source for outbound UPS/FedEx expenses;
+- confirmation that 51300 has been changed to Cost of Goods Sold in live QBO.
