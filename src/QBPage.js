@@ -83,6 +83,7 @@ export default function QBPage(){
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
     const uploadBill=async()=>{
+      if(!migrationUnlocked){nf('For the initial test, use Supplier Bills → Test up to 3 in QuickBooks. Manual bills do not carry the parsed SKU/quantity checks.','error');return}
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before any test bill','error');return}
       if(!qbBillVendor){nf('Select a vendor','error');return}
       if(!qbBillAmount||parseFloat(qbBillAmount)<=0){nf('Enter bill amount','error');return}
@@ -603,8 +604,9 @@ export default function QBPage(){
                 <input type="checkbox" checked={qbCanaryMode||!migrationUnlocked} disabled={!migrationUnlocked} onChange={e=>setQbCanaryMode(e.target.checked)}/>
                 <span><strong>Live canary test</strong><br/>Tags this real QBO bill with NSA-QB-CANARY for your screenshot review. Required until the initial migration is approved.</span>
               </label>
-              <button className="btn btn-primary" style={{width:'100%'}} disabled={qbBillUploading} onClick={uploadBill}>
-                {qbBillUploading?'Uploading to QuickBooks...':(qbCanaryMode||!migrationUnlocked)?'Push One Live Canary Bill':'Upload Bill to QuickBooks'}
+              <button className="btn btn-primary" style={{width:'100%'}} disabled={qbBillUploading||!migrationUnlocked} onClick={uploadBill}
+                title={!migrationUnlocked?'Use Supplier Bills → Test up to 3 so SKU quantities and bill totals are validated':''}>
+                {qbBillUploading?'Uploading to QuickBooks...':!migrationUnlocked?'Use Parsed Supplier-Bill Canary':'Upload Bill to QuickBooks'}
               </button>
             </div>
           </div>
