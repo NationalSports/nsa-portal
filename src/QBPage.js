@@ -12,7 +12,9 @@ import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
   QB_ACCOUNT_SPECS,
+  QB_STATE_TAX_ACCOUNT_KEYS,
   buildVendorBillLines,
+  calculateCustomerShipping,
   loadQBAccounts,
   manualBillAccountKey,
   resolveQBAccountRefs,
@@ -20,17 +22,22 @@ import {
 
 const QB_MAPPING_FIELDS = [
   ['income_account', 'Customer sales + shipping'],
-  ['purchases_account', 'Vendor merchandise purchases'],
-  ['cogs_account', 'Inventory item COGS'],
+  ['discount_account', 'Customer discounts'],
+  ['purchases_account', 'SKU purchases + supplies'],
   ['freight_account', 'Vendor freight in'],
+  ['outbound_freight_account', 'Outbound UPS / FedEx'],
   ['sports_inc_fee_account', 'Sports Inc fee'],
   ['deco_account', 'Outside decoration'],
-  ['inventory_asset_account', 'Inventory asset'],
-  ['inventory_adjustment_account', 'Inventory loss / adjustment'],
   ['ar_account', 'Accounts Receivable'],
   ['payment_deposit_account', 'Payment deposit'],
   ['ap_account', 'Accounts Payable'],
-  ['tax_account', 'Sales tax payable'],
+  ['tax_parent_account', 'Sales tax parent'],
+  ['tax_ca_account', 'Sales tax — CA'],
+  ['tax_az_account', 'Sales tax — AZ'],
+  ['tax_co_account', 'Sales tax — CO'],
+  ['tax_nv_account', 'Sales tax — NV'],
+  ['tax_tx_account', 'Sales tax — TX'],
+  ['tax_wa_account', 'Sales tax — WA'],
 ];
 
 export default function QBPage(){
@@ -227,6 +234,9 @@ export default function QBPage(){
           if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),qty:eq,rate:sell,amount:eq*sell,account:qbConfig.mapping.income_account});
         });
       });
+      const salesSubtotal=lines.reduce((a,l)=>a+l.amount,0);
+      const customerShipping=calculateCustomerShipping(so,salesSubtotal);
+      if(customerShipping>0)lines.push({type:'SalesItemLine',desc:'Customer shipping',qty:1,rate:customerShipping,amount:customerShipping,account:qbConfig.mapping.income_account});
       return{docType:'SalesOrder',docNumber:so.id,customerRef:c?.name||'Unknown',date:so.created_at,memo:so.memo,lines,total:lines.reduce((a,l)=>a+l.amount,0)};
     };
 
@@ -241,9 +251,12 @@ export default function QBPage(){
 
     const buildQBInvoice=(inv)=>{
       const so=sos.find(s=>s.id===inv.so_id);
+      const customer=cust.find(c=>c.id===inv.customer_id);
+      const taxState=String(inv.shipping_state||customer?.shipping_state||'').trim().toUpperCase();
+      const taxKey=QB_STATE_TAX_ACCOUNT_KEYS[taxState];
       return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
         date:inv.date,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
-        tax:inv.tax||0,taxAccount:qbConfig.mapping.tax_account,
+        tax:inv.tax||0,taxAccount:taxKey?qbConfig.mapping[taxKey]:'State not mapped',
         account:qbConfig.mapping.ar_account};
     };
 
@@ -322,7 +335,7 @@ export default function QBPage(){
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['bills','Bill Upload'],['inventory','Inventory'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
 
@@ -352,7 +365,7 @@ export default function QBPage(){
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncBillsFromQB}>Bills from QB</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPurchaseOrders}>POs</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncInventory}>Inventory</button>
+                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncInventory}>QBO Items</button>
               </div>
             </div>
           </div>
@@ -365,7 +378,7 @@ export default function QBPage(){
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) to QB; bill costs auto-pull from QB back to portal POs</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bill Costs (QB → Portal)</strong> — bills received in QB matched to POs push costs back to portal daily</div>
-              <div>&#8226; <strong>Inventory</strong> — quantity and value using 12000 Inventory Asset, 50000 COGS, and 52400 Inventory Loss</div>
+              <div>&#8226; <strong>Products</strong> — one QBO NonInventory item per SKU; size/color inventory remains in the portal</div>
             </div>
           </div>
         </div>
@@ -612,11 +625,11 @@ export default function QBPage(){
       {qbTab==='inventory'&&<>
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <h2>Inventory Sync (Totals Only)</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInventory}>{qbSyncing?'Syncing...':'Sync Inventory'}</button>
+            <h2>QBO Product Items (One per SKU)</h2>
+            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInventory}>{qbSyncing?'Syncing...':'Sync NonInventory Items'}</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
-            Syncs product totals (qty + cost value) as non-inventory items to QB. Real size-level inventory tracking stays on the portal.
+            Creates one NonInventory item per SKU using 40000 Sales and 51300 Purchases. QBO does not receive size/color on-hand quantities or inventory valuation; those remain in the portal.
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
@@ -720,7 +733,7 @@ export default function QBPage(){
           <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
           <div>&#8226; <strong>Invoices</strong> &#8594; QB Invoices (total amount as single line, payments applied)</div>
           <div>&#8226; <strong>Vendor Bills</strong> &#8594; Upload bills with PDF/image attachments directly into QB</div>
-          <div>&#8226; <strong>Inventory</strong> &#8594; Product totals as QB Items (qty + cost value — real inventory stays on portal)</div>
+          <div>&#8226; <strong>Products</strong> &#8594; One QBO NonInventory Item per SKU; inventory quantities and valuation stay in Portal</div>
         </div>
       </div>}
     </>);
