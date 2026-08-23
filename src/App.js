@@ -19492,7 +19492,7 @@ export default function App(){
                 })}
               </div>}
             </div>
-          </div>}
+          </div>
 
           {/* Ship Destination */}
           <div className="card" style={{marginBottom:12,borderLeft:'3px solid '+(shipDest==='ship_customer'?'#3b82f6':shipDest==='ship_deco'?'#d97706':'#64748b')}}>
