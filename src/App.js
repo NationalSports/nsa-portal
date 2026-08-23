@@ -416,7 +416,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, isDecorationVendorBill, loadQBAccounts, migrateQBAccountMapping, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, resolveQBAccountRefs } from './qbAccountMappings';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -29234,117 +29234,174 @@ export default function App(){
     // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
       if(qbConfig.initialMigrationApproved!==true){nf('Bulk QuickBooks bill push is locked until the live canary and read-back review are approved. Use QuickBooks → Bill Upload for one tagged canary bill.','error');return}
-      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!b.qbStatus);
-      if(!selected.length){nf('No matched bills to push','error');return}
-      const qbIds=new Set(selected.map(b=>b.id));
+      const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
+        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&!row.qbStatus);
+      if(!selectedEntries.length){nf('No matched bills to push','error');return}
+      // Posting transactions are intentionally sequential and capped at 20. Every
+      // completed row is persisted, so the next click resumes the remaining rows
+      // instead of holding one browser/server request open for the full backlog.
+      const batch=selectedEntries.slice(0,20);
+      const selectedIndexes=new Set(batch.map(entry=>entry.index));
+      const remainingAfterBatch=Math.max(0,selectedEntries.length-batch.length);
       setBillImport(x=>({...x,uploading:true}));
-      // Load the full chart once. Each bill resolves its exact account numbers below;
-      // missing, inactive, duplicate, or wrong-type accounts fail closed.
-      let qbAccounts=[];
-      try{qbAccounts=await loadQBAccounts(qbApi)}
-      catch(e){
-        nf('Could not validate the QuickBooks chart of accounts — '+(e.message||'connection error'),'error');
+
+      let qbAccounts=[],existingQBVendors=[],existingQBItems=[],existingQBBills=[];
+      try{
+        [qbAccounts,existingQBVendors,existingQBItems,existingQBBills]=await Promise.all([
+          loadQBAccounts(qbApi),
+          loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',1000),
+          loadAllQBEntities(qbApi,'Item','Id, Name, Sku, Type, Active',1000),
+          loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500),
+        ]);
+      }catch(e){
+        nf('Could not run the QuickBooks bill preflight — '+(e.message||'connection error'),'error');
         setBillImport(x=>({...x,uploading:false}));return;
       }
+
+      const normQBName=value=>String(value||'').trim().replace(/\s+/g,' ').toLowerCase();
+      const billsByDoc=new Map();
+      existingQBBills.forEach(qbBill=>{
+        const key=String(qbBill.DocNumber||'').trim().toLowerCase();
+        if(!key)return;
+        if(!billsByDoc.has(key))billsByDoc.set(key,[]);
+        billsByDoc.get(key).push(qbBill);
+      });
+      const setRowResult=(bi,b,status,message)=>{
+        setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:status,qbMsg:message}:p)}));
+        return {[b.id]:{qbStatus:status,qbMsg:message}};
+      };
+
       let success=0,failed=0;
-      const qbResults={};// Track QB status locally to avoid stale closure issue
+      const qbResults={};
       for(let bi=0;bi<billImport.parsed.length;bi++){
-        const b=billImport.parsed[bi];if(!qbIds.has(b.id))continue;
-        const bill=b.parsed;
-        // Find vendor
-        const vendorName=bill.supplier||'Unknown Vendor';
-        let vendor=vend.find(v=>v.name.toLowerCase().includes(vendorName.toLowerCase()));
-        if(!vendor)vendor=vend.find(v=>vendorName.toLowerCase().includes(v.name.toLowerCase()));
-        let qbVendorId=vendor?.qb_vendor_id;
-        if(!qbVendorId&&vendor){
-          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendor.name,CompanyName:vendor.name}});
-          if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id;setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v))}
-        }
-        if(!qbVendorId){
-          // Create vendor with supplier name
-          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
-          if(vRes?.Vendor?.Id)qbVendorId=vRes.Vendor.Id;
-        }
-        // Query QB for existing vendor by name before giving up
-        if(!qbVendorId){
-          try{
-            const qRes=await qbApi('query',{query:"SELECT * FROM Vendor WHERE DisplayName = '"+vendorName.replace(/'/g,"\\'")+"'"});
-            const qbVendor=qRes?.QueryResponse?.Vendor?.[0];
-            if(qbVendor?.Id){
-              qbVendorId=qbVendor.Id;
-              if(vendor)setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
-            }
-          }catch(e){console.warn('[QB] Vendor query failed:',e)}
-        }
-        if(!qbVendorId){
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'Vendor not found/created'}:p)}));
-          failed++;continue;
-        }
-        let amt=0,lineItems=[],billRefs=null;
+        if(!selectedIndexes.has(bi))continue;
+        const b=billImport.parsed[bi];
+        const bill=b.parsed||{};
         try{
+          if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
+          const vendorName=String(bill.supplier||'').trim();
+          if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
+
+          let vendor=vend.find(v=>normQBName(v.name)===normQBName(vendorName));
+          if(!vendor)vendor=vend.find(v=>normQBName(v.name).includes(normQBName(vendorName))||normQBName(vendorName).includes(normQBName(v.name)));
+          const decoVendor=(decoVendors||[]).find(v=>normQBName(v.name)===normQBName(vendorName))
+            ||(decoVendors||[]).find(v=>normQBName(v.name).includes(normQBName(vendorName))||normQBName(vendorName).includes(normQBName(v.name)));
+          const portalVendor=vendor||decoVendor;
+          let qbVendorId=portalVendor?.qb_vendor_id;
+          if(qbVendorId&&!existingQBVendors.some(v=>String(v.Id)===String(qbVendorId)&&v.Active!==false))qbVendorId=null;
+
+          if(!qbVendorId){
+            const candidateNames=new Set([vendorName,portalVendor?.name].filter(Boolean).map(normQBName));
+            const exactMatches=existingQBVendors.filter(v=>v.Active!==false&&
+              (candidateNames.has(normQBName(v.DisplayName))||candidateNames.has(normQBName(v.CompanyName))));
+            if(exactMatches.length>1)throw new Error('Multiple active QBO vendors exactly match '+vendorName+'; no bill was sent.');
+            if(exactMatches.length===1)qbVendorId=exactMatches[0].Id;
+          }
+          if(!qbVendorId){
+            const displayName=String(portalVendor?.name||vendorName).trim();
+            const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:displayName,CompanyName:displayName}});
+            if(!vRes?.Vendor?.Id)throw new Error(vRes?.Fault?.Error?.[0]?.Detail||'Vendor was not found or created.');
+            qbVendorId=vRes.Vendor.Id;
+            existingQBVendors.push({Id:qbVendorId,DisplayName:displayName,CompanyName:displayName,Active:true});
+          }
+          if(vendor&&String(vendor.qb_vendor_id||'')!==String(qbVendorId)){
+            setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
+          }
+
           const decorationCategory=isDecorationVendorBill(bill,decoVendors);
           const routedBill=decorationCategory&&bill.kind!=='decoration'?{...bill,kind:'decoration'}:bill;
           const keys=decorationCategory
             ?['deco_account','freight_account','ap_account']
             :['purchases_account','freight_account','sports_inc_fee_account','ap_account'];
-          billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
-          const built=buildVendorBillLines(routedBill,billRefs);
-          amt=built.total;lineItems=built.lines;
+          const billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
+          const requiredSkus=decorationCategory?[]:(bill.items||[]).map(item=>item?.sku).filter(Boolean);
+          const billItemRefs=requiredSkus.length?indexQBNonInventoryItems(existingQBItems,requiredSkus):{};
+          const built=buildVendorBillLines(routedBill,billRefs,billItemRefs);
+          const amt=built.total;
+          const lineItems=built.lines;
+
+          const _qbDate=(s)=>{if(!s)return undefined;const t=String(s).trim();
+            if(/^\d{4}-\d{2}-\d{2}/.test(t))return t.slice(0,10);
+            const m2=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+            if(!m2)return undefined;
+            return (m2[3].length===2?'20'+m2[3]:m2[3])+'-'+m2[1].padStart(2,'0')+'-'+m2[2].padStart(2,'0');};
+          const txnDate=_qbDate(bill.doc_date)||new Date().toISOString().slice(0,10);
+          const billDocNumber=String(bill.doc_number||b.id||'').trim();
+          if(!billDocNumber)throw new Error('Bill has no vendor document number or portal source ID; no QBO bill was sent.');
+          const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
+          const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:billRefs.ap_account,TxnDate:txnDate,
+            DueDate:_qbDate(bill.due_date),DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
+
+          // Idempotency check happens before every create. An exact vendor/date/total
+          // match is reused; any same-number conflict blocks rather than guessing.
+          const docKey=billDocNumber.toLowerCase();
+          const sameNumber=billsByDoc.get(docKey)||[];
+          const exact=sameNumber.filter(existing=>
+            String(existing.VendorRef?.value||'')===String(qbVendorId)
+            &&Math.abs(safeNum(existing.TotalAmt)-amt)<0.005
+            &&String(existing.TxnDate||'').slice(0,10)===txnDate);
+          if(exact.length>1)throw new Error('QBO contains duplicate exact bills for document '+billDocNumber+'; no new bill was sent.');
+          if(sameNumber.length&&exact.length!==1)throw new Error('QBO document '+billDocNumber+' already exists with a different vendor, date, or total; no new bill was sent.');
+
+          let qboBillId,created=false;
+          if(exact.length===1){
+            qboBillId=exact[0].Id;
+          }else{
+            const billRes=await qbApi('upsert_bill',{bill:qbBill});
+            if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
+            qboBillId=billRes.Bill.Id;created=true;
+            const savedQBBill={Id:qboBillId,DocNumber:billDocNumber,VendorRef:{value:String(qbVendorId)},TotalAmt:amt,TxnDate:txnDate};
+            existingQBBills.push(savedQBBill);
+            billsByDoc.set(docKey,[...(billsByDoc.get(docKey)||[]),savedQBBill]);
+          }
+
+          // Only now—after QBO success or an exact existing read-back—may the
+          // portal apply quantities/costs. This prevents a QBO failure from
+          // mutating the portal and makes a crash/retry safely recoverable.
+          let portalApplied=!!bill._applied;
+          let portalWarning='';
+          if(!portalApplied){
+            try{applyBillToSO(bill);portalApplied=true}
+            catch(e){portalWarning='QBO Bill #'+qboBillId+' exists, but portal apply failed: '+(e.message||'unknown error')}
+          }
+          if(portalApplied&&!bill._applied&&_billHasTarget(bill)){
+            try{await _recordAppliedBills([{parsed:bill}])}
+            catch(e){portalWarning='QBO Bill #'+qboBillId+' and portal quantities were applied, but ledger write failed: '+(e.message||'unknown error')}
+          }
+
+          const action=created?'created':'verified existing';
+          const log={ts:new Date().toLocaleString(),type:'bill_upload',status:portalWarning?'partial':'success',
+            details:['Bill '+action+': '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+qboBillId,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2),...(portalWarning?[portalWarning]:[])]};
+          if(portalApplied){
+            setQBConfig(prev=>{
+              const ids=new Set((prev._syncedBillIds||[]).map(String));ids.add(String(qboBillId));
+              return {...prev,_syncedBillIds:[...ids],syncLog:[log,...prev.syncLog].slice(0,100)};
+            });
+          }else{
+            setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          }
+          const status=portalWarning?'partial':'success';
+          const msg=portalWarning||('QB Bill #'+qboBillId+(created?'':' (existing verified)'));
+          Object.assign(qbResults,setRowResult(bi,b,status,msg));
+          if(portalWarning)failed++;else success++;
         }catch(e){
-          const msg=e.message||'Bill account validation failed';
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:msg}:p)}));
-          qbResults[b.id]={qbStatus:'error',qbMsg:msg};failed++;continue;
-        }
-        const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
-        // Date → QB ISO. The old regex blindly prepended '20' to the year, turning
-        // MM/DD/YYYY (how S&S/SI bills print dates) into '202026-07-17' — an invalid
-        // TxnDate QB rejects. Handle ISO passthrough, 2- and 4-digit years.
-        const _qbDate=(s)=>{if(!s)return undefined;const t=String(s).trim();
-          if(/^\d{4}-\d{2}-\d{2}/.test(t))return t.slice(0,10);
-          const m2=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-          if(!m2)return undefined;
-          return (m2[3].length===2?'20'+m2[3]:m2[3])+'-'+m2[1].padStart(2,'0')+'-'+m2[2].padStart(2,'0');};
-        const qbBill={VendorRef:{value:qbVendorId},APAccountRef:billRefs.ap_account,TxnDate:_qbDate(bill.doc_date)||new Date().toISOString().slice(0,10),
-          DueDate:_qbDate(bill.due_date),
-          DocNumber:bill.doc_number||bill.po_number||undefined,
-          Line:lineItems,PrivateNote:memo};
-        // Apply billed quantities, tracking, and freight to matched SO/PO
-        // (uses shared applyBillToSO — skips if already applied at parse time). Ledger only
-        // when there was a target to apply to — an unmatched bill writes no billed qty here.
-        if(!bill._applied){applyBillToSO(bill);if(_billHasTarget(bill))await _recordAppliedBills([{parsed:bill}]);}
-        // Now push to QuickBooks
-        const billRes=await qbApi('upsert_bill',{bill:qbBill});
-        if(billRes?.Bill?.Id){
-          const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
-            details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2)]};
-          // Mark our own QB bill as already-synced so the QB→portal bill pull
-          // (syncBillsFromQB) can never pull it back and apply its cost a SECOND time —
-          // the portal already applied this bill's costs when it was pushed.
-          setQBConfig(prev=>({...prev,_syncedBillIds:[...(prev._syncedBillIds||[]),billRes.Bill.Id],syncLog:[log,...prev.syncLog].slice(0,100)}));
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
-          qbResults[b.id]={qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id};
-          success++;
-        }else{
-          const errMsg=billRes?.Fault?.Error?.[0]?.Detail||'Unknown error';
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:errMsg}:p)}));
-          qbResults[b.id]={qbStatus:'error',qbMsg:errMsg};
+          const msg=e.message||'Bill sync failed';
+          Object.assign(qbResults,setRowResult(bi,b,'error',msg));
           failed++;
         }
       }
+
       setBillImport(x=>({...x,uploading:false}));
-      // Persist QB status to savedBills history (use local qbResults to avoid stale closure)
       setSavedBills(prev=>{
         const updated=prev.map(sb=>{
           const result=qbResults[sb.id];
-          if(result)return{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''};
-          return sb;
+          return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''}:sb;
         });
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
       });
-      nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
+      nf(success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?' · '+remainingAfterBatch+' ready for the next batch':''));
     };
-
     // Import sub-tabs visible per role. Admins see everything; reps and CSRs
     // see only the NetSuite order import; accounting also gets supplier bills.
     const IMPORT_TABS_BY_ROLE={
