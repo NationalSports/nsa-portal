@@ -844,12 +844,19 @@ const sanmarApiCall = async (service, action, params = {}) => {
   } catch (error) { console.error('[SanMar] API call failed:', action, error); throw error; }
 };
 
-const sanmarGetProduct = async (style, color, size) => {
-  const params = { style };
-  if (color) params.color = color;
-  if (size) params.size = size;
-  return await sanmarApiCall('product', 'getProductInfoByStyleColorSize', params);
-};
+// Always send <color> and <size>, empty when unspecified. SanMar treats a MISSING
+// element differently from an empty one: style-only requests come back with a
+// partial variant list (one size-S row per color), while the same style queried
+// with empty <color></color><size></size> returns the full color/size range —
+// the shape every other call here (inventory, pricing, the brands sync) already
+// uses. Omitting the empty params is what left PO lines unmatchable ("⚠ missing"
+// partIds) and the part picker showing only size-S rows.
+const sanmarGetProduct = async (style, color, size) =>
+  await sanmarApiCall('product', 'getProductInfoByStyleColorSize', {
+    style: String(style || '').trim(),
+    color: color || '',
+    size: size || '',
+  });
 
 const sanmarGetProductByBrand = async (brand) =>
   await sanmarApiCall('product', 'getProductInfoByBrand', { brand });
