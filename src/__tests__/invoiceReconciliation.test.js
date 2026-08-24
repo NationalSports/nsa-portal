@@ -9,7 +9,7 @@
 // deliberately left unchanged, the test PINS it with a comment explaining
 // the concern, so any future change is a visible, deliberate diff.
 // ═══════════════════════════════════════════════
-const { buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, rekeyGarmentMocks, soLineKey } = require('../safeHelpers');
+const { buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, rekeyGarmentMocks, soLineKey } = require('../safeHelpers');
 
 const makeSO = (overrides = {}) => ({
   id: 'SO-1',
@@ -53,6 +53,38 @@ describe('Gap 12 (regression): buildInvoicedQtyMap ignores negative line quantit
     // A mixed invoice still counts its valid lines.
     const mixed = [{ inv_type: 'final', line_items: [{ _so_line_key: key0, qty: -2 }, { _so_line_key: key0, qty: 3 }] }];
     expect(buildInvoicedQtyMap(so, mixed).get(key0)).toBe(3);
+  });
+});
+
+describe('staleInvoiceQtyConflicts — blocks duplicate creation from a stale tab', () => {
+  test('reports a selected line whose live invoiced quantity increased', () => {
+    const so = makeSO();
+    const key0 = soLineKey(so.items[0], 0);
+    const live = [{ id: 'INV-2', inv_type: 'full', line_items: [{ _so_line_key: key0, qty: 1 }] }];
+    expect(staleInvoiceQtyConflicts(so, [], live, [0])).toEqual([
+      expect.objectContaining({ idx: 0, key: key0, localQty: 0, liveQty: 1, delta: 1 }),
+    ]);
+  });
+
+  test('does not block when the live and local snapshots agree', () => {
+    const so = makeSO();
+    const key0 = soLineKey(so.items[0], 0);
+    const known = [{ id: 'INV-1', inv_type: 'partial', line_items: [{ _so_line_key: key0, qty: 3 }] }];
+    expect(staleInvoiceQtyConflicts(so, known, known, [0])).toEqual([]);
+  });
+
+  test('ignores a newly invoiced line that is not selected', () => {
+    const so = makeSO();
+    const key1 = soLineKey(so.items[1], 1);
+    const live = [{ id: 'INV-2', inv_type: 'partial', line_items: [{ _so_line_key: key1, qty: 2 }] }];
+    expect(staleInvoiceQtyConflicts(so, [], live, [0])).toEqual([]);
+  });
+
+  test('deposit invoices do not claim line quantities', () => {
+    const so = makeSO();
+    const key0 = soLineKey(so.items[0], 0);
+    const live = [{ id: 'INV-D', inv_type: 'deposit', line_items: [{ _so_line_key: key0, qty: 10 }] }];
+    expect(staleInvoiceQtyConflicts(so, [], live, [0])).toEqual([]);
   });
 });
 
