@@ -9,7 +9,10 @@ export const QB_ACCOUNT_SPECS = Object.freeze({
   freight_account: Object.freeze({ number: '51000', name: 'Cost of Goods Sold:Freight In', types: ['Cost of Goods Sold'] }),
   outbound_freight_account: Object.freeze({ number: '67000', name: 'Freight Expenses', types: ['Expense'] }),
   sports_inc_fee_account: Object.freeze({ number: '58000', name: 'Sports Inc Fee', types: ['Cost of Goods Sold'] }),
+  omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }),
   deco_account: Object.freeze({ number: '52000', name: 'Outside Decoration', types: ['Cost of Goods Sold'] }),
+  decoration_account: Object.freeze({ number: '55100', name: 'Decoration', types: ['Cost of Goods Sold'] }),
+  in_house_art_account: Object.freeze({ number: '55400', name: 'Decoration:In House Art', types: ['Cost of Goods Sold'] }),
   ar_account: Object.freeze({ number: '11000', name: 'Accounts Receivable (A/R)', types: ['Accounts Receivable'] }),
   payment_deposit_account: Object.freeze({ number: '11010', name: 'Undeposited Funds', types: ['Other Current Asset'] }),
   ap_account: Object.freeze({ number: '21100', name: 'Accounts Payable (A/P)', types: ['Accounts Payable'] }),
@@ -42,8 +45,12 @@ const LEGACY_MAPPING_VALUES = Object.freeze({
   'Freight In': '51000',
   'Freight Expenses': '67000',
   'Sports Inc Fee': '58000',
+  'OMG Fee': '57000',
   'Subcontractor - Decoration': '52000',
   'Outside Decoration': '52000',
+  Decoration: '55100',
+  'In House Art': '55400',
+  'Decoration:In House Art': '55400',
   'Accounts Receivable': '11000',
   'Accounts Receivable (A/R)': '11000',
   'Undeposited Funds': '11010',
@@ -74,6 +81,43 @@ export function calculateCustomerShipping(order, salesSubtotal) {
   const prior = order?.pending_ship_applied ? Number(order?.pending_ship_amount) || 0 : 0;
   if (prior < 0) throw new Error('Prior customer shipping cannot be negative.');
   return money(current + prior);
+}
+
+// OMG is a distinct hosted-store source. A native Portal webstore may have a
+// Stripe/card fee, but that is not an OrderMyGear fee and must never hit 57000.
+export function getOmgFeeSource(storeOrSalesOrder) {
+  const row = storeOrSalesOrder || {};
+  const isOmg = row.source === 'omg' || !!row.omg_store_id || !!row._omg_source ||
+    String(row.id || '').startsWith('OMG-sale_');
+  const amount = money(row._omg_omg_fees);
+  return isOmg && amount > 0
+    ? { sourceType: 'omg_accounting_report', sourceId: row.omg_store_id || row.id, amount, accountKey: 'omg_fee_account' }
+    : null;
+}
+
+// Produces a read-only labor-cost manifest from the portal's two clocks. It is
+// deliberately not a QBO write builder: internal labor needs an accountant-
+// approved offset/reclassification account, stable source IDs, and a posting
+// cadence before it can be journaled without duplicating payroll expense.
+export function buildInternalLaborCostManifest({ artLogs = [], decorationLogs = [], laborRates = {} } = {}) {
+  const summarize = (logs, accountKey, sourceType) => {
+    let minutes = 0;
+    let idleMinutes = 0;
+    let cost = 0;
+    for (const log of logs || []) {
+      const mins = Math.max(0, Number(log?.minutes) || 0);
+      const idle = Math.min(mins, Math.max(0, Number(log?.idleMinutes) || 0));
+      const rate = Math.max(0, Number(laborRates?.[log?.person]) || 0);
+      minutes += mins;
+      idleMinutes += idle;
+      cost += mins / 60 * rate;
+    }
+    return { sourceType, accountKey, minutes, idleMinutes, amount: money(cost), logCount: (logs || []).length };
+  };
+  return {
+    decoration: summarize(decorationLogs, 'decoration_account', 'job_time_logs'),
+    inHouseArt: summarize(artLogs, 'in_house_art_account', 'art_time_logs'),
+  };
 }
 
 export function migrateQBAccountMapping(mapping = {}) {
@@ -310,6 +354,9 @@ export const QB_ACCOUNT_POSTING_MATRIX = Object.freeze([
   { itemType: 'Outbound UPS / FedEx expense', accountKey: 'outbound_freight_account', account: '67000 Freight Expenses', posting: 'Debit', control: 'Not currently created by Connect' },
   { itemType: 'Outside decoration vendor bill', accountKey: 'deco_account', account: '52000 Outside Decoration', posting: 'Debit', control: '21100 A/P credit' },
   { itemType: 'Sports Inc fee', accountKey: 'sports_inc_fee_account', account: '58000 Sports Inc Fee', posting: 'Debit', control: '21100 A/P credit' },
+  { itemType: 'OrderMyGear hosted-store fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit', control: 'Source: OMG Accounting Report; settlement posting method pending' },
+  { itemType: 'In-house decoration labor', accountKey: 'decoration_account', account: '55100 Decoration', posting: 'Debit / payroll reclass', control: 'Source: production time logs × labor rate; offset/cadence pending' },
+  { itemType: 'In-house art labor', accountKey: 'in_house_art_account', account: '55400 In House Art', posting: 'Debit / payroll reclass', control: 'Source: art time logs × labor rate; offset/cadence pending' },
   { itemType: 'Customer payment deposit', accountKey: 'payment_deposit_account', account: '11010 Undeposited Funds', posting: 'Debit', control: '11000 A/R credit' },
   { itemType: 'Customer discount', accountKey: 'discount_account', account: '40200 Sales:Discounts', posting: 'Debit / negative revenue', control: '11000 A/R' },
   { itemType: 'State sales tax', accountKey: 'state tax mapping', account: '25200–25230 state subaccounts', posting: 'Credit', control: 'Portal amount; QBO TaxCode mapping required' },
