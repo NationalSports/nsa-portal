@@ -26,6 +26,8 @@ The dry run should report counts for:
 - estimates and purchase orders;
 - invoices, bills, and payments;
 - blocked taxable invoices;
+- OMG fee manifests from the Accounting Report, excluding native Portal webstores;
+- 55100/55400 labor manifests by clock source, employee, rate, minutes, idle minutes, and date;
 - bills with missing SKUs or total discrepancies;
 - duplicate source IDs or QBO document numbers.
 
@@ -67,7 +69,7 @@ The migration is complete only when:
 - every source record is succeeded, intentionally excluded, or explicitly in needs-review;
 - no duplicate portal source IDs or QBO document numbers exist;
 - QBO read-back totals equal portal totals by transaction type;
-- 40000, 40200, 51000, 51300, 52000, 58000, 67000, 11000, 11010, 21100, and the state tax balances agree with the approved manifest;
+- 40000, 40200, 51000, 51300, 52000, 57000, 58000, 67000, 11000, 11010, 21100, and the state tax balances agree with the approved manifest;
 - all successful canary and production records retain their QBO IDs;
 - the final reconciliation report is saved for audit.
 
@@ -77,4 +79,6 @@ The migration is complete only when:
 - exact scope for closed history, paid historical invoices, unpaid bills, and payments;
 - live QBO TaxCode/TxnTaxDetail results;
 - the portal source for outbound UPS/FedEx expenses;
+- the accountant-approved 57000 settlement method (negative bank-deposit line versus vendor bill/expense);
+- the payroll reclassification offset account and cadence for 55100/55400;
 - confirmation that 51300 has been changed to Cost of Goods Sold in live QBO.
