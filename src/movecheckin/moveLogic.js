@@ -181,6 +181,40 @@ export const buildSubmitPlan = (tally, invRows, products) => {
   return { counted, zeroCandidates, unmatched };
 };
 
+// CSV snapshot of the submit review — the paper trail downloaded before the
+// numbers are written. One row per SKU×size; zero-candidates say whether the
+// zero-out was confirmed, unmatched lines are flagged for follow-up.
+export const submitPlanCsv = (plan, zeroChecked) => {
+  const esc = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const rows = [['type', 'sku', 'name', 'color', 'size', 'current_qty', 'new_qty']];
+  (plan?.counted || []).forEach((c) => c.rows.forEach((r) => rows.push(['counted', c.sku, c.name, c.color, r.size, r.oldQty, r.quantity])));
+  (plan?.zeroCandidates || []).forEach((z) => z.rows.forEach((r) => rows.push([zeroChecked && zeroChecked[z.product_id] ? 'zero_out_confirmed' : 'never_came_over_kept', z.sku, z.name, z.color, r.size, r.oldQty, zeroChecked && zeroChecked[z.product_id] ? 0 : r.oldQty])));
+  (plan?.unmatched || []).forEach((t) => Object.entries(t.sizes || {}).forEach(([sz, q]) => rows.push(['unmatched_sku', t.sku, t.name, '', sz, '', q])));
+  return rows.map((r) => r.map(esc).join(',')).join('\n');
+};
+
+// Contents ⇄ editor lines for the box detail "edit contents" mode. Editor
+// lines mirror the No QR SKU editor: per-size qty inputs. Sizes come from the
+// entry itself (a scanned box's real sizes) plus the product's available_sizes
+// when a line is added fresh.
+export const contentsToLines = (contents) =>
+  (contents || []).filter(Boolean).map((e) => ({
+    sku: e.sku || '', product_id: e.product_id || null, name: e.name || '', color: e.color || '',
+    so_id: e.so_id, if_id: e.if_id, // preserved verbatim on save — reconciliation refs
+    available_sizes: Object.keys(e.sizes || {}).length ? Object.keys(e.sizes) : ['EA'],
+    sizes: { ...(e.sizes || {}) },
+  }));
+
+export const linesToContents = (lines) =>
+  (lines || []).map((l) => {
+    const sizes = Object.fromEntries(Object.entries(l.sizes || {}).map(([s, v]) => [s, +v || 0]).filter(([, v]) => v > 0));
+    const e = { sku: l.sku, name: l.name, color: l.color || '', sizes };
+    if (l.product_id) e.product_id = l.product_id;
+    if (l.so_id) e.so_id = l.so_id;
+    if (l.if_id) e.if_id = l.if_id;
+    return e;
+  }).filter((e) => Object.keys(e.sizes).length > 0);
+
 // Move-progress rollup for the header + Boxes tab, per stage.
 export const moveStats = (boxes, todayStart) => {
   const live = (boxes || []).filter((b) => b && b.status !== 'combined');

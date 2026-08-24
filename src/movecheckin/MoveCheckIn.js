@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { plateFromCounter, boxUnits, buildBoxLabel, BOX_STATUS_META } from '../boxTracking';
 import { printQrLabel, printQrLabels } from '../utils';
-import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch, buildLocationLabels } from './moveLogic';
+import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch, buildLocationLabels, submitPlanCsv, contentsToLines, linesToContents } from './moveLogic';
 
 // Move Check-In station — September building move. Routed at /move-checkin by
 // src/index.js (same wiring as /floor-station). Staff mode only: sign in to the
@@ -168,6 +168,10 @@ export default function MoveCheckIn() {
   const [detail, setDetail] = useState(null); // box opened from the Boxes tab
   const [q, setQ] = useState('');
   const [stageFilter, setStageFilter] = useState('all'); // 'all' | boxStage values
+  const [lastAction, setLastAction] = useState(null); // one-tap undo of the latest scan action
+  // box detail "edit contents" mode (fix a scanned box after the fact)
+  const [editLines, setEditLines] = useState(null); // null = viewing; array = editing
+  const [edQ, setEdQ] = useState(''); const [edResults, setEdResults] = useState([]);
   // legacy form
   const [lgSo, setLgSo] = useState(''); const [lgAssign, setLgAssign] = useState('job');
   const [lgItems, setLgItems] = useState(''); const [lgShelf, setLgShelf] = useState('');
@@ -221,7 +225,11 @@ export default function MoveCheckIn() {
     if (!already) { upd.checked_in_at = new Date().toISOString(); upd.checked_in_by = email || null; }
     const samePlace = place && (place.kind === 'shelf' ? box.bin === place.code : box.staging_area === place.code && !box.bin);
     if (place && !samePlace) Object.assign(upd, placePatch(place.kind, place.code));
-    if (Object.keys(upd).length && !(await patchBox(box.id, upd))) return;
+    if (Object.keys(upd).length) {
+      const prev = { checked_in_at: box.checked_in_at || null, checked_in_by: box.checked_in_by || null, bin: box.bin || null, staging_area: box.staging_area || null };
+      if (!(await patchBox(box.id, upd))) return;
+      setLastAction({ kind: 'update', boxId: box.id, prev, wasCheckIn: !already, label: box.id + (place ? ' → ' + place.code : '') });
+    }
     if (!already) setSessionCount((n) => n + 1);
     const units = boxUnits(box.contents);
     if (place) show(already && samePlace ? 'dupe' : 'ok', box.id + ' → ' + (place.kind === 'shelf' ? 'shelf ' : 'staging ') + place.code, boxTitle(box) + (units ? ' · ' + units + ' units' : ''));
@@ -237,7 +245,22 @@ export default function MoveCheckIn() {
     const { error } = await supabase.from('boxes').insert(row);
     if (error) { show('err', plate + ' — save failed', error.message); return; }
     setBoxes((prev) => [row, ...prev]); setSessionCount((n) => n + 1);
+    setLastAction({ kind: 'insert', boxId: plate, wasCheckIn: true, label: plate + ' (new plate)' });
     show('ok', plate + ' checked in ✓', 'New plate — add contents later from the Boxes tab' + (place ? ' · ' + (place.kind === 'shelf' ? 'shelf ' : 'staging ') + place.code : ''));
+  };
+
+  // One-tap undo of the latest scan action: an update restores the box's prior
+  // check-in/location fields; an adopted plate is deleted outright.
+  const undoLast = async () => {
+    const a = lastAction; if (!a) return;
+    setLastAction(null);
+    if (a.kind === 'insert') {
+      const { error } = await supabase.from('boxes').delete().eq('id', a.boxId);
+      if (error) { show('err', 'Undo failed', error.message); return; }
+      setBoxes((prev) => prev.filter((b) => b.id !== a.boxId));
+    } else if (!(await patchBox(a.boxId, a.prev))) return;
+    if (a.wasCheckIn) setSessionCount((n) => Math.max(0, n - 1));
+    show('dupe', '↩︎ Undid ' + a.label, a.kind === 'insert' ? 'The new plate was removed.' : 'Box restored to how it was before that scan.');
   };
 
   // Plain function on purpose (not useCallback): ContinuousScanner reads the
@@ -313,16 +336,18 @@ export default function MoveCheckIn() {
     } finally { setBusy(false); }
   };
 
-  // SKU lookup for inventory-box lines (products table, staff RLS).
-  const searchSku = async (qStr) => {
-    setSkuQ(qStr);
+  // SKU lookup (products table, staff RLS) — shared by the No QR tab's line
+  // editor and the box-detail contents editor.
+  const productSearch = async (qStr) => {
     const s = qStr.trim().replace(/[,()]/g, ' ').trim(); // commas/parens break PostgREST .or() filters
-    if (s.length < 2) { setSkuResults([]); return; }
+    if (s.length < 2) return [];
     const { data, error } = await supabase.from('products').select('id,sku,name,color,available_sizes').or('sku.ilike.%' + s + '%,name.ilike.%' + s + '%').limit(8);
-    if (!error && data) setSkuResults(data);
+    return !error && data ? data : [];
   };
+  const searchSku = async (qStr) => { setSkuQ(qStr); setSkuResults(await productSearch(qStr)); };
+  const productToLine = (p) => ({ product_id: p.id, sku: p.sku, name: p.name, color: p.color || '', available_sizes: (p.available_sizes && p.available_sizes.length ? p.available_sizes : ['OS']), sizes: {} });
   const addSkuLine = (p) => {
-    setLgLines((prev) => prev.some((l) => l.product_id === p.id) ? prev : [...prev, { product_id: p.id, sku: p.sku, name: p.name, color: p.color || '', available_sizes: (p.available_sizes && p.available_sizes.length ? p.available_sizes : ['OS']), sizes: {} }]);
+    setLgLines((prev) => prev.some((l) => l.product_id === p.id) ? prev : [...prev, productToLine(p)]);
     setSkuQ(''); setSkuResults([]);
   };
 
@@ -354,6 +379,18 @@ export default function MoveCheckIn() {
       setZeroChecked({});
     } catch (e) { setPlan(null); show('err', 'Could not load the count', (e && e.message) || String(e)); }
   };
+  // Download the submit review as CSV — the stocktake paper trail.
+  const downloadCsv = () => {
+    try {
+      const blob = new Blob([submitPlanCsv(plan, zeroChecked)], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'move-count-' + new Date().toISOString().slice(0, 10) + '.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    } catch (e) { show('err', 'Export failed', (e && e.message) || String(e)); }
+  };
+
   const runSubmit = async () => {
     if (!plan || plan === 'loading' || submitProg) return;
     const zeros = plan.zeroCandidates.filter((z) => zeroChecked[z.product_id]);
@@ -465,6 +502,9 @@ export default function MoveCheckIn() {
       {(mode === 'checkin' || mode === 'place') && <>
         <ContinuousScanner onRead={handleScan} paused={!!pick} />
         {bannerBox}
+        {lastAction && (
+          <button onClick={undoLast} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px', marginTop: banner ? 0 : 10 }}>↩︎ Undo last scan — {lastAction.label}</button>
+        )}
         {manualRow}
         {pick && (
           <div style={{ ...S.card, marginTop: 10, border: '1px solid #f59e0b' }}>
@@ -538,7 +578,7 @@ export default function MoveCheckIn() {
             const stage = boxStage(b);
             const sm = STAGE_META[stage];
             return (
-              <button key={b.id} onClick={() => setDetail({ ...b, _shelf: b.bin || b.staging_area || '' })} style={{ ...S.card, width: '100%', textAlign: 'left', color: '#f1f5f9', cursor: 'pointer', marginBottom: 6, display: 'block' }}>
+              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); }} style={{ ...S.card, width: '100%', textAlign: 'left', color: '#f1f5f9', cursor: 'pointer', marginBottom: 6, display: 'block' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <b style={{ fontFamily: 'monospace', fontSize: 15 }}>{b.id}</b>
                   <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{stage === 'not_in' && st && b.status !== 'staged' ? st.label : sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
@@ -566,7 +606,10 @@ export default function MoveCheckIn() {
             <div style={{ ...S.card, marginBottom: 10 }}>
               <div style={{ fontWeight: 800, fontSize: 15 }}>The move count is the new inventory</div>
               <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>Counts come from checked-in boxes assigned to <b style={{ color: '#e2e8f0' }}>Inventory</b> ({boxes.filter(isCountedInventoryBox).length} boxes). Sales-order boxes are never counted. Review, confirm the zero-outs, then submit.</div>
-              <button onClick={loadPlan} style={{ ...S.btn('#334155'), marginTop: 10, fontSize: 14, padding: '10px' }}>↻ Refresh count</button>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button onClick={loadPlan} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px' }}>↻ Refresh count</button>
+                <button onClick={downloadCsv} style={{ ...S.btn('#2563eb'), fontSize: 14, padding: '10px' }}>⬇ Download CSV</button>
+              </div>
             </div>
             {plan.unmatched.length > 0 && (
               <div style={{ ...S.card, marginBottom: 10, border: '1px solid #ef4444' }}>
@@ -610,16 +653,46 @@ export default function MoveCheckIn() {
       )}
 
       {detail && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 50 }} onClick={() => setDetail(null)}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 50 }} onClick={() => { setDetail(null); setEditLines(null); }}>
           <div style={{ ...S.card, width: '100%', maxWidth: 560, margin: '0 auto', borderRadius: '14px 14px 0 0', maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <b style={{ fontFamily: 'monospace', fontSize: 18 }}>{detail.id}</b>
-              <button onClick={() => setDetail(null)} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>✕</button>
+              <button onClick={() => { setDetail(null); setEditLines(null); }} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>✕</button>
             </div>
             <div style={{ fontSize: 13, color: '#94a3b8', margin: '2px 0 10px' }}>{boxTitle(detail)} · {boxUnits(detail.contents)} units{detail.checked_in_at ? ' · checked in ' + fmtWhen(detail.checked_in_at) + (detail.checked_in_by ? ' by ' + detail.checked_in_by : '') : ' · NOT checked in'}</div>
-            {(detail.contents || []).map((e, i) => (
-              <div key={i} style={{ fontSize: 13, padding: '4px 0', borderTop: '1px solid #334155' }}>{[(e.sku || '').trim(), e.name].filter(Boolean).join(' ')} — {Object.entries(e.sizes || {}).map(([s, v]) => s + ':' + v).join(' ')}</div>
-            ))}
+            {editLines == null ? <>
+              {(detail.contents || []).map((e, i) => (
+                <div key={i} style={{ fontSize: 13, padding: '4px 0', borderTop: '1px solid #334155' }}>{[(e.sku || '').trim(), e.name].filter(Boolean).join(' ')} — {Object.entries(e.sizes || {}).map(([s, v]) => s + ':' + v).join(' ')}</div>
+              ))}
+              <button onClick={() => { setEditLines(contentsToLines(detail.contents)); setEdQ(''); setEdResults([]); }} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px', margin: '8px 0 4px' }}>✏️ Edit contents</button>
+            </> : <>
+              <div style={{ ...S.cap, marginTop: 4 }}>Edit contents — fix quantities, remove wrong lines, add missed SKUs</div>
+              {editLines.map((l, li) => (
+                <div key={li} style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: 8, margin: '6px 0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span><b style={{ fontFamily: 'monospace' }}>{l.sku || '(no SKU)'}</b>{l.name ? ' · ' + l.name : ''}{l.color ? ' · ' + l.color : ''}</span>
+                    <button onClick={() => setEditLines((prev) => prev.filter((_, i) => i !== li))} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 15 }}>✕</button>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                    {l.available_sizes.map((sz) => (
+                      <label key={sz} style={{ fontSize: 11, color: '#94a3b8', textAlign: 'center' }}>{sz}<br />
+                        <input type="number" inputMode="numeric" min="0" value={l.sizes[sz] ?? ''} onChange={(e) => setEditLines((prev) => prev.map((x, i) => i === li ? { ...x, sizes: { ...x.sizes, [sz]: e.target.value } } : x))} style={{ ...S.input, width: 54, padding: '8px 4px', textAlign: 'center', fontSize: 15 }} />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <input value={edQ} onChange={async (e) => { setEdQ(e.target.value); setEdResults(await productSearch(e.target.value)); }} placeholder="Add a SKU — type SKU or product name…" style={{ ...S.input, margin: '6px 0 4px', fontFamily: 'monospace' }} />
+              {edResults.map((p) => (
+                <button key={p.id} onClick={() => { setEditLines((prev) => prev.some((l) => l.product_id === p.id) ? prev : [...prev, productToLine(p)]); setEdQ(''); setEdResults([]); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: '#0f172a', color: '#e2e8f0', border: '1px solid #334155', borderRadius: 6, padding: '8px 10px', marginBottom: 3, fontSize: 13, cursor: 'pointer' }}>
+                  <b style={{ fontFamily: 'monospace' }}>{p.sku}</b> — {p.name}{p.color ? ' · ' + p.color : ''}
+                </button>
+              ))}
+              <div style={{ display: 'flex', gap: 8, margin: '8px 0 4px' }}>
+                <button onClick={async () => { const contents = linesToContents(editLines); if (await patchBox(detail.id, { contents })) { setDetail({ ...detail, contents }); setEditLines(null); fxOk(); } }} style={{ ...S.btn('#166534'), fontSize: 14, padding: '10px' }}>✓ Save contents</button>
+                <button onClick={() => setEditLines(null)} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px' }}>Cancel</button>
+              </div>
+            </>}
             <div style={{ ...S.cap, marginTop: 12 }}>Location — now: <b style={{ color: STAGE_META[boxStage(detail)].color }}>{STAGE_META[boxStage(detail)].label}</b>{detail.bin ? ' ' + detail.bin : detail.staging_area ? ' ' + detail.staging_area : ''}</div>
             <input value={detail._shelf} onChange={(e) => setDetail({ ...detail, _shelf: e.target.value })} placeholder="A3 / STAGE 1" style={{ ...S.input, margin: '6px 0 8px', fontFamily: 'monospace' }} />
             <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>

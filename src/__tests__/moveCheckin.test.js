@@ -168,6 +168,41 @@ describe('inventory count → submit', () => {
   });
 });
 
+describe('submitPlanCsv', () => {
+  const { submitPlanCsv } = require('../movecheckin/moveLogic');
+  test('one row per SKU×size; zero-outs marked by confirmation; quotes escaped', () => {
+    const plan = {
+      counted: [{ product_id: 'p1', sku: 'AB123', name: 'Hoodie, "warm"', color: 'Navy', rows: [{ size: 'S', quantity: 2, oldQty: 10 }] }],
+      zeroCandidates: [
+        { product_id: 'p3', sku: 'GONE1', name: 'Old Tee', color: '', rows: [{ size: 'M', quantity: 0, oldQty: 8 }] },
+        { product_id: 'p4', sku: 'KEEP1', name: 'Kept', color: '', rows: [{ size: 'L', quantity: 0, oldQty: 3 }] },
+      ],
+      unmatched: [{ sku: 'XX', name: 'mystery', sizes: { EA: 7 } }],
+    };
+    const lines = submitPlanCsv(plan, { p3: true }).split('\n');
+    expect(lines[0]).toBe('type,sku,name,color,size,current_qty,new_qty');
+    expect(lines[1]).toBe('counted,AB123,"Hoodie, ""warm""",Navy,S,10,2');
+    expect(lines[2]).toBe('zero_out_confirmed,GONE1,Old Tee,,M,8,0');
+    expect(lines[3]).toBe('never_came_over_kept,KEEP1,Kept,,L,3,3');
+    expect(lines[4]).toBe('unmatched_sku,XX,mystery,,EA,,7');
+  });
+});
+
+describe('contents ⇄ editor lines (edit scans)', () => {
+  const { contentsToLines, linesToContents } = require('../movecheckin/moveLogic');
+  test('round-trips and preserves reconciliation refs (so_id/if_id)', () => {
+    const contents = [{ sku: 'AB123', product_id: 'p1', name: 'Hoodie', color: 'Navy', so_id: 'SO-1', if_id: 'IF-9', sizes: { S: 2, M: 3 } }];
+    expect(linesToContents(contentsToLines(contents))).toEqual(contents);
+  });
+  test('edited quantities: zero/blank cells drop, empty lines drop', () => {
+    const lines = contentsToLines([{ sku: 'A', sizes: { S: 2, M: 3 } }, { sku: 'B', sizes: { L: 1 } }]);
+    lines[0].sizes.M = '';    // blanked in the UI
+    lines[0].sizes.S = '5';   // typed as string
+    lines[1].sizes.L = 0;     // line emptied entirely
+    expect(linesToContents(lines)).toEqual([{ sku: 'A', name: '', color: '', sizes: { S: 5 } }]);
+  });
+});
+
 describe('three-stage flow: checked in → staging → on shelf', () => {
   test('boxStage derives the stage, shelf wins over staging', () => {
     expect(boxStage({ checked_in_at: null })).toBe('not_in');
