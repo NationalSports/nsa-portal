@@ -10,11 +10,13 @@ export const QB_ACCOUNT_SPECS = Object.freeze({
   outbound_freight_account: Object.freeze({ number: '67000', name: 'Freight Expenses', types: ['Expense'] }),
   sports_inc_fee_account: Object.freeze({ number: '58000', name: 'Sports Inc Fee', types: ['Cost of Goods Sold'] }),
   omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }),
+  omg_card_fee_account: Object.freeze({ number: '71400', name: 'Bank Charges', types: ['Expense'] }),
   deco_account: Object.freeze({ number: '52000', name: 'Outside Decoration', types: ['Cost of Goods Sold'] }),
   decoration_account: Object.freeze({ number: '55100', name: 'Decoration', types: ['Cost of Goods Sold'] }),
   in_house_art_account: Object.freeze({ number: '55400', name: 'Decoration:In House Art', types: ['Cost of Goods Sold'] }),
   ar_account: Object.freeze({ number: '11000', name: 'Accounts Receivable (A/R)', types: ['Accounts Receivable'] }),
   payment_deposit_account: Object.freeze({ number: '11010', name: 'Undeposited Funds', types: ['Other Current Asset'] }),
+  operating_bank_account: Object.freeze({ number: '10100', name: 'First Foundation Checking', types: ['Bank'] }),
   ap_account: Object.freeze({ number: '21100', name: 'Accounts Payable (A/P)', types: ['Accounts Payable'] }),
   tax_parent_account: Object.freeze({ number: '25201', name: 'Sales Tax Payables', types: ['Other Current Liability'] }),
   tax_ca_account: Object.freeze({ number: '25200', name: 'Sales Tax Payables:CA', types: ['Other Current Liability'] }),
@@ -46,6 +48,7 @@ const LEGACY_MAPPING_VALUES = Object.freeze({
   'Freight Expenses': '67000',
   'Sports Inc Fee': '58000',
   'OMG Fee': '57000',
+  'Bank Charges': '71400',
   'Subcontractor - Decoration': '52000',
   'Outside Decoration': '52000',
   Decoration: '55100',
@@ -54,6 +57,7 @@ const LEGACY_MAPPING_VALUES = Object.freeze({
   'Accounts Receivable': '11000',
   'Accounts Receivable (A/R)': '11000',
   'Undeposited Funds': '11010',
+  'First Foundation Checking': '10100',
   'Accounts Payable': '21100',
   'Accounts Payable (A/P)': '21100',
   'Sales Tax Payable': '25201',
@@ -99,6 +103,87 @@ export function getOmgFeeSource(storeOrSalesOrder) {
 // deliberately not a QBO write builder: internal labor needs an accountant-
 // approved offset/reclassification account, stable source IDs, and a posting
 // cadence before it can be journaled without duplicating payroll expense.
+// Builds the exact QBO Bank Deposit for an OMG payout. Customer payments are
+// first recorded in 11010 at their gross amount. The Deposit then links those
+// Payments and subtracts the OMG and card fees so its line total equals the
+// amount that actually landed in 10100.
+export function buildOmgBankDeposit({
+  sourceId, txnDate, payments = [], omgFee = 0, cardFee = 0,
+  bankAccountRef, omgFeeAccountRef, cardFeeAccountRef,
+} = {}) {
+  const sourceKey = String(sourceId || '').trim();
+  if (!sourceKey) throw new Error('OMG deposit source ID is required.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(txnDate || ''))) {
+    throw new Error('OMG deposit date must be YYYY-MM-DD.');
+  }
+  const requireRef = (ref, label) => {
+    if (!ref?.value) throw new Error(label + ' account reference is required.');
+    return ref;
+  };
+  requireRef(bankAccountRef, '10100 bank');
+  requireRef(omgFeeAccountRef, '57000 OMG fee');
+  requireRef(cardFeeAccountRef, '71400 card fee');
+
+  const seen = new Set();
+  const linkedPaymentLines = (payments || []).map((payment, index) => {
+    const paymentId = String(payment?.paymentId || payment?.id || '').trim();
+    const amount = money(payment?.amount);
+    if (!paymentId) throw new Error('OMG deposit payment #' + (index + 1) + ' is missing a QBO Payment ID.');
+    if (seen.has(paymentId)) throw new Error('OMG deposit contains duplicate QBO Payment ID ' + paymentId + '.');
+    if (!(amount > 0)) throw new Error('OMG deposit payment #' + (index + 1) + ' must be positive.');
+    seen.add(paymentId);
+    return {
+      Amount: amount,
+      LinkedTxn: [{ TxnId: paymentId, TxnType: 'Payment', TxnLineId: '0' }],
+    };
+  });
+  if (!linkedPaymentLines.length) throw new Error('OMG deposit requires at least one linked QBO Payment.');
+
+  const rawOmgFee = Number(omgFee);
+  const rawCardFee = Number(cardFee);
+  if (!Number.isFinite(rawOmgFee) || rawOmgFee < 0) throw new Error('OMG fee cannot be negative or invalid.');
+  if (!Number.isFinite(rawCardFee) || rawCardFee < 0) throw new Error('OMG card fee cannot be negative or invalid.');
+  const gross = money(linkedPaymentLines.reduce((sum, line) => sum + line.Amount, 0));
+  const cleanOmgFee = money(rawOmgFee);
+  const cleanCardFee = money(rawCardFee);
+  const totalFees = money(cleanOmgFee + cleanCardFee);
+  const net = money(gross - totalFees);
+  if (!(net > 0)) throw new Error('OMG payout fees must be less than the gross customer payments.');
+
+  const lines = [...linkedPaymentLines];
+  if (cleanOmgFee > 0) {
+    lines.push({
+      Amount: -cleanOmgFee,
+      Description: 'OrderMyGear fee',
+      DetailType: 'DepositLineDetail',
+      DepositLineDetail: { AccountRef: omgFeeAccountRef },
+    });
+  }
+  if (cleanCardFee > 0) {
+    lines.push({
+      Amount: -cleanCardFee,
+      Description: 'OrderMyGear credit-card processing fee',
+      DetailType: 'DepositLineDetail',
+      DepositLineDetail: { AccountRef: cardFeeAccountRef },
+    });
+  }
+  const lineTotal = money(lines.reduce((sum, line) => sum + Number(line.Amount || 0), 0));
+  if (lineTotal !== net) throw new Error('OMG deposit lines do not reconcile to the net bank deposit.');
+
+  return {
+    sourceKey: 'NSA-OMG-DEPOSIT:' + sourceKey,
+    gross,
+    totalFees,
+    net,
+    deposit: {
+      TxnDate: txnDate,
+      DepositToAccountRef: bankAccountRef,
+      PrivateNote: 'NSA-OMG-DEPOSIT:' + sourceKey,
+      Line: lines,
+    },
+  };
+}
+
 export function buildInternalLaborCostManifest({ artLogs = [], decorationLogs = [], laborRates = {} } = {}) {
   const summarize = (logs, accountKey, sourceType) => {
     let minutes = 0;
@@ -354,10 +439,12 @@ export const QB_ACCOUNT_POSTING_MATRIX = Object.freeze([
   { itemType: 'Outbound UPS / FedEx expense', accountKey: 'outbound_freight_account', account: '67000 Freight Expenses', posting: 'Debit', control: 'Not currently created by Connect' },
   { itemType: 'Outside decoration vendor bill', accountKey: 'deco_account', account: '52000 Outside Decoration', posting: 'Debit', control: '21100 A/P credit' },
   { itemType: 'Sports Inc fee', accountKey: 'sports_inc_fee_account', account: '58000 Sports Inc Fee', posting: 'Debit', control: '21100 A/P credit' },
-  { itemType: 'OrderMyGear hosted-store fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit', control: 'Source: OMG Accounting Report; settlement posting method pending' },
+  { itemType: 'OrderMyGear hosted-store fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit via negative deposit line', control: 'Gross payment remains in 11010; payout deposits to 10100' },
+  { itemType: 'OrderMyGear credit-card fee', accountKey: 'omg_card_fee_account', account: '71400 Bank Charges', posting: 'Debit via negative deposit line', control: 'Separate from the 57000 OMG fee' },
   { itemType: 'In-house decoration labor', accountKey: 'decoration_account', account: '55100 Decoration', posting: 'Debit / payroll reclass', control: 'Source: production time logs × labor rate; offset/cadence pending' },
   { itemType: 'In-house art labor', accountKey: 'in_house_art_account', account: '55400 In House Art', posting: 'Debit / payroll reclass', control: 'Source: art time logs × labor rate; offset/cadence pending' },
-  { itemType: 'Customer payment deposit', accountKey: 'payment_deposit_account', account: '11010 Undeposited Funds', posting: 'Debit', control: '11000 A/R credit' },
+  { itemType: 'Customer payment received', accountKey: 'payment_deposit_account', account: '11010 Undeposited Funds', posting: 'Debit', control: '11000 A/R credit' },
+  { itemType: 'OrderMyGear net bank deposit', accountKey: 'operating_bank_account', account: '10100 First Foundation Checking', posting: 'Debit', control: 'Linked gross payment less 57000 and 71400 negative lines' },
   { itemType: 'Customer discount', accountKey: 'discount_account', account: '40200 Sales:Discounts', posting: 'Debit / negative revenue', control: '11000 A/R' },
   { itemType: 'State sales tax', accountKey: 'state tax mapping', account: '25200–25230 state subaccounts', posting: 'Credit', control: 'Portal amount; QBO TaxCode mapping required' },
   { itemType: 'Quarterly sales-tax payment', accountKey: 'state tax mapping', account: 'Individual state subaccount', posting: 'Debit', control: 'Bank credit — workflow not yet implemented' },
