@@ -54,7 +54,12 @@ export function buildSanMarLineItems(batchPOs) {
   let lineNumber = 1;
   (batchPOs || []).forEach(bp => {
     (bp.items || []).forEach(it => {
-      const style = it._sanmar_style || (String(it.sku || '').split(/[\s_]/)[0] || it.sku || '');
+      // Portal SanMar SKUs are "STYLE-ColorCode" (PC78-Navy); SanMar's APIs know only
+      // the bare style, and no SanMar style code contains a hyphen (verified against
+      // the full synced catalog). Keeping the suffix made every SanMar lookup —
+      // partId resolution, the part picker, warehouse stock — query a nonexistent
+      // style ("Product Id not found") and left whole POs blocked on "missing" partIds.
+      const style = it._sanmar_style || (String(it.sku || '').split(/[\s_-]/)[0] || it.sku || '');
       const color = it._sanmar_color || it.color || '';
       // SanMar upcharges extended sizes (2XL+). Per-size costs (if captured at PO
       // time) live on _size_costs; otherwise fall back to the blended unit_cost.

@@ -999,7 +999,12 @@ const sanmarStyleVariants = async (style) => {
   const s = String(style || '').trim();
   if (!s) return [];
   let d;
-  try { d = await sanmarGetProduct(s); }
+  try {
+    d = await sanmarGetProduct(s);
+    // A pasted portal SKU ("PC78-Navy") isn't a SanMar style — retry with the bare
+    // style prefix before giving up (SanMar style codes never contain a hyphen).
+    if (!(d && d.items && d.items.length) && s.includes('-')) d = await sanmarGetProduct(s.split('-')[0]);
+  }
   catch (e) { console.warn('[SanMar] style variant lookup failed for', s, e.message); return []; }
   const out = [];
   const seen = new Set();
