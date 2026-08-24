@@ -13,7 +13,9 @@ Source of truth reviewed: `National_Sports Apparel LLC.csv`, exported from the c
 | Freight on a vendor bill | 51000 Freight In | Debit; bill control side is 21100 A/P |
 | Outside-decoration vendor bill | 52000 Outside Decoration | Debit; vendor category is authoritative |
 | Sports Inc fee on a vendor bill | 58000 Sports Inc Fee | Debit; bill control side is 21100 A/P |
-| OrderMyGear hosted-store fee | 57000 OMG Fee | Exact `_omg_omg_fees` amount from the OMG Accounting Report; settlement posting method is gated |
+| OrderMyGear hosted-store fee | 57000 OMG Fee | Exact `_omg_omg_fees` amount from the OMG Accounting Report; negative Bank Deposit line |
+| OrderMyGear credit-card fee | 71400 Bank Charges | Exact `_omg_cc_fees` amount; separate negative Bank Deposit line |
+| OrderMyGear payout | 10100 First Foundation Checking | Gross linked QBO Payment(s) less the 57000 and 71400 negative lines; must equal the bank deposit |
 | In-house decoration labor | 55100 Decoration | Production/decoration clock minutes × the employee's labor rate; payroll reclass offset and cadence are gated |
 | In-house art labor | 55400 In House Art | Art-clock minutes × the artist's labor rate; payroll reclass offset and cadence are gated |
 | Outbound UPS/FedEx shipping cost | 67000 Freight Expenses | Debit when a future Connect expense source is implemented |
@@ -50,7 +52,7 @@ The state account numbers are approved, but a taxable QBO invoice still needs th
 - These two labor streams are internal payroll cost, not vendor bills. Posting a new debit without reclassifying an already-booked payroll expense would double-count cost. The Portal therefore exposes them in the mapping/preflight and can produce a dry-run manifest, but does not yet post them.
 - The current clock blobs have no stable per-log IDs, rates are looked up at report time rather than snapshotted at clock-out, and idle minutes are tracked but presently included in the displayed cost. Those issues must be resolved before resumable QBO journals are safe.
 
-For 57000, accounting must choose whether the fee is a negative line on the QBO bank deposit or a separate OrderMyGear vendor bill/expense. The Portal must not guess because the two choices reconcile A/R, A/P, Undeposited Funds, and the bank feed differently.
+Accounting approved the gross-payment/negative-deposit method: record the customer payment in full to 11010 Undeposited Funds, then create the 10100 Bank Deposit by linking the gross QBO Payment(s), subtracting `_omg_omg_fees` to 57000 and `_omg_cc_fees` to 71400. The deposit is blocked unless every Payment ID is unique and the line total exactly equals the net amount received.
 
 ## Remaining source gap
 
