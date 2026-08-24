@@ -70,9 +70,31 @@ export const makeLegacyMoveBox = ({ plate, assign, soId = null, items = [], bin 
   checked_in_by: createdBy,
 });
 
-// Shelf codes are free text ("A3", "RACK 12", or a scanned shelf barcode) —
-// trimmed + uppercased so "a3" and "A3 " land in the same bin.
+// Shelf / staging codes are free text ("A3", "RACK 12", "STAGE 1", or a scanned
+// location barcode) — trimmed + uppercased so "a3" and "A3 " land the same.
 export const normShelf = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, ' ');
+
+// ── the three-stage move flow: checked in → staging → on shelf ───────────────
+// A box's stage is derived, not stored: bin (final shelf) wins over
+// staging_area (temporary drop zone), which wins over bare check-in.
+export const boxStage = (b) => {
+  if (!b || !b.checked_in_at) return 'not_in';
+  if (b.bin) return 'shelved';
+  if (b.staging_area) return 'staged';
+  return 'checked_in';
+};
+
+export const STAGE_META = {
+  not_in: { label: 'Not in yet', color: '#f59e0b' },
+  checked_in: { label: 'Checked in', color: '#38bdf8' },
+  staged: { label: 'Staging', color: '#a78bfa' },
+  shelved: { label: 'On shelf', color: '#22c55e' },
+};
+
+// Patch for placing a box: a shelf is final (clears staging), staging is a
+// drop zone (clears any shelf — physically the box left it).
+export const placePatch = (kind, code) =>
+  kind === 'shelf' ? { bin: code, staging_area: null } : { staging_area: code, bin: null };
 
 // ── inventory count → submit (the move IS the new stocktake) ─────────────────
 // Only boxes assigned to INVENTORY count — SO/IF fulfillment boxes are customer
@@ -144,14 +166,16 @@ export const buildSubmitPlan = (tally, invRows, products) => {
   return { counted, zeroCandidates, unmatched };
 };
 
-// Move-progress rollup for the header + Boxes tab.
+// Move-progress rollup for the header + Boxes tab, per stage.
 export const moveStats = (boxes, todayStart) => {
   const live = (boxes || []).filter((b) => b && b.status !== 'combined');
   const checked = live.filter((b) => b.checked_in_at);
   return {
     checkedIn: checked.length,
     today: todayStart ? checked.filter((b) => b.checked_in_at >= todayStart).length : 0,
-    unshelved: checked.filter((b) => !b.bin).length,
+    checkedInOnly: checked.filter((b) => boxStage(b) === 'checked_in').length,
+    staged: checked.filter((b) => boxStage(b) === 'staged').length,
+    shelved: checked.filter((b) => boxStage(b) === 'shelved').length,
     notCheckedIn: live.filter((b) => !b.checked_in_at && b.status !== 'shipped').length,
   };
 };

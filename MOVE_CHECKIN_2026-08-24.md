@@ -16,9 +16,13 @@ column 00185 already reserved.
    already done, red = unknown. Old pre-plate labels (QR encodes IF#/PO#)
    resolve to their boxes; if an IF has several boxes you pick which (or "all").
    A BX plate not in the table is adopted as a new checked-in box.
-2. **Shelve tab** — boxes don't have to be shelved at check-in. Later, type the
-   shelf code once (e.g. `A3`), it locks, then scan box after box into that
-   shelf. Scanning here also checks in a box that skipped step 1.
+2. **Place tab** — the move is three stages: **checked in → staging → on
+   shelf**. Pick **Staging zone** (e.g. `STAGE 1`) or **Final shelf** (e.g.
+   `A3`), type the code once (it locks), then scan box after box into it.
+   Staging is the temporary drop zone; a later shelf scan finalizes the box
+   (and clears its staging area). Scanning here also checks in a box that
+   skipped step 1. The header shows per-stage progress and a bar; the Boxes
+   tab filters by stage (Unplaced / Staging / On shelf).
 3. **No QR tab** — pre-QR-era boxes: enter the SO# and contents (one line per
    item, "12 x navy hoodies"), assign to **Job** or **Inventory**, and a 4×6 BX
    QR label prints (stick it on — the box is scannable from then on).

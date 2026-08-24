@@ -3,19 +3,22 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { plateFromCounter, boxUnits, buildBoxLabel, BOX_STATUS_META } from '../boxTracking';
 import { printQrLabel } from '../utils';
-import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox } from './moveLogic';
+import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch } from './moveLogic';
 
 // Move Check-In station — September building move. Routed at /move-checkin by
 // src/index.js (same wiring as /floor-station). Staff mode only: sign in to the
 // portal once on the phone, then this page talks to the `boxes` table directly
 // (staff RLS). Three jobs, one screen:
+// The move flow is three stages: CHECKED IN → STAGING → ON SHELF.
 //   1. CHECK IN — camera stays live; every BX QR scanned is stamped
 //      checked_in_at/by. Old pre-plate labels (IF#/PO#) resolve to their boxes.
-//   2. SHELVE — pick a shelf once (locked), then scan box after box into it
-//      (sets `bin`; also checks in if the box skipped step 1).
+//   2. PLACE — pick a staging zone OR a final shelf once (locked), then scan
+//      box after box into it (staging_area / bin; also checks in boxes that
+//      skipped step 1). Staging is temporary; the shelf scan later finalizes.
 //   3. NO QR — hand-enter a legacy box (SO# + items), assign it to a job or to
 //      inventory, and a 4×6 BX label prints so it's scannable from now on.
-// A Boxes tab shows progress (checked in / today / unshelved) and per-box actions.
+// A Boxes tab shows per-stage progress + filters and per-box actions; a Submit
+// tab turns the counted inventory boxes into the new inventory numbers.
 
 // ── feedback: sound + haptics (BaggingStation's pattern, local on purpose) ──
 let _audioCtx = null;
@@ -152,16 +155,18 @@ const boxTitle = (b) => [b.so_id, b.if_id, b.po_id].filter(Boolean).join(' · ')
 
 export default function MoveCheckIn() {
   const { loading, signedIn, email } = useStaffSession();
-  const [mode, setMode] = useState('checkin'); // 'checkin' | 'shelve' | 'legacy' | 'boxes'
+  const [mode, setMode] = useState('checkin'); // 'checkin' | 'place' | 'legacy' | 'boxes' | 'submit'
   const [boxes, setBoxes] = useState([]);
   const [banner, setBanner] = useState(null); // {kind:'ok'|'dupe'|'err', title, sub}
   const [sessionCount, setSessionCount] = useState(0);
   const [pick, setPick] = useState(null); // {ref, matches:[boxes]} — old-label multi-match
   const [manualVal, setManualVal] = useState('');
   const [shelf, setShelf] = useState('');
+  const [placeKind, setPlaceKind] = useState('staging'); // Place tab: 'staging' | 'shelf'
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState(null); // box opened from the Boxes tab
   const [q, setQ] = useState('');
+  const [stageFilter, setStageFilter] = useState('all'); // 'all' | boxStage values
   // legacy form
   const [lgSo, setLgSo] = useState(''); const [lgAssign, setLgAssign] = useState('job');
   const [lgItems, setLgItems] = useState(''); const [lgShelf, setLgShelf] = useState('');
@@ -173,10 +178,11 @@ export default function MoveCheckIn() {
   const [zeroChecked, setZeroChecked] = useState({}); // product_id → true (confirmed zero-out)
   const [submitProg, setSubmitProg] = useState(null); // {done,total,fails:[]} while writing
   const [submitDone, setSubmitDone] = useState(null); // final summary
-  useWakeLock(signedIn && (mode === 'checkin' || mode === 'shelve'));
+  useWakeLock(signedIn && (mode === 'checkin' || mode === 'place'));
 
   const boxesRef = useRef(boxes); boxesRef.current = boxes;
   const shelfRef = useRef(''); shelfRef.current = normShelf(shelf);
+  const placeKindRef = useRef(placeKind); placeKindRef.current = placeKind;
   const modeRef = useRef(mode); modeRef.current = mode;
 
   const reload = useCallback(async () => {
@@ -196,29 +202,34 @@ export default function MoveCheckIn() {
     return true;
   };
 
-  // Stamp a box checked in (idempotent), optionally also shelving it.
-  const checkInBox = async (box, { toShelf } = {}) => {
+  // Where is a box, human-readable ("shelf A3" / "staging DOCK 1").
+  const whereStr = (b) => (b.bin ? 'shelf ' + b.bin : b.staging_area ? 'staging ' + b.staging_area : '');
+
+  // Stamp a box checked in (idempotent), optionally also placing it
+  // (place = {kind:'staging'|'shelf', code}).
+  const checkInBox = async (box, { place } = {}) => {
     const already = !!box.checked_in_at;
     const upd = {};
     if (!already) { upd.checked_in_at = new Date().toISOString(); upd.checked_in_by = email || null; }
-    if (toShelf && box.bin !== toShelf) upd.bin = toShelf;
+    const samePlace = place && (place.kind === 'shelf' ? box.bin === place.code : box.staging_area === place.code && !box.bin);
+    if (place && !samePlace) Object.assign(upd, placePatch(place.kind, place.code));
     if (Object.keys(upd).length && !(await patchBox(box.id, upd))) return;
     if (!already) setSessionCount((n) => n + 1);
     const units = boxUnits(box.contents);
-    if (toShelf) show(already && box.bin === toShelf ? 'dupe' : 'ok', box.id + ' → ' + toShelf, boxTitle(box) + (units ? ' · ' + units + ' units' : ''));
-    else if (already) show('dupe', box.id + ' — already checked in', (box.checked_in_at ? fmtWhen(box.checked_in_at) : '') + (box.bin ? ' · shelf ' + box.bin : ''));
-    else show('ok', box.id + ' checked in ✓', boxTitle(box) + (units ? ' · ' + units + ' units' : '') + (toShelf ? '' : box.bin ? ' · shelf ' + box.bin : ''));
+    if (place) show(already && samePlace ? 'dupe' : 'ok', box.id + ' → ' + (place.kind === 'shelf' ? 'shelf ' : 'staging ') + place.code, boxTitle(box) + (units ? ' · ' + units + ' units' : ''));
+    else if (already) show('dupe', box.id + ' — already checked in', (box.checked_in_at ? fmtWhen(box.checked_in_at) : '') + (whereStr(box) ? ' · ' + whereStr(box) : ''));
+    else show('ok', box.id + ' checked in ✓', boxTitle(box) + (units ? ' · ' + units + ' units' : '') + (whereStr(box) ? ' · ' + whereStr(box) : ''));
   };
 
   // A BX plate that isn't in the table (label printed while the table lagged,
   // or a plate hand-written on a box): create the row so the plate is real.
-  const adoptPlate = async (plate, toShelf) => {
+  const adoptPlate = async (plate, place) => {
     const now = new Date().toISOString();
-    const row = { id: plate, kind: 'legacy', contents: [], source_refs: [], status: 'staged', bin: toShelf || null, created_by: email || null, created_at: now, updated_at: now, checked_in_at: now, checked_in_by: email || null };
+    const row = { id: plate, kind: 'legacy', contents: [], source_refs: [], status: 'staged', bin: null, staging_area: null, ...(place ? placePatch(place.kind, place.code) : {}), created_by: email || null, created_at: now, updated_at: now, checked_in_at: now, checked_in_by: email || null };
     const { error } = await supabase.from('boxes').insert(row);
     if (error) { show('err', plate + ' — save failed', error.message); return; }
     setBoxes((prev) => [row, ...prev]); setSessionCount((n) => n + 1);
-    show('ok', plate + ' checked in ✓', 'New plate — add contents later from the Boxes tab' + (toShelf ? ' · shelf ' + toShelf : ''));
+    show('ok', plate + ' checked in ✓', 'New plate — add contents later from the Boxes tab' + (place ? ' · ' + (place.kind === 'shelf' ? 'shelf ' : 'staging ') + place.code : ''));
   };
 
   // Plain function on purpose (not useCallback): ContinuousScanner reads the
@@ -226,23 +237,23 @@ export default function MoveCheckIn() {
   // email/checkInBox closures.
   const handleScan = async (raw) => {
     const c = classifyMoveScan(raw);
-    const toShelf = modeRef.current === 'shelve' ? shelfRef.current : null;
-    if (modeRef.current === 'shelve' && !toShelf) { show('err', 'Pick a shelf first', 'Type or scan the shelf code above, then scan boxes.'); return; }
+    const place = modeRef.current === 'place' ? (shelfRef.current ? { kind: placeKindRef.current, code: shelfRef.current } : null) : null;
+    if (modeRef.current === 'place' && !place) { show('err', 'Pick a location first', 'Type or scan the ' + (placeKindRef.current === 'shelf' ? 'shelf' : 'staging zone') + ' code above, then scan boxes.'); return; }
     if (c.type === 'empty') return;
     if (c.type === 'box') {
       const box = boxesRef.current.find((b) => b.id === c.id);
-      if (!box) { await adoptPlate(c.id, toShelf); return; }
+      if (!box) { await adoptPlate(c.id, place); return; }
       if (box.status === 'combined' && box.merged_into) {
         const tgt = boxesRef.current.find((b) => b.id === box.merged_into);
-        if (tgt) { show('dupe', c.id + ' was combined into ' + tgt.id, 'Checked that one in instead.'); await checkInBox(tgt, { toShelf }); return; }
+        if (tgt) { show('dupe', c.id + ' was combined into ' + tgt.id, 'Checked that one in instead.'); await checkInBox(tgt, { place }); return; }
       }
-      await checkInBox(box, { toShelf });
+      await checkInBox(box, { place });
       return;
     }
     // old pre-plate label: IF# / PO# / SO#
     const matches = boxesForRef(boxesRef.current, c.id);
-    if (matches.length === 1) { await checkInBox(matches[0], { toShelf }); return; }
-    if (matches.length > 1) { setPick({ ref: c.id, matches, toShelf }); fxDupe(); return; }
+    if (matches.length === 1) { await checkInBox(matches[0], { place }); return; }
+    if (matches.length > 1) { setPick({ ref: c.id, matches, place }); fxDupe(); return; }
     show('err', 'No box found for "' + c.id + '"', 'Use the No QR tab to enter it and print a label.');
   };
 
@@ -368,7 +379,7 @@ export default function MoveCheckIn() {
 
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const stats = moveStats(boxes, todayStart.toISOString());
-  const tabs = [['checkin', '✅ Check In'], ['shelve', '🗄️ Shelve'], ['legacy', '📝 No QR'], ['boxes', '📦 Boxes'], ['submit', '📊 Submit']];
+  const tabs = [['checkin', '✅ Check In'], ['place', '📍 Place'], ['legacy', '📝 No QR'], ['boxes', '📦 Boxes'], ['submit', '📊 Submit']];
 
   const bannerBox = banner && (
     <div style={{ borderRadius: 10, padding: '12px 14px', margin: '10px 0', background: banner.kind === 'ok' ? '#14532d' : banner.kind === 'dupe' ? '#78350f' : '#7f1d1d', border: '1px solid ' + (banner.kind === 'ok' ? '#22c55e' : banner.kind === 'dupe' ? '#f59e0b' : '#ef4444') }}>
@@ -386,9 +397,10 @@ export default function MoveCheckIn() {
 
   const filtered = boxes.filter((b) => {
     if (b.status === 'combined') return false;
+    if (stageFilter !== 'all' && boxStage(b) !== stageFilter) return false;
     if (!q.trim()) return true;
     const s = q.trim().toUpperCase();
-    return [b.id, b.so_id, b.if_id, b.po_id, b.bin, b.assigned_to].some((x) => String(x || '').toUpperCase().includes(s))
+    return [b.id, b.so_id, b.if_id, b.po_id, b.bin, b.staging_area, b.assigned_to].some((x) => String(x || '').toUpperCase().includes(s))
       || (b.contents || []).some((e) => String((e && e.name) || '').toUpperCase().includes(s));
   });
 
@@ -398,25 +410,38 @@ export default function MoveCheckIn() {
         <h1 style={{ fontSize: 20, margin: '2px 0 2px' }}>📦 Move Check-In</h1>
         <div style={{ fontSize: 12, color: '#94a3b8' }}>{sessionCount ? sessionCount + ' this session' : email}</div>
       </div>
-      <div style={{ display: 'flex', gap: 10, margin: '4px 0 10px', fontSize: 12, color: '#94a3b8' }}>
-        <span><b style={{ color: '#22c55e' }}>{stats.checkedIn}</b> checked in</span>
-        <span><b style={{ color: '#e2e8f0' }}>{stats.today}</b> today</span>
-        <span><b style={{ color: stats.unshelved ? '#f59e0b' : '#22c55e' }}>{stats.unshelved}</b> need a shelf</span>
+      {/* per-stage progress: checked in → staging → on shelf */}
+      <div style={{ display: 'flex', gap: 10, margin: '4px 0 10px', fontSize: 12, color: '#94a3b8', flexWrap: 'wrap' }}>
+        <span><b style={{ color: STAGE_META.checked_in.color }}>{stats.checkedIn}</b> in ({stats.today} today)</span>
+        <span><b style={{ color: STAGE_META.staged.color }}>{stats.staged}</b> staging</span>
+        <span><b style={{ color: STAGE_META.shelved.color }}>{stats.shelved}</b> on shelf</span>
+        <span><b style={{ color: stats.checkedInOnly ? '#f59e0b' : '#22c55e' }}>{stats.checkedInOnly}</b> unplaced</span>
       </div>
+      {stats.checkedIn > 0 && (
+        <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: '#1e293b', marginBottom: 10 }}>
+          <div style={{ width: (stats.shelved / stats.checkedIn * 100) + '%', background: STAGE_META.shelved.color }} />
+          <div style={{ width: (stats.staged / stats.checkedIn * 100) + '%', background: STAGE_META.staged.color }} />
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
         {tabs.map(([id, label]) => (
           <button key={id} onClick={() => { setMode(id); setBanner(null); setPick(null); if (id === 'submit' && plan == null) loadPlan(); }} style={{ flex: 1, padding: '10px 2px', fontSize: 12, fontWeight: 800, border: 'none', borderRadius: 8, cursor: 'pointer', background: mode === id ? '#2563eb' : '#1e293b', color: mode === id ? '#fff' : '#94a3b8' }}>{label}</button>
         ))}
       </div>
 
-      {mode === 'shelve' && (
+      {mode === 'place' && (
         <div style={{ ...S.card, marginBottom: 10 }}>
-          <div style={S.cap}>Shelf / location — set once, then scan every box going there</div>
-          <input value={shelf} onChange={(e) => setShelf(e.target.value)} placeholder="e.g. A3, RACK 12…" style={{ ...S.input, marginTop: 6, fontFamily: 'monospace', fontSize: 20, fontWeight: 800, color: shelf ? '#f59e0b' : '#fff' }} />
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            <button onClick={() => setPlaceKind('staging')} style={{ ...S.btn(placeKind === 'staging' ? '#7c3aed' : '#1e293b'), fontSize: 14, padding: '10px', border: placeKind === 'staging' ? 'none' : '1px solid #334155' }}>📥 Staging zone</button>
+            <button onClick={() => setPlaceKind('shelf')} style={{ ...S.btn(placeKind === 'shelf' ? '#166534' : '#1e293b'), fontSize: 14, padding: '10px', border: placeKind === 'shelf' ? 'none' : '1px solid #334155' }}>🗄️ Final shelf</button>
+          </div>
+          <div style={S.cap}>{placeKind === 'shelf' ? 'Shelf' : 'Staging zone'} — set once, then scan every box going there</div>
+          <input value={shelf} onChange={(e) => setShelf(e.target.value)} placeholder={placeKind === 'shelf' ? 'e.g. A3, RACK 12…' : 'e.g. STAGE 1, DOCK…'} style={{ ...S.input, marginTop: 6, fontFamily: 'monospace', fontSize: 20, fontWeight: 800, color: shelf ? (placeKind === 'shelf' ? '#22c55e' : '#a78bfa') : '#fff' }} />
+          {placeKind === 'staging' && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>Staging is temporary — re-scan the box in Final shelf mode when it lands on its shelf.</div>}
         </div>
       )}
 
-      {(mode === 'checkin' || mode === 'shelve') && <>
+      {(mode === 'checkin' || mode === 'place') && <>
         <ContinuousScanner onRead={handleScan} paused={!!pick} />
         {bannerBox}
         {manualRow}
@@ -424,11 +449,11 @@ export default function MoveCheckIn() {
           <div style={{ ...S.card, marginTop: 10, border: '1px solid #f59e0b' }}>
             <div style={{ fontWeight: 800, marginBottom: 8 }}>{pick.ref} has {pick.matches.length} boxes — which one is this?</div>
             {pick.matches.map((b) => (
-              <button key={b.id} onClick={async () => { setPick(null); await checkInBox(b, { toShelf: pick.toShelf }); }} style={{ ...S.btn('#1e293b'), textAlign: 'left', marginBottom: 6, border: '1px solid #334155', fontSize: 14 }}>
-                <b>{b.id}</b> · {boxUnits(b.contents)} units {b.checked_in_at ? '· ✓ ' + fmtWhen(b.checked_in_at) : ''}{b.bin ? ' · ' + b.bin : ''}
+              <button key={b.id} onClick={async () => { setPick(null); await checkInBox(b, { place: pick.place }); }} style={{ ...S.btn('#1e293b'), textAlign: 'left', marginBottom: 6, border: '1px solid #334155', fontSize: 14 }}>
+                <b>{b.id}</b> · {boxUnits(b.contents)} units {b.checked_in_at ? '· ✓ ' + fmtWhen(b.checked_in_at) : ''}{whereStr(b) ? ' · ' + whereStr(b) : ''}
               </button>
             ))}
-            <button onClick={async () => { const m = pick; setPick(null); for (const b of m.matches) await checkInBox(b, { toShelf: m.toShelf }); }} style={S.btn('#166534')}>Check in ALL {pick.matches.length}</button>
+            <button onClick={async () => { const m = pick; setPick(null); for (const b of m.matches) await checkInBox(b, { place: m.place }); }} style={S.btn('#166534')}>Check in ALL {pick.matches.length}</button>
             <button onClick={() => setPick(null)} style={{ ...S.btn('#334155'), marginTop: 6, fontSize: 14, padding: '10px' }}>Cancel</button>
           </div>
         )}
@@ -472,7 +497,7 @@ export default function MoveCheckIn() {
             ))}
             <div style={{ height: 8 }} />
           </>}
-          <div style={S.cap}>Shelf (optional — can shelve later)</div>
+          <div style={S.cap}>Shelf (optional — most boxes go to staging first and get placed later)</div>
           <input value={lgShelf} onChange={(e) => setLgShelf(e.target.value)} placeholder="A3" style={{ ...S.input, margin: '6px 0 14px', fontFamily: 'monospace' }} />
           <button onClick={submitLegacy} disabled={busy} style={S.btn('#166534', busy)}>{busy ? 'Saving…' : '✓ Check In + Print QR Label'}</button>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>A 4×6 BX label prints — stick it on the box so it scans from now on.</div>
@@ -481,14 +506,21 @@ export default function MoveCheckIn() {
 
       {mode === 'boxes' && (
         <div>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search box, SO#, shelf, item…" style={{ ...S.input, marginBottom: 10 }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search box, SO#, shelf, staging, item…" style={{ ...S.input, marginBottom: 8 }} />
+          <div style={{ display: 'flex', gap: 5, marginBottom: 10, flexWrap: 'wrap' }}>
+            {[['all', 'All'], ['checked_in', 'Unplaced'], ['staged', 'Staging'], ['shelved', 'On shelf'], ['not_in', 'Not in']].map(([id, label]) => (
+              <button key={id} onClick={() => setStageFilter(id)} style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700, border: '1px solid ' + (stageFilter === id ? (STAGE_META[id] ? STAGE_META[id].color : '#2563eb') : '#334155'), borderRadius: 999, cursor: 'pointer', background: stageFilter === id ? '#1e293b' : 'transparent', color: stageFilter === id ? (STAGE_META[id] ? STAGE_META[id].color : '#fff') : '#94a3b8' }}>{label}</button>
+            ))}
+          </div>
           {filtered.slice(0, 200).map((b) => {
             const st = BOX_STATUS_META[b.status];
+            const stage = boxStage(b);
+            const sm = STAGE_META[stage];
             return (
-              <button key={b.id} onClick={() => setDetail({ ...b, _shelf: b.bin || '' })} style={{ ...S.card, width: '100%', textAlign: 'left', color: '#f1f5f9', cursor: 'pointer', marginBottom: 6, display: 'block' }}>
+              <button key={b.id} onClick={() => setDetail({ ...b, _shelf: b.bin || b.staging_area || '' })} style={{ ...S.card, width: '100%', textAlign: 'left', color: '#f1f5f9', cursor: 'pointer', marginBottom: 6, display: 'block' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <b style={{ fontFamily: 'monospace', fontSize: 15 }}>{b.id}</b>
-                  <span style={{ fontSize: 12, color: b.checked_in_at ? '#22c55e' : '#f59e0b', fontWeight: 700 }}>{b.checked_in_at ? '✓ in' + (b.bin ? ' · ' + b.bin : ' · no shelf') : (st ? st.label : b.status)}</span>
+                  <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{stage === 'not_in' && st && b.status !== 'staged' ? st.label : sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{boxTitle(b)} · {boxUnits(b.contents)} units{b.checked_in_at ? ' · ' + fmtWhen(b.checked_in_at) : ''}</div>
               </button>
@@ -567,10 +599,12 @@ export default function MoveCheckIn() {
             {(detail.contents || []).map((e, i) => (
               <div key={i} style={{ fontSize: 13, padding: '4px 0', borderTop: '1px solid #334155' }}>{[(e.sku || '').trim(), e.name].filter(Boolean).join(' ')} — {Object.entries(e.sizes || {}).map(([s, v]) => s + ':' + v).join(' ')}</div>
             ))}
-            <div style={{ ...S.cap, marginTop: 12 }}>Shelf</div>
-            <div style={{ display: 'flex', gap: 8, margin: '6px 0 10px' }}>
-              <input value={detail._shelf} onChange={(e) => setDetail({ ...detail, _shelf: e.target.value })} placeholder="A3" style={{ ...S.input, fontFamily: 'monospace' }} />
-              <button onClick={async () => { const bin = normShelf(detail._shelf) || null; if (await patchBox(detail.id, { bin })) { setDetail(null); fxOk(); } }} style={{ ...S.btn('#2563eb'), width: 'auto', padding: '0 18px' }}>Save</button>
+            <div style={{ ...S.cap, marginTop: 12 }}>Location — now: <b style={{ color: STAGE_META[boxStage(detail)].color }}>{STAGE_META[boxStage(detail)].label}</b>{detail.bin ? ' ' + detail.bin : detail.staging_area ? ' ' + detail.staging_area : ''}</div>
+            <input value={detail._shelf} onChange={(e) => setDetail({ ...detail, _shelf: e.target.value })} placeholder="A3 / STAGE 1" style={{ ...S.input, margin: '6px 0 8px', fontFamily: 'monospace' }} />
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <button onClick={async () => { const code = normShelf(detail._shelf); if (!code) return; if (await patchBox(detail.id, placePatch('staging', code))) { setDetail(null); fxOk(); } }} style={{ ...S.btn('#7c3aed'), fontSize: 14, padding: '10px' }}>📥 To staging</button>
+              <button onClick={async () => { const code = normShelf(detail._shelf); if (!code) return; if (await patchBox(detail.id, placePatch('shelf', code))) { setDetail(null); fxOk(); } }} style={{ ...S.btn('#166534'), fontSize: 14, padding: '10px' }}>🗄️ To shelf</button>
+              {(detail.bin || detail.staging_area) && <button onClick={async () => { if (await patchBox(detail.id, { bin: null, staging_area: null })) { setDetail(null); fxOk(); } }} style={{ ...S.btn('#334155'), width: 'auto', fontSize: 14, padding: '10px 12px' }}>Clear</button>}
             </div>
             <div style={{ ...S.cap, marginBottom: 6 }}>Counts toward new inventory?</div>
             <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>

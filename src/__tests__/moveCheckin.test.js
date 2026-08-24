@@ -1,7 +1,7 @@
 /* Unit tests for src/movecheckin/moveLogic.js — the pure helpers behind the
  * /move-checkin station (September building move). */
 
-const { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, isCountedInventoryBox, inventoryTally, buildSubmitPlan } = require('../movecheckin/moveLogic');
+const { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, isCountedInventoryBox, inventoryTally, buildSubmitPlan, boxStage, placePatch } = require('../movecheckin/moveLogic');
 
 describe('classifyMoveScan', () => {
   test('bare BX plate', () => {
@@ -152,18 +152,33 @@ describe('inventory count → submit', () => {
   });
 });
 
+describe('three-stage flow: checked in → staging → on shelf', () => {
+  test('boxStage derives the stage, shelf wins over staging', () => {
+    expect(boxStage({ checked_in_at: null })).toBe('not_in');
+    expect(boxStage({ checked_in_at: 'x' })).toBe('checked_in');
+    expect(boxStage({ checked_in_at: 'x', staging_area: 'STAGE 1' })).toBe('staged');
+    expect(boxStage({ checked_in_at: 'x', staging_area: 'STAGE 1', bin: 'A3' })).toBe('shelved');
+    expect(boxStage(null)).toBe('not_in');
+  });
+  test('placePatch: shelf is final (clears staging), staging clears the shelf', () => {
+    expect(placePatch('shelf', 'A3')).toEqual({ bin: 'A3', staging_area: null });
+    expect(placePatch('staging', 'DOCK 1')).toEqual({ staging_area: 'DOCK 1', bin: null });
+  });
+});
+
 describe('moveStats', () => {
   const boxes = [
     { id: 'BX-1', status: 'staged', checked_in_at: '2026-08-24T09:00:00Z', bin: 'A1' },
     { id: 'BX-2', status: 'staged', checked_in_at: '2026-08-23T09:00:00Z', bin: null },
+    { id: 'BX-6', status: 'staged', checked_in_at: '2026-08-23T10:00:00Z', staging_area: 'STAGE 1' },
     { id: 'BX-3', status: 'staged', checked_in_at: null, bin: null },
     { id: 'BX-4', status: 'combined', checked_in_at: null },
     { id: 'BX-5', status: 'shipped', checked_in_at: null },
   ];
-  test('rollup counts', () => {
-    expect(moveStats(boxes, '2026-08-24T00:00:00Z')).toEqual({ checkedIn: 2, today: 1, unshelved: 1, notCheckedIn: 1 });
+  test('rollup counts per stage', () => {
+    expect(moveStats(boxes, '2026-08-24T00:00:00Z')).toEqual({ checkedIn: 3, today: 1, checkedInOnly: 1, staged: 1, shelved: 1, notCheckedIn: 1 });
   });
   test('empty input', () => {
-    expect(moveStats([], null)).toEqual({ checkedIn: 0, today: 0, unshelved: 0, notCheckedIn: 0 });
+    expect(moveStats([], null)).toEqual({ checkedIn: 0, today: 0, checkedInOnly: 0, staged: 0, shelved: 0, notCheckedIn: 0 });
   });
 });
