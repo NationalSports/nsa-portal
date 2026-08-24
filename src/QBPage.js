@@ -27,7 +27,7 @@ const QB_MAPPING_FIELDS = [
   ['freight_account', 'Vendor freight in'],
   ['outbound_freight_account', 'Outbound UPS / FedEx'],
   ['sports_inc_fee_account', 'Sports Inc fee'],
-  ['omg_fee_account', 'OMG vendor invoice fee'],
+  ['omg_fee_account', 'OMG fee (vendor invoice or deposit withheld)'],
   ['omg_card_fee_account', 'OMG credit-card fee'],
   ['deco_account', 'Outside decoration'],
   ['decoration_account', 'In-house decoration labor (55200)'],

@@ -14,7 +14,7 @@ Source of truth reviewed: `National_Sports Apparel LLC.csv`, exported from the c
 | Outside-decoration vendor bill | 52000 Outside Decoration | Debit; vendor category is authoritative |
 | Sports Inc fee on a vendor bill | 58000 Sports Inc Fee | Debit; bill control side is 21100 A/P |
 | OrderMyGear vendor invoice fee | 57000 OMG Fee | Debit on a real OMG vendor bill, such as store-creation or chargeback invoices; bill control side is 21100 A/P |
-| OrderMyGear fee withheld from a deposit | **BLOCKED — account unconfirmed** | Separate negative Bank Deposit line; Andrea confirmed this is not automatically 57000 |
+| OrderMyGear fee withheld from a deposit | 57000 OMG Fee | Separate negative Bank Deposit line |
 | OrderMyGear processing fee withheld | 71400 Bank Charges | Separate negative Bank Deposit line |
 | OrderMyGear payout | Configured bank account (currently 10100) | Gross linked QBO Payment(s) less the two withheld-fee lines; must equal the real bank deposit |
 | In-house decoration labor | 55200 Decoration:Decoration Labor | Production/decoration clock minutes × the employee's labor rate; payroll reclass offset and cadence are gated |
@@ -47,8 +47,8 @@ The state account numbers are approved, but a taxable QBO invoice still needs th
 
 ## OMG and internal-labor source findings
 
-- Account 57000 applies to actual OMG **vendor invoices**, not automatically to the `OMG Fee Withheld` amount on a Deposit Statement. The supplied invoice `584-1L7K7QA` is a paid $8.91 vendor invoice with nine $0.99 OMG-fee lines and is the confirmed 57000 example.
-- The supplied Deposit Statement is one bank deposit: statement `MRBHQRB6G`, dated 08/18/26, containing 28 stores. It reconciles $8,963.02 collected - $369.90 OMG fee withheld - $288.81 processing fee withheld = $8,304.31 net. The processing fee uses 71400. The $369.90 withheld-fee account is still unconfirmed and must not be guessed as 57000.
+- Account 57000 applies to OMG/webstore fees, including actual OMG vendor invoices and the `OMG Fee Withheld` amount on a Deposit Statement. The supplied invoice `584-1L7K7QA` is a paid $8.91 vendor invoice with nine $0.99 OMG-fee lines.
+- The supplied Deposit Statement is one bank deposit: statement `MRBHQRB6G`, dated 08/18/26, containing 28 stores. It reconciles $8,963.02 collected - $369.90 OMG fee withheld to 57000 - $288.81 processing fee withheld to 71400 = $8,304.31 net.
 - Account 55200 has a concrete Portal source: `job_time_logs` minutes multiplied by the current employee rate in `labor_rates`.
 - Account 55400 has a separate concrete Portal source: `art_time_logs` minutes multiplied by the current artist rate in `labor_rates`.
 - These two labor streams are internal payroll cost, not vendor bills. Posting a new debit without reclassifying an already-booked payroll expense would double-count cost. The Portal therefore exposes them in the mapping/preflight and can produce a dry-run manifest, but does not yet post them.

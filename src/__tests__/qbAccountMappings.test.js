@@ -223,17 +223,17 @@ describe('OMG and internal labor source routing', () => {
       .toThrow(/does not reconcile/i);
   });
 
-  test('never routes Deposit Statement OMG Fee Withheld to 57000', () => {
+  test('routes Deposit Statement OMG Fee Withheld to approved 57000 mapping', () => {
     expect(getOmgFeeSource({source:'omg',id:'store-1',_omg_deposit_statement_id:'MRBHQRB6G',_omg_omg_fees:123.45}))
       .toMatchObject({
         sourceType:'omg_deposit_statement_withheld_fee',sourceId:'MRBHQRB6G',amount:123.45,
-        accountKey:null,blocked:true,
+        accountKey:'omg_fee_account',blocked:false,
       });
     expect(getOmgFeeSource({source:'webstore',id:'native-1',_omg_omg_fees:123.45})).toBeNull();
     expect(getOmgFeeSource({source:'omg',id:'store-2',_omg_omg_fees:0})).toBeNull();
   });
 
-  test('builds a reconciled OMG deposit without assuming withheld fees use 57000', () => {
+  test('builds a reconciled OMG deposit with withheld OMG fees in 57000', () => {
     const result=buildOmgBankDeposit({
       sourceId:'OMG-REPORT-42',
       txnDate:'2026-08-23',
@@ -241,7 +241,7 @@ describe('OMG and internal labor source routing', () => {
       omgFee:75,
       cardFee:29.5,
       bankAccountRef:{value:'bank-configured'},
-      omgWithheldFeeAccountRef:{value:'withheld-fee-account-tbd'},
+      omgWithheldFeeAccountRef:{value:'cogs-57000'},
       cardFeeAccountRef:{value:'expense-71400'},
       expectedCollected:1000,
       expectedNet:895.5,
@@ -258,7 +258,7 @@ describe('OMG and internal labor source routing', () => {
     expect(result.deposit.Line).toEqual([
       {Amount:600,LinkedTxn:[{TxnId:'pmt-1',TxnType:'Payment',TxnLineId:'0'}]},
       {Amount:400,LinkedTxn:[{TxnId:'pmt-2',TxnType:'Payment',TxnLineId:'0'}]},
-      {Amount:-75,Description:'OrderMyGear fee withheld',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'withheld-fee-account-tbd'}}},
+      {Amount:-75,Description:'OrderMyGear fee withheld',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'cogs-57000'}}},
       {Amount:-29.5,Description:'OrderMyGear processing fee withheld',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'expense-71400'}}},
     ]);
     expect(result.deposit.Line.reduce((sum,line)=>sum+line.Amount,0)).toBe(result.net);

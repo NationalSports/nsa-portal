@@ -27,7 +27,7 @@ The dry run should report counts for:
 - invoices, bills, and payments;
 - blocked taxable invoices;
 - OMG vendor-bill fee manifests for 57000;
-- OMG payout deposit manifests showing gross QBO Payment(s), the unconfirmed OMG-withheld-fee account, 71400 processing fee, and the exact net received in the configured bank account;
+- OMG payout deposit manifests showing gross QBO Payment(s), 57000 OMG fee, 71400 processing fee, and the exact net received in the configured bank account;
 - 55200/55400 labor manifests by clock source, employee, rate, minutes, idle minutes, and date;
 - Deposit Statements containing refunds, which remain blocked until their QBO credit-memo/refund links are complete;
 - bills with missing SKUs or total discrepancies;
@@ -91,6 +91,5 @@ Before NetSuite transaction access ends, export the transaction saved searches w
 - exact SilverScreen lookback: 3 months or 6 months;
 - live QBO TaxCode/TxnTaxDetail results;
 - the portal source for outbound UPS/FedEx expenses;
-- the QBO account for `OMG Fee Withheld` on a Deposit Statement; it is not assumed to be 57000;
 - the payroll reclassification offset account for weekly 55200/55400 journals;
 - confirmation that 51300 has been changed to Cost of Goods Sold in live QBO.

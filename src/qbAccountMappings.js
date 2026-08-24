@@ -9,7 +9,7 @@ export const QB_ACCOUNT_SPECS = Object.freeze({
   freight_account: Object.freeze({ number: '51000', name: 'Cost of Goods Sold:Freight In', types: ['Cost of Goods Sold'] }),
   outbound_freight_account: Object.freeze({ number: '67000', name: 'Freight Expenses', types: ['Expense'] }),
   sports_inc_fee_account: Object.freeze({ number: '58000', name: 'Sports Inc Fee', types: ['Cost of Goods Sold'] }),
-  omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }), // OMG vendor invoices only; never withheld deposit fees
+  omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }), // OMG vendor invoices and Deposit Statement OMG Fee Withheld
   omg_card_fee_account: Object.freeze({ number: '71400', name: 'Bank Charges', types: ['Expense'] }),
   deco_account: Object.freeze({ number: '52000', name: 'Outside Decoration', types: ['Cost of Goods Sold'] }),
   decoration_account: Object.freeze({ number: '55200', name: 'Decoration:Decoration Labor', types: ['Cost of Goods Sold'] }),
@@ -89,10 +89,10 @@ export function calculateCustomerShipping(order, salesSubtotal) {
   return money(current + prior);
 }
 
-// OMG deposit statements contain a distinct "OMG Fee Withheld". Accounting
-// confirmed that 57000 is reserved for actual OMG vendor invoices (store setup,
-// chargeback, and per-order fee invoices), not this withheld amount. Keep the
-// withheld source visible but deliberately unassigned until its account is approved.
+// The owner approved 57000 for OMG/webstore fees. That includes both actual OMG
+// vendor invoices (store setup, chargebacks, etc.) and the separately identified
+// "OMG Fee Withheld" line on an OMG Deposit Statement. Processing/card fees stay
+// separate in 71400.
 export function getOmgFeeSource(storeOrSalesOrder) {
   const row = storeOrSalesOrder || {};
   const isOmg = row.source === 'omg' || !!row.omg_store_id || !!row._omg_source ||
@@ -103,9 +103,8 @@ export function getOmgFeeSource(storeOrSalesOrder) {
       sourceType: 'omg_deposit_statement_withheld_fee',
       sourceId: row._omg_deposit_statement_id || row.omg_store_id || row.id,
       amount,
-      accountKey: null,
-      blocked: true,
-      blockedReason: 'The QBO account for OMG Fee Withheld is not confirmed; 57000 is vendor invoices only.',
+      accountKey: 'omg_fee_account',
+      blocked: false,
     }
     : null;
 }
@@ -535,8 +534,8 @@ export const QB_ACCOUNT_POSTING_MATRIX = Object.freeze([
   { itemType: 'Outbound UPS / FedEx expense', accountKey: 'outbound_freight_account', account: '67000 Freight Expenses', posting: 'Debit', control: 'Not currently created by Connect' },
   { itemType: 'Outside decoration vendor bill', accountKey: 'deco_account', account: '52000 Outside Decoration', posting: 'Debit', control: '21100 A/P credit' },
   { itemType: 'Sports Inc fee', accountKey: 'sports_inc_fee_account', account: '58000 Sports Inc Fee', posting: 'Debit', control: '21100 A/P credit' },
-  { itemType: 'OrderMyGear vendor invoice fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit on OMG vendor bill', control: '21100 A/P credit; never a deposit-statement fee' },
-  { itemType: 'OrderMyGear fee withheld from deposit', accountKey: 'unconfirmed', account: 'BLOCKED', posting: 'Negative bank-deposit line', control: 'Account assignment still required; must not use 57000 without approval' },
+  { itemType: 'OrderMyGear vendor invoice fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit on OMG vendor bill', control: '21100 A/P credit' },
+  { itemType: 'OrderMyGear fee withheld from deposit', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit via negative bank-deposit line', control: 'Deposit Statement “OMG Fee Withheld”' },
   { itemType: 'OrderMyGear processing fee withheld', accountKey: 'omg_card_fee_account', account: '71400 Bank Charges', posting: 'Debit via negative deposit line', control: 'Deposit Statement “Processing Fee Withheld”' },
   { itemType: 'In-house decoration labor', accountKey: 'decoration_account', account: '55200 Decoration Labor', posting: 'Debit / payroll reclass', control: 'Source: production time logs × labor rate; offset/cadence pending' },
   { itemType: 'In-house art labor', accountKey: 'in_house_art_account', account: '55400 In House Art', posting: 'Debit / payroll reclass', control: 'Source: art time logs × labor rate; offset/cadence pending' },
