@@ -62,6 +62,7 @@ One OMG Deposit Statement corresponds to one bank deposit, but it can contain ma
 
 - The portal currently uses TaxCloud, but existing customer rates are not automatically kept current: scheduled refresh jobs were disabled and the UI normally refreshes only missing rates.
 - TaxCloud capture is wired as a manual action on paid taxable invoices. It is not an automatic completion control, so a paid taxable invoice can remain unfiled.
+- Capture performs a new tax lookup at payment time but does not compare the result with the tax stored on the invoice. The current request supplies only state/ZIP, omits separately stored invoice shipping, and has no wired Portal caller for TaxCloud's return/refund action. Those gaps can make filed tax differ from collected tax.
 - The TaxCloud functions contain placeholder origin-address fallbacks. Production tax calls must fail closed when the real NSA origin configuration is missing.
 - Most lines default to the apparel taxability code. Freight, decoration, art, and other taxable/non-taxable categories need explicit taxability rules before relying on portal-calculated tax.
 - Therefore QBO Automated Sales Tax must not be turned off yet. Taxable QBO invoice writes remain blocked until the portal calculation/capture controls and live QBO tax configuration are proven in a test company.
