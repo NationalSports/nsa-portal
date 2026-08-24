@@ -7,7 +7,39 @@
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, resolveQBAccountRefs } from './qbAccountMappings';
+import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, resolveQBAccountRefs } from './qbAccountMappings';
+
+// Return a circular batch and the cursor for the next run. Permanent blockers
+// in the first N records must not starve every later customer/invoice/item/PO.
+export function rotatingBatch(items = [], offset = 0, size = 20) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length || !(size > 0)) return { items: [], nextOffset: 0 };
+  const rawOffset = Number.isFinite(Number(offset)) ? Math.floor(Number(offset)) : 0;
+  const start = ((rawOffset % list.length) + list.length) % list.length;
+  const count = Math.min(Math.floor(size), list.length);
+  const batch = [...list.slice(start), ...list.slice(0, start)].slice(0, count);
+  return { items: batch, nextOffset: (start + count) % list.length };
+}
+
+export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description }) {
+  const cents = value => Math.round(safeNum(value) * 100) / 100;
+  const total = cents(invoice?.total);
+  const discount = cents(invoice?.credit_amount);
+  if (!(total > 0)) throw new Error('Invoice total must be positive.');
+  if (discount < 0) throw new Error('Invoice discount cannot be negative.');
+  if (!salesItemId) throw new Error('QBO sales item is required.');
+  if (discount > 0 && !discountAccountRef?.value) throw new Error('40200 Discounts account is required.');
+  const grossSales = cents(total + discount);
+  const lines = [{
+    DetailType:'SalesItemLineDetail', Amount:grossSales, Description:description,
+    SalesItemLineDetail:{Qty:1,UnitPrice:grossSales,ItemRef:{value:String(salesItemId),name:'NSA Portal Sales'}},
+  }];
+  if (discount > 0) lines.push({
+    DetailType:'DiscountLineDetail', Amount:discount, Description:'Customer discount / credit — 40200',
+    DiscountLineDetail:{PercentBased:false,DiscountAccountRef:discountAccountRef},
+  });
+  return lines;
+}
 
 // ctx: every piece of app state/setters the routines touch, plus qbApi/nf/dP —
 // passed fresh by the caller (QBPage per render; App per interval fire).
@@ -15,15 +47,6 @@ export function createQBSyncEngine(ctx){
   const {cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,
     setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}=ctx;
     const QB_SYNC_BATCH_SIZE=20;
-    const parseQBDate=value=>{
-      const raw=String(value||'').trim();
-      if(!raw)return new Date().toISOString().slice(0,10);
-      if(/^\d{4}-\d{2}-\d{2}/.test(raw))return raw.slice(0,10);
-      const us=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:\D|$)/);
-      if(us)return (us[3].length===2?'20'+us[3]:us[3])+'-'+us[1].padStart(2,'0')+'-'+us[2].padStart(2,'0');
-      return null;
-    };
-
     let accountCache=null;
     const requiredAccountRefs=async(keys)=>{
       if(!accountCache)accountCache=await loadQBAccounts(qbApi);
@@ -62,11 +85,13 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Customer sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
       }
       const activeCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at);
-      const customersToSync=[...activeCustomers].sort((a,b)=>{
+      const sortedCustomers=[...activeCustomers].sort((a,b)=>{
         const aLinked=!!(a.qb_customer_id||(qbConfig.custQBMap||{})[a.id]);
         const bLinked=!!(b.qb_customer_id||(qbConfig.custQBMap||{})[b.id]);
         return Number(aLinked)-Number(bLinked);
-      }).slice(0,QB_SYNC_BATCH_SIZE);
+      });
+      const customerBatch=rotatingBatch(sortedCustomers,qbConfig._customerSyncOffset,QB_SYNC_BATCH_SIZE);
+      const customersToSync=customerBatch.items;
       for(const c of customersToSync){
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
@@ -113,7 +138,7 @@ export function createQBSyncEngine(ctx){
       if(synced===0&&log.details.length>0)log.status='error';
       const remainingCustomers=activeCustomers.filter(c=>!(c.qb_customer_id||(qbConfig.custQBMap||{})[c.id]||custQBMap[c.id])).length;
       log.details.unshift(synced+'/'+customersToSync.length+' customers completed in this batch'+(remainingCustomers?' · '+remainingCustomers+' remain unlinked':''));
-      setQBConfig(prev=>({...prev,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_customerSyncOffset:customerBatch.nextOffset,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
       setQbSyncing(false);
       return custQBMap;
@@ -125,10 +150,11 @@ export function createQBSyncEngine(ctx){
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
       const allUnsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
-      const unsyncedInvs2=allUnsyncedInvs.slice(0,QB_SYNC_BATCH_SIZE);
+      const invoiceBatch=rotatingBatch(allUnsyncedInvs,qbConfig._invoiceSyncOffset,QB_SYNC_BATCH_SIZE);
+      const unsyncedInvs2=invoiceBatch.items;
       let invoiceRefs,salesItemId;
       try{
-        invoiceRefs=await requiredAccountRefs(['income_account','ar_account']);
+        invoiceRefs=await requiredAccountRefs(['income_account','discount_account','ar_account']);
         salesItemId=await ensurePortalSalesItem(invoiceRefs.income_account);
       }catch(e){
         log.status='error';log.details.push(e.message||'Required invoice account could not be resolved');
@@ -146,17 +172,20 @@ export function createQBSyncEngine(ctx){
           log.details.push((inv.display_id||inv.id)+' — BLOCKED: $'+safeNum(inv.tax).toFixed(2)+' sales tax requires a QBO tax-code mapping. It was not posted to 40000 or guessed into 25201.');
           log.status='partial';continue;
         }
-        const invoiceDate=parseQBDate(inv.invoice_date||inv.date||inv.created_at);
+        const invoiceDate=parseQBDateValue(inv.invoice_date||inv.date||inv.created_at);
         if(!invoiceDate){log.details.push((inv.display_id||inv.id)+' — BLOCKED: invoice date could not be converted to a QBO date');log.status='partial';continue}
         const invoiceTotal=safeNum(inv.total);
         if(invoiceTotal<=0){log.details.push((inv.display_id||inv.id)+' — BLOCKED: invoice total must be positive; refunds require the separate 40000 credit/refund workflow.');log.status='partial';continue}
+        const invoiceDescription='Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:'');
+        let invoiceLines;
+        try{invoiceLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:invoiceRefs.discount_account,description:invoiceDescription})}
+        catch(e){log.details.push((inv.display_id||inv.id)+' — BLOCKED: '+e.message);log.status='partial';continue}
         const qbInvoice={
           DocNumber:inv.display_id||inv.id,
           TxnDate:invoiceDate,
           CustomerRef:{value:cQBId},
           ARAccountRef:invoiceRefs.ar_account,
-          Line:[{DetailType:'SalesItemLineDetail',Amount:invoiceTotal,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
-            SalesItemLineDetail:{Qty:1,UnitPrice:invoiceTotal,ItemRef:{value:salesItemId,name:'NSA Portal Sales'}}}],
+          Line:invoiceLines,
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         let res;
@@ -187,7 +216,7 @@ export function createQBSyncEngine(ctx){
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       log.details.unshift(synced+'/'+unsyncedInvs2.length+' invoices completed in this batch'+(allUnsyncedInvs.length>unsyncedInvs2.length?' · '+(allUnsyncedInvs.length-unsyncedInvs2.length)+' remain':''));
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_invoiceSyncOffset:invoiceBatch.nextOffset,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' invoices synced to QB');
       setQbSyncing(false);
     };
@@ -205,7 +234,7 @@ export function createQBSyncEngine(ctx){
       if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No invoices to sync');setQbSyncing(false);return}
       let paidRefs,salesItemId;
       try{
-        paidRefs=await requiredAccountRefs(['income_account','ar_account','payment_deposit_account']);
+        paidRefs=await requiredAccountRefs(['income_account','discount_account','ar_account','payment_deposit_account']);
         salesItemId=await ensurePortalSalesItem(paidRefs.income_account);
       }catch(e){
         log.status='error';log.details.push(e.message||'Required payment account could not be resolved');
@@ -229,8 +258,10 @@ export function createQBSyncEngine(ctx){
           const portalTotal=safeNum(inv.total);
           if(portalTotal>0&&Math.abs(portalTotal-qbTotal)>0.005){
             if(safeNum(inv.tax)>0){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: taxable invoice needs QBO tax-code mapping');log.status='partial';continue}
-            const upd=await qbApi('upsert_invoice',{invoice:{Id:inv.qb_invoice_id,SyncToken:qbInv.SyncToken,sparse:true,
-              Line:[{DetailType:'SalesItemLineDetail',Amount:portalTotal,Description:'Invoice '+(inv.display_id||inv.id),SalesItemLineDetail:{Qty:1,UnitPrice:portalTotal,ItemRef:{value:salesItemId,name:'NSA Portal Sales'}}}]}});
+            let correctionLines;
+            try{correctionLines=buildQBInvoicePostingLines({invoice:inv,salesItemId,discountAccountRef:paidRefs.discount_account,description:'Invoice '+(inv.display_id||inv.id)})}
+            catch(e){log.details.push((inv.display_id||inv.id)+' — total correction BLOCKED: '+e.message);log.status='partial';continue}
+            const upd=await qbApi('upsert_invoice',{invoice:{Id:inv.qb_invoice_id,SyncToken:qbInv.SyncToken,sparse:true,Line:correctionLines}});
             if(upd?.Invoice?.Id){log.details.push((inv.display_id||inv.id)+' — QB total corrected $'+qbTotal.toFixed(2)+' → $'+portalTotal.toFixed(2)+' (paid re-checks next run)');updated++}
             else{log.details.push((inv.display_id||inv.id)+' — total correction FAILED: '+(upd?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
             continue;
@@ -436,11 +467,13 @@ export function createQBSyncEngine(ctx){
         if(!skuGroups.has(key))skuGroups.set(key,[]);
         skuGroups.get(key).push(p);
       });
-      const skuBatches=[...skuGroups.entries()].sort(([,a],[,b])=>{
+      const sortedSkuGroups=[...skuGroups.entries()].sort(([,a],[,b])=>{
         const aLinked=a.some(p=>prodQBMap[p.id]);
         const bLinked=b.some(p=>prodQBMap[p.id]);
         return Number(aLinked)-Number(bLinked);
-      }).slice(0,QB_SYNC_BATCH_SIZE);
+      });
+      const inventoryBatch=rotatingBatch(sortedSkuGroups,qbConfig._inventorySyncOffset,QB_SYNC_BATCH_SIZE);
+      const skuBatches=inventoryBatch.items;
       for(const [sku,products] of skuBatches){
         const p=products[0];
         const existingQBId=products.map(pp=>prodQBMap[pp.id]).find(Boolean);
@@ -488,7 +521,7 @@ export function createQBSyncEngine(ctx){
       }
       const remainingSkus=[...skuGroups.values()].filter(products=>!products.some(p=>prodQBMap[p.id])).length;
       log.details.unshift(synced+'/'+skuBatches.length+' product items completed in this batch'+(remainingSkus?' · '+remainingSkus+' remain unlinked':''));
-      setQBConfig(prev=>({...prev,prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_inventorySyncOffset:inventoryBatch.nextOffset,prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' non-inventory SKU items synced to QB');
       setQbSyncing(false);
       return prodQBMap;
@@ -505,7 +538,8 @@ export function createQBSyncEngine(ctx){
         const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
         return hasItems&&!soMap[so.id];
       });
-      const toSync=allToSync.slice(0,QB_SYNC_BATCH_SIZE);
+      const salesOrderBatch=rotatingBatch(allToSync,qbConfig._salesOrderSyncOffset,QB_SYNC_BATCH_SIZE);
+      const toSync=salesOrderBatch.items;
       let existingQBEstimates=[];
       try{existingQBEstimates=await loadAllQBEntities(qbApi,'Estimate','Id, DocNumber, CustomerRef, TotalAmt, TxnDate',500)}
       catch(e){
@@ -524,7 +558,7 @@ export function createQBSyncEngine(ctx){
         const c=cust.find(x=>x.id===so.customer_id);
         const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
         if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
-        const estimateDate=parseQBDate(so.created_at);
+        const estimateDate=parseQBDateValue(so.created_at);
         if(!estimateDate){log.details.push(so.id+' — BLOCKED: sales-order date could not be converted to a QBO date');log.status='partial';continue}
         const saf=safeArt(so);
         const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
@@ -578,7 +612,7 @@ export function createQBSyncEngine(ctx){
       }
       if(synced===0&&toSync.length>0)log.status='error';
       log.details.unshift(synced+'/'+toSync.length+' sales orders completed in this batch'+(allToSync.length>toSync.length?' · '+(allToSync.length-toSync.length)+' remain':''));
-      setQBConfig(prev=>({...prev,qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_salesOrderSyncOffset:salesOrderBatch.nextOffset,qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' sales orders synced to QB');
       setQbSyncing(false);
     };
@@ -622,11 +656,12 @@ export function createQBSyncEngine(ctx){
         }
       })})});
       const allPoGroups=Object.values(poGroupMap);
-      const poGroups=allPoGroups.slice(0,QB_SYNC_BATCH_SIZE);
+      const purchaseOrderBatch=rotatingBatch(allPoGroups,qbConfig._purchaseOrderSyncOffset,QB_SYNC_BATCH_SIZE);
+      const poGroups=purchaseOrderBatch.items;
       for(const group of poGroups){
         const vendorName=group.vendor;
         if(!vendorName){log.details.push(group.poId+' — skipped: no vendor name');log.status='partial';continue}
-        const poDate=parseQBDate(group.created_at);
+        const poDate=parseQBDateValue(group.created_at);
         if(!poDate){log.details.push(group.poId+' — BLOCKED: purchase-order date could not be converted to a QBO date');log.status='partial';continue}
         // Find or create vendor in QB
         let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
@@ -670,7 +705,7 @@ export function createQBSyncEngine(ctx){
         if(missingSkuItem){log.details.push(group.poId+' — BLOCKED: QBO NonInventory item missing for '+missingSkuItem);log.status='partial';continue}
         itemGroups.forEach(entry=>qbLines.push({DetailType:'ItemBasedExpenseLineDetail',Amount:Math.round(entry.amount*100)/100,
           Description:entry.sku+' '+[...entry.names].filter(Boolean).join(' / ')+' (SO: '+[...entry.soIds].join(', ')+')',
-          ItemBasedExpenseLineDetail:{ItemRef:{value:String(entry.itemId)},Qty:entry.qty,UnitPrice:Math.round((entry.amount/entry.qty)*100)/100}}));
+          ItemBasedExpenseLineDetail:{ItemRef:{value:String(entry.itemId)},Qty:entry.qty,UnitPrice:Math.round((entry.amount/entry.qty)*1e6)/1e6}}));
         const totalAmount=qbLines.reduce((a,l)=>a+l.Amount,0);
         if(!qbLines.length||!(totalAmount>0)){log.details.push(group.poId+' — BLOCKED: no positive purchase-order lines');log.status='partial';continue}
         const soRefs=[...new Set(group.entries.map(({so:s})=>s.id))].join(', ');
@@ -698,7 +733,7 @@ export function createQBSyncEngine(ctx){
       }
       if(synced===0&&poGroups.length>0)log.status='error';
       log.details.unshift(synced+'/'+poGroups.length+' purchase orders completed in this batch'+(allPoGroups.length>poGroups.length?' · '+(allPoGroups.length-poGroups.length)+' remain':''));
-      setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,_purchaseOrderSyncOffset:purchaseOrderBatch.nextOffset,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' purchase orders synced to QB');
       setQbSyncing(false);
     };

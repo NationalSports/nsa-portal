@@ -3,14 +3,17 @@ import {
   QB_STATE_TAX_ACCOUNT_KEYS,
   aggregateBillItemsBySku,
   buildVendorBillLines,
+  calculateOmgInvoicePayment,
   calculateCustomerShipping,
   buildInternalLaborCostManifest,
   buildOmgBankDeposit,
+  findUniqueVendorMatch,
   getOmgFeeSource,
   indexQBNonInventoryItems,
   isDecorationVendorBill,
   manualBillAccountKey,
   migrateQBAccountMapping,
+  parseQBDateValue,
   parseOmgDepositStatements,
   resolveQBAccount,
 } from '../qbAccountMappings';
@@ -94,6 +97,16 @@ describe('vendor bill adversarial routing', () => {
     expect(isDecorationVendorBill({supplier:'ABC Decoration LLC'},vendors)).toBe(true);
     expect(isDecorationVendorBill({supplier:'Old Decorator'},vendors)).toBe(false);
     expect(isDecorationVendorBill({supplier:'ABC Apparel'},vendors)).toBe(false);
+    expect(isDecorationVendorBill({supplier:'ABC Decoration Services'},vendors)).toBe(false);
+  });
+
+  test('matches only one normalized legal vendor name and blocks ambiguity', () => {
+    expect(findUniqueVendorMatch('Acme Sports, LLC', [{id:'v1',name:'ACME SPORTS INC.'}]).id).toBe('v1');
+    expect(findUniqueVendorMatch('Acme Sports', [{id:'v1',name:'Acme Sportswear'}])).toBeNull();
+    expect(()=>findUniqueVendorMatch('Acme Sports', [
+      {id:'v1',name:'Acme Sports LLC'},
+      {id:'v2',name:'Acme Sports, Inc.'},
+    ])).toThrow(/Multiple active portal vendors/i);
   });
 
   test('aggregates bill sizes into one NonInventory line per SKU and splits freight/SI fee', () => {
@@ -124,6 +137,15 @@ describe('vendor bill adversarial routing', () => {
       {sku:'A',size:'2XL',qty:1,unit_price:13,extension:13},
     ]}, refs, itemRefs);
     expect(result.lines[0].ItemBasedExpenseLineDetail).toMatchObject({Qty:3,UnitPrice:11});
+  });
+
+  test('keeps enough rate precision for a non-even weighted cost to round back to the bill amount', () => {
+    const result=buildVendorBillLines({kind:'goods',merchandise_total:10,doc_total:10,items:[
+      {sku:'A',qty:3,unit_price:10/3,extension:10},
+    ]},refs,itemRefs);
+    const detail=result.lines[0].ItemBasedExpenseLineDetail;
+    expect(detail.UnitPrice).toBe(3.333333);
+    expect(Math.round(detail.Qty*detail.UnitPrice*100)/100).toBe(10);
   });
 
   test('indexes exact active NonInventory SKUs and rejects duplicate or wrong-type items', () => {
@@ -186,6 +208,16 @@ describe('customer shipping routing', () => {
   });
 });
 
+describe('required QBO dates', () => {
+  test('converts supported dates and rejects blanks or impossible calendar dates', () => {
+    expect(parseQBDateValue('2026-08-23T09:15:00')).toBe('2026-08-23');
+    expect(parseQBDateValue('8/23/26')).toBe('2026-08-23');
+    expect(parseQBDateValue('')).toBeNull();
+    expect(parseQBDateValue('2026-02-30')).toBeNull();
+    expect(parseQBDateValue('13/10/2026')).toBeNull();
+  });
+});
+
 describe('OMG and internal labor source routing', () => {
   const statementText=`
                            National Sports Apparel LLC                                                      Deposit Statement
@@ -231,6 +263,15 @@ describe('OMG and internal labor source routing', () => {
       });
     expect(getOmgFeeSource({source:'webstore',id:'native-1',_omg_omg_fees:123.45})).toBeNull();
     expect(getOmgFeeSource({source:'omg',id:'store-2',_omg_omg_fees:0})).toBeNull();
+  });
+
+  test('applies gross OMG collections to the invoice instead of netting fees against A/R', () => {
+    expect(calculateOmgInvoicePayment(1000,1000)).toBe(1000);
+    expect(calculateOmgInvoicePayment(1000,950)).toBe(950);
+    expect(calculateOmgInvoicePayment(900,1000)).toBe(900);
+    // Fees of $75 and $25 belong on the deposit; they do not reduce this payment to $900.
+    expect(calculateOmgInvoicePayment(1000,1000)).not.toBe(1000-75-25);
+    expect(()=>calculateOmgInvoicePayment(-1,1000)).toThrow(/cannot be negative/i);
   });
 
   test('builds a reconciled OMG deposit with withheld OMG fees in 57000', () => {

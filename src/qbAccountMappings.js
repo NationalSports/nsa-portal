@@ -75,6 +75,64 @@ const LEGACY_MAPPING_VALUES = Object.freeze({
 const norm = value => String(value == null ? '' : value).trim().toLowerCase();
 const money = value => Math.round((Number(value) || 0) * 100) / 100;
 
+// Vendor names arrive from PDFs, the portal, and QBO with inconsistent legal
+// suffixes and punctuation. Normalize only those harmless differences. Do not
+// use substring matching: "ABC Apparel" must never silently match
+// "ABC Apparel Decoration" or another similarly named supplier.
+const VENDOR_LEGAL_SUFFIXES = new Set([
+  'co', 'company', 'corp', 'corporation', 'inc', 'incorporated',
+  'llc', 'llp', 'lp', 'ltd', 'limited',
+]);
+
+export function normalizeVendorName(value) {
+  const tokens = norm(value)
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  while (tokens.length > 1 && VENDOR_LEGAL_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
+  return tokens.join(' ');
+}
+
+export function findUniqueVendorMatch(value, vendors = []) {
+  const target = normalizeVendorName(value);
+  if (!target) return null;
+  const matches = (vendors || []).filter(vendor =>
+    vendor && vendor.is_active !== false && normalizeVendorName(vendor.name) === target
+  );
+  if (matches.length > 1) {
+    throw new Error(`Multiple active portal vendors match "${String(value || '').trim()}"; no transaction was sent.`);
+  }
+  return matches[0] || null;
+}
+
+export function parseQBDateValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  let year, month, day;
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:\D|$)/);
+  const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:\D|$)/);
+  if (iso) {
+    year = Number(iso[1]); month = Number(iso[2]); day = Number(iso[3]);
+  } else if (us) {
+    year = Number(us[3].length === 2 ? '20' + us[3] : us[3]);
+    month = Number(us[1]); day = Number(us[2]);
+  } else {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return String(year).padStart(4, '0') + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+}
+
+export function calculateOmgInvoicePayment(grossCollected, invoiceTotal) {
+  const gross = money(grossCollected);
+  const total = money(invoiceTotal);
+  if (gross < 0 || total < 0) throw new Error('OMG collected and invoice amounts cannot be negative.');
+  return gross > 0 ? money(Math.min(gross, total)) : 0;
+}
+
 // Matches the portal's order-total calculation: percentage shipping is based
 // on merchandise + decoration revenue, flat shipping is used as-is, and an
 // explicitly carried prior shipping charge is added once. Customer shipping
@@ -384,14 +442,7 @@ export function manualBillAccountKey(vendorSelection) {
 
 export function isDecorationVendorBill(bill, decorationVendors = []) {
   if (bill?.kind === 'decoration') return true;
-  const supplier = norm(bill?.supplier).replace(/[^a-z0-9]/g, '');
-  if (supplier.length < 4) return false;
-  return (decorationVendors || []).some(vendor => {
-    if (!vendor || vendor.is_active === false) return false;
-    const vendorName = norm(vendor.name).replace(/[^a-z0-9]/g, '');
-    return vendorName.length >= 4 &&
-      (supplier === vendorName || supplier.includes(vendorName) || vendorName.includes(supplier));
-  });
+  return !!findUniqueVendorMatch(bill?.supplier, decorationVendors);
 }
 
 function expenseLine(amount, description, accountRef) {
@@ -472,7 +523,9 @@ function itemExpenseLine(group, po, itemRef) {
     ItemBasedExpenseLineDetail: {
       ItemRef: itemRef,
       Qty: group.qty,
-      UnitPrice: money(group.amount / group.qty),
+      // Keep enough precision that Qty x UnitPrice rounds back to Amount. Two
+      // decimal rate rounding makes $10 / 3 display as $9.99 in QBO.
+      UnitPrice: Math.round((group.amount / group.qty) * 1e6) / 1e6,
     },
   };
 }

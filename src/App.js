@@ -416,7 +416,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, resolveQBAccountRefs } from './qbAccountMappings';
 import BaggingDashCard from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -11101,7 +11101,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={(c,product,seed)=>newE(c,product,seed)} sos={sos} msgs={msgs} onMsg={setMsgs} onInv={setInvs} companyInfo={companyInfo} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} onOpenInv={inv=>{setViewInvoice(inv);setPg('invoices')}} ests={ests} invs={invs} onSaveSO={savSO} onSaveEst={savE} onSaveArtFiles={savArtFiles} REPS={REPS} prod={prod}
       onMarkRead={ids=>{const s=new Set(ids);setMsgs(msgs.map(m=>s.has(m.id)?{...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}:m))}}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const isFamily=c=>c.id===prog.customer_id||c.parent_id===prog.customer_id;const upd=c=>({...c,promo_programs:[...(c.promo_programs||[]).filter(p=>p.id!==prog.id),prog]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s);nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const upd=c=>({...c,promo_programs:(c.promo_programs||[]).filter(p=>p.id!==id)});setCust(prev=>prev.map(c=>(c.promo_programs||[]).some(p=>p.id===id)?upd(c):c));setSelC(s=>s&&(s.promo_programs||[]).some(p=>p.id===id)?upd(s):s);nf('Promo program removed')}}
@@ -14905,13 +14905,16 @@ export default function App(){
   // so the invoice is an internal accounting document against funds already
   // in hand — there's nothing to wait for. Builds the same full invoice a
   // manual create would (blended per-size sells + deco sells + flat shipping,
-  // tax-exempt) and stamps the store-funds payment at birth: paid in full
-  // when the net remit (collected − OMG & CC fees) covers the total, else
-  // paid to exactly what was collected so a shortfall stays visible as a
+  // tax-exempt) and stamps the gross store-funds payment at birth: paid in
+  // full when customer collections cover the total, else paid to exactly
+  // what was collected so a shortfall stays visible as a
   // partial balance. If the Accounting Report isn't entered yet the invoice
   // is created open and the settlement queue keeps flagging the store.
   // Idempotent: skips SOs that already carry any invoice, and the
-  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert.
+  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert. The
+  // customer payment is GROSS. OMG/card fees are separate deposit deductions
+  // (57000/71400); netting them against the invoice would leave a false A/R
+  // balance equal to the fees.
   // Called at store port (createOmgSO) and from the settlement queue.
   const createAndSettleOmgInvoice=(so)=>{
     if(!so||!so.omg_store_id)return null;
@@ -14932,8 +14935,7 @@ export default function App(){
     const ship=so.shipping_type==='pct'?Math.round(sub*(safeNum(so.shipping_value)/100)*100)/100:safeNum(so.shipping_value)||0;
     const total=Math.round((sub+ship)*100)/100;
     const acct=+(so._omg_acct_collected??store?._omg_acct_collected)||0;
-    const netRemit=Math.round((acct-(+(so._omg_omg_fees??store?._omg_omg_fees)||0)-(+(so._omg_cc_fees??store?._omg_cc_fees)||0))*100)/100;
-    const applied=netRemit>0?Math.min(netRemit,total):0;
+    const applied=calculateOmgInvoicePayment(acct,total);
     const saleCode=(store&&store._omg_sale_code)||String(so.omg_store_id).replace(/^OMG-sale_/,'');
     const dateStr=new Date().toLocaleDateString('en-CA');
     const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
@@ -29300,7 +29302,6 @@ export default function App(){
         setBillImport(x=>({...x,uploading:false}));return;
       }
 
-      const normQBName=value=>String(value||'').trim().replace(/\s+/g,' ').toLowerCase();
       const billsByDoc=new Map();
       existingQBBills.forEach(qbBill=>{
         const key=String(qbBill.DocNumber||'').trim().toLowerCase();
@@ -29324,19 +29325,21 @@ export default function App(){
           const vendorName=String(bill.supplier||'').trim();
           if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
 
-          let vendor=vend.find(v=>normQBName(v.name)===normQBName(vendorName));
-          if(!vendor)vendor=vend.find(v=>normQBName(v.name).includes(normQBName(vendorName))||normQBName(vendorName).includes(normQBName(v.name)));
-          const decoVendor=(decoVendors||[]).find(v=>normQBName(v.name)===normQBName(vendorName))
-            ||(decoVendors||[]).find(v=>normQBName(v.name).includes(normQBName(vendorName))||normQBName(vendorName).includes(normQBName(v.name)));
+          const vendor=findUniqueVendorMatch(vendorName,vend);
+          const decoVendor=findUniqueVendorMatch(vendorName,decoVendors||[]);
+          if(vendor&&decoVendor&&String(vendor.id)!==String(decoVendor.vendor_id||decoVendor.id)){
+            throw new Error('Supplier '+vendorName+' matches both merchandise and decoration vendor lists; no QBO bill was sent.');
+          }
           const portalVendor=vendor||decoVendor;
+          if(!portalVendor)throw new Error('Supplier '+vendorName+' does not uniquely match an active portal vendor; no QBO bill was sent.');
           let qbVendorId=portalVendor?.qb_vendor_id;
           if(qbVendorId&&!existingQBVendors.some(v=>String(v.Id)===String(qbVendorId)&&v.Active!==false))qbVendorId=null;
 
           if(!qbVendorId){
-            const candidateNames=new Set([vendorName,portalVendor?.name].filter(Boolean).map(normQBName));
+            const candidateNames=new Set([vendorName,portalVendor?.name].filter(Boolean).map(normalizeVendorName));
             const exactMatches=existingQBVendors.filter(v=>v.Active!==false&&
-              (candidateNames.has(normQBName(v.DisplayName))||candidateNames.has(normQBName(v.CompanyName))));
-            if(exactMatches.length>1)throw new Error('Multiple active QBO vendors exactly match '+vendorName+'; no bill was sent.');
+              (candidateNames.has(normalizeVendorName(v.DisplayName))||candidateNames.has(normalizeVendorName(v.CompanyName))));
+            if(exactMatches.length>1)throw new Error('Multiple active QBO vendors match '+vendorName+' after legal-name normalization; no bill was sent.');
             if(exactMatches.length===1)qbVendorId=exactMatches[0].Id;
           }
           if(!qbVendorId){
@@ -29362,17 +29365,15 @@ export default function App(){
           const amt=built.total;
           const lineItems=built.lines;
 
-          const _qbDate=(s)=>{if(!s)return undefined;const t=String(s).trim();
-            if(/^\d{4}-\d{2}-\d{2}/.test(t))return t.slice(0,10);
-            const m2=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-            if(!m2)return undefined;
-            return (m2[3].length===2?'20'+m2[3]:m2[3])+'-'+m2[1].padStart(2,'0')+'-'+m2[2].padStart(2,'0');};
-          const txnDate=_qbDate(bill.doc_date)||new Date().toISOString().slice(0,10);
+          const txnDate=parseQBDateValue(bill.doc_date);
+          if(!txnDate)throw new Error('Bill date is missing or invalid; no QBO bill was sent.');
+          const dueDate=parseQBDateValue(bill.due_date);
+          if(bill.due_date&&!dueDate)throw new Error('Bill due date is invalid; no QBO bill was sent.');
           const billDocNumber=String(bill.doc_number||b.id||'').trim();
           if(!billDocNumber)throw new Error('Bill has no vendor document number or portal source ID; no QBO bill was sent.');
           const memo=[canaryMode?'NSA-QB-CANARY:'+String(b.id||bill.doc_number||bi):'','PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
           const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:billRefs.ap_account,TxnDate:txnDate,
-            DueDate:_qbDate(bill.due_date),DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
+            DueDate:dueDate,DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
 
           // Idempotency check happens before every create. An exact vendor/date/total
           // match is reused; any same-number conflict blocks rather than guessing.

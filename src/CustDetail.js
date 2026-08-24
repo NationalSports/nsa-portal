@@ -9,12 +9,13 @@ import { artWriteMatches } from './lib/artIdentity';
 import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction, greetLine, withGreeting } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, buildPdfAttachment, _brevoKey, _portalAction, greetLine, withGreeting } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
 import { _fetchHistInvoiceLines } from './lib/dbEngine';
+import { applyBulkInvoiceSendHistory, buildBulkInvoiceEmailHtml, buildBulkInvoiceMessages, bulkInvoiceEmailSubject } from './lib/bulkInvoiceEmail';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -31,6 +32,56 @@ const _fmtDate=ds=>{const d=_pDate(ds);if(!d)return'';
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
 // -> 'M-D' (no year), for the dense Active Orders columns.
 const _fmtMD=ds=>{const d=_pDate(ds);return d?(d.getMonth()+1)+'-'+d.getDate():''};
+
+// The customer-level bulk sender needs the same real PDF attachment shape as every
+// other outbound mail path. Invoice line_items are the pricing source of truth. Older
+// invoices without stored lines still get a valid one-line invoice instead of silently
+// dropping the attachment or pretending the send succeeded.
+const _bulkInvoicePdfOptions=(inv,invoiceCustomer,companyInfo)=>{
+  const fmt=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const lineItems=safeArr(inv?.line_items);
+  const shipping=safeNum(inv?.shipping);const tax=safeNum(inv?.tax);const credit=safeNum(inv?.credit_amount);
+  const fallbackSubtotal=Math.max(0,safeNum(inv?.total)-shipping-tax+credit);
+  const sourceLines=lineItems.length?lineItems:[{qty:1,desc:inv?.memo||'Invoice',rate:fallbackSubtotal,amount:fallbackSubtotal}];
+  const rows=sourceLines.map(li=>({cells:[
+    {value:safeNum(li.qty)||1,style:'text-align:center'},
+    {value:li._sku||'',style:'font-weight:700'},
+    {value:li._name||li.desc||inv?.memo||'Invoice'},
+    {value:fmt(safeNum(li.rate)),style:'text-align:right'},
+    {value:fmt(safeNum(li.amount)),style:'text-align:right;font-weight:600'},
+  ]}));
+  const subtotal=lineItems.length?lineItems.reduce((sum,li)=>sum+safeNum(li.amount),0):fallbackSubtotal;
+  const billName=inv?.billing_name||invoiceCustomer?.name||'—';
+  const billAddress=inv?.billing_address||[
+    invoiceCustomer?.billing_address_line1,
+    [invoiceCustomer?.billing_city,invoiceCustomer?.billing_state,invoiceCustomer?.billing_zip].filter(Boolean).join(' '),
+  ].filter(Boolean).join('\n');
+  const shipName=inv?.shipping_name||invoiceCustomer?.name||'—';
+  const shipAddress=String(inv?.shipping_address||'').replace(/\n/g,'<br/>');
+  const balance=safeNum(inv?.total)-safeNum(inv?.paid);
+  const poNumber=inv?.po_number||inv?._po_number||'—';
+  return{
+    title:billName,docNum:inv?.id||'Invoice',docType:'INVOICE',date:inv?.date,companyInfo,
+    headerRight:'<div class="ta">'+fmt(inv?.total)+'</div><div class="ts">Balance Due: <strong>'+fmt(balance)+'</strong></div>',
+    infoBoxes:[
+      {label:'Bill To',value:billName,sub:String(billAddress||'').replace(/\n/g,'<br/>')},
+      ...(shipAddress?[{label:'Ship To',value:shipName,sub:shipAddress}]:[]),
+      {label:'Invoice Date',value:inv?.date||'—',sub:inv?.due_date?'Due: '+inv.due_date:''},
+      {label:'PO Number',value:poNumber},
+      {label:'Payment Terms',value:inv?.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv?.inv_type==='partial'?'Partial Invoice':'Invoice'},
+    ],
+    tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],rows:[
+      ...rows,
+      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc'},{value:'<strong>'+fmt(subtotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc'}]},
+      ...(shipping>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Shipping',style:'text-align:right;border:none'},{value:fmt(shipping),style:'text-align:right;border:none'}]}]:[]),
+      ...(tax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax',style:'text-align:right;border:none'},{value:fmt(tax),style:'text-align:right;border:none'}]}]:[]),
+      ...(credit>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Credit',style:'text-align:right;border:none;color:#166534'},{value:'-'+fmt(credit),style:'text-align:right;border:none;color:#166534'}]}]:[]),
+      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>'+fmt(inv?.total)+'</strong>',style:'text-align:right'}]},
+      ...(safeNum(inv?.paid)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Paid',style:'text-align:right;border:none;color:#166534'},{value:fmt(inv.paid),style:'text-align:right;border:none;color:#166534'}]}]:[]),
+      ...(balance>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626">'+fmt(balance)+'</strong>',style:'text-align:right'}]}]:[]),
+    ]}],
+  };
+};
 
 // Multi-select garment-color picker — tie ONE web-logo cutout to any number of garment
 // colors (reuse without re-uploading the same file per color). Colors come from the art's
@@ -82,12 +133,12 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,companyInfo,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
-  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[showPortal,setShowPortal]=useState(false);
+  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[invEmailSending,setInvEmailSending]=useState(false);const[invEmailStatus,setInvEmailStatus]=useState(null);const[showPortal,setShowPortal]=useState(false);
   // Email Invoices recipients. The modal used to send to getBillingContacts()[0] with no way to
   // change it — on a parent account like a university that is one AP contact for every team's
   // invoices. Same checkbox + add-an-address pattern the estimate/SO send modals use.
@@ -239,6 +290,56 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   useEffect(()=>{if(!showInvEmail||!_invToKey)return;
     setInvEmailMsg(m=>withGreeting(m,greetLine(_invToKey.split('|'),famContacts)))},[_invToKey,showInvEmail]);// eslint-disable-line react-hooks/exhaustive-deps
 
+  const sendOpenInvoiceBatch=async(displayInvs)=>{
+    if(invEmailSending||displayInvs.length===0||invEmailTargets.length===0)return;
+    setInvEmailSending(true);setInvEmailStatus({type:'sending',text:'Preparing invoice PDFs…'});
+    try{
+      const attachments=[];
+      for(let i=0;i<displayInvs.length;i++){
+        const inv=displayInvs[i];
+        setInvEmailStatus({type:'sending',text:'Preparing invoice PDF '+(i+1)+' of '+displayInvs.length+'…'});
+        const invCustomer=allCustomers.find(c=>c.id===inv.customer_id)||customer;
+        const pdfName=(inv.id||'Invoice')+(invCustomer?.name?' - '+invCustomer.name:'')+'.pdf';
+        try{attachments.push(await buildPdfAttachment(_bulkInvoicePdfOptions(inv,invCustomer,companyInfo),pdfName))}
+        catch(error){throw new Error('Could not generate '+(inv.id||'an invoice')+' PDF: '+(error?.message||'Unknown PDF error'))}
+      }
+      const totalDue=displayInvs.reduce((sum,inv)=>sum+safeNum(inv.total)-safeNum(inv.paid),0);
+      const portalUrl=customer.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+'&page=billing':'';
+      const htmlContent=buildBrandedEmailHtml(buildBulkInvoiceEmailHtml({
+        message:invEmailMsg,customerName:customer.name,totalDue,invoices:displayInvs,portalUrl,
+      }),companyInfo);
+      const senderEmail=cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'noreply@nationalsportsapparel.com';
+      setInvEmailStatus({type:'sending',text:'Sending '+displayInvs.length+' invoice'+(displayInvs.length===1?'':'s')+'…'});
+      const result=await sendBrevoEmail({
+        to:invEmailTargets.map(email=>({email})),
+        subject:bulkInvoiceEmailSubject({customerName:customer.name,totalDue}),
+        htmlContent,
+        textContent:invEmailMsg+'\n\nInvoices: '+displayInvs.map(inv=>inv.id).join(', '),
+        senderName:cu?.name||'National Sports Apparel',
+        senderEmail,
+        replyTo:cu?.email?{email:cu.email,name:cu.name||'National Sports Apparel'}:undefined,
+        attachment:attachments,
+      });
+      if(!result.ok)throw new Error(result.error||'The mail provider rejected the request');
+      const sentAt=new Date().toISOString();
+      const recipientText=invEmailTargets.join(', ');
+      const invoiceIds=displayInvs.map(inv=>inv.id);
+      if(onInv)onInv(prev=>applyBulkInvoiceSendHistory(prev,invoiceIds,{
+        sentAt,sentBy:cu?.name||cu?.id||'NSA',to:recipientText,messageId:result.messageId,
+      }));
+      if(onMsg){const sendMessages=buildBulkInvoiceMessages({
+        invoices:displayInvs,recipientEmails:invEmailTargets,message:invEmailMsg,currentUser:cu||{},sentAt,
+      });if(sendMessages.length)onMsg(prev=>[...prev,...sendMessages])}
+      setInvEmailStatus({type:'success',text:'Sent '+displayInvs.length+' invoice'+(displayInvs.length===1?'':'s')+' to '+recipientText+'.'});
+      nf&&nf('Invoice email sent to '+recipientText);
+    }catch(error){
+      const message=error?.message||'Unexpected send failure';
+      console.error('[Bulk invoice email]',error);
+      setInvEmailStatus({type:'error',text:message});
+      nf&&nf('Invoice email failed: '+message,'error');
+    }finally{setInvEmailSending(false)}
+  };
+
   // Promote a sub-customer's order/estimate artwork into the parent customer's own library
   // (customer.art_files). Library art cascades to every sub-customer ("applies to all"),
   // so this is how a logo first seen on one sub-account becomes shared across the program.
@@ -327,7 +428,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {openInvCount>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setInvEmailStatus(null);setInvEmailSending(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag);try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
@@ -1619,8 +1720,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const accts=getBillingContacts(customer,allCustomers);
     const displayInvs=invEmailOverdueOnly?openInvs.filter(inv=>{const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;return age>30;}):openInvs;
     const totalDue=displayInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
-    return<div className="modal-overlay" onClick={()=>setShowInvEmail(false)}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
-      <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" onClick={()=>setShowInvEmail(false)}>×</button></div>
+    return<div className="modal-overlay" onClick={()=>{if(!invEmailSending)setShowInvEmail(false)}}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" disabled={invEmailSending} onClick={()=>setShowInvEmail(false)}>×</button></div>
       <div className="modal-body">
         {/* Sending to — billing contacts start checked; every family contact is available, and any
             address can be typed in. Sub-customer contacts are labelled with their account. */}
@@ -1685,10 +1786,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginTop:14,fontSize:11,color:'#64748b'}}>
           <strong>Preview:</strong> Email to {invEmailTargets.length>0?invEmailTargets.join(', '):'(no recipients selected)'} with this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
         </div>
+        {invEmailStatus&&<div role="status" style={{borderRadius:8,padding:'10px 12px',marginTop:10,fontSize:12,fontWeight:600,background:invEmailStatus.type==='error'?'#fef2f2':invEmailStatus.type==='success'?'#f0fdf4':'#eff6ff',color:invEmailStatus.type==='error'?'#b91c1c':invEmailStatus.type==='success'?'#166534':'#1d4ed8'}}>{invEmailStatus.text}</div>}
       </div>
       <div className="modal-footer">
-        <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0||invEmailTargets.length===0} title={invEmailTargets.length===0?'Select at least one recipient':undefined} onClick={()=>{setShowInvEmail(false);alert('📧 Invoice email sent to '+invEmailTargets.join(', ')+'\n'+displayInvs.length+' invoice(s) (demo)')}}>📧 Send {displayInvs.length} Invoice{displayInvs.length!==1?'s':''}</button>
+        <button className="btn btn-secondary" disabled={invEmailSending} onClick={()=>setShowInvEmail(false)}>{invEmailStatus?.type==='success'?'Close':'Cancel'}</button>
+        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0||invEmailTargets.length===0||invEmailSending||invEmailStatus?.type==='success'} title={invEmailTargets.length===0?'Select at least one recipient':undefined} onClick={()=>sendOpenInvoiceBatch(displayInvs)}>{invEmailSending?'⏳ Sending…':invEmailStatus?.type==='success'?'✓ Sent':'📧 Send '+displayInvs.length+' Invoice'+(displayInvs.length!==1?'s':'')}</button>
       </div>
     </div></div>})()}
 

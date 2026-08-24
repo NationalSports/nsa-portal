@@ -392,6 +392,27 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
 export const buildInvoicedQtyMap = (so, invoicesForSO) =>
   _reconcileInvoicedQty(so, invoicesForSO).map;
 
+// Detect quantities that were invoiced after the Create Invoice modal loaded.
+// The modal calculates its remaining quantities from the client's invoice snapshot;
+// comparing that snapshot with a just-fetched server snapshot prevents a stale tab
+// from billing the same SO units again. Only selected lines are returned so a new
+// invoice for an unrelated line does not block legitimate partial invoicing.
+export const staleInvoiceQtyConflicts = (so, localInvoices, liveInvoices, itemIdxs) => {
+  const localMap = buildInvoicedQtyMap(so, localInvoices);
+  const liveMap = buildInvoicedQtyMap(so, liveInvoices);
+  const items = safeItems(so);
+  const idxs = Array.isArray(itemIdxs) ? itemIdxs : items.map((_, idx) => idx);
+  return idxs.reduce((conflicts, idx) => {
+    const item = items[idx];
+    if (!item) return conflicts;
+    const key = soLineKey(item, idx);
+    const localQty = safeNum(localMap.get(key));
+    const liveQty = safeNum(liveMap.get(key));
+    if (liveQty > localQty + 0.0001) conflicts.push({ idx, key, item, localQty, liveQty, delta: liveQty - localQty });
+    return conflicts;
+  }, []);
+};
+
 // Invoice lines already billed against this SO that no longer match any line ON the SO.
 // A non-empty result means the order was edited after it was invoiced: those goods were
 // charged (and possibly paid) but are no longer part of the order, so every "remaining to

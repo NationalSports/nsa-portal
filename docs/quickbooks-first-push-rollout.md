@@ -28,6 +28,7 @@ The dry run should report counts for:
 - blocked taxable invoices;
 - OMG vendor-bill fee manifests for 57000;
 - OMG payout deposit manifests showing gross QBO Payment(s), 57000 OMG fee, 71400 processing fee, and the exact net received in the configured bank account;
+- discounted invoice manifests showing gross sales in 40000 and the approved discount/credit in 40200;
 - 55200/55400 labor manifests by clock source, employee, rate, minutes, idle minutes, and date;
 - Deposit Statements containing refunds, which remain blocked until their QBO credit-memo/refund links are complete;
 - bills with missing SKUs or total discrepancies;
@@ -59,6 +60,8 @@ Process dependencies in this order:
 6. read-back reconciliation.
 
 Start with 20 records per batch and concurrency 1 for posting transactions. Persist success or failure after every record. A new run skips exact verified successes and resumes the remaining records. A browser retry or duplicate click must query QBO by stored ID or document number before creating anything.
+
+Batch cursors rotate across customers, invoices, SKUs, estimates, and purchase orders. A permanent blocker in the first 20 records cannot prevent later records from being tested. Missing or impossible source dates block rather than defaulting into today's accounting period.
 
 After a clean 20-record pilot, continue in batches of 20. Increase concurrency only for independent non-posting records and only after error/rate-limit results are clean. Do not depend on one long browser request to process the entire migration.
 

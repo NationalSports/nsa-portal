@@ -15,8 +15,10 @@ import {
   QB_STATE_TAX_ACCOUNT_KEYS,
   buildVendorBillLines,
   calculateCustomerShipping,
+  loadAllQBEntities,
   loadQBAccounts,
   manualBillAccountKey,
+  normalizeVendorName,
   resolveQBAccountRefs,
 } from './qbAccountMappings';
 
@@ -109,10 +111,17 @@ export default function QBPage(){
         // vendor stored in its own portal table cannot create duplicates.
         let vRes=null;
         try{
-          const qRes=await qbApi('query',{query:"SELECT Id, DisplayName FROM Vendor WHERE DisplayName = '"+String(vendor.name||'').replace(/'/g,"\\'")+"' MAXRESULTS 1"});
-          const existing=qRes?.QueryResponse?.Vendor?.[0];
-          if(existing?.Id)vRes={Vendor:existing};
-        }catch(e){console.warn('[QB] Existing vendor lookup failed:',e)}
+          const qboVendors=await loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',500);
+          const target=normalizeVendorName(vendor.name);
+          const matches=qboVendors.filter(v=>v.Active!==false&&
+            (normalizeVendorName(v.DisplayName)===target||normalizeVendorName(v.CompanyName)===target));
+          if(matches.length>1)throw new Error('Multiple active QBO vendors match '+vendor.name+' after legal-name normalization.');
+          if(matches.length===1)vRes={Vendor:matches[0]};
+        }catch(e){
+          log.details.push('Vendor duplicate preflight failed: '+e.message);log.status='error';
+          setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          setQbBillUploading(false);return;
+        }
         if(!vRes?.Vendor?.Id)vRes=await qbApi('upsert_vendor',{vendor:{
           DisplayName:vendor.name,CompanyName:vendor.name,
           ...(vendor.contact_email?{PrimaryEmailAddr:{Address:vendor.contact_email}}:{}),

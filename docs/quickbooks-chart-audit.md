@@ -49,6 +49,8 @@ The state account numbers are approved, but a taxable QBO invoice still needs th
 
 - Account 57000 applies to OMG/webstore fees, including actual OMG vendor invoices and the `OMG Fee Withheld` amount on a Deposit Statement. The supplied invoice `584-1L7K7QA` is a paid $8.91 vendor invoice with nine $0.99 OMG-fee lines.
 - The supplied Deposit Statement is one bank deposit: statement `MRBHQRB6G`, dated 08/18/26, containing 28 stores. It reconciles $8,963.02 collected - $369.90 OMG fee withheld to 57000 - $288.81 processing fee withheld to 71400 = $8,304.31 net.
+- OMG customer invoices are settled by the gross customer collection. The 57000 and 71400 fees are separate deposit deductions and never reduce the customer payment or leave fee-sized A/R open.
+- Invoice `credit_amount` is persisted and sent as a QBO discount line to 40200; ordinary sales remain in 40000.
 - Account 55200 has a concrete Portal source: `job_time_logs` minutes multiplied by the current employee rate in `labor_rates`.
 - Account 55400 has a separate concrete Portal source: `art_time_logs` minutes multiplied by the current artist rate in `labor_rates`.
 - These two labor streams are internal payroll cost, not vendor bills. Posting a new debit without reclassifying an already-booked payroll expense would double-count cost. The Portal therefore exposes them in the mapping/preflight and can produce a dry-run manifest, but does not yet post them.
