@@ -17,13 +17,13 @@
    ═══════════════════════════════════════════════════════════════ */
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -184,7 +184,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1047,6 +1047,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
   const[sizingDraft,setSizingDraft]=useState({});
+  const sizingDraftRef=useRef({});
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   // Art proofs often go to several contacts — keep the greeting naming whoever is checked
   // ("Hi Cam and Hillary,"). Only the greeting line is rewritten, so typed edits survive.
@@ -1733,8 +1734,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);const memoInputRef=useRef(null);const poInputRef=useRef(null);
   const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
   const onSaveRef=React.useRef(onSave);React.useEffect(()=>{onSaveRef.current=onSave},[onSave]);
+  const onSaveNowRef=React.useRef(onSaveNow);React.useEffect(()=>{onSaveNowRef.current=onSaveNow},[onSaveNow]);
+  const onEmergencySaveRef=React.useRef(onEmergencySave);React.useEffect(()=>{onEmergencySaveRef.current=onEmergencySave},[onEmergencySave]);
+  // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
+  // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
+  // immediately, before React would normally expose the new order state to the click handler.
+  const _stageSizingDraft=(k,v)=>{const next={...sizingDraftRef.current,[k]:v};sizingDraftRef.current=next;setSizingDraft(next);dirtyRef2.current=true;setDirty(true)};
+  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next;setSizingDraft(next)};
+  const _flushActiveSizingDraft=()=>{
+    if(!Object.keys(sizingDraftRef.current).length)return true;
+    const active=typeof document!=='undefined'?document.activeElement:null;
+    if(active?.dataset?.sizingDraft==='true'&&typeof active.blur==='function')active.blur();
+    return Object.keys(sizingDraftRef.current).length===0;
+  };
   React.useEffect(()=>{
-    const doAutoSave=()=>{
+    const doAutoSave=(emergency=false)=>{
+      // Never persist the old quantity while a size cell still owns a newer draft. Emergency
+      // unload/version-reload saves first force the focused cell through its synchronous blur
+      // commit; the regular 30s autosave simply waits for the rep to finish the edit.
+      if(Object.keys(sizingDraftRef.current).length){
+        if(!emergency)return;
+        const active=typeof document!=='undefined'?document.activeElement:null;
+        if(active?.dataset?.sizingDraft==='true'&&typeof active.blur==='function')active.blur();
+        if(Object.keys(sizingDraftRef.current).length)return;
+      }
       let cur=oRef.current;if(!cur)return;
       // Fold in text from inputs that commit on blur (memo/PO #) but may not have blurred yet —
       // covers a tab crash / version-reload firing while a field is still focused.
@@ -1742,13 +1765,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const p=poInputRef.current;if(p&&p.value!==(cur.po_number||''))cur={...cur,po_number:p.value};
       if(!dirtyRef2.current&&cur===oRef.current)return;
       if(cur!==oRef.current)setO(cur);
-      onSaveRef.current(cur);dirtyRef2.current=false;setDirty(false);
+      // Normal autosave goes through the result-checked DB entry point. Emergency unload / forced-auth
+      // flush additionally stages the exact draft in the durable outbox synchronously before any unmount.
+      const persist=emergency?(onEmergencySaveRef.current||onSaveNowRef.current||onSaveRef.current):(onSaveNowRef.current||onSaveRef.current);
+      const result=persist(cur);
+      Promise.resolve(result).then(ok=>{if(ok===false){dirtyRef2.current=true;setDirty(true);return}dirtyRef2.current=false;setDirty(false)},()=>{dirtyRef2.current=true;setDirty(true)});
     };
     const iv=setInterval(doAutoSave,30000);
-    const handleUnload=()=>doAutoSave();
+    const handleUnload=()=>doAutoSave(true);
     window.addEventListener('beforeunload',handleUnload);
-    window.addEventListener('nsa:version-reload-pending',doAutoSave);
-    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);window.removeEventListener('nsa:version-reload-pending',doAutoSave)};
+    window.addEventListener('nsa:version-reload-pending',handleUnload);
+    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);window.removeEventListener('nsa:version-reload-pending',handleUnload)};
   },[]);
   // Warn user before closing tab if there are unsaved order changes
   React.useEffect(()=>{
@@ -2851,7 +2878,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
-    const item=o.items[i];if(!item)return;
+    const item=safeItems(oRef.current||o)[i];if(!item)return;
     const cur=item.sizes[sz]||0;
     if(n===cur)return;// no-op: value unchanged, skip render + side effects
     const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
@@ -2860,13 +2887,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Apply the size change (optionally with synced po_lines) in ONE update so the item and its
     // POs can't drift apart between saves.
     const _applySizes=(po_lines,note)=>{
-      setO(e=>({...e,items:safeItems(e).map((it,x)=>{
+      setO(e=>{const next={...e,items:safeItems(e).map((it,x)=>{
         if(x!==i)return it;
         const next={...it,sizes:{...it.sizes,[sz]:n}};
         if(po_lines)next.po_lines=po_lines;
         if(it.est_qty&&Object.values(next.sizes).reduce((a,v2)=>a+safeNum(v2),0)>0)next.est_qty=0;
         return next;
-      }),updated_at:new Date().toLocaleString()}));
+      }),updated_at:new Date().toLocaleString()};oRef.current=next;return next});
       setDirty(true);
       if(note)nf(note);
     };
@@ -3201,7 +3228,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // folder has no name or color ways yet, so the picker had nothing useful to offer.
   // The rep fills the folder in first, then uses its "🎯 Apply to items" button.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
-  const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?markArtFieldEdit(f,k,v):f),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
   // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to
   // Cloudinary but never recorded in the portal" gap the old "click Save to keep" flow left open (a refresh,
@@ -3209,9 +3236,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // persisted (the lightweight onSaveArtFiles path); metadata edits still save via the Save button. Returns
   // true on a confirmed write; on failure it keeps the editor dirty and warns the user NOT to reload.
   const saveArtFilesNow=async(newArtFiles,label)=>{
-    const updated={...oRef.current,art_files:newArtFiles,updated_at:new Date().toLocaleString()};
+    const trackedArtFiles=markArtChanges(oRef.current.art_files||[],newArtFiles);
+    const updated={...oRef.current,art_files:trackedArtFiles,updated_at:new Date().toLocaleString()};
     setO(updated);
-    if(onSaveArtFiles){nf('Saving '+(label||'file')+'...');const ok=await onSaveArtFiles(updated);if(ok){setSaved(true);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
+    if(onSaveArtFiles||onSaveNow){nf('Saving '+(label||'file')+'...');const ok=await (onSaveArtFiles?onSaveArtFiles(updated):onSaveNow(updated));if(ok){setSaved(true);setDirty(false);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
     onSave(updated);setSaved(true);return true;
   };
   // Result-checked FULL save (jobs + art together) for reuse/forward mutations that change both. Mirrors
@@ -3349,19 +3377,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // scope = {sku,color,artFileIds} — the × sits on ONE garment's card in ONE job's panel, so only
   // clear that garment's keys on the art files the job owns. Order-wide-by-url removal wiped the same
   // image off sibling garments/jobs that reused it (SO-1023). See removeMockFromArtFiles.
-  const removeMockupUrl=(url,scope)=>{if(!url)return;const updated={...o,art_files:removeMockFromArtFiles(safeArt(o),url,scope||{}),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf('Mockup removed')};
+  const removeMockupUrl=async(url,scope)=>{if(!url)return;const arts=removeMockFromArtFiles(safeArt(oRef.current),url,scope||{});await saveArtFilesNow(arts,'Mockup removal')};
   // Side a mockup represents (front/back), from the stored tag or the filename suffix.
   const _mockSide=f=>{const s=typeof f!=='string'&&f&&f.side;if(s==='front'||s==='back')return s;const n=(typeof f!=='string'&&(f?.name||f?.url))||(typeof f==='string'?f:'');if(/-front\.png/i.test(n))return 'front';if(/-back\.png/i.test(n))return 'back';return ''};
   // Display order for a mockup: explicit ord if set, else front before back before others.
   const _mockOrd=f=>{if(typeof f!=='string'&&f&&f.ord!=null)return f.ord;const s=_mockSide(f);return s==='front'?0:s==='back'?1:2};
   // Persist an explicit display order (front-first by default) by writing `ord` onto each mock entry.
-  const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const updated={...o,art_files:safeArt(o).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)})),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false)};
+  const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const arts=safeArt(oRef.current).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)}));saveArtFilesNow(arts,'Mockup order')};
   const moveMock=(orderedUrls,i,dir)=>{const j=i+dir;if(j<0||j>=orderedUrls.length)return;const arr=[...orderedUrls];[arr[i],arr[j]]=[arr[j],arr[i]];setMockupOrder(arr)};
   // ── Mock links ("use the same mockup as that garment") ── stored on the job's primary
   // design art file as garment -> source garment. Mirrors the Art Dashboard modal handler
   // so linking done in either place is identical. sourceKey null = unlink. Chains are
   // flattened on write and anything pointing at the member is re-pointed.
-  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const updated={...o,art_files:applyMockLink(safeArt(o),artId,memberKey,sourceKey),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup')};
+  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const arts=applyMockLink(safeArt(oRef.current),artId,memberKey,sourceKey);saveArtFilesNow(arts,sourceKey?'Mockup link':'Mockup unlink')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
@@ -4399,12 +4427,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
       <button className="btn btn-sm btn-primary" onClick={()=>{
+        if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
+        const current=oRef.current||o;
         if(!cust){nf('Select a customer first','error');return}
-        if(!o.memo?.trim()){nf('Memo is required','error');return}
-        const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+        if(!current.memo?.trim()){nf('Memo is required','error');return}
+        const validItems=safeItems(current).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
-        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
+        onSave(current);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -5325,7 +5355,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (an 11-wide row starting at 5 breaks after 10). */}
             <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-              <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
+              <input data-sizing-draft="true" value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;_stageSizingDraft(k,e.target.value)}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraftRef.current))return;const v=sizingDraftRef.current[k];flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
                 // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
@@ -11329,7 +11359,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _linkArtId=j.art_file_id||(_jobArts[0]&&_jobArts[0].id)||null;
                 const _linkOfR=gi=>resolveMockLink(_jobArts,mockSkuOf(gi),gi.color);
                 const _depsOfR=gi=>mockLinkDependents(_jobArts,mockSkuOf(gi),gi.color).filter(k=>itemDetails.some(g=>garmentMockKey(g)===k));
-                const _hasOwnMockR=g=>_jobArts.some(a=>{const im=a?.item_mockups||{};const v=itemMockFiles(im,g);return _filterDisplayable(v.length>0?v:(im[g.sku]||[])).length>0});
+                const _hasOwnMockR=g=>_jobArts.some(a=>_filterDisplayable(itemMockFiles(a?.item_mockups,g)).length>0);
                 // "Use same mockup as …" chips — one per other garment, single click to link.
                 // The visible label carries the COLOR, not just the sku: a Navy and a White PA100
                 // render as distinct chips, and a cross-color link (which linkSwappedGarmentMock
@@ -11420,7 +11450,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     // sibling design's mock onto this job's garment (the 2-Col logo rendering under the Attack
                     // Everything job on a shared JX4452 line, SO-1023). Each deco keeps its index in the FULL
                     // art-deco list (ai) so the positional discriminator key ('d1','d2') is unchanged.
-const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);return dedupeMockDupes(v.length>0?v:(im[gi.sku]||[]))})).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
+const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>dedupeMockDupes(itemMockFiles(_af?.item_mockups,_line)))).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
                     const _genPack=perSkuMocks.length===0?(()=>{const _g=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so show it rather than a dead 'No mockup uploaded yet' */return _g.length>0?{files:_g,proof:false}:{files:_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.prod_files||[])),proof:true}})():{files:[],proof:false};
                     const generalMocks=_genPack.files;
                     // Everything shown is a prod-file sew-out proof, not a garment mockup. Label it,
@@ -11528,7 +11558,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                           <div style={{fontSize:10,fontWeight:800,color:'#6d28d9',textTransform:'uppercase',letterSpacing:0.4,marginBottom:6}} title="This decoration is routed to an outside vendor — shown for context, it is not part of this approval">🏭 Also on this garment — outside vendor</div>
                           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                             {_ctx.map((ol,ci)=>{const im=ol.art?.item_mockups||{};const _v2=itemMockFiles(im,_line);
-                              const _own=_filterDisplayable(_v2.length?_v2:(im[gi.sku]||[]));
+                              const _own=_filterDisplayable(_v2);
                               const _pool=_own.length?_own:_filterDisplayable([...(ol.art?.mockup_files||ol.art?.files||[]),...(ol.art?.prod_files||[])]);
                               const f=_pool[0]||null;const url=f?(typeof f==='string'?f:(f?.url||'')):'';
                               return<div key={ci} style={{width:150,borderRadius:8,border:'2px solid #c4b5fd',overflow:'hidden',background:'white'}}>
@@ -11732,7 +11762,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                     // sibling design's mock onto this job's garment (the 2-Col logo rendering under the Attack
                     // Everything job on a shared JX4452 line, SO-1023). Each deco keeps its index in the FULL
                     // art-deco list (ai) so the positional discriminator key ('d1','d2') is unchanged.
-const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);return dedupeMockDupes(v.length>0?v:(im[gi.sku]||[]))})).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
+const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)=>({d,di})).filter(({d})=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map((x,ai)=>({...x,ai})).filter(({di})=>!_ownDis||_ownDis.includes(di)):[];const _gf=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};const perSkuMocks=_filterDisplayable(_decosSorted.length>1?_decosSorted.flatMap(({d,ai})=>{const af3=safeArt(o).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=ai===0?'':(d.color_way_id||('d'+ai));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_gf(af3);return f?[f]:[];}):itemArtFiles.length>1?itemArtFiles.flatMap(_af=>{const f=_gf(_af);return f?[f]:[]}):itemArtFiles.flatMap(_af=>dedupeMockDupes(itemMockFiles(_af?.item_mockups,_line)))).concat(/* suffixed slots: reversible Side B, numbers, names. Deduped PER SLOT: a re-upload keeps its filename under a fresh URL (SO-1605's backpack held the same names proof twice, so the garment rendered three identical boxes), but filenames are generated from the POSITION, so two decorations at one position share a name and must not collapse into each other. */_filterDisplayable(itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>dedupeMockDupes(arr)))));
                     const _genPack=perSkuMocks.length===0?(()=>{const _g=_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so show it rather than a dead 'No mockup uploaded yet' */return _g.length>0?{files:_g,proof:false}:{files:_filterDisplayable(itemArtFiles.flatMap(_af=>_af?.prod_files||[])),proof:true}})():{files:[],proof:false};
                     const generalMocks=_genPack.files;
                     // Proof-only garments: label the files as sew-out proofs and drop the × —
@@ -12890,10 +12920,10 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
                   const seenImg=new Set();
-                  g.items.filter(it=>!it._excluded).forEach(it=>{const full=safeItems(o)[it.item_idx];if(!full)return;const k=(full.sku||'')+'|'+(full.color||'');if(seenImg.has(k))return;seenImg.add(k);fetchVendorImage(full.sku,full.color,full.vendor_id,full)});
+                  g.items.filter(it=>!it._excluded).forEach(it=>{const full=safeItems(o)[it.item_idx];if(!full)return;const k=garmentMockKey(full);if(seenImg.has(k))return;seenImg.add(k);fetchVendorImage(full.sku,full.color,full.vendor_id,full)});
                   setMockBuilder({gi});
                 }}>{qmCount>0?'Edit Mockups':'⚡ Build Mockups'}</button>
-                {(()=>{const colors=[...new Set(g.items.filter(it=>!it._excluded).map(it=>it.sku+'|'+(it.color||'')))].length;return<span style={{fontSize:11,color:qmCount>0?'#166534':'#d97706',fontWeight:700}}>{qmCount}/{colors} color{colors===1?'':'s'} mocked{qmCount===0?' — none yet':''}</span>})()}
+                {(()=>{const garmentCount=new Set(g.items.filter(it=>!it._excluded).map(it=>garmentMockKey(safeItems(o)[it.item_idx]||it))).size;return<span style={{fontSize:11,color:qmCount>0?'#166534':'#d97706',fontWeight:700}}>{qmCount}/{garmentCount} garment{garmentCount===1?'':'s'} mocked{qmCount===0?' — none yet':''}</span>})()}
               </div>
             </div>}
             {!g.skipArtist&&!g.quickMock&&<div>
@@ -12937,7 +12967,7 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           const rel=g.items.filter(it=>!it._excluded);
           const _back=full=>{const prd=products.find(pp=>pp.id===full?.product_id||pp.sku===full?.sku);return prd?.image_back_url||prd?.back_image_url||(prd?.images&&prd.images[1])||full?._colorBackImage||_vImg(full,'back')||''};
           const garments=[];const seenG=new Set();
-          rel.forEach(it=>{const key=it.sku+'|'+(it.color||'');if(seenG.has(key))return;seenG.add(key);const full=safeItems(o)[it.item_idx];const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=it.sku+'|'+(it.color||'').toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku:it.sku,color:it.color||'',name:it.name||'',frontUrl:front,backUrl:back,pending})});
+          rel.forEach(it=>{const full=safeItems(o)[it.item_idx];const line=full||it;const key=garmentMockKey(line);if(seenG.has(key))return;seenG.add(key);const sku=line.sku||it.sku||'';const color=line.color||it.color||'';const front=_itemImg(full),back=_back(full);const vendorItem=!!(full&&(isSSItem(full)||isSanMarItem(full)||isMomentecItem(full)));const vKey=sku+'|'+color.toLowerCase();const pending=vendorItem&&!front&&vendorImgs[vKey]===undefined;garments.push({key,sku,color,name:line.name||it.name||'',frontUrl:front,backUrl:back,pending})});
           const locations=[];const seenL=new Set();
           const _renderable=f=>{const u=typeof f==='string'?f:(f?.url||'');return !!u&&(_isImgUrl(u)||/\.svg(\?|$)/i.test(u))};
           // One location per distinct artwork on the included items. An item can carry several
@@ -13800,8 +13830,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {po.po_type!=='outside_deco'&&decoReadyBanner(allLines.map(ln=>ln.lineIdx))}
           {/* Vendor — who this PO is written to */}
           {(()=>{
-            const _vRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id);
-            const _vName=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(po.vendor||_vRec?.name||D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'');
+            const _poVendorRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===po.vendor);
+            const _vRec=_poVendorRec||(po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===item?.vendor_id));
+            // po.vendor is often a stored id (ns_34 / v1), so resolve it before falling back to the raw value.
+            const _vName=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(_poVendorRec?.name||_vRec?.name||D_V.find(v=>v.id===(po.vendor||item?.vendor_id))?.name||po.vendor||item?.brand||'');
             const _vEmail=_vRec?.contact_email||'';
             return<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',letterSpacing:0.5}}>Written to</span>

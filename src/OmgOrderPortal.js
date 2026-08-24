@@ -489,8 +489,23 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     w.document.write(html); w.document.close(); w.focus();
     setTimeout(() => { try { w.print(); } catch {} }, 350);
   };
+  // Bagging Station ship gate (BAGGING_STATION_PLAN.md): open packer shorts
+  // block the ship/complete bulk move and label creation until each is
+  // resolved (found / pulled / backorder / refund) at /bagging-station.
+  // Override requires a typed reason. Terminal resolutions stamp missing_qty,
+  // which shipPlan below already excludes.
+  const openBagShorts = () => orders.reduce((n, o) => n + (o.items || []).filter((i) => i.short_status === 'open').length, 0);
+  const bagShortGate = () => {
+    const n = openBagShorts();
+    if (!n) return true;
+    const reason = window.prompt(`${n} open bagging short${n === 1 ? '' : 's'} on this store — resolve at the Bagging Station before shipping.\n\nTo proceed anyway, type a reason:`, '');
+    if (!reason || !reason.trim()) return false;
+    console.warn('[bagging] OMG ship gate overridden —', reason.trim());
+    return true;
+  };
   const advanceAll = async (ls) => {
     if (!store || !orders.length) return;
+    if ((ls === 'shipped' || ls === 'complete') && !bagShortGate()) return;
     setBusy('advance');
     const ids = orders.map((o) => o.id);
     const { error } = await supabase.from('webstore_order_items').update({ line_status: ls }).in('order_id', ids);
@@ -569,6 +584,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
 
   const printOmgLabels = async (subset) => {
     if (shipToSchool) { flash('Ship-to-school store — bulk delivery, no per-player labels.', 'err'); return; }
+    if (!bagShortGate()) return;
     const pool = subset || orders;
     const selected = pool.length;
     const errors = [];

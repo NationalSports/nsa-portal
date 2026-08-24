@@ -539,10 +539,21 @@ export const legacyMockKeyOf = (it) => {
 // or the buckets are split. It never makes an order worse than it is now.
 export const itemMockFiles = (mocks, it, sub) => {
   const m = safeObj(mocks);
-  const own = safeArr(m[garmentMockKey(it) + (sub || '')]);
-  if (own.length > 0) return own;
+  const ownKey = garmentMockKey(it) + (sub || '');
+  const own = safeArr(m[ownKey]);
+  // Presence is intentional even when the bucket is empty: removing the last file leaves []
+  // behind. Falling through in that state would resurrect the pre-fix shared mockup the user
+  // just removed and could let it satisfy the approval gate again. Only orders that have never
+  // written this garment's own key should read the legacy shared bucket.
+  if (Object.prototype.hasOwnProperty.call(m, ownKey)) return own;
   const lk = legacyMockKeyOf(it);
-  return lk ? safeArr(m[lk + (sub || '')]) : own;
+  const legacyKey = lk && (lk + (sub || ''));
+  if (legacyKey && Object.prototype.hasOwnProperty.call(m, legacyKey)) return safeArr(m[legacyKey]);
+  // The oldest orders used a bare SKU bucket. It was only ever a primary/front bucket, never
+  // a color-way, numbers or names sub-slot. Keep that final compatibility read centralized here
+  // so every caller honors the empty-own-bucket tombstone above.
+  if (!sub && it?.sku != null && Object.prototype.hasOwnProperty.call(m, it.sku)) return safeArr(m[it.sku]);
+  return own;
 };
 // Resolve the root source key this garment is linked to, or null when unlinked.
 export const resolveMockLink = (anchorArts, sku, color) => {
@@ -629,6 +640,62 @@ export const squashMockLinks = (artFiles, artId, memberKeys) => {
 // opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
 // SKU, so callers must pass false when another live line still carries the old SKU in a
 // different color — moving the bare bucket would steal that line's legacy fallback.
+const _ART_TRACKED_ARRAY_FIELDS = ['files', 'mockup_files', 'prod_files', 'sample_art', 'web_logos'];
+const _ART_TRACKED_FIELDS = [..._ART_TRACKED_ARRAY_FIELDS, 'item_mockups', 'mock_links', 'preview_url', 'web_logo_url'];
+const _artMutationUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+const _uniqTruthy = (arr) => [...new Set(safeArr(arr).filter(Boolean))];
+// Stamp explicit art removals/asset replacements as client-only one-save intent. A conflict merge otherwise
+// has no safe way to distinguish “the rep removed this” from “this stale tab never loaded it”, so it must union
+// arrays and would resurrect deleted mockups/files. Existing markers are reconciled so undo-before-save works.
+export const markArtFieldEdit = (art, field, value) => {
+  if (!art) return art;
+  const next = { ...art, [field]: value };
+  const edited = new Set(safeArr(art._artEditedFields)); edited.add(field);
+  next._artEditedFields = [...edited];
+  const deletes = { ...(art._artDeletes || {}) };
+  if (_ART_TRACKED_ARRAY_FIELDS.includes(field)) {
+    const live = new Set(safeArr(value).map(_artMutationUrl).filter(Boolean));
+    const removed = safeArr(art[field]).map(_artMutationUrl).filter(u => u && !live.has(u));
+    const prior = safeArr(deletes[field]).filter(u => !live.has(u));
+    const gone = _uniqTruthy([...prior, ...removed]);
+    if (gone.length) deletes[field] = gone; else delete deletes[field];
+  } else if (field === 'item_mockups') {
+    const priorMap = art.item_mockups || {}; const liveMap = value || {}; const dm = { ...(deletes.item_mockups || {}) };
+    new Set([...Object.keys(priorMap), ...Object.keys(liveMap), ...Object.keys(dm)]).forEach(k => {
+      const live = new Set(safeArr(liveMap[k]).map(_artMutationUrl).filter(Boolean));
+      const removed = safeArr(priorMap[k]).map(_artMutationUrl).filter(u => u && !live.has(u));
+      const gone = _uniqTruthy([...safeArr(dm[k]).filter(u => !live.has(u)), ...removed]);
+      if (gone.length) dm[k] = gone; else delete dm[k];
+    });
+    if (Object.keys(dm).length) deletes.item_mockups = dm; else delete deletes.item_mockups;
+  } else if (field === 'mock_links') {
+    const live = value || {};
+    const removed = Object.keys(art.mock_links || {}).filter(k => !(k in live));
+    const gone = _uniqTruthy([...safeArr(deletes.mock_links).filter(k => !(k in live)), ...removed]);
+    if (gone.length) deletes.mock_links = gone; else delete deletes.mock_links;
+  }
+  if (Object.keys(deletes).length) next._artDeletes = deletes; else delete next._artDeletes;
+  return next;
+};
+// File-upload/reuse helpers often construct a whole art_files array rather than calling uArt. Diff the fields
+// whose conflict semantics need explicit intent and carry the same markers into that immediate save.
+export const markArtChanges = (before, after) => {
+  const prev = new Map(safeArr(before).filter(Boolean).map(a => [a.id, a]));
+  return safeArr(after).map(a => {
+    const old = a && prev.get(a.id); if (!old) return a;
+    let next = { ...a };
+    if (old._artDeletes && !next._artDeletes) next._artDeletes = old._artDeletes;
+    if (old._artEditedFields && !next._artEditedFields) next._artEditedFields = old._artEditedFields;
+    _ART_TRACKED_FIELDS.forEach(f => {
+      let changed = old[f] !== a[f];
+      if (changed && (typeof old[f] === 'object' || typeof a[f] === 'object')) {
+        try { changed = JSON.stringify(old[f]) !== JSON.stringify(a[f]); } catch (_) { changed = true; }
+      }
+      if (changed) next = markArtFieldEdit({ ...next, [f]: old[f] }, f, a[f]);
+    });
+    return next;
+  });
+};
 // Strip a mockup image (by URL) from art files, scoped to ONE garment on the art files a job owns.
 // The SO-page "×" lives on a single garment's mock card inside a single job's panel, so a removal
 // must only clear THAT garment's mock keys on the art files the job owns. The old order-wide strip
@@ -907,10 +974,7 @@ export const nnMockCounts = (artFiles, it) => {
 export const slotMockFiles = (slot, slots, it) => {
   const art = slot?.artFile;
   const mocks = safeObj(art?.item_mockups);
-  const bareRead = () => {
-    const v = itemMockFiles(mocks, it);
-    return v.length > 0 ? v : safeArr(mocks[it?.sku]);
-  };
+  const bareRead = () => itemMockFiles(mocks, it);
   if (slot?.primary) return bareRead();
   // Sub-key slots read through the same legacy fallback: the sub-key part (`|<cwid>`, `|numbers`)
   // hangs off whichever base the mock was written under.
@@ -1011,7 +1075,7 @@ export const skusMissingMockups = (job, so) => {
       // Look the source's mocks up across ALL the job's art (the source garment may pull
       // its art from a different file than this garment's anchors).
       const allAnchors = [...new Set([...linkAnchors, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
-      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mSku) missing.push(mLabel);
+      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mLabel) missing.push(mLabel);
       return;
     }
     // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
@@ -1020,10 +1084,8 @@ export const skusMissingMockups = (job, so) => {
     // one garment's mockup satisfied this gate for every other custom garment of that color
     // and unmocked garments went to the coach (SO-2063). Older data may use a plain SKU key
     // or the legacy shared bucket — accept either.
-    const mockKey = garmentMockKey(mLine);
     const perSku = artFiles.flatMap(a => {
-      const byKey = itemMockFiles(a?.item_mockups, mLine);
-      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
+      return itemMockFiles(a?.item_mockups, mLine);
     });
     if (perSku.length > 0) {
       // Primary mock present — additionally require every slot a REVERSIBLE decoration
@@ -1034,10 +1096,14 @@ export const skusMissingMockups = (job, so) => {
       // mockup_files bucket (handled below) are left alone.
       const _idxs = jobItemDecoIdxs(gi);
       const anchors = [...new Set([...artFiles, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      const mockKey = garmentMockKey(mLine);
       const missSlots = mockSlotKeys(mockKey, safeDecos(it))
         .filter(s => s.reversible && !s.primary && (!_idxs || _idxs.includes(s.di)))
-        .filter(s => !anchors.some(a => safeArr(a?.item_mockups?.[s.key]).length > 0));
-      if (missSlots.length > 0 && mSku) {
+        .filter(s => {
+          const sub = safeStr(s.key).startsWith(mockKey) ? safeStr(s.key).slice(mockKey.length) : '';
+          return !anchors.some(a => itemMockFiles(a?.item_mockups, mLine, sub).length > 0);
+        });
+      if (missSlots.length > 0 && mLabel) {
         missing.push(mLabel + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
       }
       return;
@@ -1060,7 +1126,7 @@ export const skusMissingMockups = (job, so) => {
     // art its two compliant paths (reuse an approved prior mock, or send to the artist
     // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
     // so approval screens still show what exists — it just can't pass the gate.
-    if (mSku) missing.push(mLabel);
+    if (mLabel) missing.push(mLabel);
   });
   return missing;
 };

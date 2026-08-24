@@ -417,6 +417,7 @@ import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus 
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, resolveQBAccountRefs } from './qbAccountMappings';
+import BaggingDashCard from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -457,6 +458,7 @@ import {
   _onEstStatusMerge,
   _forceReauth,
   _sessionDead,
+  _isLiveSession,
   _ensureFreshSession,
   _dbSaveCustomer,
   _dbSavePromoProgram,
@@ -1053,7 +1055,6 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
       const v=(m[key]&&m[key].length>0)?m[key]
         :_sub.length>0?_sub
         :_bas.length>0?_bas
-        :(m[sku]&&m[sku].length>0)?m[sku]
         :(Object.entries(m).find(([k,arr])=>(k.startsWith(_mk+'|')||k.startsWith(_legacyMk+'|'))&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
       _dedupMockDupes(v).forEach(push);
       // Reversible decos have a second mockup slot (Side B) keyed |<color_way_id_b> with
@@ -1062,7 +1063,7 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     });
   }else{
     // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
-    artFiles.forEach(a=>{const m=a?.item_mockups||{};const _v=itemMockFiles(m,_line);_dedupMockDupes(_v.length>0?_v:(m[sku]||[])).forEach(push)});
+    artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes(itemMockFiles(m,_line)).forEach(push)});
   }
   const rank=k=>/\|numbers(_\d+)?(_b)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
@@ -5096,6 +5097,7 @@ export default function App(){
   },[q,rF,custPage,pg]);// eslint-disable-line
   useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
+  const productBrandOptions=useMemo(()=>[...new Set(prod.map(p=>(p.brand||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[prod]);
   const[aiWizOpen,setAiWizOpen]=useState(false);
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
@@ -6138,10 +6140,9 @@ export default function App(){
     window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before we unmount it to the login screen
     // Session-death capture: persist every known-dirty entity's payload to the durable outbox
     // BEFORE unmounting (localStorage needs no live session). Committed state here cannot see the
-    // draft the flush event just handed to onSave — that setState is still batched — which is why
-    // the flushed draft is captured separately at the save entry point (dbEngine's _outboxWrap
-    // capture-on-attempt runs synchronously once _sessionDead is latched, which it is by the time
-    // this callback fires). This snapshot covers everything already failed/pending in committed state.
+    // draft the flush event just handed to the editor's emergency-save callback — that setState is still
+    // batched. The callback now stages that exact draft synchronously before starting its DB save; this
+    // snapshot separately covers everything already failed/pending in committed state.
     try{
       const _dirty=new Set([..._dbSaveFailedIds,..._dbSavePendingIds]);
       if(_dirty.size){
@@ -6177,7 +6178,7 @@ export default function App(){
       // boot the user to login while the session is still being restored.
       for(let i=0;i<30&&!cancelled;i++){
         const{data}=await supabase.auth.getSession();
-        if(data?.session)return;
+        if(_isLiveSession(data?.session))return;
         await new Promise(r=>setTimeout(r,300));
       }
       if(cancelled)return;
@@ -6191,7 +6192,7 @@ export default function App(){
       if(cancelled)return;
       let _finalSession=null;
       try{const{data:_fd}=await supabase.auth.getSession();_finalSession=_fd?.session||null}catch(_){}
-      if(_finalSession||cancelled)return;
+      if(_isLiveSession(_finalSession)||cancelled)return;
       console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
       window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before unmount
       setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
@@ -6633,6 +6634,19 @@ export default function App(){
     if(prev){setEstHistory(h=>{const existing=h[e2.id]||[];return{...h,[e2.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});
     logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  // Result-checked estimate save, matching savSONow. Autosave and emergency editor flushes must enter the
+  // database queue directly instead of hoping the later [ests] diff effect runs before an unmount/reload.
+  const savENow=(e,opts)=>{
+    const e2=savE(e);if(!e2||!e2.id)return Promise.resolve(false);
+    setEEst(prev=>prev&&prev.id===e2.id?e2:prev);
+    const snap=_dbSnap.current?.ests;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===e2.id))_dbSnap.current.ests=snap.map(x=>x.id===e2.id?e2:x);
+    if(opts?.stageOutbox)_outboxAdd('estimates',e2);// synchronous durability for unload / forced re-auth
+    _dbSavePendingIds.add(e2.id);
+    const _p=_dbSaveEstimate(e2);
+    Promise.resolve(_p).finally(()=>{_dbSavePendingIds.delete(e2.id)});
+    return _p;
+  };
   // ── Pending shipping charge carryover ──
   // A billable shipping charge recorded against a customer via Manual Ship when
   // they had no open order. It auto-attaches to the customer's next rep-created
@@ -6793,8 +6807,10 @@ export default function App(){
   const savSONow=(s,opts)=>{
     const sl=savSO(s,opts);
     if(!sl||!sl.id)return Promise.resolve(false);
+    setESO(prev=>prev&&prev.id===sl.id?sl:prev);
     const snap=_dbSnap.current?.sos;
     if(Array.isArray(snap)&&snap.some(x=>x.id===sl.id))_dbSnap.current.sos=snap.map(x=>x.id===sl.id?sl:x);
+    if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
     const _p=_dbSaveSO(sl);
     Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{_dbSavePendingIds.delete(sl.id)});
@@ -9707,6 +9723,8 @@ export default function App(){
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
     </div>
+    {/* Bagging queue — batches ready at the tablet Bagging Station (/bagging-station) */}
+    <div style={{marginBottom:16}}><BaggingDashCard/></div>
     {/* Ready for decoration — jobs whose last units were just checked in with art already complete */}
     {(()=>{
       const readyNotifs=todos.filter(t=>t.type==='ready_for_deco'&&!dismissedNotifs.includes(t.dismissKey));
@@ -10322,6 +10340,8 @@ export default function App(){
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
     </div>
+    {/* Bagging queue — batches ready at the tablet Bagging Station (/bagging-station) */}
+    <div style={{marginBottom:16}}><BaggingDashCard/></div>
     {/* Ready for decoration — jobs whose last units were just checked in with art already complete */}
     {(()=>{
       const readyNotifs=todos.filter(t=>t.type==='ready_for_deco'&&!dismissedNotifs.includes(t.dismissKey));
@@ -10941,7 +10961,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -10998,7 +11018,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -19693,6 +19713,8 @@ export default function App(){
         </div>})()}
 
       {!whViewIF&&<>
+      {/* Bagging queue — batches ready at the tablet Bagging Station (/bagging-station) */}
+      <div style={{marginBottom:16}}><BaggingDashCard/></div>
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
@@ -23064,7 +23086,7 @@ export default function App(){
         // lines (all of them SKU 'CUST-SUPPLIED') on their name so they don't collapse either.
         const _mockKey=(g)=>garmentMockKey(g);
         // Read with fallback to the legacy shared / plain-SKU keys so existing data still renders.
-        const _getMocks=(artF,g)=>{const m=artF?.item_mockups||{};const v=itemMockFiles(m,g);return v.length>0?v:(m[g?.sku]||[]);};
+        const _getMocks=(artF,g)=>itemMockFiles(artF?.item_mockups,g);
         const handleMockupUploadForItem=async(files,g,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           const sku=g?.sku;const color=g?.color;
@@ -23582,7 +23604,7 @@ export default function App(){
         // lines (all of them SKU 'CUST-SUPPLIED') on their name so they don't collapse either.
         const _mockKey=(g)=>garmentMockKey(g);
         // Read with fallback to the legacy shared / plain-SKU keys so existing data still renders.
-        const _getMocks=(artF,g)=>{const m=artF?.item_mockups||{};const v=itemMockFiles(m,g);return v.length>0?v:(m[g?.sku]||[]);};
+        const _getMocks=(artF,g)=>itemMockFiles(artF?.item_mockups,g);
         // Copy mockup helper
         const _copyMockup=(fromG,toG)=>{
           const fromMocks=_getMocks(af,fromG);
@@ -37349,7 +37371,7 @@ export default function App(){
         {qPC.mode==='single'&&(()=>{const it=qPC.items[0]||{};const up=(k,v)=>setQPC(x=>({...x,items:[{...x.items[0],[k]:v}]}));
           return<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
             <div><label className="form-label">SKU *</label><input className="form-input" value={it.sku} onChange={e=>up('sku',e.target.value)} placeholder="JJ0605"/></div>
-            <div><label className="form-label">Brand</label><select className="form-select" value={it.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);const bn=v?.name||'';const rp=it.retail_price||0;const cat=it.category||'Tees';if(bn==='Adidas'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],vendor_id:e.target.value,brand:bn,nsa_cost:Math.floor(rp*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],vendor_id:e.target.value,brand:bn,nsa_cost:Math.floor(rp*0.425*100)/100}]}))}else{up('vendor_id',e.target.value);if(v)up('brand',v.name)}}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+            <div><label className="form-label">Brand</label><input className="form-input" type="search" list="quick-product-brand-options" value={it.brand||''} onChange={e=>{const entered=e.target.value;const v=D_V.find(x=>(x.name||'').localeCompare(entered,undefined,{sensitivity:'accent'})===0);const bn=v?.name||entered;const rp=it.retail_price||0;const cat=it.category||'Tees';const upd={...it,brand:bn,vendor_id:v?.id||''};if(bn==='Adidas'&&rp>0)upd.nsa_cost=Math.floor(rp*(cat==='Custom'?0.4125:0.375)*100)/100;else if(bn==='Under Armour'&&rp>0)upd.nsa_cost=Math.floor(rp*0.425*100)/100;setQPC(x=>({...x,items:[upd]}))}} placeholder="Search or enter a brand" autoComplete="off"/></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Product Name *</label><input className="form-input" value={it.name} onChange={e=>up('name',e.target.value)} placeholder="Adidas Practice Jersey 2.0"/></div>
             <div><label className="form-label">Color</label><input className="form-input" value={it.color} onChange={e=>up('color',e.target.value)} placeholder="Power Red/White"/></div>
             <div><label className="form-label">Category</label><select className="form-select" value={it.category} onChange={e=>{const cat=e.target.value;const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const rp=it.retail_price||0;if(bn==='Adidas'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],category:cat,nsa_cost:Math.floor(rp*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else{up('category',cat)}}}>
@@ -37386,8 +37408,7 @@ export default function App(){
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <input className="form-input" value={it.sku} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,sku:e.target.value}:ii)}))} placeholder="SKU" style={{width:90,fontSize:11}}/>
               <input className="form-input" value={it.name} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,name:e.target.value}:ii)}))} placeholder="Product name" style={{flex:1,fontSize:11}}/>
-              <select className="form-select" value={it.vendor_id||''} onChange={e=>{const bn=D_V.find(v=>v.id===e.target.value)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,vendor_id:e.target.value,brand:bn};if(bn==='Adidas'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.375*100)/100;else if(bn==='Under Armour'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.425*100)/100;return upd})}))}} style={{width:100,fontSize:10}}>
-                <option value="">Brand</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
+              <input className="form-input" type="search" list="quick-product-brand-options" value={it.brand||''} onChange={e=>{const entered=e.target.value;const v=D_V.find(x=>(x.name||'').localeCompare(entered,undefined,{sensitivity:'accent'})===0);const bn=v?.name||entered;setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,vendor_id:v?.id||'',brand:bn};if(bn==='Adidas'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.375*100)/100;else if(bn==='Under Armour'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.425*100)/100;return upd})}))}} placeholder="Search brand" autoComplete="off" style={{width:120,fontSize:10}}/>
               <input className="form-input" value={it.color||''} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,color:e.target.value}:ii)}))} placeholder="Color" style={{width:100,fontSize:11}}/>
               <$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,nsa_cost:v};if(bn==='Adidas'&&v>0)upd.retail_price=Math.ceil(v/0.375*100)/100;else if(bn==='Under Armour'&&v>0)upd.retail_price=Math.ceil(v/0.425*100)/100;return upd})}))}} w={50}/>
               <$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,retail_price:v};if(bn==='Adidas')upd.nsa_cost=Math.floor(v*0.375*100)/100;else if(bn==='Under Armour')upd.nsa_cost=Math.floor(v*0.425*100)/100;return upd})}))}} w={50}/>
@@ -37407,6 +37428,8 @@ export default function App(){
             📎 Drop CSV/TSV file or click to browse
           </div>
         </>}
+
+        <datalist id="quick-product-brand-options">{productBrandOptions.map(brand=><option key={brand} value={brand}/>)}</datalist>
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-primary" onClick={()=>{
