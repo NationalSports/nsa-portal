@@ -13,6 +13,9 @@ Source of truth reviewed: `National_Sports Apparel LLC.csv`, exported from the c
 | Freight on a vendor bill | 51000 Freight In | Debit; bill control side is 21100 A/P |
 | Outside-decoration vendor bill | 52000 Outside Decoration | Debit; vendor category is authoritative |
 | Sports Inc fee on a vendor bill | 58000 Sports Inc Fee | Debit; bill control side is 21100 A/P |
+| OrderMyGear hosted-store fee | 57000 OMG Fee | Exact `_omg_omg_fees` amount from the OMG Accounting Report; settlement posting method is gated |
+| In-house decoration labor | 55100 Decoration | Production/decoration clock minutes × the employee's labor rate; payroll reclass offset and cadence are gated |
+| In-house art labor | 55400 In House Art | Art-clock minutes × the artist's labor rate; payroll reclass offset and cadence are gated |
 | Outbound UPS/FedEx shipping cost | 67000 Freight Expenses | Debit when a future Connect expense source is implemented |
 | Customer payment | 11010 Undeposited Funds | Debit; 11000 A/R is credited |
 | CA / AZ / CO / NV / TX / WA sales tax | 25200 / 25205 / 25215 / 25220 / 25225 / 25230 | State liability; the portal supplies the exact tax amount |
@@ -38,6 +41,16 @@ This follows accounting's instruction that QBO will not track inventory items or
 ## Sales-tax gate
 
 The state account numbers are approved, but a taxable QBO invoice still needs the live company's QBO TaxCode/TxnTaxDetail configuration. Until the live Sales Tax Center IDs and behavior are inspected, taxable invoice writes remain blocked. The sync must not book tax as 40000 revenue or fake it as a normal line to 25201.
+
+## OMG and internal-labor source findings
+
+- Account 57000 applies only to an OrderMyGear-hosted store (`source='omg'`, `omg_store_id`, or the OMG store record). Its amount is `_omg_omg_fees`, imported from the OMG Accounting Report. Native Portal webstore Stripe/card fees are not OMG fees and must not use 57000.
+- Account 55100 has a concrete Portal source: `job_time_logs` minutes multiplied by the current employee rate in `labor_rates`.
+- Account 55400 has a separate concrete Portal source: `art_time_logs` minutes multiplied by the current artist rate in `labor_rates`.
+- These two labor streams are internal payroll cost, not vendor bills. Posting a new debit without reclassifying an already-booked payroll expense would double-count cost. The Portal therefore exposes them in the mapping/preflight and can produce a dry-run manifest, but does not yet post them.
+- The current clock blobs have no stable per-log IDs, rates are looked up at report time rather than snapshotted at clock-out, and idle minutes are tracked but presently included in the displayed cost. Those issues must be resolved before resumable QBO journals are safe.
+
+For 57000, accounting must choose whether the fee is a negative line on the QBO bank deposit or a separate OrderMyGear vendor bill/expense. The Portal must not guess because the two choices reconcile A/R, A/P, Undeposited Funds, and the bank feed differently.
 
 ## Remaining source gap
 
