@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { plateFromCounter, boxUnits, buildBoxLabel, BOX_STATUS_META } from '../boxTracking';
-import { printQrLabel } from '../utils';
-import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch } from './moveLogic';
+import { printQrLabel, printQrLabels } from '../utils';
+import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch, buildLocationLabels } from './moveLogic';
 
 // Move Check-In station — September building move. Routed at /move-checkin by
 // src/index.js (same wiring as /floor-station). Staff mode only: sign in to the
@@ -163,6 +163,7 @@ export default function MoveCheckIn() {
   const [manualVal, setManualVal] = useState('');
   const [shelf, setShelf] = useState('');
   const [placeKind, setPlaceKind] = useState('staging'); // Place tab: 'staging' | 'shelf'
+  const [locCodes, setLocCodes] = useState(''); const [locOpen, setLocOpen] = useState(false); // location-label printer
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState(null); // box opened from the Boxes tab
   const [q, setQ] = useState('');
@@ -191,6 +192,13 @@ export default function MoveCheckIn() {
     if (!error && data) setBoxes(data);
   }, []);
   useEffect(() => { if (signedIn) reload(); }, [signedIn, reload]);
+  // Several people scan at once during the move — keep counts/lists fresh
+  // with a light poll while the page is visible.
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    const t = setInterval(() => { if (document.visibilityState === 'visible') reload(); }, 20000);
+    return () => clearInterval(t);
+  }, [signedIn, reload]);
 
   const show = (kind, title, sub) => { setBanner({ kind, title, sub, at: Date.now() }); (kind === 'ok' ? fxOk : kind === 'dupe' ? fxDupe : fxErr)(); };
 
@@ -238,6 +246,13 @@ export default function MoveCheckIn() {
   const handleScan = async (raw) => {
     const c = classifyMoveScan(raw);
     const place = modeRef.current === 'place' ? (shelfRef.current ? { kind: placeKindRef.current, code: shelfRef.current } : null) : null;
+    // A printed location label (LOC:A3) locks the Place tab onto that location
+    // hands-free — from any scanning tab.
+    if (c.type === 'loc') {
+      setMode('place'); setShelf(c.code); setPick(null);
+      show('ok', '📍 Location locked: ' + c.code, 'Now scan every box going to ' + (placeKindRef.current === 'shelf' ? 'shelf' : 'staging') + ' ' + c.code + '.');
+      return;
+    }
     if (modeRef.current === 'place' && !place) { show('err', 'Pick a location first', 'Type or scan the ' + (placeKindRef.current === 'shelf' ? 'shelf' : 'staging zone') + ' code above, then scan boxes.'); return; }
     if (c.type === 'empty') return;
     if (c.type === 'box') {
@@ -438,6 +453,12 @@ export default function MoveCheckIn() {
           <div style={S.cap}>{placeKind === 'shelf' ? 'Shelf' : 'Staging zone'} — set once, then scan every box going there</div>
           <input value={shelf} onChange={(e) => setShelf(e.target.value)} placeholder={placeKind === 'shelf' ? 'e.g. A3, RACK 12…' : 'e.g. STAGE 1, DOCK…'} style={{ ...S.input, marginTop: 6, fontFamily: 'monospace', fontSize: 20, fontWeight: 800, color: shelf ? (placeKind === 'shelf' ? '#22c55e' : '#a78bfa') : '#fff' }} />
           {placeKind === 'staging' && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>Staging is temporary — re-scan the box in Final shelf mode when it lands on its shelf.</div>}
+          <button onClick={() => setLocOpen(!locOpen)} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: 0, marginTop: 8 }}>{locOpen ? '▾' : '▸'} 🖨️ Print location labels</button>
+          {locOpen && <>
+            <div style={{ fontSize: 12, color: '#94a3b8', margin: '6px 0' }}>One code per line (or commas). Post the printed 4×6 label on each shelf/zone — scanning it locks this tab onto that location, no typing.</div>
+            <textarea value={locCodes} onChange={(e) => setLocCodes(e.target.value)} placeholder={'A1\nA2\nSTAGE 1'} rows={3} style={{ ...S.input, fontFamily: 'monospace', resize: 'vertical' }} />
+            <button onClick={() => { const labels = buildLocationLabels(locCodes); if (labels.length) { try { printQrLabels(labels); } catch (e) { console.warn('[MoveCheckIn] location labels:', e); } } }} disabled={!buildLocationLabels(locCodes).length} style={{ ...S.btn('#2563eb', !buildLocationLabels(locCodes).length), fontSize: 14, padding: '10px', marginTop: 6 }}>Print {buildLocationLabels(locCodes).length || ''} label{buildLocationLabels(locCodes).length === 1 ? '' : 's'}</button>
+          </>}
         </div>
       )}
 

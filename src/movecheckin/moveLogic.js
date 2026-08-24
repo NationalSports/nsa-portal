@@ -21,6 +21,9 @@ export const classifyMoveScan = (raw) => {
   }
   v = v.trim();
   if (!v) return { type: 'empty' };
+  // location labels (printed from the Place tab): LOC:A3 → lock that location
+  const loc = v.match(/^LOC:(.+)$/i);
+  if (loc) return { type: 'loc', code: normShelf(loc[1]) };
   // tolerate "bx2001" / "bx 2001" hand-typing
   const bare = v.replace(/^bx[\s-]*/i, '');
   if (/^bx/i.test(v) && /^[A-Z0-9]+$/i.test(bare)) v = 'BX-' + bare.toUpperCase();
@@ -73,6 +76,18 @@ export const makeLegacyMoveBox = ({ plate, assign, soId = null, items = [], bin 
 // Shelf / staging codes are free text ("A3", "RACK 12", "STAGE 1", or a scanned
 // location barcode) — trimmed + uppercased so "a3" and "A3 " land the same.
 export const normShelf = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, ' ');
+
+// Parse a hand-typed list of location codes ("A1, A2\nSTAGE 1") into 4×6 label
+// objects for printQrLabels. QR encodes LOC:<code> — a station-only token the
+// camera router locks onto; it deliberately isn't a portal ?scan= URL.
+export const buildLocationLabels = (text) =>
+  [...new Set(String(text || '').split(/[\n,]/).map(normShelf).filter(Boolean))].map((code) => ({
+    code,
+    qrData: 'LOC:' + code,
+    program: code,
+    note: 'LOCATION',
+    codeSub: 'scan to lock this location',
+  }));
 
 // ── the three-stage move flow: checked in → staging → on shelf ───────────────
 // A box's stage is derived, not stored: bin (final shelf) wins over

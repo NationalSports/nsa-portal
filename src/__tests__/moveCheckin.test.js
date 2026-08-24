@@ -20,6 +20,10 @@ describe('classifyMoveScan', () => {
     expect(classifyMoveScan('IF-1071')).toEqual({ type: 'ref', id: 'IF-1071' });
     expect(classifyMoveScan('https://portal.app/?scan=NSA-4501')).toEqual({ type: 'ref', id: 'NSA-4501' });
   });
+  test('printed location labels (LOC:) lock a location', () => {
+    expect(classifyMoveScan('LOC:A3')).toEqual({ type: 'loc', code: 'A3' });
+    expect(classifyMoveScan('loc: stage  1 ')).toEqual({ type: 'loc', code: 'STAGE 1' });
+  });
   test('empty / blank input', () => {
     expect(classifyMoveScan('')).toEqual({ type: 'empty' });
     expect(classifyMoveScan(null)).toEqual({ type: 'empty' });
@@ -86,6 +90,18 @@ describe('makeLegacyMoveBox', () => {
     expect(row.assigned_to).toBe('inventory');
     expect(row.bin).toBe('A3');
     expect(row.source_refs).toEqual([]);
+  });
+});
+
+describe('buildLocationLabels', () => {
+  const { buildLocationLabels } = require('../movecheckin/moveLogic');
+  test('splits on newlines/commas, normalizes, dedupes; QR encodes LOC:', () => {
+    const l = buildLocationLabels('a1, A2\n a1 \nstage  1');
+    expect(l.map((x) => x.code)).toEqual(['A1', 'A2', 'STAGE 1']);
+    expect(l[0].qrData).toBe('LOC:A1');
+  });
+  test('empty text → no labels', () => {
+    expect(buildLocationLabels(' \n, ')).toEqual([]);
   });
 });
 
