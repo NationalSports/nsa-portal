@@ -640,6 +640,62 @@ export const squashMockLinks = (artFiles, artId, memberKeys) => {
 // opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
 // SKU, so callers must pass false when another live line still carries the old SKU in a
 // different color — moving the bare bucket would steal that line's legacy fallback.
+const _ART_TRACKED_ARRAY_FIELDS = ['files', 'mockup_files', 'prod_files', 'sample_art', 'web_logos'];
+const _ART_TRACKED_FIELDS = [..._ART_TRACKED_ARRAY_FIELDS, 'item_mockups', 'mock_links', 'preview_url', 'web_logo_url'];
+const _artMutationUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+const _uniqTruthy = (arr) => [...new Set(safeArr(arr).filter(Boolean))];
+// Stamp explicit art removals/asset replacements as client-only one-save intent. A conflict merge otherwise
+// has no safe way to distinguish “the rep removed this” from “this stale tab never loaded it”, so it must union
+// arrays and would resurrect deleted mockups/files. Existing markers are reconciled so undo-before-save works.
+export const markArtFieldEdit = (art, field, value) => {
+  if (!art) return art;
+  const next = { ...art, [field]: value };
+  const edited = new Set(safeArr(art._artEditedFields)); edited.add(field);
+  next._artEditedFields = [...edited];
+  const deletes = { ...(art._artDeletes || {}) };
+  if (_ART_TRACKED_ARRAY_FIELDS.includes(field)) {
+    const live = new Set(safeArr(value).map(_artMutationUrl).filter(Boolean));
+    const removed = safeArr(art[field]).map(_artMutationUrl).filter(u => u && !live.has(u));
+    const prior = safeArr(deletes[field]).filter(u => !live.has(u));
+    const gone = _uniqTruthy([...prior, ...removed]);
+    if (gone.length) deletes[field] = gone; else delete deletes[field];
+  } else if (field === 'item_mockups') {
+    const priorMap = art.item_mockups || {}; const liveMap = value || {}; const dm = { ...(deletes.item_mockups || {}) };
+    new Set([...Object.keys(priorMap), ...Object.keys(liveMap), ...Object.keys(dm)]).forEach(k => {
+      const live = new Set(safeArr(liveMap[k]).map(_artMutationUrl).filter(Boolean));
+      const removed = safeArr(priorMap[k]).map(_artMutationUrl).filter(u => u && !live.has(u));
+      const gone = _uniqTruthy([...safeArr(dm[k]).filter(u => !live.has(u)), ...removed]);
+      if (gone.length) dm[k] = gone; else delete dm[k];
+    });
+    if (Object.keys(dm).length) deletes.item_mockups = dm; else delete deletes.item_mockups;
+  } else if (field === 'mock_links') {
+    const live = value || {};
+    const removed = Object.keys(art.mock_links || {}).filter(k => !(k in live));
+    const gone = _uniqTruthy([...safeArr(deletes.mock_links).filter(k => !(k in live)), ...removed]);
+    if (gone.length) deletes.mock_links = gone; else delete deletes.mock_links;
+  }
+  if (Object.keys(deletes).length) next._artDeletes = deletes; else delete next._artDeletes;
+  return next;
+};
+// File-upload/reuse helpers often construct a whole art_files array rather than calling uArt. Diff the fields
+// whose conflict semantics need explicit intent and carry the same markers into that immediate save.
+export const markArtChanges = (before, after) => {
+  const prev = new Map(safeArr(before).filter(Boolean).map(a => [a.id, a]));
+  return safeArr(after).map(a => {
+    const old = a && prev.get(a.id); if (!old) return a;
+    let next = { ...a };
+    if (old._artDeletes && !next._artDeletes) next._artDeletes = old._artDeletes;
+    if (old._artEditedFields && !next._artEditedFields) next._artEditedFields = old._artEditedFields;
+    _ART_TRACKED_FIELDS.forEach(f => {
+      let changed = old[f] !== a[f];
+      if (changed && (typeof old[f] === 'object' || typeof a[f] === 'object')) {
+        try { changed = JSON.stringify(old[f]) !== JSON.stringify(a[f]); } catch (_) { changed = true; }
+      }
+      if (changed) next = markArtFieldEdit({ ...next, [f]: old[f] }, f, a[f]);
+    });
+    return next;
+  });
+};
 // Strip a mockup image (by URL) from art files, scoped to ONE garment on the art files a job owns.
 // The SO-page "×" lives on a single garment's mock card inside a single job's panel, so a removal
 // must only clear THAT garment's mock keys on the art files the job owns. The old order-wide strip

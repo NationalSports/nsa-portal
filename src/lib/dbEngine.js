@@ -878,8 +878,9 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 // copy must win on conflict. Overlaying the client's value let a stale tab silently un-confirm a
 // just-approved design (SO-1131, 2026-08-19: a warehouse tab reverted prod_files_attached true→
 // false 17 minutes after the rep's approval set it, alongside the so_jobs art_status clobber).
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','notes','archived'];
-const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived'];
+const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art','web_logos'];
+const _ART_EXPLICIT_SCALAR_FIELDS=new Set(['preview_url','web_logo_url']);
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
   // Both scalar (e.g. a single preview/sample url): prefer the client's value, falling back to the DB's.
@@ -888,6 +889,31 @@ const _unionArtFiles=(dbArr,clientArr)=>{
   const seen=new Set(out.map(_artFileUrl).filter(Boolean));
   (Array.isArray(clientArr)?clientArr:[]).forEach(f=>{const k=_artFileUrl(f);if(!k){out.push(f)}else if(!seen.has(k)){seen.add(k);out.push(f)}});
   return out;
+};
+// A version conflict cannot infer whether a missing array entry was deliberately deleted in this tab or was
+// merely never loaded here. Editors therefore stamp narrow, one-save tombstones on explicit removals. Apply
+// them AFTER the conservative DB+client union so concurrent additions survive while the exact user deletion
+// still lands. Tombstones are client-only and are consumed only after a confirmed write.
+const _applyArtDeletes=(merged,clientArt)=>{
+  const d=clientArt?._artDeletes;if(!d||typeof d!=='object')return merged;
+  _ART_FILE_COLLECTIONS.forEach(f=>{
+    const gone=new Set(Array.isArray(d[f])?d[f]:[]);if(!gone.size||!Array.isArray(merged[f]))return;
+    merged[f]=merged[f].filter(x=>!gone.has(_artFileUrl(x)));
+  });
+  if(d.item_mockups&&typeof d.item_mockups==='object'){
+    const im={...(merged.item_mockups||{})};
+    Object.entries(d.item_mockups).forEach(([k,urls])=>{
+      const gone=new Set(Array.isArray(urls)?urls:[]);if(!gone.size)return;
+      im[k]=(Array.isArray(im[k])?im[k]:[]).filter(x=>!gone.has(_artFileUrl(x)));
+      // Keep an explicitly emptied garment bucket as []: itemMockFiles treats key presence as a
+      // tombstone that blocks legacy shared/bare-SKU fallback (SO-2063 / PR #2039).
+    });
+    merged.item_mockups=im;
+  }
+  if(Array.isArray(d.mock_links)&&d.mock_links.length){
+    const ml={...(merged.mock_links||{})};d.mock_links.forEach(k=>delete ml[k]);merged.mock_links=ml;
+  }
+  return merged;
 };
 const _mergeArtConflict=(clientArt,dbRow)=>{
   const merged={...dbRow};// base = DB row: keeps status/preview/uploaded and anything another user changed
@@ -899,8 +925,12 @@ const _mergeArtConflict=(clientArt,dbRow)=>{
   // mock_links: small {garmentKey -> sourceKey} map. Shallow-merge so neither side's reuse links are
   // dropped on a concurrent edit; the client's link wins for any key it set.
   merged.mock_links={...(dbRow.mock_links||{}),...(clientArt.mock_links||{})};
+  // Preview / web-logo replacements are user-authoritative only when this tab actually edited the field.
+  // Otherwise the DB copy wins so an unrelated stale save cannot restore an older asset URL.
+  const edited=new Set(Array.isArray(clientArt._artEditedFields)?clientArt._artEditedFields:[]);
+  _ART_EXPLICIT_SCALAR_FIELDS.forEach(f=>{if(edited.has(f))merged[f]=clientArt[f]});
   if(!merged.preview_url&&clientArt.preview_url)merged.preview_url=clientArt.preview_url;
-  return merged;
+  return _applyArtDeletes(merged,clientArt);
 };
 // Resolve which art rows to persist given the client's art_files and the live full DB rows. Conflicting rows
 // (DB _version ahead of the client's) are field-merged onto the DB copy; the rest pass through unchanged. Returns
@@ -916,6 +946,14 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
   });
   if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
   return out;
+};
+// Adopt the exact conflict-resolved row back into the live object. Rebasing only `_version` poisons the
+// client: its stale status/files then look current and the NEXT save can undo the protection. Preserve
+// client-only UI keys via Object.assign, but consume the one-save edit/deletion markers after success.
+const _adoptResolvedArtRow=({client,row,baseVersion})=>{
+  Object.assign(client,row,{_version:baseVersion+1});
+  delete client._artDeletes;delete client._artEditedFields;
+  return client;
 };
 const _EST_STATUS_RANK={draft:0,open:1,sent:2,approved:3,converted:4};
 const _mergeDbEstStatus=async(est)=>{
@@ -1211,7 +1249,7 @@ const _dbSaveEstimateInner = async (est) => {
           if(_dbNotify)_dbNotify(_artGapMsg('estimate_art_files',afDropped),'error');
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+        if(_afOk)_resolved.forEach(_adoptResolvedArtRow);
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
@@ -1526,7 +1564,7 @@ const _dbSaveSOInner = async (so) => {
           if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+        if(_afOk)_resolved.forEach(_adoptResolvedArtRow);
       }
       // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
@@ -2195,7 +2233,11 @@ const _dbSaveSOInner = async (so) => {
         if(!jobErr&&_dbNotify)_dbNotify(_schemaGapMsg('Jobs','so_jobs',jobDropped),'error');
       }
       if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
-      else dedupedJobs.forEach(j=>{
+      else dedupedJobs.forEach((j,i)=>{
+        // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
+        // protected first save promotes stale local content to the current version and a second save can
+        // regress art status, receipts, or append-only history with the guards now disarmed.
+        Object.assign(j,jobRows[i]);
         if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
         if(j._art_moved)delete j._art_moved;
         // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
@@ -2535,7 +2577,7 @@ const _dbSaveArtFilesInner = async (so) => {
           console.warn('[DB] so_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
           if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
         }
-        _resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+        _resolved.forEach(_adoptResolvedArtRow);
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
@@ -3474,24 +3516,37 @@ const _dbPersistNewPoLine=async(soId,itemIndex,poLine)=>{
   }catch(e){console.error('[DB] persist new PO line error for',soId,'item',itemIndex,':',e?.message||e)}});
 };
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
-// When a save is in-progress and a newer version arrives, the newer version is queued.
-// After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
+// When a save is in-progress and a newer version arrives, the newer version is queued. Consecutive pending
+// saves of the SAME kind coalesce to the latest payload; different kinds (full SO vs art-only) stay serialized.
 const _dbSaveInFlight={};// id → true if a save is currently running
-const _dbSavePending={};// id → {data, saveFn} latest pending save data
-const _queuedEntitySave=async(id,data,saveFn)=>{
-  _dbSavePending[id]={data,saveFn};
-  if(_dbSaveInFlight[id])return;// save running — pending data will be picked up when it finishes
+const _dbSavePending={};// id → [{data,saveFn,waiters}] serialized pending batches
+const _drainEntitySaveQueue=async(id)=>{
   _dbSaveInFlight[id]=true;
-  let lastResult;
   try{
-    while(_dbSavePending[id]){
-      const{data:toSave,saveFn:fn}=_dbSavePending[id];
-      delete _dbSavePending[id];
-      lastResult=await fn(toSave);
+    while(_dbSavePending[id]?.length){
+      const batch=_dbSavePending[id].shift();
+      if(!_dbSavePending[id].length)delete _dbSavePending[id];
+      try{
+        const result=await batch.saveFn(batch.data);
+        batch.waiters.forEach(w=>w.resolve(result));
+      }catch(error){batch.waiters.forEach(w=>w.reject(error))}
     }
-  }finally{delete _dbSaveInFlight[id]}
-  return lastResult;
+  }finally{
+    delete _dbSaveInFlight[id];
+    // A caller can enqueue in the narrow gap after the loop observes empty but before `finally` clears
+    // in-flight. Hand that batch to a new drain instead of leaving it stranded forever.
+    if(_dbSavePending[id]?.length)_drainEntitySaveQueue(id);
+  }
 };
+const _queuedEntitySave=(id,data,saveFn)=>new Promise((resolve,reject)=>{
+  const queue=_dbSavePending[id]||(_dbSavePending[id]=[]);
+  const tail=queue[queue.length-1];
+  // Latest-wins coalescing is safe only within the same operation kind. A full-SO save and an art-only
+  // save share an entity id but must both run, in order; dropping either can lose non-art or art changes.
+  if(tail&&tail.saveFn===saveFn){tail.data=data;tail.waiters.push({resolve,reject})}
+  else queue.push({data,saveFn,waiters:[{resolve,reject}]});
+  if(!_dbSaveInFlight[id])_drainEntitySaveQueue(id);
+});
 // Track recently-pulled SOs — prevents poll/realtime from reverting pulls for 30s after a warehouse pull
 // This is a safety net for slow connections where the full SO save might not complete before the next poll
 const _recentlyPulledSOs=new Map();// soId → timestamp
@@ -3838,6 +3893,7 @@ export {
   _unionArtFiles,
   _mergeArtConflict,
   _resolveArtRows,
+  _adoptResolvedArtRow,
   _writeRowsSchemaSafe,
   _matchRestoreItem,
   _sanitizeArtRow,

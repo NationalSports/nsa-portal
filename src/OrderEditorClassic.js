@@ -23,7 +23,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -184,7 +184,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1733,8 +1733,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);const memoInputRef=useRef(null);const poInputRef=useRef(null);
   const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
   const onSaveRef=React.useRef(onSave);React.useEffect(()=>{onSaveRef.current=onSave},[onSave]);
+  const onSaveNowRef=React.useRef(onSaveNow);React.useEffect(()=>{onSaveNowRef.current=onSaveNow},[onSaveNow]);
+  const onEmergencySaveRef=React.useRef(onEmergencySave);React.useEffect(()=>{onEmergencySaveRef.current=onEmergencySave},[onEmergencySave]);
   React.useEffect(()=>{
-    const doAutoSave=()=>{
+    const doAutoSave=(emergency=false)=>{
       let cur=oRef.current;if(!cur)return;
       // Fold in text from inputs that commit on blur (memo/PO #) but may not have blurred yet —
       // covers a tab crash / version-reload firing while a field is still focused.
@@ -1742,13 +1744,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const p=poInputRef.current;if(p&&p.value!==(cur.po_number||''))cur={...cur,po_number:p.value};
       if(!dirtyRef2.current&&cur===oRef.current)return;
       if(cur!==oRef.current)setO(cur);
-      onSaveRef.current(cur);dirtyRef2.current=false;setDirty(false);
+      // Normal autosave goes through the result-checked DB entry point. Emergency unload / forced-auth
+      // flush additionally stages the exact draft in the durable outbox synchronously before any unmount.
+      const persist=emergency?(onEmergencySaveRef.current||onSaveNowRef.current||onSaveRef.current):(onSaveNowRef.current||onSaveRef.current);
+      const result=persist(cur);
+      Promise.resolve(result).then(ok=>{if(ok===false){dirtyRef2.current=true;setDirty(true);return}dirtyRef2.current=false;setDirty(false)},()=>{dirtyRef2.current=true;setDirty(true)});
     };
     const iv=setInterval(doAutoSave,30000);
-    const handleUnload=()=>doAutoSave();
+    const handleUnload=()=>doAutoSave(true);
     window.addEventListener('beforeunload',handleUnload);
-    window.addEventListener('nsa:version-reload-pending',doAutoSave);
-    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);window.removeEventListener('nsa:version-reload-pending',doAutoSave)};
+    window.addEventListener('nsa:version-reload-pending',handleUnload);
+    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);window.removeEventListener('nsa:version-reload-pending',handleUnload)};
   },[]);
   // Warn user before closing tab if there are unsaved order changes
   React.useEffect(()=>{
@@ -3201,7 +3207,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // folder has no name or color ways yet, so the picker had nothing useful to offer.
   // The rep fills the folder in first, then uses its "🎯 Apply to items" button.
   const addArt=()=>{setO(e=>({...e,art_files:[...(e.art_files||[]),{id:'af'+Date.now(),design_id:'design_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],mock_links:{},preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}],updated_at:new Date().toLocaleString()}));setDirty(true)};
-  const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?{...f,[k]:v}:f),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const uArt=(i,k,v)=>{setO(e=>({...e,art_files:(e.art_files||[]).map((f,x)=>x===i?markArtFieldEdit(f,k,v):f),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Persist an art_files change to the DB right now — used immediately after a file upload so a freshly
   // uploaded mockup/production/preview file is durable the moment it lands. This closes the "uploaded to
   // Cloudinary but never recorded in the portal" gap the old "click Save to keep" flow left open (a refresh,
@@ -3209,9 +3215,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // persisted (the lightweight onSaveArtFiles path); metadata edits still save via the Save button. Returns
   // true on a confirmed write; on failure it keeps the editor dirty and warns the user NOT to reload.
   const saveArtFilesNow=async(newArtFiles,label)=>{
-    const updated={...oRef.current,art_files:newArtFiles,updated_at:new Date().toLocaleString()};
+    const trackedArtFiles=markArtChanges(oRef.current.art_files||[],newArtFiles);
+    const updated={...oRef.current,art_files:trackedArtFiles,updated_at:new Date().toLocaleString()};
     setO(updated);
-    if(onSaveArtFiles){nf('Saving '+(label||'file')+'...');const ok=await onSaveArtFiles(updated);if(ok){setSaved(true);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
+    if(onSaveArtFiles||onSaveNow){nf('Saving '+(label||'file')+'...');const ok=await (onSaveArtFiles?onSaveArtFiles(updated):onSaveNow(updated));if(ok){setSaved(true);setDirty(false);nf('✅ '+(label||'File')+' saved')}else{setDirty(true);nf('⚠️ '+(label||'File')+' uploaded but NOT saved to the portal — sign in again and click Save. Do NOT reload; your work is still here.','error')}return ok}
     onSave(updated);setSaved(true);return true;
   };
   // Result-checked FULL save (jobs + art together) for reuse/forward mutations that change both. Mirrors
@@ -3349,19 +3356,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // scope = {sku,color,artFileIds} — the × sits on ONE garment's card in ONE job's panel, so only
   // clear that garment's keys on the art files the job owns. Order-wide-by-url removal wiped the same
   // image off sibling garments/jobs that reused it (SO-1023). See removeMockFromArtFiles.
-  const removeMockupUrl=(url,scope)=>{if(!url)return;const updated={...o,art_files:removeMockFromArtFiles(safeArt(o),url,scope||{}),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf('Mockup removed')};
+  const removeMockupUrl=async(url,scope)=>{if(!url)return;const arts=removeMockFromArtFiles(safeArt(oRef.current),url,scope||{});await saveArtFilesNow(arts,'Mockup removal')};
   // Side a mockup represents (front/back), from the stored tag or the filename suffix.
   const _mockSide=f=>{const s=typeof f!=='string'&&f&&f.side;if(s==='front'||s==='back')return s;const n=(typeof f!=='string'&&(f?.name||f?.url))||(typeof f==='string'?f:'');if(/-front\.png/i.test(n))return 'front';if(/-back\.png/i.test(n))return 'back';return ''};
   // Display order for a mockup: explicit ord if set, else front before back before others.
   const _mockOrd=f=>{if(typeof f!=='string'&&f&&f.ord!=null)return f.ord;const s=_mockSide(f);return s==='front'?0:s==='back'?1:2};
   // Persist an explicit display order (front-first by default) by writing `ord` onto each mock entry.
-  const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const updated={...o,art_files:safeArt(o).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)})),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false)};
+  const setMockupOrder=orderedUrls=>{const pos={};orderedUrls.forEach((u,i)=>{pos[u]=i});const _ap=arr=>(arr||[]).map(f=>{if(typeof f==='string')return f;const u=f?.url;return (u&&pos[u]!=null)?{...f,ord:pos[u]}:f});const arts=safeArt(oRef.current).map(a=>({...a,item_mockups:Object.fromEntries(Object.entries(a.item_mockups||{}).map(([k,v])=>[k,_ap(v)])),mockup_files:_ap(a.mockup_files)}));saveArtFilesNow(arts,'Mockup order')};
   const moveMock=(orderedUrls,i,dir)=>{const j=i+dir;if(j<0||j>=orderedUrls.length)return;const arr=[...orderedUrls];[arr[i],arr[j]]=[arr[j],arr[i]];setMockupOrder(arr)};
   // ── Mock links ("use the same mockup as that garment") ── stored on the job's primary
   // design art file as garment -> source garment. Mirrors the Art Dashboard modal handler
   // so linking done in either place is identical. sourceKey null = unlink. Chains are
   // flattened on write and anything pointing at the member is re-pointed.
-  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const updated={...o,art_files:applyMockLink(safeArt(o),artId,memberKey,sourceKey),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf&&nf(sourceKey?'Linked — uses the same mockup as '+sourceKey.split('|')[0]:'Unlinked — back to its own mockup')};
+  const setMockLinkOE=(artId,memberKey,sourceKey)=>{if(!artId||memberKey===sourceKey)return;const arts=applyMockLink(safeArt(oRef.current),artId,memberKey,sourceKey);saveArtFilesNow(arts,sourceKey?'Mockup link':'Mockup unlink')};
   const rmArt=i=>{setO(e=>{const arr=e.art_files||[];const removedId=arr[i]?.id||null;const newAf=arr.filter((_,x)=>x!==i);const newItems=removedId?safeItems(e).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removedId?{...d,art_file_id:null}:d)})):e.items;return{...e,art_files:newAf,items:newItems,updated_at:new Date().toLocaleString()}});setDirty(true)};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
