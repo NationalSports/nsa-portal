@@ -4,6 +4,8 @@ import {
   aggregateBillItemsBySku,
   buildVendorBillLines,
   calculateCustomerShipping,
+  buildInternalLaborCostManifest,
+  getOmgFeeSource,
   indexQBNonInventoryItems,
   isDecorationVendorBill,
   manualBillAccountKey,
@@ -176,5 +178,30 @@ describe('customer shipping routing', () => {
   test('blocks negative shipping instead of silently reducing sales', () => {
     expect(() => calculateCustomerShipping({ shipping_type: 'flat', shipping_value: -1 }, 100)).toThrow(/cannot be negative/i);
     expect(() => calculateCustomerShipping({ pending_ship_applied: true, pending_ship_amount: -1 }, 100)).toThrow(/cannot be negative/i);
+  });
+});
+
+describe('OMG and internal labor source routing', () => {
+  test('routes only OrderMyGear-hosted store fees to 57000', () => {
+    expect(getOmgFeeSource({source:'omg',id:'store-1',_omg_omg_fees:123.45})).toMatchObject({
+      sourceType:'omg_accounting_report',sourceId:'store-1',amount:123.45,accountKey:'omg_fee_account',
+    });
+    expect(getOmgFeeSource({source:'webstore',id:'native-1',_omg_omg_fees:123.45})).toBeNull();
+    expect(getOmgFeeSource({source:'omg',id:'store-2',_omg_omg_fees:0})).toBeNull();
+  });
+
+  test('sources 55100 and 55400 manifests from their separate clocks and current labor rates', () => {
+    const manifest=buildInternalLaborCostManifest({
+      decorationLogs:[{person:'Dana',minutes:90,idleMinutes:10}],
+      artLogs:[{person:'Alex',minutes:120,idleMinutes:15}],
+      laborRates:{Dana:20,Alex:30},
+    });
+    expect(manifest.decoration).toEqual({sourceType:'job_time_logs',accountKey:'decoration_account',minutes:90,idleMinutes:10,amount:30,logCount:1});
+    expect(manifest.inHouseArt).toEqual({sourceType:'art_time_logs',accountKey:'in_house_art_account',minutes:120,idleMinutes:15,amount:60,logCount:1});
+  });
+
+  test('does not create negative labor cost from bad minutes or rates', () => {
+    const manifest=buildInternalLaborCostManifest({artLogs:[{person:'Alex',minutes:-5}],laborRates:{Alex:-20}});
+    expect(manifest.inHouseArt.amount).toBe(0);
   });
 });
