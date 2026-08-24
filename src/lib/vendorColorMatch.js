@@ -83,10 +83,23 @@ export const ssStyleSearchVariants = (style) => {
   const s = String(style ?? '').toUpperCase().trim();
   const out = [];
   const add = (code, strict, brand) => { const t = String(code || '').trim(); if (t && !out.some((o) => o.code === t)) out.push({ code: t, strict, ...(brand ? { brand } : {}) }); };
-  add(s, false);
-  // Trailing color suffix: "AT300-50" → base style "AT300".
   const dash = s.lastIndexOf('-');
-  if (dash > 0) add(s.slice(0, dash), false);
+  // Synced API skus are '<style>-<numericColorCode>' ("AT105-50"). The whole code never
+  // names an S&S style, but its fuzzy /Styles?search= still downloads hundreds-to-thousands
+  // of styles before the base-style variant would get its turn — so when the suffix looks
+  // like a numeric color code, search the base style FIRST (typically an exact single hit)
+  // and demote the as-is code to the fallback.
+  const numericColorSuffix = dash > 0 && /^\d{1,3}$/.test(s.slice(dash + 1));
+  if (numericColorSuffix) add(s.slice(0, dash), false);
+  add(s, false);
+  // Trailing non-numeric suffix: "AT300-XYZ" → base style "AT300" as a fallback. Synced
+  // skus can also spell out the whole colorway NAME ("AT101-BLACK-WHITE",
+  // "AT101-MEDIUM-GREY-HEATHER-BLACK"), so strip trailing word segments all the way down to
+  // the base style. Only the full base is offered — an intermediate prefix ("AT101-BLACK")
+  // never names an S&S style, and a fuzzy first-hit on one could land the wrong garment.
+  let base = numericColorSuffix ? s.slice(0, dash) : s;
+  for (let d = base.lastIndexOf('-'); d > 0 && /^[A-Z]+$/.test(base.slice(d + 1)); d = base.lastIndexOf('-')) base = base.slice(0, d);
+  if (base !== s) add(base, false);
   // Leading 1–3 letter brand prefix on a numeric style: "BC3945" → "3945", "NL3600" → "3600".
   const m = /^([A-Z]{1,3})(\d[A-Z0-9]*)$/.exec(s);
   if (m) add(m[2], true, SS_BRAND_BY_PREFIX[m[1]]);

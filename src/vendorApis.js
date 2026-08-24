@@ -983,6 +983,29 @@ const sanmarResolvePartIds = async (descriptors) => {
   return { resolved, candidates };
 };
 
+// Every color/size variant SanMar lists for a style, each with its Unique_Key — the same
+// normalization the resolver uses, exposed so a rep can hand-pick the right part when the
+// automatic match can't (naming differences the correct-biased matcher refuses to guess at,
+// or an order line carrying a style code SanMar catalogs differently). Returns [] for an
+// unknown style rather than throwing, so a typo in the search box is just an empty list.
+const sanmarStyleVariants = async (style) => {
+  const s = String(style || '').trim();
+  if (!s) return [];
+  let d;
+  try { d = await sanmarGetProduct(s); }
+  catch (e) { console.warn('[SanMar] style variant lookup failed for', s, e.message); return []; }
+  const out = [];
+  const seen = new Set();
+  for (const r of ((d && d.items) || [])) {
+    const bi = r.productBasicInfo || r;
+    const uniqueKey = _smKey(r, bi);
+    if (!uniqueKey || seen.has(uniqueKey)) continue;
+    seen.add(uniqueKey);
+    out.push({ style: String(bi.style || bi.styleName || s).trim() || s, color: _smColor(bi), size: _smSize(bi), uniqueKey });
+  }
+  return out;
+};
+
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
 // Docs: https://api.ssactivewear.com/V2/Default.aspx
@@ -999,7 +1022,14 @@ const _ssErrMsg = (errText, status) => {
   return `S&S API error ${status}` + (msg ? `: ${msg}` : raw ? `: ${raw.slice(0, 200)}` : '');
 };
 
-const ssApiCall = async (endpoint, options = {}) => {
+// S&S allows 60 requests/minute (see ss-proxy.js). Over that it answers 429 and the caller
+// used to fail outright — and because the SKU resolver swallows a failed lookup as "no
+// match", a rate-limited burst silently reads as "S&S doesn't carry any of these styles"
+// (live: batch PO 57402 SFGO, 32 lines / 15 style codes, every line flagged unmatched even
+// though the same styles resolved fine hours earlier). Retry the throttle on GETs only:
+// they're idempotent, so a repeat is free — a POST /orders is NOT replayed here, ever.
+const _SS_RETRY_STATUS = /\b(429|409|503)\b/;
+const ssApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
@@ -1009,13 +1039,33 @@ const ssApiCall = async (endpoint, options = {}) => {
       ...(options.body ? { headers: { 'Content-Type': 'application/json' }, body: options.body } : {})
     });
     if (!response.ok) {
+      if (method === 'GET' && (response.status === 429 || response.status === 409 || response.status === 503) && _retries < 3) {
+        const delay = (2 ** _retries) * 1000; // 1s, 2s, 4s — inside one 60s rate-limit window
+        console.warn(`[S&S] ${response.status} on ${endpoint}, retrying in ${delay}ms (attempt ${_retries + 1}/3)`);
+        await new Promise(r => setTimeout(r, delay));
+        return ssApiCall(endpoint, options, _retries + 1);
+      }
       const errText = await response.text().catch(() => '');
-      throw new Error(_ssErrMsg(errText, response.status));
+      const err = new Error(_ssErrMsg(errText, response.status));
+      // Marked so the catch below doesn't retry it a SECOND time: the status branch above has
+      // already had its turn, and a nested retry would multiply attempts (3 × 3) and stack
+      // their backoffs into a multi-minute hang.
+      err._ssRetryConsidered = true;
+      throw err;
     }
     const data = await response.json();
     console.log('[S&S] API response:', endpoint, Array.isArray(data) ? `${data.length} items` : data);
     return data;
-  } catch (error) { console.error('[S&S] API call failed:', endpoint, error); throw error; }
+  } catch (error) {
+    // A throttle that surfaced as a thrown error (proxy/network layer) gets the same retry.
+    if (!error?._ssRetryConsidered && (options.method || 'GET') === 'GET' && _retries < 3 && _SS_RETRY_STATUS.test(error?.message || '')) {
+      const delay = (2 ** _retries) * 1000;
+      console.warn(`[S&S] retrying ${endpoint} after "${error.message}" in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      return ssApiCall(endpoint, options, _retries + 1);
+    }
+    console.error('[S&S] API call failed:', endpoint, error); throw error;
+  }
 };
 
 // Style lookup for a set of S&S part numbers (chunked GET /Products/{sku,sku,…}).
@@ -1102,7 +1152,34 @@ const ssResolveSkus = async (descriptors) => {
   const resolved = {};
   const candidates = {};
   const styles = [...new Set((descriptors || []).map(d => String(d.style || '').toUpperCase().trim()).filter(Boolean))];
+  // One lookup per distinct SEARCH CODE, not per style code. Our synced skus carry the
+  // colorway ("A231-00/-09/-50/-70" are four styles here but one S&S style "A231"), so
+  // without this a four-colorway polo fires the same /Styles+/Products pair four times.
+  // Live cost of that: batch PO 57402 SFGO's 15 style codes collapse to 7 real lookups —
+  // the un-deduped burst is what put the modal over S&S's 60 req/min limit, and a
+  // throttled lookup is indistinguishable from "no such style" downstream.
+  const itemCache = new Map();
+  // Styles whose lookup ERRORED (throttle/outage) as opposed to genuinely not matching.
+  // The caller must be able to tell those apart: "S&S has no such colorway" is a data
+  // problem the rep fixes by hand; "we never got an answer" is one they fix by retrying.
+  const lookupErrors = new Map();
 
+  // Circuit breaker. Each failing lookup now costs up to three backoff sleeps, so on a truly
+  // throttled account a 15-style batch could sit there for minutes retrying calls that are all
+  // going to fail. Two failures in a row means it's the account, not the style: stop calling,
+  // mark the rest as unanswered, and let the rep retry once the window resets.
+  let consecutiveFailures = 0;
+  // Memoized wrapper — see itemCache above for why the cache is the point, not an optimization.
+  const fetchItems = async (variant) => {
+    const ck = variant.code + '|' + (variant.strict ? '1' : '0') + '|' + (variant.brand || '');
+    if (itemCache.has(ck)) return itemCache.get(ck);
+    if (consecutiveFailures >= 2) { lookupErrors.set(variant.code, 'skipped — S&S lookups are failing (rate limit or outage); retry in a minute'); return []; }
+    const before = lookupErrors.size;
+    const items = await fetchItemsUncached(variant);
+    if (lookupErrors.size > before) consecutiveFailures += 1; else consecutiveFailures = 0;
+    itemCache.set(ck, items);
+    return items;
+  };
   // Fetch a style's S&S products by a search code. S&S /Products?style= expects a numeric
   // styleID, not the style name — so resolve the styleID first via /Styles?search= (the same
   // path our other S&S lookups use), then fetch that style's products.
@@ -1113,7 +1190,7 @@ const ssResolveSkus = async (descriptors) => {
   //    picking by brand yields ours, not whichever S&S lists first. With no brand (or none of
   //    the exact hits carry it) accept the exact match only when it's unambiguous (exactly one),
   //    so a shared number is left blocked rather than guessed.
-  const fetchItems = async ({ code, strict, brand }) => {
+  const fetchItemsUncached = async ({ code, strict, brand }) => {
     try {
       const styleList = await ssApiCall('/Styles?search=' + encodeURIComponent(code));
       const sa = Array.isArray(styleList) ? styleList : (styleList ? [styleList] : []);
@@ -1137,9 +1214,10 @@ const ssResolveSkus = async (descriptors) => {
       if (!styleID) return [];
       const data = await ssApiCall('/Products/?style=' + encodeURIComponent(styleID));
       return Array.isArray(data) ? data : (data ? [data] : []);
-    } catch (e) { console.warn('[S&S] SKU lookup failed for', code, e.message); return []; }
+    } catch (e) { console.warn('[S&S] SKU lookup failed for', code, e.message); lookupErrors.set(code, e.message || 'lookup failed'); return []; }
   };
 
+  const erroredStyles = new Set();
   for (const style of styles) {
     const mine = descriptors.filter(d => String(d.style || '').toUpperCase().trim() === style);
     const cand = [];
@@ -1147,6 +1225,7 @@ const ssResolveSkus = async (descriptors) => {
     for (const variant of ssStyleSearchVariants(style)) {
       if (mine.every(d => resolved[d.key])) break; // all lines matched — no looser search needed
       const items = await fetchItems(variant);
+      if (lookupErrors.has(variant.code)) erroredStyles.add(style);
       const map = {}; // normalized "color|size" -> sku, from this variant's products
       for (const r of items) {
         const sku = String(r.sku || r.Sku || r.gtin || '');
@@ -1184,7 +1263,11 @@ const ssResolveSkus = async (descriptors) => {
       if (skus.size === 1) resolved[d.key] = hit;
     }
   }
-  return { resolved, candidates };
+  // failedStyles: styles we never got an answer for. Only report the ones still unresolved —
+  // a style that errored on one variant and matched on another is not a failure.
+  const failedStyles = [...erroredStyles].filter(st => descriptors.some(d =>
+    String(d.style || '').toUpperCase().trim() === st && !resolved[d.key]));
+  return { resolved, candidates, failedStyles, lookupError: failedStyles.length ? (lookupErrors.values().next().value || '') : '' };
 };
 
 // ─── Per-warehouse availability (order-modal "ships from" display) ───
@@ -1796,4 +1879,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, sanmarStyleVariants, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock, sanmarGetWarehouseStock, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

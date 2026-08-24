@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, poLineFulfilledQty } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
@@ -69,10 +69,13 @@ function Toast({msg,type='success'}){if(!msg)return null;return<div className={`
 
 function SortHeader({label,field,sortField,sortDir,onSort}){const a=sortField===field;return<th onClick={()=>onSort(field)} style={{cursor:'pointer',userSelect:'none'}}><span style={{display:'inline-flex',alignItems:'center',gap:4}}>{label}<span style={{opacity:a?1:0.3}}>{a&&sortDir==='asc'?<Icon name="sortUp" size={12}/>:<Icon name="sort" size={12}/>}</span></span></th>}
 
-function SearchSelect({options,value,onChange,placeholder}){const[open,setOpen]=useState(false);const[q,setQ]=useState('');const _toks=q.toLowerCase().split(/\s+/).filter(Boolean);const f=options.filter(o=>{const h=(o.label+' '+(o.searchText||'')).toLowerCase();return _toks.every(t=>h.includes(t))});const sel=options.find(o=>o.value===value);
+// `limit` (optional) caps how many matches are RENDERED — a list of a few thousand
+// options (the full customer book) re-mounts every row on each keystroke otherwise.
+// Callers that pass no limit keep rendering every match, as before.
+function SearchSelect({options,value,onChange,placeholder,limit}){const[open,setOpen]=useState(false);const[q,setQ]=useState('');const _toks=q.toLowerCase().split(/\s+/).filter(Boolean);const f=options.filter(o=>{const h=(o.label+' '+(o.searchText||'')).toLowerCase();return _toks.every(t=>h.includes(t))});const sel=options.find(o=>o.value===value);const shown=limit?f.slice(0,limit):f;
   return(<div style={{position:'relative'}}><div className="form-input" style={{cursor:'pointer',display:'flex',alignItems:'center'}} onClick={()=>setOpen(!open)}><span style={{flex:1,color:sel?'#0f172a':'#94a3b8'}}>{sel?sel.label:placeholder}</span><Icon name="search" size={14}/></div>
     {open&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:50,maxHeight:200,overflow:'auto'}}><div style={{padding:6}}><input className="form-input" placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)} autoFocus style={{fontSize:12}}/></div>
-      {f.map(o=><div key={o.value} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,background:o.value===value?'#dbeafe':''}} onClick={()=>{onChange(o.value);setOpen(false);setQ('')}}>{o.label}</div>)}{f.length===0&&<div style={{padding:8,fontSize:12,color:'#94a3b8'}}>No results</div>}</div>}</div>)}
+      {shown.map(o=><div key={o.value} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,background:o.value===value?'#dbeafe':''}} onClick={()=>{onChange(o.value);setOpen(false);setQ('')}}>{o.label}</div>)}{f.length===0&&<div style={{padding:8,fontSize:12,color:'#94a3b8'}}>No results</div>}{shown.length<f.length&&<div style={{padding:8,fontSize:11,color:'#94a3b8'}}>Showing {shown.length} of {f.length} — keep typing to narrow.</div>}</div>}</div>)}
 
 // Catalog product picker built on SearchSelect. Lets the user bind a row to a
 // real catalog product by SKU/name/brand/color. Options are memoized so a table
@@ -108,7 +111,7 @@ function $In({value,onChange,w=70}){const[raw,setRaw]=React.useState(String(valu
 // blur was invisible to autosave AND to the unsaved-changes tab-close warning while
 // the field was still focused — closing the tab mid-note silently lost the note.
 const TXT_IDLE_MS=400,TXT_MAX_MS=1500;
-function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFocus}){
+function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,onClick,autoFocus}){
   const cur=value==null?'':String(value);
   const[raw,setRaw]=React.useState(cur);const[focused,setFocused]=React.useState(false);
   const rawRef=React.useRef(raw);rawRef.current=raw;
@@ -120,13 +123,18 @@ function $Txt({value,onChange,className,style,placeholder,title,onKeyDown,autoFo
   React.useEffect(()=>flush,[flush]);// flush pending text on unmount
   const commit=()=>{setFocused(false);flush()};
   return<input className={className} style={style} placeholder={placeholder} title={title} autoFocus={autoFocus} value={raw}
+    onClick={onClick}
     onFocus={()=>setFocused(true)}
     onChange={e=>{const v=e.target.value;setRaw(v);rawRef.current=v;if(!firstEditRef.current)firstEditRef.current=Date.now();if(timerRef.current)clearTimeout(timerRef.current);if(Date.now()-firstEditRef.current>=TXT_MAX_MS)flush();else timerRef.current=setTimeout(flush,TXT_IDLE_MS)}}
     onBlur={commit}
     onKeyDown={e=>{if(e.key==='Enter'&&e.currentTarget.tagName==='INPUT')e.currentTarget.blur();if(onKeyDown)onKeyDown(e)}}/>;
 }
 
-function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
+function EmailBadge({e}){if(!e.email_status)return null;const s=e.email_status;
+  // 'failed' = Brevo reported a hard bounce / block / spam rejection. It must read as an
+  // alarm, not a status: the coach never got this email and nobody else will notice.
+  if(s==='failed')return<span title={e._delivery_reason||'The email provider rejected this address — the recipient never received it.'} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered</span>;
+  return<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 8px',borderRadius:10,background:s==='sent'?'#fef3c7':s==='opened'?'#dbeafe':'#dcfce7',color:s==='sent'?'#92400e':s==='opened'?'#1e40af':'#166534'}}>{s==='sent'?'✉️ Sent':s==='opened'?`👁️ Opened ${e.email_opened_at||''}`:`🔗 Viewed`}</span>}
 
 function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_line1||c.shipping_city)a.push({id:c.id,label:`${l}: ${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim(),addr:`${c.shipping_address_line1||''} ${c.shipping_city||''}, ${c.shipping_state||''} ${c.shipping_zip||''}`.trim()})};
   const addAlts=(c)=>{(c.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city)).forEach((ab,i)=>{a.push({id:`${c.id}_alt_${i}`,label:`${ab.label||'Alt Shipping'}: ${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim(),addr:`${ab.street||''} ${ab.city||''}, ${ab.state||''} ${ab.zip||''}`.trim()})})};
@@ -168,6 +176,78 @@ function custShipAddrSub(cu){
   const l1=cu.shipping_address_line1||'';const l2=cu.shipping_address_line2||'';
   const cityLine=[cu.shipping_city,[(cu.shipping_state||''),(cu.shipping_zip||'')].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return[attn,l1,l2,cityLine].filter(Boolean).join('<br/>');
+}
+
+
+// ── Bill-to ────────────────────────────────────────────────────────────────────
+// The billing-address twin of the ship-to trio above. An order/estimate carries a
+// `bill_to_id` exactly the way it carries `ship_to_id`, and null is always the
+// "nothing changed" answer: a doc with no selection prints the Bill To block it
+// printed before this field existed.
+//
+// Billing rolls up to the parent customer when there is one — a club's invoices bill
+// the parent org — which is the rule the invoice Bill To selector already follows, so
+// the order-level picker offers exactly the addresses the invoice would.
+function billToCust(cu,all){return cu&&cu.parent_id&&Array.isArray(all)?(all.find(c=>c.id===cu.parent_id)||cu):cu}
+
+// Alternate addresses usable as a bill-to. An entry with no `type` predates the
+// billing/shipping split and the customer editor migrates it to 'billing' (see
+// modals.js), so treat untyped as billing here too rather than hiding it.
+function billAlts(c){return(c?.alt_billing_addresses||[]).filter(ab=>ab.type!=='shipping'&&(ab.street||ab.city))}
+
+// "123 Main St Anytown, CA 90001" — same one-line shape getAddrs builds for ship-to.
+function _billLine(street,city,state,zip){
+  const cityLine=[city,[state,zip].filter(Boolean).join(' ').trim()].filter(Boolean).join(', ');
+  return[street,cityLine].filter(Boolean).join(' ').trim();
+}
+
+// Bill-to options for the order/estimate dropdown. Ids are self-describing so a saved
+// selection survives a reload: 'default' = the customer's own billing address,
+// `${billingCustomerId}_bill_${i}` = the i-th billing entry in alt_billing_addresses.
+function getBillAddrs(cu,all){
+  if(!cu)return[];
+  const bc=billToCust(cu,all);
+  const dflt=_billLine(bc.billing_address_line1,bc.billing_city,bc.billing_state,bc.billing_zip);
+  const a=[{id:'default',label:'Default'+(dflt?': '+dflt:' (no billing address on file)'),addr:dflt}];
+  billAlts(bc).forEach((ab,i)=>{const line=_billLine(ab.street,ab.city,ab.state,ab.zip);
+    a.push({id:`${bc.id}_bill_${i}`,label:(ab.label||'Alt Billing')+(line?': '+line:''),addr:line})});
+  return a}
+
+// Resolve the bill-to selected on an order/estimate (bill_to_id) into structured fields.
+// Returns {name,attention,street,city,state,zip} for an alternate billing address, or
+// null when the doc bills to the customer's default address.
+function resolveOrderBillTo(o,cu,all){
+  const id=o?.bill_to_id;
+  if(!id||id==='default'||!cu)return null;
+  const bc=billToCust(cu,all);
+  const m=/_bill_(\d+)$/.exec(String(id));
+  if(m&&String(id)===bc.id+'_bill_'+m[1]){
+    const ab=billAlts(bc)[parseInt(m[1],10)];
+    if(ab)return{name:ab.label||bc.name||cu.name||'',attention:ab.attention||'',street:ab.street||'',city:ab.city||'',state:ab.state||'',zip:ab.zip||''};
+  }
+  return null;
+}
+
+// The bill_to_id for a raw alt_billing_addresses entry — the inverse of resolveOrderBillTo.
+// Surfaces that pick an address as an object (the invoice Bill To selectors) map it back
+// through here rather than inventing their own index into alt_billing_addresses, so one
+// id scheme covers estimates, sales orders and invoices alike. Matches by value, not
+// identity, because the invoice modals round-trip the entry through JSON.
+function billToIdFor(cu,all,ab){
+  if(!ab||!cu)return'default';
+  const bc=billToCust(cu,all);
+  const same=(x)=>x===ab||((x.label||'')===(ab.label||'')&&(x.street||'')===(ab.street||'')&&(x.city||'')===(ab.city||'')&&(x.state||'')===(ab.state||'')&&(x.zip||'')===(ab.zip||''));
+  const i=billAlts(bc).findIndex(same);
+  return i>=0?`${bc.id}_bill_${i}`:'default';
+}
+
+// <br/>-joined bill-to block for printed docs; '' when the doc bills to the default.
+function orderBillToSub(o,cu,all){
+  const sel=resolveOrderBillTo(o,cu,all);
+  if(!sel)return'';
+  const attn=sel.attention?'Attn: '+sel.attention:null;
+  const cityLine=[sel.city,[sel.state,sel.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return[attn,sel.street,cityLine].filter(Boolean).join('<br/>');
 }
 
 
@@ -470,7 +550,8 @@ function calcSOStatus(ord,opts){
       const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       coveredSz+=Math.min(v,picked+poOrd);
       const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-      const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      // Drop-ship lines count billed units as fulfilled (vendor ships direct — never checked in). See safeHelpers.poLineFulfilledQty.
+      const rcvdQty=safePOs(it).reduce((a,pk)=>a+poLineFulfilledQty(pk,sz),0);
       fulfilledSz+=Math.min(v,pulledQty+rcvdQty);
     });
   });
@@ -661,4 +742,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

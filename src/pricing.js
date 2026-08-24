@@ -31,7 +31,12 @@ export const auCostMult=DECO.auCostMult;
 const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
 const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
 const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
-export const normSzName=s=>{if(!s)return s;const u=String(s).toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
+// A fit range that names itself one-size — headwear catalogs label Richardson caps
+// "MD-LG (ONE SIZE FITS MOST)". SanMar lists the same cap as the bare 'OSFA', so the
+// parenthetical is what carries the meaning and the fit range is decoration. Checked
+// LAST, so any label the exact maps already know keeps its own answer.
+const _ONE_SIZE_PHRASE=/\bONE\s*SIZE\b|\bOSFA\b|\bOSFM\b/;
+export const normSzName=s=>{if(!s)return s;const u=String(s).toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}if(_ONE_SIZE_PHRASE.test(u))return'OSFA';return u};
 export const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 
 // ── Deco vendor price lookup ──
@@ -167,6 +172,12 @@ export const decoCostAt=(d,q,af,localCq,combinedQty)=>{
 // same rules as the Deco PO builder. Mirrors decoCostAt (eq × per-piece, priced at the cq tier).
 // Returns 0 when it does not apply — not outside, no vendor, no matching price row, or an actual PO
 // already covers it (that PO's cost is summed separately, so this stays 0 to avoid double-counting).
+//
+// opts.ignorePoCoverage skips ONLY that PO-coverage bail-out, so a caller can read the vendor's rate
+// for a row that a Deco PO already covers. Cost WALKS must never pass it (they'd double-count the
+// PO's bill); DISPLAY callers must, because the fallback when this returns 0 is the in-house matrix —
+// which made the very same print read the in-house rate on the lines a PO's item_idxs happened to
+// list and the vendor rate on the lines it didn't (SO-1791: $2.50/pc vs $1.94/pc for one screen).
 const _ssFleece=g=>/fleece|hood|sweat|crew|jogger/i.test(g||'');
 const _ssMesh=g=>/\bmesh\b/i.test(g||'');
 const _artInkCount=(a,d)=>{
@@ -174,10 +185,11 @@ const _artInkCount=(a,d)=>{
   if(a&&a.ink_colors){const n=a.ink_colors.split('\n').filter(l=>l.trim()).length;if(n>0)return n}
   return safeNum(d&&d.tbd_colors)||1;
 };
-export const outsideDecoEstAt=(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem)=>{
+export const outsideDecoEstAt=(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem,opts)=>{
   if(!d||d.kind!=='art'||d.fulfillment!=='outside'||!d.vendor)return 0;
   const dt=decoConcreteType(o,d);if(!dt)return 0;
-  if(decoIsOutsourced(outByItem&&outByItem[ii],dt)||d.deco_po_id)return 0; // on an actual Deco PO → counted there
+  // on an actual Deco PO → counted there (unless the caller only wants the vendor rate to display)
+  if(!(opts&&opts.ignorePoCoverage)&&(decoIsOutsourced(outByItem&&outByItem[ii],dt)||d.deco_po_id))return 0;
   const _dv=(decoVendors||[]).find(v=>v&&v.name===d.vendor);const vid=_dv&&_dv.id;if(!vid)return 0;
   const a=(af||[]).find(f=>f&&f.id===d.art_file_id);
   const it=(o&&Array.isArray(o.items)?o.items[ii]:null)||{};

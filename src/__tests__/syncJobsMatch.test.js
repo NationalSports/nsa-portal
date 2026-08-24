@@ -11,8 +11,13 @@ import {
   inheritJobWorkflowFields,
   isClosedJob,
   isPureArtExpansion,
+  jobDecoClaimKeys,
   matchExistingJob,
+  reparentOrphanSplitJobs,
   splitClosedJobAdditions,
+  splitSliceOwnedKeys,
+  splitFamilyMembers,
+  pruneStaleSliceRows,
 } from '../lib/syncJobsMatch';
 
 const pantsRejection = {
@@ -124,6 +129,69 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(inheritJobWorkflowFields(existing).sent_history).toEqual(solo.sent_history);
   });
 
+  test('SO-2106: assigning art after a split keeps the original parent via decoration claims', () => {
+    const parent = {
+      id: 'JOB-2106-01',
+      key: 'screen_print::art_unassigned@Front Center',
+      art_file_id: null,
+      items: [{ item_idx: 1, sku: 'IW2442', deco_idx: 0, deco_idxs: [0] }],
+    };
+    const child = {
+      id: 'JOB-2106-01-B',
+      key: 'screen_print::art_unassigned@Front Center__split__B',
+      art_file_id: null,
+      split_from: 'JOB-2106-01',
+      items: [{ item_idx: 0, sku: 'IM9857', deco_idx: 0, deco_idxs: [0] }],
+    };
+    const built = {
+      key: 'screen_print::art_af-clark@Front Center',
+      art_file_id: 'af-clark',
+      items: [
+        { item_idx: 0, sku: 'IM9857', deco_idx: 0, deco_idxs: [0] },
+        { item_idx: 1, sku: 'IW2442', deco_idx: 0, deco_idxs: [0] },
+      ],
+    };
+    const { existing, matchedBy } = matchExistingJob(
+      built,
+      buildExistingJobLookups([parent, child]),
+      new Set(),
+    );
+    expect(matchedBy).toBe('deco_claim');
+    expect(existing).toBe(parent);
+    expect(jobDecoClaimKeys(built)).toEqual(['0::0', '1::0']);
+  });
+
+  test('decoration-claim fallback refuses a build spanning multiple old root jobs', () => {
+    const first = { id: 'J1', key: 'old-1', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const second = { id: 'J2', key: 'old-2', items: [{ item_idx: 1, deco_idx: 0 }] };
+    const built = { key: 'consolidated', items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }] };
+    const { existing, matchedBy } = matchExistingJob(
+      built,
+      buildExistingJobLookups([first, second]),
+      new Set(),
+    );
+    expect(matchedBy).toBeNull();
+    expect(existing).toBeNull();
+  });
+
+  test('decoration-claim fallback refuses a partly ambiguous claim set', () => {
+    const first = {
+      id: 'J1', key: 'old-1',
+      items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }],
+    };
+    const duplicate = { id: 'J2', key: 'old-2', items: [{ item_idx: 1, deco_idx: 0 }] };
+    const built = {
+      key: 'rebuilt',
+      items: [{ item_idx: 0, deco_idx: 0 }, { item_idx: 1, deco_idx: 0 }],
+    };
+    const lookups = buildExistingJobLookups([first, duplicate]);
+    expect(lookups.existingByDecoClaim['0::0']).toBe(first);
+    expect(lookups.ambiguousDecoClaims.has('1::0')).toBe(true);
+    const { existing, matchedBy } = matchExistingJob(built, lookups, new Set());
+    expect(matchedBy).toBeNull();
+    expect(existing).toBeNull();
+  });
+
   test('art-id fallback refuses an already-claimed job in the same pass', () => {
     const a = { id: 'JOB-A', key: 'k-a', art_file_id: 'af-unique' };
     const lookups = buildExistingJobLookups([a]);
@@ -198,6 +266,43 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(pantsMatch.existing.rejections[0].reason).toMatch(/pants will be blank/i);
     expect(hoodieMatch.existing.rejections).toBeNull();
     expect(hoodieMatch.existing.art_status).toBe('art_complete');
+  });
+});
+
+describe('reparentOrphanSplitJobs (SO-2106 merge-back repair)', () => {
+  test('re-points an orphaned split child to the one root that covers its decoration claim', () => {
+    const root = {
+      id: 'JOB-2106-02',
+      items: [
+        { item_idx: 0, sku: 'IM9857', deco_idx: 0 },
+        { item_idx: 1, sku: 'IW2442', deco_idx: 0 },
+      ],
+    };
+    const child = {
+      id: 'JOB-2106-01-B',
+      split_from: 'JOB-2106-01',
+      items: [{ item_idx: 0, sku: 'IM9857', deco_idx: 0 }],
+    };
+    const repaired = reparentOrphanSplitJobs([root, child]);
+    expect(repaired.find((j) => j.id === child.id).split_from).toBe(root.id);
+  });
+
+  test('leaves a valid parent link unchanged', () => {
+    const parent = { id: 'P', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const child = { id: 'P-B', split_from: 'P', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const repaired = reparentOrphanSplitJobs([parent, child]);
+    expect(repaired[1]).toBe(child);
+  });
+
+  test('does not guess when two roots cover the orphan claim', () => {
+    const roots = [
+      { id: 'A', items: [{ item_idx: 0, deco_idx: 0 }] },
+      { id: 'B', items: [{ item_idx: 0, deco_idx: 0 }] },
+    ];
+    const child = { id: 'OLD-B', split_from: 'OLD', items: [{ item_idx: 0, deco_idx: 0 }] };
+    const repaired = reparentOrphanSplitJobs([...roots, child]);
+    expect(repaired[2]).toBe(child);
+    expect(repaired[2].split_from).toBe('OLD');
   });
 });
 
@@ -535,5 +640,249 @@ describe('splitClosedJobAdditions', () => {
     expect(splitClosedJobAdditions(null, null)).toEqual({ keep: [], added: [] });
     expect(splitClosedJobAdditions([null, reprint], undefined).added).toEqual([reprint]);
     expect(splitClosedJobAdditions(shipped, [null]).added).toEqual(shipped);
+  });
+});
+
+describe('splitSliceOwnedKeys (SO-1634 grandchild double-count)', () => {
+  // SO-1634's real shape: KC4512 was split off the parent to -B, then split AGAIN to -B-B.
+  // The grandchild owns the garment; the parent's rebuild must not re-add it.
+  const isRel = (j) => !!j._released || (j.key || '').startsWith('released_');
+  const exclude = (j) => j._merged || isRel(j);
+  const family = [
+    { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+    { id: 'JOB-1634-01-B', split_from: 'JOB-1634-01', items: [{ item_idx: 12, sku: 'JW6595' }] },
+    { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01-B', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    { id: 'JOB-1634-01-C2', split_from: 'JOB-1634-01', items: [{ item_idx: 1, sku: 'KB9091' }] },
+  ];
+
+  test('a direct child owns its garments', () => {
+    const owned = splitSliceOwnedKeys(family, 'JOB-1634-01', exclude);
+    expect(owned.has('12-JW6595')).toBe(true);
+  });
+
+  test('a grandchild slice owns its garments too — the SO-1634 regression', () => {
+    const owned = splitSliceOwnedKeys(family, 'JOB-1634-01', exclude);
+    expect(owned.has('7-KC4512')).toBe(true);
+  });
+
+  test('the parent job itself contributes nothing', () => {
+    const owned = splitSliceOwnedKeys(family, 'JOB-1634-01', exclude);
+    expect(owned.has('1-KB9091')).toBe(true); // via C2, a slice — not via the parent
+    expect(splitSliceOwnedKeys(family.slice(0, 3), 'JOB-1634-01', exclude).has('1-KB9091')).toBe(false);
+  });
+
+  test('an unrelated family is not scanned', () => {
+    const jobs = [...family, { id: 'JOB-1634-02-C1', split_from: 'JOB-1634-02', items: [{ item_idx: 5, sku: 'JX4472' }] }];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', exclude);
+    expect(owned.has('5-JX4472')).toBe(false);
+  });
+
+  test('merged/released slices are excluded (their claims are frozen elsewhere) but still link deeper slices', () => {
+    const jobs = [
+      { id: 'P', split_from: null, items: [] },
+      { id: 'P-B', split_from: 'P', _merged: true, items: [{ item_idx: 3, sku: 'AAA' }] },
+      { id: 'P-B-B', split_from: 'P-B', items: [{ item_idx: 4, sku: 'BBB' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'P', exclude);
+    expect(owned.has('3-AAA')).toBe(false); // merged slice: preserved via frozenItemDecos, not here
+    expect(owned.has('4-BBB')).toBe(true); // grandchild under the merged slice still owns its row
+  });
+
+  test('cycle-safe: a corrupted split_from loop terminates', () => {
+    const jobs = [
+      { id: 'A', split_from: 'B', items: [{ item_idx: 0, sku: 'X' }] },
+      { id: 'B', split_from: 'A', items: [{ item_idx: 1, sku: 'Y' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'A', exclude);
+    expect(owned.has('1-Y')).toBe(true);
+    expect(owned.has('0-X')).toBe(false);
+  });
+});
+
+describe('splitSliceOwnedKeys — orphaned slices', () => {
+  // An orphaned slice (split_from pointing at a job that no longer exists) is unreachable
+  // from the family root, so its garments are NOT counted as slice-owned. This is why the
+  // Merge Back handler re-parents the merged slice's children instead of leaving them
+  // orphaned — an orphan would get its garments re-added to the parent on the next sync.
+  test('a slice whose parent link is broken is not reachable from the root', () => {
+    const jobs = [
+      { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+      // JOB-1634-01-B was merged back and removed; B-B was left pointing at it.
+      { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01-B', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', () => false);
+    expect(owned.has('7-KC4512')).toBe(false);
+  });
+
+  test('after Merge Back re-parents the child, its garments are owned again', () => {
+    const jobs = [
+      { id: 'JOB-1634-01', split_from: null, items: [{ item_idx: 1, sku: 'KB9091' }] },
+      { id: 'JOB-1634-01-B-B', split_from: 'JOB-1634-01', items: [{ item_idx: 7, sku: 'KC4512' }] },
+    ];
+    const owned = splitSliceOwnedKeys(jobs, 'JOB-1634-01', () => false);
+    expect(owned.has('7-KC4512')).toBe(true);
+  });
+});
+
+describe('pruneStaleSliceRows (SO-1110 phantom slice)', () => {
+  // SO-1110's real shape. JN3647 (a 1-unit line) ended up on TWO slices: JOB-1110-02-A,
+  // carved by the closed-job addition rule with a whole-line claim (no sizes), and
+  // JOB-1110-02-S-S, which holds it with a real per-size allocation. They are COUSINS —
+  // neither is an ancestor of the other — so the parent-side descendant walk never saw it,
+  // and neither slice is ever rebuilt. The result was a permanent 1-unit phantom job.
+  const so1110 = () => [
+    { id: 'JOB-1110-02', split_from: null, prod_status: 'shipped', items: [{ item_idx: 0, sku: 'JM5227', units: 12, sizes: { M: 2, L: 2, XL: 4, '2XL': 3, '3XL': 1 } }] },
+    { id: 'JOB-1110-02-A', split_from: 'JOB-1110-02', prod_status: 'hold', items: [{ item_idx: 2, sku: 'JN3647', units: 1 }] },
+    { id: 'JOB-1110-02-S', split_from: 'JOB-1110-02', prod_status: 'shipped', items: [{ item_idx: 3, sku: 'KE8804', units: 1, sizes: { M: 1 } }] },
+    { id: 'JOB-1110-02-S-S', split_from: 'JOB-1110-02-S', prod_status: 'hold', items: [{ item_idx: 2, sku: 'JN3647', units: 1, sizes: { M: 1 } }] },
+  ];
+
+  test('the phantom cousin slice is retired; the real one survives', () => {
+    const jobs = so1110();
+    const slices = jobs.filter((j) => j.split_from);
+    const out = pruneStaleSliceRows(slices, jobs);
+    expect(out.map((j) => j.id)).toEqual(['JOB-1110-02-S', 'JOB-1110-02-S-S']);
+    expect(out.find((j) => j.id === 'JOB-1110-02-S-S').items).toHaveLength(1);
+  });
+
+  test('a genuine size-partitioned split is NOT pruned — both halves are sized', () => {
+    const jobs = [
+      { id: 'P', split_from: null, prod_status: 'hold', items: [{ item_idx: 0, sku: 'X', units: 6, sizes: { M: 6 } }] },
+      { id: 'P-C1', split_from: 'P', prod_status: 'hold', items: [{ item_idx: 0, sku: 'X', units: 4, sizes: { M: 4 } }] },
+    ];
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs);
+    expect(out).toHaveLength(1);
+    expect(out[0].items).toHaveLength(1);
+  });
+
+  test('a by-SKU slice keeps its whole-line row when nobody else in the family holds it', () => {
+    const jobs = [
+      { id: 'P', split_from: null, prod_status: 'hold', items: [{ item_idx: 0, sku: 'X', units: 6 }] },
+      { id: 'P-B', split_from: 'P', prod_status: 'hold', items: [{ item_idx: 1, sku: 'Y', units: 4 }] },
+    ];
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs);
+    expect(out[0].items).toEqual([{ item_idx: 1, sku: 'Y', units: 4 }]);
+  });
+
+  test('a slice already in production is never touched', () => {
+    const jobs = so1110().map((j) => (j.id === 'JOB-1110-02-A' ? { ...j, prod_status: 'in_process' } : j));
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs);
+    expect(out.map((j) => j.id)).toContain('JOB-1110-02-A');
+  });
+
+  test('an unrelated family never supplies the sized claim', () => {
+    const jobs = [
+      { id: 'P', split_from: null, prod_status: 'hold', items: [] },
+      { id: 'P-B', split_from: 'P', prod_status: 'hold', items: [{ item_idx: 2, sku: 'JN3647', units: 1 }] },
+      { id: 'Q', split_from: null, prod_status: 'hold', items: [] },
+      { id: 'Q-B', split_from: 'Q', prod_status: 'hold', items: [{ item_idx: 2, sku: 'JN3647', units: 1, sizes: { M: 1 } }] },
+    ];
+    const out = pruneStaleSliceRows([jobs[1]], jobs);
+    expect(out.map((j) => j.id)).toEqual(['P-B']);
+  });
+
+  test('partly-stale slice keeps its good rows and re-totals', () => {
+    const jobs = [
+      { id: 'P', split_from: null, prod_status: 'hold', items: [] },
+      { id: 'P-A', split_from: 'P', prod_status: 'hold', total_units: 9, fulfilled_units: 0,
+        items: [{ item_idx: 0, sku: 'STALE', units: 4, fulfilled: 0 }, { item_idx: 1, sku: 'GOOD', units: 5, fulfilled: 2 }] },
+      { id: 'P-S', split_from: 'P', prod_status: 'hold', items: [{ item_idx: 0, sku: 'STALE', units: 4, sizes: { M: 4 } }] },
+    ];
+    const out = pruneStaleSliceRows([jobs[1]], jobs);
+    expect(out[0].items.map((g) => g.sku)).toEqual(['GOOD']);
+    expect(out[0].total_units).toBe(5);
+    expect(out[0].fulfilled_units).toBe(2);
+    expect(out[0].item_status).toBe('partially_received');
+  });
+
+  test('splitFamilyMembers reaches cousins through the root', () => {
+    const fam = splitFamilyMembers(so1110(), 'JOB-1110-02-A');
+    expect([...fam].sort()).toEqual(['JOB-1110-02', 'JOB-1110-02-A', 'JOB-1110-02-S', 'JOB-1110-02-S-S']);
+  });
+
+  test('tolerates junk and cycles', () => {
+    expect(pruneStaleSliceRows(null, null)).toEqual([]);
+    const cyc = [{ id: 'A', split_from: 'B', prod_status: 'hold', items: [{ item_idx: 0, sku: 'X', units: 1 }] },
+                 { id: 'B', split_from: 'A', prod_status: 'hold', items: [{ item_idx: 0, sku: 'X', units: 1, sizes: { M: 1 } }] }];
+    expect(() => pruneStaleSliceRows(cyc, cyc)).not.toThrow();
+  });
+});
+
+describe('pruneStaleSliceRows — zeroed line (SO-1048 stock swap)', () => {
+  // SO-1048: 29 KV2197 tees were swapped to KV4651 on a different line. Item 2 went to all
+  // zeros with no PO and no receipts, but JOB-1048-04-S kept its frozen 29-unit claim — a
+  // phantom screen-print job for a garment the order no longer carries, while the real 29
+  // units ran on JOB-1048-05. Slice quantities are frozen by design, so nothing healed it.
+  const so1048 = () => [
+    { id: 'JOB-1048-04', split_from: null, prod_status: 'in_process', items: [{ item_idx: 25, sku: 'AT101', units: 6, fulfilled: 6, sizes: { S: 2, M: 2, L: 2 } }] },
+    { id: 'JOB-1048-04-S', split_from: 'JOB-1048-04', prod_status: 'hold', total_units: 29, fulfilled_units: 0,
+      items: [{ item_idx: 2, sku: 'KV2197', units: 29, fulfilled: 0, sizes: { XS: 1, S: 13, M: 12, L: 1, XL: 2 } }] },
+  ];
+  // item 2 zeroed, nothing received; the live replacement lives on another line entirely.
+  const lines = { 2: { units: 0, received: 0 }, 25: { units: 6, received: 6 } };
+  const resolve = (ix) => (Object.prototype.hasOwnProperty.call(lines, ix) ? lines[ix] : null);
+
+  test('the phantom slice is retired once its line is zeroed', () => {
+    const jobs = so1048();
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve);
+    expect(out).toEqual([]);
+  });
+
+  test('without the resolver the row is kept — the sized claim alone is not stale', () => {
+    const jobs = so1048();
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs);
+    expect(out.map((j) => j.id)).toEqual(['JOB-1048-04-S']);
+  });
+
+  test('receipts hold the row — an absorbed write-off is a human call, not a sync', () => {
+    const jobs = so1048();
+    const held = (ix) => (ix === 2 ? { units: 0, received: 29 } : resolve(ix));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, held).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a fulfilled row is never dead-lined even if the line reads zero', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, items: [{ ...j.items[0], fulfilled: 29 }] } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('unallocated aggregate fulfillment holds the slice when row counts are stale', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, fulfilled_units: 1 } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a MISSING line (index drift) is left alone — never silently delete work', () => {
+    const jobs = so1048();
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, () => null).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a slice already in production keeps its zeroed row', () => {
+    const jobs = so1048().map((j) => (j.split_from ? { ...j, prod_status: 'in_process' } : j));
+    expect(pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, resolve).map((j) => j.id))
+      .toEqual(['JOB-1048-04-S']);
+  });
+
+  test('a live line keeps its slice untouched', () => {
+    const jobs = so1048();
+    const live = (ix) => (ix === 2 ? { units: 29, received: 0 } : resolve(ix));
+    const out = pruneStaleSliceRows(jobs.filter((j) => j.split_from), jobs, live);
+    expect(out[0].items).toHaveLength(1);
+  });
+
+  test('mixed slice drops only the dead-lined row and re-totals', () => {
+    const jobs = [
+      { id: 'P', split_from: null, prod_status: 'hold', items: [] },
+      { id: 'P-S', split_from: 'P', prod_status: 'hold', total_units: 9, fulfilled_units: 3,
+        items: [{ item_idx: 2, sku: 'DEAD', units: 4, fulfilled: 0, sizes: { M: 4 } },
+                { item_idx: 5, sku: 'LIVE', units: 5, fulfilled: 3, sizes: { M: 5 } }] },
+    ];
+    const r = (ix) => (ix === 2 ? { units: 0, received: 0 } : { units: 5, received: 3 });
+    const out = pruneStaleSliceRows([jobs[1]], jobs, r);
+    expect(out[0].items.map((g) => g.sku)).toEqual(['LIVE']);
+    expect(out[0].total_units).toBe(5);
+    expect(out[0].fulfilled_units).toBe(3);
   });
 });

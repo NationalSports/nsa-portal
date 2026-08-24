@@ -15,6 +15,23 @@ describe('garmentNeedsUnderbase', () => {
     expect(garmentNeedsUnderbase('Grey')).toBe(true);
     expect(garmentNeedsUnderbase('Light Grey')).toBe(false);
   });
+  // Catalog colors name body first, trim second. The body token decides — a dark garment must not
+  // escape the upcharge because its own name ends in "/White" (EST-2139).
+  test('two-tone DARK body still needs an underbase', () => {
+    ['Black/White', 'Black/ White', 'Navy/White', 'Team Power Red/White', 'Royal/White',
+     'Maroon/White', 'Dark Green/White', 'Medium Grey Heather/ White', 'Grey Three/White',
+     'Team Collegiate Purple/White', 'Black, Team Royal Blue/White'].forEach(c =>
+      expect(garmentNeedsUnderbase(c)).toBe(true));
+  });
+  test('two-tone LIGHT body does NOT need one', () => {
+    ['White/Black', 'White/Team Grey', 'Vegas Gold/Black', 'Light Grey/Navy'].forEach(c =>
+      expect(garmentNeedsUnderbase(c)).toBe(false));
+  });
+  test('a trailing "(SKU)" note does not change the answer', () => {
+    expect(garmentNeedsUnderbase('Black/White (JX4452)')).toBe(true);
+    expect(garmentNeedsUnderbase('White/Team Grey (JX4482)')).toBe(false);
+    expect(garmentNeedsUnderbase('Black (KB9093)')).toBe(true);
+  });
   test('blank / unknown color → false (do not auto-charge)', () => {
     expect(garmentNeedsUnderbase('')).toBe(false);
     expect(garmentNeedsUnderbase(null)).toBe(false);

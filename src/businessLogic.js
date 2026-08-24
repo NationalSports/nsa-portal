@@ -88,7 +88,13 @@ function dP(d, q, artFiles, cq) {
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
-  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
+  // Names bill per NAME, not per garment: return the true per-name rate and hand the
+  // application count out as _nq, exactly like the numbers branch above. The old form
+  // baked the count into the rate (rQ(nc*se/q)), so one $5 name on a 24-pc line printed
+  // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
+  // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
+  // is unchanged everywhere nc*se/q happened to land on an exact quarter.
+  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: se, cost: co, _nq: (nc || q) * (d.reversible ? 2 : 1) } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
@@ -100,6 +106,43 @@ function dP(d, q, artFiles, cq) {
 // Per-line floor at 0: cancelling more than was ordered (data-entry slip) must not
 // produce a negative committed count — negative quantities are invalid, not credits.
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
+
+// ── PO over-commit check ──
+// Sizes about to go on a NEW PO for `item` that exceed what the line still has OPEN
+// (line qty − picked − already PO-committed, same math as the PO form's open counts).
+// The PO form's qty boxes default to the open count but accept any typed number, so a
+// typo — or a rep re-ordering a line whose PO they didn't spot — puts the same units
+// on two POs. Both get received, and the extras sit on the SO as a cost write-off
+// (SO-1295: JW6602's 9 extra hoods on PO 3371 a day after PO 3345 covered the line).
+// Returns one row per over-committed size: { sz, qty, open, committed, pos } where
+// `pos` names the PO lines already holding units of that size, so the caller can show
+// exactly which PO the units are on before asking the rep to confirm. Empty array = OK.
+// qty_only lines (no size grid) track their count under 'QTY', mirroring poCommitted's
+// callers (openSizesFor / allocateJobFulfillment).
+const poOverCommit = (item, sizes) => {
+  const out = [];
+  if (!item) return out;
+  const szMap = safeSizes(item);
+  const hasSizes = Object.values(szMap).some(v => safeNum(v) > 0);
+  Object.keys(sizes || {}).forEach(sz => {
+    const qty = safeNum((sizes || {})[sz]);
+    if (!(qty > 0)) return;
+    const lineQty = hasSizes ? safeNum(szMap[sz]) : (sz === 'QTY' ? safeNum(item.est_qty) : 0);
+    const picked = safePicks(item).reduce((a, pk) => a + safeNum(pk[sz]), 0);
+    const committed = poCommitted(safePOs(item), sz);
+    const open = Math.max(0, lineQty - picked - committed);
+    if (qty > open) {
+      const pos = [];
+      safePOs(item).forEach(pl => {
+        if (!pl || !(safeNum(pl[sz]) > 0)) return;
+        const pid = pl.po_id || 'PO';
+        if (pos.indexOf(pid) === -1) pos.push(pid);
+      });
+      out.push({ sz, qty, open, committed, pos });
+    }
+  });
+  return out;
+};
 
 // ── Accepted-overage ordered-qty ceiling ──
 // When a human accepts a flagged over-billing, the bill wizard raises the po_line's ORDERED
@@ -132,6 +175,116 @@ const billLineNeed = (it, line, sz) => {
   const others = safePOs(it).filter(p => p && p !== line);
   return Math.max(0, safeNum(safeSizes(it)[sz]) - poCommitted(others, sz));
 };
+
+// ── Reducing a size the POs / picks already cover ──
+// A rep who ordered the wrong size has to be able to take it back off the order even after the
+// goods landed and the vendor billed us — otherwise the order can never be made right (SO-1845:
+// 3 XL ordered by mistake, received and billed, and the size grid refused every reduction).
+// Those units stay bought: the po_line keeps its ordered / received / billed history untouched,
+// so the SO keeps carrying their cost (garmentCost walks po_lines, not sizes) until a vendor
+// credit or a return brings the money back. That is the whole point of the write-off — the
+// order eats the cost knowingly instead of silently losing it.
+//
+// PICKED units are never absorbable: they are physically pulled from stock into this order, and
+// the way to undo that is to return the pick to inventory, not to zero the size.
+//
+// Both order editors carry hand-synced copies of the size grid, so the arithmetic lives here —
+// one place to test, one place to fix.
+//
+// NOTE for anything added below: use Object.assign, never object spread ({...x}), in this file.
+// This module exports through `module.exports`, and the object-spread transform turns it into an
+// ES module in the production build — at which point webpack sees NO named exports and every
+// `import { … } from './businessLogic'` in the app fails to compile. Jest never sees it.
+const _pulledForSize = (it, sz) => safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
+// Per-line adjustability for one size: open (not received/billed) units on normal blanks lines.
+// Batch-queued and outside-deco lines stay locked — they're managed elsewhere.
+const _poLineSizeInfo = (pl, sz) => {
+  const ord = safeNum(pl[sz]) - safeNum((pl.cancelled || {})[sz]);
+  const locked = Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz]));
+  const frozen = pl.status === 'queued' || pl.po_type === 'outside_deco';
+  return { ord, locked, adj: frozen ? 0 : Math.max(0, ord - locked), frozen };
+};
+const _poLineSizeKeys = (pl) => Object.keys(pl).filter(k => !k.startsWith('_') && !_PO_LINE_META.has(k) && typeof pl[k] === 'number');
+const _recalcPoLineStatus = (pl) => {
+  const szK = _poLineSizeKeys(pl);
+  const totR = szK.reduce((a, s2) => a + safeNum((pl.received || {})[s2]), 0);
+  const totOp = szK.reduce((a, s2) => a + Math.max(0, safeNum(pl[s2]) - safeNum((pl.received || {})[s2]) - safeNum((pl.cancelled || {})[s2])), 0);
+  if (totR > 0) pl.status = totOp <= 0 ? 'received' : 'partial';
+  return pl;
+};
+// Plan for setting item.sizes[sz] = n. Never mutates the item.
+//   'plain'   nothing committed stands in the way — just write the number
+//   'blocked' n is below the picked floor — return the pick to stock first
+//   'cut'     open, unreceived PO units have to come down too — confirm, then apply po_lines
+//   'absorb'  n is below what a PO already received/billed/queued — confirm the write-off,
+//             then apply po_lines (open units trimmed, received units left in place)
+function planSizeCut(item, sz, n, opts) {
+  const picked = _pulledForSize(item, sz);
+  const lines = safePOs(item);
+  const poQty = poCommitted(lines, sz);
+  const committed = picked + poQty;
+  const plan = { kind: 'plain', sz, n, picked, poQty, committed, floor: 0, lockedPo: 0, cut: 0, absorb: 0, poIds: [], absorbPoIds: [], po_lines: null };
+  if (!(committed > 0 && n < committed)) return plan;
+  const infos = lines.map(pl => _poLineSizeInfo(pl, sz));
+  const adjustable = infos.reduce((a, x) => a + x.adj, 0);
+  const floor = committed - adjustable;
+  plan.floor = floor;
+  plan.lockedPo = Math.max(0, floor - picked);
+  if (n < picked) return Object.assign({}, plan, { kind: 'blocked' });
+  plan.cut = Math.min(adjustable, committed - n);
+  plan.absorb = Math.max(0, floor - n);
+  plan.kind = plan.absorb > 0 ? 'absorb' : 'cut';
+  plan.poIds = [...new Set(lines.filter((pl, pi) => infos[pi].adj > 0).map(pl => pl.po_id || 'PO'))];
+  plan.absorbPoIds = [...new Set(lines.filter((pl, pi) => infos[pi].locked > 0).map(pl => pl.po_id || 'PO'))];
+  // Trim the open units, newest line first — a rebalance should come off the order that is
+  // still open, not the one already in the warehouse.
+  let newPls = lines.map(pl => Object.assign({}, pl));
+  let remaining = plan.cut;
+  for (let pi = newPls.length - 1; pi >= 0 && remaining > 0; pi--) {
+    const { adj } = _poLineSizeInfo(newPls[pi], sz); if (adj <= 0) continue;
+    const take = Math.min(adj, remaining); remaining -= take;
+    const pl = newPls[pi];
+    const newOrd = safeNum(pl[sz]) - take;
+    if (newOrd > 0) pl[sz] = newOrd;
+    else { delete pl[sz]; if (pl.cancelled && pl.cancelled[sz] != null) { const c = Object.assign({}, pl.cancelled); delete c[sz]; pl.cancelled = c } }
+    _recalcPoLineStatus(pl);
+  }
+  // Stamp the write-off on the lines actually holding the stranded units, so months later the
+  // answer to "why is there cost here with nothing to sell?" is on the record. `_absorbed` is
+  // underscore-prefixed, so every size-key walk (garmentCost, receiving, the save mapper) skips
+  // it, and it round-trips through so_item_po_lines.sizes with no schema change.
+  if (plan.absorb > 0) {
+    let left = plan.absorb;
+    const stamp = { at: (opts && opts.at) || new Date().toISOString(), by: (opts && opts.by) || '' };
+    for (let pi = newPls.length - 1; pi >= 0 && left > 0; pi--) {
+      const { locked } = _poLineSizeInfo(newPls[pi], sz); if (locked <= 0) continue;
+      const take = Math.min(locked, left); left -= take;
+      newPls[pi]._absorbed = (newPls[pi]._absorbed || []).concat([Object.assign({ sz, qty: take }, stamp)]);
+    }
+  }
+  // Drop lines left with no size buckets and no receiving/billing history
+  plan.po_lines = newPls.filter(pl => {
+    if (_poLineSizeKeys(pl).length > 0) return true;
+    return Object.values(pl.received || {}).some(v => v > 0) || Object.values(pl.billed || {}).some(v => v > 0);
+  });
+  return plan;
+}
+// Units a PO already received or billed for a size the SO line no longer sells — what an absorb
+// leaves behind (also catches a plain vendor over-ship). Derived from both sides rather than read
+// from a stored flag, so it stays true after any later edit to the size or to the PO.
+function absorbedSizes(item) {
+  const lines = safePOs(item);
+  const sizes = safeSizes(item);
+  const keys = new Set();
+  lines.forEach(pl => { Object.keys(pl.received || {}).forEach(k => keys.add(k)); Object.keys(pl.billed || {}).forEach(k => keys.add(k)) });
+  const out = {};
+  keys.forEach(sz => {
+    const locked = lines.reduce((a, pl) => a + Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz])), 0);
+    const over = locked - safeNum(sizes[sz]);
+    if (over > 0) out[sz] = over;
+  });
+  return out;
+}
 
 // ── Booking Order Helpers ──
 function isBookingOrder(ord) {
@@ -182,7 +335,10 @@ function calcSOStatus(ord) {
       const poOrd = safePOs(it).reduce((a, pk) => a + safeNum(pk[sz]) - safeNum((pk.cancelled || {})[sz]), 0);
       coveredSz += Math.min(v, picked + poOrd);
       const pulledQty = safePicks(it).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
-      const rcvdQty = safePOs(it).reduce((a, pk) => a + safeNum((pk.received || {})[sz]), 0);
+      // Drop-ship lines count billed units as fulfilled (vendor ships direct — the warehouse
+      // never checks them in, so `received` stays empty forever). max, not +, so a drop-ship
+      // line that also got checked in manually can't count twice. Mirrors safeHelpers.poLineFulfilledQty.
+      const rcvdQty = safePOs(it).reduce((a, pk) => a + (pk.drop_ship ? Math.max(safeNum((pk.received || {})[sz]), safeNum((pk.billed || {})[sz])) : safeNum((pk.received || {})[sz])), 0);
       fulfilledSz += Math.min(v, pulledQty + rcvdQty);
     });
   });
@@ -288,8 +444,11 @@ const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
 // _jobAllOutsourced), but boards that read stored jobs directly (Art Dashboard) need the same
 // answer WITHOUT waiting for a sync (SO-1009: a job moved to outside deco sat in Needs Approval).
 // Partial PO coverage — a transfers purchase on an item that keeps in-house work — does NOT count:
-// that job is still produced in-house. Missing item/deco pairs don't count as outside (deleted-line
-// snapshot preservation is the sync's business, not the board's).
+// that job is still produced in-house. Missing item/deco pairs are NEUTRAL — they can't be produced
+// in-house or outside, so they neither grant nor block "routed outside" (SO-1403: a released job
+// over an outside-routed tee plus a deleted-deco pant must read routed-outside, matching the sync's
+// retirement). A job with no live pairs at all reads false (deleted-line snapshot preservation is
+// the sync's business, not the board's).
 const jobAllRoutedOutside = (o, j, outByItem) => {
   const map = outByItem || outsourcedDecoTypes(o);
   const pairs = [];
@@ -303,18 +462,28 @@ const jobAllRoutedOutside = (o, j, outByItem) => {
     const ds = it ? safeDecos(it).filter(d => d && (d.kind === 'art' || d.kind === 'numbers' || d.kind === 'names')) : [];
     return ds.length > 0 && ds.every(d => isDecoOutsourced(o, ii, d, map));
   };
-  return pairs.every(([ii, di]) => {
-    const it = safeItems(o)[ii]; if (!it) return false;
-    const d = safeDecos(it)[di]; if (!d) return false;
-    return d.kind === 'outside_deco' || d.fulfillment === 'outside' || !!d.deco_po_id || _itemFullyOut(ii);
-  });
+  let out = 0;
+  for (const [ii, di] of pairs) {
+    const it = safeItems(o)[ii]; if (!it) continue;
+    const d = safeDecos(it)[di]; if (!d) continue;
+    if (d.kind === 'outside_deco' || d.fulfillment === 'outside' || !!d.deco_po_id || _itemFullyOut(ii)) out++;
+    else return false;
+  }
+  return out > 0;
 };
 
 // ── Underbase rule ── Screen-print on anything darker than white / light grey / vegas gold needs
 // a white underbase (NSA rule). Returns true when the garment color needs one; blank color → false
 // (unknown, don't auto-charge). Used to auto-apply the underbase upcharge on pricing lookups.
 const _LIGHT_GARMENT = /white|vegas|(?:light|lt)[\s.]*gr[ae]y/i;
-const garmentNeedsUnderbase = (color) => { const c = safeStr(color).trim(); return c ? !_LIGHT_GARMENT.test(c) : false; };
+// Catalog colors name the BODY first and the trim/logo second ("Black/White", "Team Power Red/ White",
+// "Black/White (JX4452)"), so the light test must read the body token ALONE. Testing the whole string
+// let every dark two-tone garment escape the underbase upcharge on the "/White" half of its own name —
+// EST-2139 priced one screen at $4.90/pc on a Black/White tee and $5.60/pc on a Black one. Strips a
+// trailing "(SKU)" note, then keeps everything before the first slash; falls back to the full string
+// when that leaves nothing (a color written as "/White").
+const _garmentBody = (c) => c.replace(/\s*\([^)]*\)\s*$/, '').split('/')[0].trim() || c;
+const garmentNeedsUnderbase = (color) => { const c = safeStr(color).trim(); return c ? !_LIGHT_GARMENT.test(_garmentBody(c)) : false; };
 
 // ── ONE asset resolver (Layer 3 of the one-process art model) ──
 // Resolve a design's image for a given color way, keyed on the STABLE `color_way_id` (never the CW
@@ -390,6 +559,12 @@ const buildJobs = (o) => {
     if (it.no_deco) return;
     const decosByType = {};
     safeDecos(it).forEach((d, di) => {
+      // Routed outside (soft flag / on a deco PO) — the vendor produces it, so no derived job.
+      // Mirrors syncJobs' guard in the editors: without it, an SO whose stored jobs are EMPTY
+      // (a fully-outsourced webstore batch never creates any; retiring the last job saves [])
+      // fails the short-circuit above and this derive re-materializes phantom jobs on every
+      // board. Kind-agnostic, same as isDecoOutsourced — names/numbers route outside too.
+      if (d.fulfillment === 'outside' || d.deco_po_id) return;
       if (d.kind === 'art') {
         const artF = d.art_file_id ? safeArr(o?.art_files).find(f => f.id === d.art_file_id) : null;
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
@@ -892,7 +1067,7 @@ function createInvoice(o, invSelItems, cust, artQty) {
         decoRev += (dp._nq != null ? dp._nq : qty) * dp.sell;
       } else if (d.kind === 'names') {
         const dp = dP(d, qty, [], qty);
-        decoRev += qty * dp.sell;
+        decoRev += (dp._nq != null ? dp._nq : qty) * dp.sell;
       } else if (d.kind === 'outside_deco') {
         const dp = dP(d, qty, [], qty);
         decoRev += qty * dp.sell;
@@ -1258,15 +1433,25 @@ function itemsWithWipedQty(clientItems, dbItems) {
 }
 
 // ─── Commission / account attribution ───
-// The account OWNER (customer.primary_rep_id) is ALWAYS credited — for earned commission, pipeline,
+// The account OWNER (customer.primary_rep_id) is credited — for earned commission, pipeline,
 // promo-cost deductions, and every per-rep rollup. The SO creator (so.created_by) is only a fallback
 // for accounts that have no assigned rep. This ordering decides who gets PAID, so it lives here as the
 // single source of truth: a reversed `created_by || primary_rep_id` credited whoever happened to write
 // the order instead of the account's rep, leaking open invoices on another rep's account into the
 // creator's pipeline (the Rancho Buena Vista regression). Route ALL commission attribution through this
 // helper so the rule can never drift or get reversed at one of its call sites again.
-function commissionRepId(customer, so) {
-  return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
+//
+// `inv.rep_id` (invoices.rep_id, migration 20260815120000) outranks both — it is the ONE deliberate,
+// per-document override, set from the invoice detail page's Rep pencil. It exists because the only way
+// to move a single invoice to another rep used to be rewriting the customer's primary rep, which
+// reassigned the whole account and, since attribution stays live rather than frozen at snapshot time,
+// retroactively moved already-paid commission lines with it. NULL/absent means "follow the account",
+// so every invoice that has never been overridden attributes exactly as it did before.
+//
+// Pass `inv` at every call site that has an invoice in hand. Call sites that only have a sales order
+// (uninvoiced pipeline) correctly pass nothing — an SO with no invoice has no override to honor.
+function commissionRepId(customer, so, inv) {
+  return (inv && inv.rep_id) || (customer && customer.primary_rep_id) || (so && so.created_by) || null;
 }
 
 // Who may be listed as the rep on an account/job and earn commission. Sales reps and admins
@@ -1304,7 +1489,14 @@ const _catalogUnitAvg = (it, sq) => {
 function garmentCost(it) {
   const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
   const q = sq > 0 ? sq : safeNum(it.est_qty);
-  if (!q) return { cost: 0, poQty: 0, q: 0 };
+  // A line with no quantity left normally costs nothing — EXCEPT when a PO already received or
+  // billed units against it. That is the write-off an absorb leaves behind (planSizeCut): the
+  // goods were bought, so the order keeps carrying them until a credit or a return, and the walk
+  // below prices them off the po_lines. Without this the cost silently vanished the moment the
+  // last size was zeroed, which is exactly the loss the absorb is supposed to make visible.
+  const _lockedUnits = safePOs(it).reduce((a, pl) => a + [...new Set([...Object.keys(pl.received || {}), ...Object.keys(pl.billed || {})])]
+    .reduce((b, sz) => b + Math.max(safeNum((pl.received || {})[sz]), safeNum((pl.billed || {})[sz])), 0), 0);
+  if (!q && !_lockedUnits) return { cost: 0, poQty: 0, q: 0 };
   let poQty = 0, poCost = 0;
   safePOs(it).forEach(pl => {
     if (!pl) return;
@@ -1314,8 +1506,16 @@ function garmentCost(it) {
     const bc = safeNum(pl._bill_cost);
     if (bc > 0) {
       const billedQty = Object.values(pl.billed || {}).reduce((a, v) => a + (typeof v === 'number' && v > 0 ? v : 0), 0);
-      const openQty = billedQty > 0 ? Math.max(0, lineQty - billedQty) : 0;
-      poCost += bc + openQty * u;
+      if (billedQty > lineQty && lineQty > 0) {
+        // The bill covers more units than this line holds — a doc-level supplier bill whose
+        // billed sizes were reconciled to the FULL document, spanning other orders' garments
+        // (SO-1396: 50 shirts carrying a $1,815 bill for 250). Charge this line only its own
+        // share at the billed unit price; the rest of the doc belongs to other lines/orders.
+        poCost += bc * lineQty / billedQty;
+      } else {
+        const openQty = billedQty > 0 ? Math.max(0, lineQty - billedQty) : 0;
+        poCost += bc + openQty * u;
+      }
     } else {
       poCost += lineQty * u;
     }
@@ -1343,7 +1543,9 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  // Size reductions that run into POs / picks
+  planSizeCut, absorbedSizes,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

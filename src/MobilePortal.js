@@ -199,7 +199,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const total=+i.total||0;
       const status=i.status==='void'?'cancelled':(i.status||'open');
       const date=i.invoice_date||i.date||null;
-      return{id:i.id,customer_id:i.customer_id,status,total,amount_paid:status==='paid'?total:0,
+      // `paid`, not `amount_paid`: portal invoices carry `paid` straight from the DB and are
+      // passed through this list unmapped, so a second name here meant every balance below
+      // read undefined on them and reported the FULL total as still owed.
+      return{id:i.id,customer_id:i.customer_id,status,total,paid:status==='paid'?total:0,
         created_at:date,paid_date:status==='paid'?date:null,due_date:i.due_date||null,so_id:null,
         _hist:true,_cname:i.raw_customer_name||null};
     });
@@ -589,7 +592,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <div className="mp-detail-body">
         <div className="mp-info-grid">
           <div className="mp-info-item"><div className="mp-info-label">Total</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800}}>{fmtMoney(inv.total)}</div></div>
-          <div className="mp-info-item"><div className="mp-info-label">Paid</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(inv.amount_paid||0)}</div></div>
+          <div className="mp-info-item"><div className="mp-info-label">Paid</div><div className="mp-info-val" style={{fontSize:18,fontWeight:800,color:'#16a34a'}}>{fmtMoney(inv.paid||0)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Due Date</div><div className="mp-info-val">{fmtDate(inv.due_date)}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Created</div><div className="mp-info-val">{fmtDate(inv.created_at)}</div></div>
         </div>
@@ -1386,7 +1389,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(po.kind==='so'){
       const lines=po.lines.map((l,i)=>{const rcv={};Object.entries(whRcvQty[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0){rcv[sz]=n;total+=n}});return{itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv}}).filter(l=>Object.keys(l.rcv).length);
       if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return}
-      setWhSaving(true);try{onReceiveSOPO&&onReceiveSOPO(po.soId,lines)}finally{setWhSaving(false);setWhDetail(null);setWhRcvQty({})}
+      // Hold "Saving…" until the DB write confirms (r.saveP) — the receipt screen and its label
+      // print are gated on that same promise in App.js (NSA 4568: labels must not outrun the save).
+      setWhSaving(true);
+      const r=onReceiveSOPO&&onReceiveSOPO(po.soId,lines);
+      Promise.resolve(r&&r.saveP).finally(()=>{setWhSaving(false);setWhDetail(null);setWhRcvQty({})});
     }else{
       const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(whRcvQty[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0){m[sz]=n;total+=n}});if(Object.keys(m).length)receivedMap[l.idx]=m});
       if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return}
@@ -1465,27 +1472,30 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     let total=0;sel.forEach(po=>{Object.values(whBatchQty[po.key]||{}).forEach(m=>Object.values(m||{}).forEach(v=>{total+=parseInt(v)||0}))});
     if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return;}
     setWhSaving(true);
-    try{
-      // Summary toast fires FIRST: nf replaces the current toast, so firing it after the
-      // receive handlers was clobbering the "🎽 Ready for decoration" notice they raise.
-      if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
-      // Collect SO-PO receipts grouped by soId so two POs on the same SO apply in one call —
-      // onReceiveSOPO reads the SO from a render snapshot, so separate per-PO calls would
-      // clobber each other. Inventory POs each target a distinct record, so they fire directly.
-      const soLines={};
-      sel.forEach(po=>{const lm=whBatchQty[po.key]||{};
-        if(po.kind==='so'){po.lines.forEach((l,i)=>{const rcv={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)rcv[sz]=n});if(Object.keys(rcv).length>0)(soLines[po.soId]=soLines[po.soId]||[]).push({itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv})});}
-        else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
-      });
-      // Batch handler applies all SOs then prints ONE combined job — separate per-SO calls
-      // each open a print window, and iPad Safari blocks every pop-up after the first.
-      const entries=Object.entries(soLines).filter(([,lines])=>lines.length>0).map(([soId,lines])=>({soId,lines}));
-      if(entries.length>0){
-        if(onReceiveSOPOBatch)onReceiveSOPOBatch(entries);
-        else entries.forEach(e=>onReceiveSOPO&&onReceiveSOPO(e.soId,e.lines));
-      }
-      setWhBatchSelected(new Set());setWhBatchMode(false);setWhBatchQty({});setWhDetail(null);
-    }finally{setWhSaving(false);}
+    // Collect SO-PO receipts grouped by soId so two POs on the same SO apply in one call —
+    // onReceiveSOPO reads the SO from a render snapshot, so separate per-PO calls would
+    // clobber each other. Inventory POs each target a distinct record, so they fire directly.
+    const soLines={};
+    sel.forEach(po=>{const lm=whBatchQty[po.key]||{};
+      if(po.kind==='so'){po.lines.forEach((l,i)=>{const rcv={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)rcv[sz]=n});if(Object.keys(rcv).length>0)(soLines[po.soId]=soLines[po.soId]||[]).push({itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv})});}
+      else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
+    });
+    // Batch handler applies all SOs then prints ONE combined job — separate per-SO calls
+    // each open a print window, and iPad Safari blocks every pop-up after the first.
+    // Truth-checked (NSA 4568): the handler resolves only after every SO's save confirms, and
+    // the success toast / receipt screen come from IT, so "Saving…" stays up until the DB
+    // actually holds the receipts. Batch numbers ride along so a fully-saved whole-batch
+    // check-in also flips the batch PO to received (parity with the desktop batch screen).
+    const entries=Object.entries(soLines).filter(([,lines])=>lines.length>0).map(([soId,lines])=>({soId,lines}));
+    const batchNos=[...new Set(sel.map(p=>p.batchPoNumber).filter(Boolean))];
+    let done;
+    if(entries.length>0){
+      if(onReceiveSOPOBatch)done=onReceiveSOPOBatch(entries,{batchNos});
+      else{entries.forEach(e=>onReceiveSOPO&&onReceiveSOPO(e.soId,e.lines));if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''))}
+    }else if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
+    Promise.resolve(done).finally(()=>{
+      setWhSaving(false);setWhBatchSelected(new Set());setWhBatchMode(false);setWhBatchQty({});setWhDetail(null);
+    });
   };
 
   const PO_BADGE={waiting:{bg:'#fef3c7',c:'#92400e',l:'Waiting'},partial:{bg:'#dbeafe',c:'#1e40af',l:'Partial'},received:{bg:'#dcfce7',c:'#166534',l:'Received'}};
@@ -2020,7 +2030,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const revByCust={};scopedInvs.forEach(i=>{revByCust[i.customer_id]=(revByCust[i.customer_id]||0)+(i.total||0)});
       const topCust=Object.entries(revByCust).map(([id,v])=>({c:custObj(id),v})).filter(x=>x.c).sort((a,b)=>b.v-a.v).slice(0,8);
       const openInvList=scopedInvs.filter(i=>i.status!=='paid'&&i.status!=='cancelled');
-      const bal=i=>(i.total||0)-(i.amount_paid||0);
+      const bal=i=>(i.total||0)-(i.paid||0);
       const arTotal=openInvList.reduce((a,i)=>a+bal(i),0);
       const aging={current:0,d30:0,d60:0,d90:0};
       openInvList.forEach(i=>{const due=i.due_date?new Date(i.due_date):null;const past=due?Math.floor((now-due)/(1000*60*60*24)):0;const b=bal(i);if(!due||past<=0)aging.current+=b;else if(past<=30)aging.d30+=b;else if(past<=60)aging.d60+=b;else aging.d90+=b});
@@ -2205,7 +2215,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(!sendInvModal)return null;
     const inv=sendInvModal;
     const cc=custObj(inv.customer_id);
-    const bal=(+inv.total||0)-(+inv.amount_paid||0);
+    const bal=(+inv.total||0)-(+inv.paid||0);
     // Coaches portal shows the customer's open invoices + Pay Now; fall back to a plain summary if no portal tag.
     const portalUrl=cc?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cc.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
     const copyLink=()=>{if(!portalUrl)return;navigator.clipboard.writeText(portalUrl).then(()=>{if(nf)nf('Link copied to clipboard');setSendInvModal(null)}).catch(()=>{window.prompt('Copy this link:',portalUrl);setSendInvModal(null)})};

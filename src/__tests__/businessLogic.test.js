@@ -495,6 +495,35 @@ describe('SO Status Calculation — calcSOStatus()', () => {
     expect(BL.calcSOStatus(ord)).toBe('items_received');
   });
 
+  test('drop-ship PO line: billed units count as fulfilled (vendor ships direct, never checked in) — SO-1727', () => {
+    const ord = {
+      items: [
+        // warehouse line, fully received
+        { sizes: { M: 3 }, pick_lines: [], po_lines: [{ M: 3, received: { M: 3 } }], decorations: [] },
+        // drop-ship line, billed by the vendor but received stays empty forever
+        { sizes: { L: 3, M: 6 }, pick_lines: [], po_lines: [{ L: 3, M: 6, drop_ship: true, received: {}, billed: { L: 3, M: 6 } }], decorations: [] }
+      ],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
+  test('drop-ship PO line not yet billed still reads waiting_receive', () => {
+    const ord = {
+      items: [{ sizes: { M: 3 }, pick_lines: [], po_lines: [{ M: 3, drop_ship: true, received: {}, billed: {} }], decorations: [] }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('waiting_receive');
+  });
+
+  test('drop-ship line over-billed (duplicate bill match) is clamped to ordered qty', () => {
+    const ord = {
+      items: [{ sizes: { L: 3, M: 6 }, pick_lines: [], po_lines: [{ L: 3, M: 6, drop_ship: true, received: {}, billed: { L: 6, M: 12 } }], decorations: [] }],
+      jobs: []
+    };
+    expect(BL.calcSOStatus(ord)).toBe('ready_to_invoice');
+  });
+
   test('Topstar DIGITIZING billing line does not hold the SO in need_order (its PO lives in deco_pos, not on the item)', () => {
     const ord = {
       items: [
@@ -1485,6 +1514,40 @@ describe('Commission attribution — commissionRepId() must always credit the ac
   test('tolerates a missing customer or missing SO (open invoice with no linked order, etc.)', () => {
     expect(BL.commissionRepId(undefined, { created_by: STEVE })).toBe(STEVE);
     expect(BL.commissionRepId({ primary_rep_id: MIKE }, undefined)).toBe(MIKE);
+  });
+
+  // ── Per-invoice override (invoices.rep_id, migration 20260815120000) ──
+  const KEVIN = '00000000-0000-0000-0000-000000000023';
+
+  test('an explicit invoice rep_id outranks the account owner', () => {
+    // INV-63575: San Joaquin Memorial Football is Kevin's account, Steve wrote the order, and this
+    // one invoice is deliberately assigned to Steve. Only THIS invoice moves.
+    const customer = { id: 'c-ns-4536', primary_rep_id: KEVIN };
+    const so = { id: 'SO-1702', created_by: STEVE };
+    expect(BL.commissionRepId(customer, so, { id: 'INV-63575', rep_id: STEVE })).toBe(STEVE);
+    // A sibling invoice on the same account, with no override, still credits Kevin.
+    expect(BL.commissionRepId(customer, so, { id: 'INV-63574' })).toBe(KEVIN);
+  });
+
+  test('an absent, null or empty rep_id falls through to the account owner', () => {
+    const customer = { primary_rep_id: MIKE };
+    const so = { created_by: STEVE };
+    expect(BL.commissionRepId(customer, so, {})).toBe(MIKE);
+    expect(BL.commissionRepId(customer, so, { rep_id: null })).toBe(MIKE);
+    expect(BL.commissionRepId(customer, so, { rep_id: '' })).toBe(MIKE);
+    expect(BL.commissionRepId(customer, so, undefined)).toBe(MIKE);
+    expect(BL.commissionRepId(customer, so, null)).toBe(MIKE);
+  });
+
+  test('the override also covers an invoice whose account has no rep at all', () => {
+    expect(BL.commissionRepId({ id: 'c1' }, { created_by: STEVE }, { rep_id: KEVIN })).toBe(KEVIN);
+    expect(BL.commissionRepId(null, null, { rep_id: KEVIN })).toBe(KEVIN);
+  });
+
+  test('omitting the invoice argument is unchanged from the two-argument behavior', () => {
+    // Every SO-only call site (uninvoiced pipeline) relies on this.
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, { created_by: STEVE })).toBe(MIKE);
+    expect(BL.commissionRepId({ id: 'c1' }, { id: 'SO-1' })).toBeNull();
   });
 });
 

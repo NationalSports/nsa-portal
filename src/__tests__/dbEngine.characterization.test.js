@@ -12,8 +12,8 @@
  * pure logic over its arguments + module state.
  */
 import {
-  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp,
-  _sanitizeArtRow, _unionArtFiles, _mergeArtConflict, _resolveArtRows,
+  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp, _buildInvMergeRows,
+  _sanitizeArtRow, _unionArtFiles, _mergeArtConflict, _resolveArtRows, _adoptResolvedArtRow,
   _matchRestoreItem, _queuedEntitySave, _isNetErr, _retryNet,
   _lsSet, _setOnCacheFullChange, _setLsQuotaWarned,
   _markRecentlyPulled, _isRecentlyPulled,
@@ -42,6 +42,29 @@ describe('diff comparators (phantom-save guards)', () => {
     expect(_soDiffCmp(so({}))).not.toBe(_soDiffCmp({ ...so({}), items: [{ sku: 'TEE', sizes: { M: 3 }, decorations: [], pick_lines: [], po_lines: [] }] }));
     // decorations / pick / po lines are compared whole
     expect(_soDiffCmp(so({ pick_lines: [{ M: 1 }] }))).not.toBe(_soDiffCmp(so({ pick_lines: [] })));
+  });
+
+  test('_buildInvMergeRows — baseline-relative merge rows for the 00239 RPC', () => {
+    // With a baseline: quantity + base per size, sizes sorted for a stable
+    // dedupe key; a size the baseline never saw gets base 0 (pure delta-add).
+    expect(_buildInvMergeRows({ M: 50, L: 3 }, { M: 5 }, { M: 40 })).toEqual([
+      { size: 'L', quantity: 3, base: 0, alert_threshold: null },
+      { size: 'M', quantity: 50, base: 40, alert_threshold: 5 },
+    ]);
+    // No baseline (new product / restore): base null = absolute-set semantics.
+    expect(_buildInvMergeRows({ M: 7 }, {}, null)).toEqual([
+      { size: 'M', quantity: 7, base: null, alert_threshold: null },
+    ]);
+    // Alert-only size: quantity 0 / base 0 → delta 0, so the RPC preserves the
+    // live quantity while still writing the threshold.
+    expect(_buildInvMergeRows({}, { S: 4 }, {})).toEqual([
+      { size: 'S', quantity: 0, base: 0, alert_threshold: 4 },
+    ]);
+    // Identical logical edit builds an identical payload — the dedupe contract
+    // that collapses the manual-save + diff-save double-fire into one apply.
+    const a = JSON.stringify(_buildInvMergeRows({ M: 50 }, {}, { M: 40 }));
+    const b = JSON.stringify(_buildInvMergeRows({ M: 50 }, {}, { M: 40 }));
+    expect(a).toBe(b);
   });
 
   test('_estDiffCmp compares only persisted estimate columns', () => {
@@ -120,6 +143,38 @@ describe('art-file field-level merge', () => {
     expect(out[1].row).toBe(client[1]);      // same version → untouched passthrough
     expect(out[1].baseVersion).toBe(4);
   });
+
+  test('adopting a resolved conflict prevents the next save from restoring stale art', () => {
+    const client = { id: 'a1', _version: 1, status: 'waiting_for_art', files: [{ url: 'old.ai' }] };
+    const db = { id: 'a1', _version: 5, status: 'approved', files: [{ url: 'old.ai' }, { url: 'new.ai' }] };
+    const first = _resolveArtRows([client], [db], 'SO-1')[0];
+    _adoptResolvedArtRow(first);
+    expect(client).toMatchObject({ _version: 6, status: 'approved' });
+    expect(client.files.map(f => f.url)).toEqual(['old.ai', 'new.ai']);
+    const second = _resolveArtRows([client], [{ ...first.row, _version: 6 }], 'SO-1')[0];
+    expect(second.row.status).toBe('approved');
+    expect(second.row.files.map(f => f.url)).toEqual(['old.ai', 'new.ai']);
+  });
+
+  test('explicit deletion tombstones beat the conservative conflict union and are consumed on adoption', () => {
+    const client = {
+      id: 'a1', _version: 1, preview_url: '', _artEditedFields: ['preview_url'],
+      mockup_files: [], item_mockups: { 'TEE|Red': [] }, mock_links: {},
+      _artDeletes: { mockup_files: ['old.png'], item_mockups: { 'TEE|Red': ['old.png'] }, mock_links: ['TEE|Red'] },
+    };
+    const db = {
+      id: 'a1', _version: 5, preview_url: 'old.png', mockup_files: [{ url: 'old.png' }],
+      item_mockups: { 'TEE|Red': [{ url: 'old.png' }] }, mock_links: { 'TEE|Red': 'TEE|Blue' },
+    };
+    const resolved = _resolveArtRows([client], [db], 'SO-1')[0];
+    expect(resolved.row.preview_url).toBe('');
+    expect(resolved.row.mockup_files).toEqual([]);
+    expect(resolved.row.item_mockups).toEqual({ 'TEE|Red': [] }); // empty key blocks legacy shared fallback
+    expect(resolved.row.mock_links).toEqual({});
+    _adoptResolvedArtRow(resolved);
+    expect(client._artDeletes).toBeUndefined();
+    expect(client._artEditedFields).toBeUndefined();
+  });
 });
 
 // ── Restore-row re-attachment (SO-1132 guard) ────────────────────────
@@ -165,6 +220,44 @@ describe('_queuedEntitySave', () => {
     release();
     await Promise.all([p1, p2, p3]);
     expect(saved).toEqual([1, 3]); // v2 skipped entirely
+  });
+
+  test('each caller waits for and receives the result of the batch that represents it', async () => {
+    const saved = [];
+    let releaseFirst; let releaseLatest;
+    const firstGate = new Promise(r => { releaseFirst = r; });
+    const latestGate = new Promise(r => { releaseLatest = r; });
+    const save = async d => {
+      saved.push(d.v);
+      if (d.v === 1) { await firstGate; return true; }
+      await latestGate; return false;
+    };
+    let p2Settled = false;
+    const p1 = _queuedEntitySave('E-results', { v: 1 }, save);
+    const p2 = _queuedEntitySave('E-results', { v: 2 }, save).finally(() => { p2Settled = true; });
+    const p3 = _queuedEntitySave('E-results', { v: 3 }, save);
+    await Promise.resolve();
+    expect(p2Settled).toBe(false); // never an immediate undefined "success"
+    releaseFirst();
+    await expect(p1).resolves.toBe(true);
+    expect(p2Settled).toBe(false);
+    releaseLatest();
+    await expect(Promise.all([p2, p3])).resolves.toEqual([false, false]);
+    expect(saved).toEqual([1, 3]);
+  });
+
+  test('different save kinds for one entity serialize without coalescing each other away', async () => {
+    const saved = [];
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const full = async d => { saved.push('full-' + d.v); if (d.v === 1) await gate; return true; };
+    const art = async d => { saved.push('art-' + d.v); return true; };
+    const p1 = _queuedEntitySave('E-kinds', { v: 1 }, full);
+    const p2 = _queuedEntitySave('E-kinds', { v: 2 }, art);
+    const p3 = _queuedEntitySave('E-kinds', { v: 3 }, full);
+    release();
+    await expect(Promise.all([p1, p2, p3])).resolves.toEqual([true, true, true]);
+    expect(saved).toEqual(['full-1', 'art-2', 'full-3']);
   });
 
   test('different entities save independently', async () => {

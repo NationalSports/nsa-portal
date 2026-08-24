@@ -8,8 +8,8 @@
 // exact color+size match and never guesses, so an unmatched line stays blocked and
 // the rep falls back to manual ordering rather than risk shipping the wrong item.
 import React, { useEffect, useMemo, useState } from 'react';
-import { buildSanMarPOPayload, buildSanMarPOSoap, SANMAR_PO_ENDPOINTS } from './sanmarPO';
-import { sanmarSubmitPO, sanmarResolvePartIds, sanmarGetWarehouseStock } from './vendorApis';
+import { buildSanMarPOPayload, buildSanMarPOSoap, buildSanMarLineItems, SANMAR_PO_ENDPOINTS } from './sanmarPO';
+import { sanmarSubmitPO, sanmarResolvePartIds, sanmarGetWarehouseStock, sanmarStyleVariants } from './vendorApis';
 import WarehouseChips, {
   rankWarehouses, pickConsolidatedWarehouse, warehouseKey, warehouseCity,
   shipToCoords, warehouseCoords, milesBetween, SANMAR_WAREHOUSE_INFO,
@@ -54,6 +54,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [resolvedParts, setResolvedParts] = useState({}); // lineNumber -> uniqueKey
   const [candidates, setCandidates] = useState({});       // STYLE -> [{color,size,uniqueKey}]
   const [resolveErr, setResolveErr] = useState('');
+  // Hand-picked parts, lineNumber -> {uniqueKey,style,color,size}. The automatic match is
+  // correct-biased and refuses to guess, so a naming difference SanMar's catalog can't be
+  // talked out of (a cap sized "MD-LG (ONE SIZE FITS MOST)" against their "OSFA") used to
+  // dead-end the whole order. The rep can now search SanMar and say which part it is.
+  const [manualParts, setManualParts] = useState({});
+  const [pickerLine, setPickerLine] = useState(null);     // lineNumber whose picker is open
   // Per-warehouse availability keyed by "style|color|size" -> [{id,qty}] (SanMar's legacy
   // inventory list, warehouse order 1-7,12) — informational "ships from" display only;
   // a lookup failure leaves the column blank, never blocks.
@@ -68,6 +74,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const activeDecoVendors = useMemo(() => (decoVendors || []).filter(v => v.is_active !== false), [decoVendors]);
   const [selectedDecoId, setSelectedDecoId] = useState(() => shipToDecoId || activeDecoVendors[0]?.id || '');
   const [dpoNumber, setDpoNumber] = useState(initialDpoNumber || '');
+  // Attention-line value from the DPO field: ALWAYS "DPO ..." — the prefix is what lets the
+  // decorator's receiving desk match the box to their job. Idempotent so a field already holding
+  // the full "DPO 1042 XYZ" (the callers now pass po_id verbatim) doesn't get double-prefixed.
+  const dpoAttn = (v) => { const t = String(v || '').trim(); return t ? (/^dpo\b/i.test(t) ? t : 'DPO ' + t) : ''; };
   const [inlineAddr, setInlineAddr] = useState({ address_line1: '', address_line2: '', city: '', state: '', zip: '' });
 
   // Keep selectedDecoId in sync if decoVendors loads after mount
@@ -96,7 +106,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
       const state = selectedDeco.state || inlineAddr.state || '';
       const zip = selectedDeco.zip || inlineAddr.zip || '';
       effectiveShip = {
-        attentionTo: dpoNumber.trim() ? 'DPO ' + dpoNumber.trim() : (selectedDeco.contact_name || 'Receiving'),
+        attentionTo: dpoAttn(dpoNumber) || (selectedDeco.contact_name || 'Receiving'),
         companyName: selectedDeco.name,
         address1: a1,
         address2: a2,
@@ -113,18 +123,28 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     return effectiveShip;
   }, [shipTo, shipMode, selectedDeco, dpoNumber, inlineAddr]);
 
+  // Base lines (no network) — built WITHOUT the ship-to, and memoized separately from the
+  // payload below. Lines don't vary by destination, but folding them into a ship-dependent
+  // memo re-fired the partId resolver on every keystroke in the address editor AND the
+  // inline deco-address fields (owner 2026-08-13: the same chain in SSOrderModal blanked
+  // every matched SKU when the ship-to was edited).
+  const baseLines = useMemo(() => buildSanMarLineItems(batchPOs).lines, [batchPOs]);
+
+  // The payload still tracks the ship-to (that's the point of editing it) and still builds
+  // its own copy of the lines, so its _warnings stay populated. Rebuilding it per keystroke
+  // is pure CPU — what mattered is that the resolver chain above no longer hangs off it.
   const base = useMemo(() => {
     const effectiveShip = shipOverride || autoShip;
     const p = buildSanMarPOPayload({ poNumber, batchPOs, shipTo: effectiveShip });
-    return { payload: p, baseLines: p.PO.lineItems, totals: p._summary, effectiveShip };
+    return { payload: p, totals: p._summary, effectiveShip };
   }, [batchPOs, poNumber, autoShip, shipOverride]);
 
   const ship = base.effectiveShip;
 
   // Lines still missing a partId after the base build — these need a live lookup.
   const missing = useMemo(
-    () => base.baseLines.filter(l => !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
-    [base.baseLines]
+    () => baseLines.filter(l => !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
+    [baseLines]
   );
 
   useEffect(() => {
@@ -132,7 +152,9 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     if (!missing.length) { setResolving(false); return; }
     setResolving(true); setResolveErr('');
     sanmarResolvePartIds(missing)
-      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedParts(resolved || {}); setCandidates(candidates || {}); })
+      // Merge, never replace: sanmarResolvePartIds swallows per-style API failures and
+      // returns an empty map, so a degraded re-run must not wipe partIds already matched.
+      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedParts(prev => ({ ...prev, ...(resolved || {}) })); setCandidates(prev => ({ ...prev, ...(candidates || {}) })); })
       .catch(e => { if (!cancelled) setResolveErr(e.message || 'Part ID lookup failed'); })
       .finally(() => { if (!cancelled) setResolving(false); });
     return () => { cancelled = true; };
@@ -140,10 +162,30 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
   // Overlay resolved partIds onto the lines, then recompute warnings + the payload
   // that will actually be submitted.
+  // A hand-picked part outranks both the order's own partId and the resolver's match — the
+  // picker exists for the lines those two got wrong or couldn't make. SanMar's own spelling
+  // of the chosen part replaces ours on the line, so the payload, the warehouse lookup and
+  // the vendor_keys we record all describe the item that will actually ship; what the order
+  // said is kept on _manual so the table can show both.
   const lines = useMemo(
-    () => base.baseLines.map(l => (l.partId ? l : { ...l, partId: resolvedParts[l.lineNumber] || '' })),
-    [base.baseLines, resolvedParts]
+    () => baseLines.map(l => {
+      const man = manualParts[l.lineNumber];
+      if (man && man.uniqueKey) {
+        const style = man.style || l.style, color = man.color || l.color, size = man.size || l.size;
+        return {
+          ...l, partId: man.uniqueKey, style, color, size,
+          description: [style, color, size].filter(Boolean).join(' ').replace(/,/g, ' '),
+          _manual: { orderedStyle: l.style, orderedColor: l.color, orderedSize: l.size },
+        };
+      }
+      return l.partId ? l : { ...l, partId: resolvedParts[l.lineNumber] || '' };
+    }),
+    [baseLines, resolvedParts, manualParts]
   );
+  // Changing what ships un-confirms the order: the checkbox says "I confirm this is a real
+  // order", and it was checked against the previous set of parts.
+  const manualKey = useMemo(() => JSON.stringify(manualParts), [manualParts]);
+  useEffect(() => { setConfirmed(false); }, [manualKey]);
   const warnings = useMemo(
     () => lines.filter(l => !l.partId).map(l => `Line ${l.lineNumber} (${[l.style, l.color, l.size].filter(Boolean).join(' ')}) is missing a SanMar partId / Unique_Key`),
     [lines]
@@ -347,6 +389,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
               <strong>⚠ Cannot submit — {warnings.length} line(s) without a matched SanMar <code>partId</code> (Unique_Key):</strong>
               <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              <div style={{ marginTop: 6 }}>Click a line's <strong>⚠ missing</strong> in the table below to search SanMar and pick the part by hand.</div>
               {unresolvedStyles.some(st => (candidates[st] || []).length) && (
                 <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #fecaca' }}>
                   <div style={{ fontWeight: 700, marginBottom: 4 }}>What SanMar lists for these styles (for matching):</div>
@@ -393,9 +436,9 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <label style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>DPO # <span style={{ fontWeight: 400, color: '#94a3b8' }}>(goes in attention line — optional)</span></label>
-                      <input className="form-input" style={{ fontSize: 12, width: 160 }} placeholder="e.g. 1042" value={dpoNumber} onChange={e => setDpoNumber(e.target.value)} />
+                      <input className="form-input" style={{ fontSize: 12, width: 160 }} placeholder="e.g. DPO 1042" value={dpoNumber} onChange={e => setDpoNumber(e.target.value)} />
                     </div>
-                    {dpoNumber.trim() && <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>Attn: <strong>DPO {dpoNumber.trim()}</strong></div>}
+                    {dpoNumber.trim() && <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>Attn: <strong>{dpoAttn(dpoNumber)}</strong></div>}
                   </div>
                 </div>
               ) : (
@@ -439,14 +482,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                           <input
                             className="form-input"
                             style={{ fontSize: 12, width: 140 }}
-                            placeholder="e.g. 1042"
+                            placeholder="e.g. DPO 1042"
                             value={dpoNumber}
                             onChange={e => setDpoNumber(e.target.value)}
                           />
                         </div>
                         {dpoNumber.trim() && (
                           <div style={{ fontSize: 11, color: '#7c3aed', alignSelf: 'flex-end', paddingBottom: 4 }}>
-                            Attn: <strong>DPO {dpoNumber.trim()}</strong>
+                            Attn: <strong>{dpoAttn(dpoNumber)}</strong>
                           </div>
                         )}
                       </div>
@@ -594,13 +637,30 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map(l => (
-                    <tr key={l.lineNumber} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  {lines.map(l => (<React.Fragment key={l.lineNumber}>
+                    <tr style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={td}>{l.lineNumber}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.partId ? '#0f766e' : '#dc2626' }}>{l.partId || (resolving ? '…' : '⚠ missing')}</td>
-                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{l.style}</td>
-                      <td style={td}>{l.color || '—'}</td>
-                      <td style={{ ...td, fontWeight: 700 }}>{l.size}</td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.partId ? '#0f766e' : '#dc2626' }}>
+                        <button
+                          type="button"
+                          onClick={() => setPickerLine(pickerLine === l.lineNumber ? null : l.lineNumber)}
+                          title={l.partId ? 'Wrong part? Search SanMar and pick another' : 'Search SanMar and pick this part by hand'}
+                          style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', textDecoration: 'underline dotted' }}
+                        >{l.partId || (resolving ? '…' : '⚠ missing')}</button>
+                        {l._manual && <div style={{ fontSize: 9, fontWeight: 700, color: '#b45309', fontFamily: 'system-ui' }}>picked by hand</div>}
+                      </td>
+                      <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>
+                        {l.style}
+                        {l._manual && l._manual.orderedStyle !== l.style && <div style={sub}>ordered as {l._manual.orderedStyle}</div>}
+                      </td>
+                      <td style={td}>
+                        {l.color || '—'}
+                        {l._manual && l._manual.orderedColor !== l.color && <div style={sub}>ordered as {l._manual.orderedColor || '—'}</div>}
+                      </td>
+                      <td style={{ ...td, fontWeight: 700 }}>
+                        {l.size}
+                        {l._manual && l._manual.orderedSize !== l.size && <div style={{ ...sub, fontWeight: 400 }}>ordered as {l._manual.orderedSize}</div>}
+                      </td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{l.quantity}</td>
                       <td style={{ ...td, textAlign: 'right' }}>${(l.unitPrice || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>${(l.quantity * (l.unitPrice || 0)).toFixed(2)}</td>
@@ -619,7 +679,21 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
                     </tr>
-                  ))}
+                    {pickerLine === l.lineNumber && (
+                      <tr style={{ background: '#f8fafc' }}>
+                        <td colSpan={10} style={{ padding: 10 }}>
+                          <PartPicker
+                            line={l}
+                            candidates={candidates}
+                            picked={manualParts[l.lineNumber] || null}
+                            onPick={p => { setManualParts(prev => ({ ...prev, [l.lineNumber]: p })); setPickerLine(null); }}
+                            onClear={() => setManualParts(prev => { const n = { ...prev }; delete n[l.lineNumber]; return n; })}
+                            onClose={() => setPickerLine(null)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>))}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
@@ -683,6 +757,120 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
 const th = { padding: '6px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#475569', borderBottom: '1px solid #e2e8f0' };
 const td = { padding: '6px 8px', fontSize: 12 };
+// "ordered as …" note under a cell whose value the rep's hand-picked part replaced.
+const sub = { fontSize: 9, fontWeight: 400, color: '#94a3b8', fontFamily: 'system-ui' };
+
+// Hand-match one line to a SanMar part. Lists every color/size variant SanMar returned for
+// the line's style (already fetched by the resolver), filterable, and can search any other
+// style when the order's code isn't what SanMar catalogs it under. Picking sets the line's
+// partId — the ONLY id that decides what SanMar ships — so every row shows the part's own
+// color/size spelling and its Unique_Key for the rep to check against the order.
+function PartPicker({ line, candidates, picked, onPick, onClear, onClose }) {
+  const [q, setQ] = useState('');
+  const [styleQuery, setStyleQuery] = useState('');
+  const [extra, setExtra] = useState([]);        // variants pulled by a hand-typed style search
+  const [searchedStyle, setSearchedStyle] = useState('');
+  const [searching, setSearching] = useState(false);
+
+  // The resolver's candidates carry no style (they're keyed by it), so stamp the line's on.
+  const styleKey = String(line.style || '').toUpperCase().trim();
+  const pool = useMemo(() => {
+    const seen = new Set(); const out = [];
+    for (const c of [...extra, ...(candidates[styleKey] || []).map(c => ({ style: line.style, ...c }))]) {
+      if (!c.uniqueKey || seen.has(c.uniqueKey)) continue;
+      seen.add(c.uniqueKey); out.push(c);
+    }
+    return out;
+  }, [candidates, styleKey, extra, line.style]);
+
+  const filtered = useMemo(() => {
+    const t = q.trim().toUpperCase();
+    if (!t) return pool;
+    const terms = t.split(/\s+/);
+    return pool.filter(c => {
+      const hay = [c.style, c.color, c.size, c.uniqueKey].join(' ').toUpperCase();
+      return terms.every(term => hay.includes(term));
+    });
+  }, [pool, q]);
+
+  const runSearch = async () => {
+    const s = styleQuery.trim();
+    if (!s || searching) return;
+    setSearching(true);
+    const v = await sanmarStyleVariants(s);
+    setExtra(v); setSearchedStyle(s); setSearching(false);
+  };
+
+  const chip = { fontSize: 10, padding: '1px 6px', borderRadius: 8, fontWeight: 700 };
+  return (
+    <div style={{ border: '1px solid #cbd5e1', borderRadius: 6, background: 'white', padding: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: 12 }}>Find the SanMar part for line {line.lineNumber}</strong>
+        <span style={{ fontSize: 11, color: '#64748b' }}>
+          ordered as <code>{line._manual ? line._manual.orderedStyle : line.style}</code> ·
+          {' '}{(line._manual ? line._manual.orderedColor : line.color) || '—'} ·
+          {' '}{line._manual ? line._manual.orderedSize : line.size}
+        </span>
+        {picked && <span style={{ ...chip, background: '#fef3c7', color: '#92400e' }}>picked {picked.uniqueKey}</span>}
+        <span style={{ flex: 1 }} />
+        {picked && <button type="button" className="btn btn-sm btn-secondary" style={{ fontSize: 10 }} onClick={onClear}>Undo pick</button>}
+        <button type="button" className="btn btn-sm btn-secondary" style={{ fontSize: 10 }} onClick={onClose}>Close</button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <input
+          className="form-input" style={{ fontSize: 12, flex: '1 1 220px' }} autoFocus
+          placeholder="Filter by color, size or part id…"
+          value={q} onChange={e => setQ(e.target.value)}
+        />
+        <div style={{ display: 'flex', gap: 4, flex: '1 1 260px' }}>
+          <input
+            className="form-input" style={{ fontSize: 12, flex: 1 }}
+            placeholder={'Search another style (e.g. ' + (line.style || '112') + ')'}
+            value={styleQuery}
+            onChange={e => setStyleQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } }}
+          />
+          <button type="button" className="btn btn-sm btn-secondary" style={{ fontSize: 11 }} onClick={runSearch} disabled={searching || !styleQuery.trim()}>
+            {searching ? 'Searching…' : '🔍 Search'}
+          </button>
+        </div>
+      </div>
+
+      {searchedStyle !== '' && !searching && extra.length === 0 && (
+        <div style={{ fontSize: 11, color: '#991b1b', marginBottom: 6 }}>SanMar returned nothing for <code>{searchedStyle}</code> — check the style code.</div>
+      )}
+
+      <div style={{ maxHeight: 220, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 4 }}>
+        {filtered.length === 0 ? (
+          <div style={{ padding: 12, fontSize: 11, color: '#94a3b8', textAlign: 'center' }}>
+            {pool.length === 0
+              ? 'Nothing loaded for this style yet — search a style above.'
+              : 'No variant matches that filter.'}
+          </div>
+        ) : filtered.map(c => (
+          <button
+            key={c.uniqueKey} type="button"
+            onClick={() => onPick({ uniqueKey: c.uniqueKey, style: c.style || line.style, color: c.color, size: c.size })}
+            style={{
+              display: 'flex', width: '100%', gap: 10, alignItems: 'center', textAlign: 'left',
+              padding: '6px 10px', border: 'none', borderBottom: '1px solid #f1f5f9', cursor: 'pointer',
+              background: picked && picked.uniqueKey === c.uniqueKey ? '#eff6ff' : 'white', fontSize: 12,
+            }}
+          >
+            <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', minWidth: 64 }}>{c.style || line.style}</span>
+            <span style={{ flex: 1 }}>{c.color || '—'}</span>
+            <span style={{ fontWeight: 700, minWidth: 70 }}>{c.size || '—'}</span>
+            <span style={{ fontFamily: 'monospace', color: '#0f766e' }}>{c.uniqueKey}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 10, color: '#64748b', marginTop: 6 }}>
+        The part id is what SanMar ships — check the color and size on the row you pick, not the ones the order line carries.
+      </div>
+    </div>
+  );
+}
 
 function Stat({ label, value, mono }) {
   return (

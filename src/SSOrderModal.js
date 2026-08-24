@@ -3,7 +3,7 @@
 // creates and cancels (nothing ships), so it's safe to validate before going live.
 // Credentials are injected server-side by ss-proxy and never appear here.
 import React, { useEffect, useMemo, useState } from 'react';
-import { buildSSOrderPayload } from './ssOrder';
+import { buildSSOrderPayload, buildSSOrderLines } from './ssOrder';
 import { ssResolveSkus, ssSearchProducts, ssSubmitOrder, ssGetWarehouseStock } from './vendorApis';
 import WarehouseChips, { rankWarehouses, SS_WAREHOUSES } from './WarehouseChips';
 import ShipToEditor, { shipToIncomplete } from './ShipToEditor';
@@ -20,7 +20,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', onClose, onSubmitted, onLearnSkus }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, shipWarning = '', shipPresets = [], onClose, onSubmitted, onLearnSkus }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   // Live-only (owner 2026-07-31): the test-order mode was removed once S&S orders were
@@ -35,6 +35,10 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,size,sku}]
   const [resolveErr, setResolveErr] = useState('');
+  // Styles whose S&S lookup errored out (throttle/outage) rather than genuinely not matching.
+  const [failedStyles, setFailedStyles] = useState([]);
+  const [lookupErrMsg, setLookupErrMsg] = useState('');
+  const [retryTick, setRetryTick] = useState(0); // bumped by "Retry lookup" to re-run the resolver
   // Manual SKU picker: a rep searches S&S live and hand-picks the exact per-size Sku for a
   // line the auto-resolver couldn't match. manualSku overrides the auto-resolved value.
   const [manualSku, setManualSku] = useState({}); // line key -> S&S sku chosen by hand
@@ -54,20 +58,35 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   // display only; a lookup failure just leaves the column blank, never blocks.
   const [whseBySku, setWhseBySku] = useState(null); // SKUUPPER -> [{abbr,qty,closest}], null = loading
 
-  // Base lines (no network) — flatten the batch.
-  const baseLines = useMemo(() => buildSSOrderPayload({ poNumber, batchPOs, shipTo: ship }).lines, [poNumber, batchPOs, ship]);
+  // Base lines (no network) — flatten the batch. Deliberately built WITHOUT the ship-to:
+  // lines don't vary by destination, and rebuilding them per address keystroke re-fired the
+  // SKU resolver below on every character (owner 2026-08-13: editing the ship-to blanked
+  // every already-matched SKU, because the burst of lookups tripped S&S's rate limit and
+  // ssResolveSkus reports a failed lookup as "no match").
+  const baseLines = useMemo(() => buildSSOrderLines(batchPOs).lines, [batchPOs]);
   const missing = useMemo(() => baseLines.filter(l => !l.sku).map(l => ({ key: l.key, style: l.style, color: l.color, size: l.size })), [baseLines]);
 
   useEffect(() => {
     let cancelled = false;
     if (!missing.length) { setResolving(false); return; }
-    setResolving(true); setResolveErr('');
+    setResolving(true); setResolveErr(''); setFailedStyles([]); setLookupErrMsg('');
     ssResolveSkus(missing)
-      .then(({ resolved, candidates }) => { if (cancelled) return; setResolvedSkus(resolved || {}); setCandidates(candidates || {}); })
+      // Merge, never replace: ssResolveSkus swallows per-style API failures and returns an
+      // empty map, so a degraded re-run must not wipe SKUs that already matched.
+      .then(({ resolved, candidates, failedStyles, lookupError }) => {
+        if (cancelled) return;
+        setResolvedSkus(prev => ({ ...prev, ...(resolved || {}) }));
+        setCandidates(prev => ({ ...prev, ...(candidates || {}) }));
+        // A style S&S never answered for is NOT "S&S doesn't carry it" — surface it as the
+        // retryable condition it is, so the rep doesn't go hand-match 32 lines against a
+        // rate limit that clears in under a minute.
+        setFailedStyles(failedStyles || []);
+        setLookupErrMsg(lookupError || '');
+      })
       .catch(e => { if (!cancelled) setResolveErr(e.message || 'SKU lookup failed'); })
       .finally(() => { if (!cancelled) setResolving(false); });
     return () => { cancelled = true; };
-  }, [missing]);
+  }, [missing, retryTick]);
 
   // Overlay resolved skus (a hand-picked sku wins over the auto-resolved one), recompute
   // warnings + the order that will be submitted.
@@ -208,6 +227,23 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             </div>
           )}
 
+          {/* A lookup that ERRORED is a different problem from a lookup that came back empty:
+              S&S caps us at 60 requests/minute, and a throttled style used to be reported as
+              "no matched SKU" — indistinguishable from "S&S doesn't carry it". Reopening or
+              retrying a minute later normally clears it, so say that instead of sending the
+              rep off to hand-match every line. */}
+          {!done && !resolving && failedStyles.length > 0 && (
+            <div style={{ padding: 10, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#92400e' }}>
+              <strong>⏳ S&S didn't answer the lookup for {failedStyles.length} style{failedStyles.length === 1 ? '' : 's'}</strong> — these are <em>not</em> confirmed missing from S&S, we just never got a reply{lookupErrMsg ? ` (${lookupErrMsg})` : ''}.
+              <div style={{ marginTop: 4 }}>Usually S&S's 60-requests-per-minute cap on a large batch. Wait a moment and retry before matching anything by hand.</div>
+              <div style={{ marginTop: 3, fontFamily: 'monospace', fontSize: 11 }}>{failedStyles.slice(0, 20).join(' · ')}</div>
+              <button
+                onClick={() => setRetryTick(t => t + 1)}
+                style={{ marginTop: 8, border: '1px solid #d97706', background: '#fff', color: '#92400e', borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit', padding: '4px 10px' }}
+              >🔄 Retry lookup</button>
+            </div>
+          )}
+
           {!done && !resolving && warnings.length > 0 && (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>
               <strong>⚠ Cannot submit — {warnings.length} line(s) without a matched S&S SKU:</strong>
@@ -294,6 +330,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             disabled={done || submitting}
             shipVia="UPS Ground"
             autoLabel={shipTo ? 'selected' : 'warehouse'}
+            presets={shipPresets}
           />
 
           <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e2e8f0', marginBottom: 10 }}>

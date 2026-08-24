@@ -1,7 +1,9 @@
 // Scheduled (see netlify.toml): closes webstores whose close_at has passed and, for each,
-// creates a rep to-do + emails the rep & assigned CSR a breakdown (via _webstoreClose).
-// Idempotent on closed_notified_at, so a store handled here (or by a manual close) is
-// never processed twice.
+// creates a rep to-do + emails the rep & assigned CSR a breakdown (via _webstoreClose) so
+// the orders get batched into an SO promptly. Idempotent on closed_notified_at, so a store
+// handled here (or by a manual close) is never processed twice. The money side (apply
+// store funds + invoice) is prompted separately when the SO's final job finishes — see the
+// settle-on-finish to-dos in App.js.
 const { getSupabaseAdmin } = require('./_shared');
 const { notifyStoreClosed } = require('./_webstoreClose');
 

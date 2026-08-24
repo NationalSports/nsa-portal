@@ -1,18 +1,20 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback } from './safeHelpers';
+import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
+import { ptDateInput } from './lib/storeClock';
 import { MsgAttachments, msgAttachments } from './lib/msgAttach';
 import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction, greetLine, withGreeting } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
+import { _fetchHistInvoiceLines } from './lib/dbEngine';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -86,6 +88,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[showPortal,setShowPortal]=useState(false);
+  // Email Invoices recipients. The modal used to send to getBillingContacts()[0] with no way to
+  // change it — on a parent account like a university that is one AP contact for every team's
+  // invoices. Same checkbox + add-an-address pattern the estimate/SO send modals use.
+  const[invEmailChecked,setInvEmailChecked]=useState({});const[invEmailCustom,setInvEmailCustom]=useState([]);const[invEmailAdding,setInvEmailAdding]=useState('');
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');const[stmtFrom,setStmtFrom]=useState('accounting');const[stmtSending,setStmtSending]=useState(false);
   const[custArtDetail,setCustArtDetail]=useState(null);
   // When a web logo / mockup is added, prompt for the color way it belongs to
@@ -123,16 +129,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     if(!inv||!inv._hist||!supabase||!inv.netsuite_internal_id||inv.line_items?.length)return;
     let cancelled=false;
     (async()=>{
-      try{
-        const{data,error}=await supabase
-          .from('customer_invoice_lines')
-          .select('line_seq,item,description,line_memo,quantity,rate,amount')
-          .eq('netsuite_internal_id',inv.netsuite_internal_id)
-          .order('line_seq',{ascending:true});
-        if(cancelled||error||!data||!data.length)return;
-        const line_items=data.map(l=>({sku:l.item||'',name:l.line_memo||l.description||'',qty:l.quantity,rate:l.rate,amount:l.amount}));
-        setPortalInvView(prev=>prev&&prev.netsuite_internal_id===inv.netsuite_internal_id?{...prev,line_items}:prev);
-      }catch{/* non-fatal — leave the invoice without line detail */}
+      const line_items=await _fetchHistInvoiceLines(inv.netsuite_internal_id);
+      if(cancelled||!line_items||!line_items.length)return;// non-fatal — leave the invoice without line detail
+      setPortalInvView(prev=>prev&&prev.netsuite_internal_id===inv.netsuite_internal_id?{...prev,line_items}:prev);
     })();
     return()=>{cancelled=true};
   },[portalInvView]);
@@ -213,6 +212,33 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   const teamName=id=>{const c=allCustomers.find(x=>x.id===id);if(!c)return'';const parent=c.parent_id?allCustomers.find(x=>x.id===c.parent_id):null;if(parent?.name&&c.name?.startsWith(parent.name))return c.name.slice(parent.name.length).trim().replace(/^[-—–]\s*/,'')||c.name;return c.name||c.alpha_tag||''};
+  // Every contact reachable from this account — the customer's own, each sub-customer's, and (when
+  // viewing a sub-customer) the parent's — so a parent like a university can bill the AP office AND
+  // copy the team that actually ordered, and a team can still reach the AP office it inherits.
+  // The parent leg matters for correctness, not just convenience: getBillingContacts() seeds the
+  // checked recipients and returns INHERITED parent contacts, which would otherwise be checked but
+  // absent from this list and silently dropped from the send.
+  // Deduped by email; the first account to claim an address supplies its label.
+  const _idsKey=[...ids,...(customer.parent_id?[customer.parent_id]:[])].join('|');
+  const famContacts=useMemo(()=>{
+    const out=[];const seen=new Set();
+    _idsKey.split('|').forEach(cid=>{
+      const c=allCustomers.find(x=>x.id===cid);
+      (c?.contacts||[]).forEach(ct=>{
+        const em=String(ct?.email||'').trim();if(!em)return;
+        const k=em.toLowerCase();if(seen.has(k))return;seen.add(k);
+        out.push({...ct,email:em,_acct:cid===customer.id?'':((cid===customer.parent_id?(c?.name||gn(cid)):(teamName(cid)||gn(cid)))||'')});
+      });
+    });
+    return out;
+  },[_idsKey,allCustomers,customer.id,customer.parent_id]);// eslint-disable-line react-hooks/exhaustive-deps
+  const invEmailTargets=[...famContacts.map(c=>c.email),...invEmailCustom].filter(em=>invEmailChecked[em]);
+  // Keep the greeting in step with the recipient checkboxes ("Hi Cam and Hillary,") — the same rule
+  // the estimate/SO send modals use. Only the greeting line is swapped; edits below it survive.
+  const _invToKey=invEmailTargets.join('|');
+  useEffect(()=>{if(!showInvEmail||!_invToKey)return;
+    setInvEmailMsg(m=>withGreeting(m,greetLine(_invToKey.split('|'),famContacts)))},[_invToKey,showInvEmail]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Promote a sub-customer's order/estimate artwork into the parent customer's own library
   // (customer.art_files). Library art cascades to every sub-customer ("applies to all"),
   // so this is how a logo first seen on one sub-account becomes shared across the program.
@@ -301,7 +327,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {openInvCount>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _greet=getBillingContacts(customer,allCustomers)[0]?.name||(customer.contacts||[])[0]?.name||'';setInvEmailMsg('Hi '+_greet+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag);try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
@@ -328,7 +354,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const st=calcSOStatus(so);const stL={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
         // Count units from the size grid; for qty-only lines (no size breakdown) the count lives in est_qty.
-        safeItems(so).forEach(it=>{const _szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);if(_szEntries.length){_szEntries.forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})}else{totalU+=safeNum(it.est_qty)}});
+        safeItems(so).forEach(it=>{const _szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);if(_szEntries.length){_szEntries.forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+poLineFulfilledQty(pk,sz),0);fulU+=Math.min(v,pQ+rQ)})}else{totalU+=safeNum(it.est_qty)}});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
@@ -387,7 +413,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const _todayISO=_fmtDate(new Date());
       const renderTable=(list)=><table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'center'}}>Created</th><th style={{textAlign:'center'}}>Expected</th></tr></thead><tbody>{list.map(renderSORow)}</tbody></table>;
       return<>
-        {(activeSOs.length>0||custWebstores.length>0)&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Orders</h2></div><div className="card-body" style={{padding:0}}>{custWebstores.length>0&&<><table style={{fontSize:12}}><thead><tr><th>Store</th><th>Status</th><th>Opens</th><th>Closes</th>{isP&&<th>Director</th>}</tr></thead><tbody>{custWebstores.map(ws=><tr key={ws.id}><td style={{fontWeight:700,color:'#0369a1'}}>{ws.name}</td><td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ws.status==='open'?'#dcfce7':ws.status==='closed'?'#fee2e2':'#f1f5f9',color:ws.status==='open'?'#166534':ws.status==='closed'?'#dc2626':'#64748b'}}>{ws.status}</span></td><td style={{color:'#64748b'}}>{ws.open_at?(ws.open_at||'').slice(0,10):'—'}</td><td style={{color:'#64748b'}}>{ws.close_at?(ws.close_at||'').slice(0,10):'—'}</td>{isP&&<td style={{color:'#64748b'}}>{ws.director_name||'—'}</td>}</tr>)}</tbody></table>{activeSOs.length>0&&<div style={{borderTop:'2px solid #f1f5f9'}}/>}</>}{activeSOs.length>0&&renderTable(activeSOs)}</div></div>}
+        {(activeSOs.length>0||custWebstores.length>0)&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Orders</h2></div><div className="card-body" style={{padding:0}}>{custWebstores.length>0&&<><table style={{fontSize:12}}><thead><tr><th>Store</th><th>Status</th><th>Opens</th><th>Closes</th>{isP&&<th>Director</th>}</tr></thead><tbody>{custWebstores.map(ws=><tr key={ws.id}><td style={{fontWeight:700,color:'#0369a1'}}>{ws.name}</td><td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ws.status==='open'?'#dcfce7':ws.status==='closed'?'#fee2e2':'#f1f5f9',color:ws.status==='open'?'#166534':ws.status==='closed'?'#dc2626':'#64748b'}}>{ws.status}</span></td><td style={{color:'#64748b'}}>{ptDateInput(ws.open_at)||'—'}</td><td style={{color:'#64748b'}}>{ptDateInput(ws.close_at)||'—'}</td>{isP&&<td style={{color:'#64748b'}}>{ws.director_name||'—'}</td>}</tr>)}</tbody></table>{activeSOs.length>0&&<div style={{borderTop:'2px solid #f1f5f9'}}/>}</>}{activeSOs.length>0&&renderTable(activeSOs)}</div></div>}
         {(recentEsts.length>0||openPortalInvs.length>0)&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#fdf4ff',borderBottom:'1px solid #e9d5ff'}}><h2 style={{color:'#7c3aed'}}>Open Estimates & Invoices</h2></div><div className="card-body" style={{padding:0}}>{recentEsts.length>0&&<><div style={{padding:'4px 12px 2px',background:'#fdf4ff',fontSize:10,color:'#a855f7',fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>Estimates — pending approval</div><table style={{fontSize:12}}><thead><tr><th>EST</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th>Created</th></tr></thead><tbody>{recentEsts.map(e=>{const o=orders.find(ord=>ord.id===e.id);const subC=allCustomers.find(c=>c.id===e.customer_id);return<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>onOpenEst&&onOpenEst(e)}><td style={{fontWeight:700,color:'#7c3aed'}}>{e.id}</td><td>{e.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:e.status==='sent'?'#fef3c7':'#f1f5f9',color:e.status==='sent'?'#92400e':'#64748b'}}>{e.status==='draft'?'Draft':'Sent'}</span></td><td style={{textAlign:'right',fontWeight:700}}>{o?.total!=null?'$'+o.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</td><td style={{color:'#64748b'}}>{_fmtDate(e.created_at||e.date)||'—'}</td></tr>})}</tbody></table></>}{openPortalInvs.length>0&&<><div style={{padding:'4px 12px 2px',background:'#fff7ed',borderTop:recentEsts.length>0?'2px solid #f1f5f9':undefined,fontSize:10,color:'#c2410c',fontWeight:700,letterSpacing:0.3,textTransform:'uppercase'}}>Open Invoices</div><table style={{fontSize:12}}><thead><tr><th>INV</th><th>Memo</th>{isP&&<th>Customer</th>}<th>Status</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Balance</th><th>Date</th><th>Due</th></tr></thead><tbody>{openPortalInvs.map(inv=>{const subC=allCustomers.find(c=>c.id===inv.customer_id);const bal=safeNum(inv.total)-safeNum(inv.paid);const dueStr=_fmtDate(inv.due_date);const overdue=!!dueStr&&dueStr<_todayISO&&bal>0;return<tr key={inv.id} style={{cursor:'pointer'}} onClick={()=>onOpenInv&&onOpenInv(inv)}><td style={{fontWeight:700}}>{inv.id}</td><td>{inv.memo||'—'}</td>{isP&&<td><span className="badge badge-gray">{subC?.alpha_tag||''}</span></td>}<td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:inv.status==='partial'?'#fef3c7':'#fee2e2',color:inv.status==='partial'?'#92400e':'#dc2626'}}>{inv.status==='partial'?'Partial':'Open'}</span></td><td style={{textAlign:'right',fontWeight:700}}>${safeNum(inv.total).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td style={{textAlign:'right',fontWeight:700}}>${bal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td style={{color:'#64748b'}}>{_fmtDate(inv.date||inv.created_at)||'—'}</td><td style={{color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}} title={overdue?'Past due':undefined}>{dueStr||'—'}</td></tr>})}</tbody></table></>}</div></div>}
         {bookingSOs.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header" style={{background:'#eef2ff',borderBottom:'1px solid #c7d2fe'}}><h2 style={{color:'#4338ca'}}>Booking Orders ({bookingSOs.length})</h2><span style={{fontSize:11,color:'#6366f1',marginLeft:8}}>Future ship dates — not yet in production</span></div><div className="card-body" style={{padding:0}}>{renderTable(bookingSOs)}</div></div>}
       </>})()}
@@ -440,7 +466,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All Years'],['thisyear','This Year'],['lastyear','Last Year']].map(([v,l])=><button key={v} className={`btn btn-sm ${yF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setYF(v)}>{l}</button>)}
       </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
-        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){const inv2=(invs||[]).find(x=>x.id===t.id)||t;onOpenInv(inv2)}}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
+        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate'||t.type==='invoice'||t.so_id)?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t.type==='invoice'){if(onOpenInv){
+            // Rows here are rebuilt field-by-field (see the txns push above), which DROPS _hist —
+            // so test the ORIGINAL record in t._o, not the row. Handing the stripped row to the
+            // detail page rendered a NetSuite invoice as an editable $0 portal invoice with no
+            // items, Delete included (INV60425).
+            const _orig=t._o||t;const inv2=_orig._hist?_orig:((invs||[]).find(x=>x.id===t.id)||_orig);onOpenInv(inv2)}}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
           <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
           <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
           <td style={{fontSize:11,color:'#64748b'}}>{_fmtDate(t.date)||'—'}</td>
@@ -561,7 +592,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       with a one-click jump into either store. */}
   {tab==='webstores'&&(()=>{
     const money=n=>'$'+(Number(n)||0).toLocaleString(undefined,{maximumFractionDigits:0});
-    const dt=s=>s?String(s).slice(0,10):'—';
+    // Store windows are PT wall clock; slicing the timestamptz gave the UTC day.
+    const dt=s=>s?(ptDateInput(s)||'—'):'—';
     const chip=(status)=>{const st=(status||'').toLowerCase();const m=st==='open'?{bg:'#dcfce7',c:'#166534'}:st==='closed'?{bg:'#fee2e2',c:'#dc2626'}:{bg:'#f1f5f9',c:'#64748b'};return <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:m.bg,color:m.c,textTransform:'capitalize'}}>{status||'—'}</span>};
     const openFirst=arr=>[...arr].sort((a,b)=>((a.status||'').toLowerCase()==='open'?0:1)-((b.status||'').toLowerCase()==='open'?0:1));
     const ws=openFirst(custWebstores||[]);const omg=openFirst(custOmgStores||[]);
@@ -1559,11 +1591,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div className="stat-card"><div className="stat-label">Avg Invoice</div><div className="stat-value">{fmt(avg)}</div></div>
           <div className="stat-card"><div className="stat-label">First → Last</div><div className="stat-value" style={{fontSize:13}}>{fmtD(first)} → {fmtD(last)}</div></div>
         </div>
-        {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} (revenue and dates only — no line items).</div>}
+        {histCount>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Includes {histCount} NetSuite historical invoice{histCount===1?'':'s'} — click any row to view the invoice with its items.</div>}
         {sortedInvs.length>0&&<div style={{marginTop:12}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,textTransform:'uppercase'}}>Invoices</div>
           <table style={{fontSize:12,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>Date</th><th style={{textAlign:'left'}}>Invoice #</th>{isP&&<th style={{textAlign:'left'}}>Sub</th>}<th style={{textAlign:'left'}}>Memo</th><th style={{textAlign:'right'}}>Total</th><th>Source</th></tr></thead><tbody>
-            {sortedInvs.map((i,idx)=>{const d=pd(i.date);return<tr key={i.id+'-'+idx}>
+            {/* Open the invoice detail on click — it lazily loads NetSuite line items from
+                customer_invoice_lines (same data the Sales History page reads), so hist rows show
+                their real items there. Pass the _hist object itself, never a portal row that might
+                share its document number (the INV62383 shadow rule from InvoicesPage). */}
+            {sortedInvs.map((i,idx)=>{const d=pd(i.date);return<tr key={i.id+'-'+idx} style={{cursor:onOpenInv?'pointer':undefined}} onClick={()=>{if(!onOpenInv)return;onOpenInv(i._hist?i:((invs||[]).find(x=>x.id===i.id)||i))}}>
               <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtD(d)}</td>
               <td style={{fontWeight:700,color:'#1e40af'}}>{i.document_number||i.id}</td>
               {isP&&<td><span className="badge badge-gray">{gn(i.customer_id)}</span></td>}
@@ -1581,20 +1617,33 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {showInvEmail&&(()=>{
     const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
     const accts=getBillingContacts(customer,allCustomers);
-    const acctContact=accts[0]||(customer.contacts||[])[0];
-    const ccAccts=accts.filter(a=>a.email&&a.email!==acctContact?.email);
     const displayInvs=invEmailOverdueOnly?openInvs.filter(inv=>{const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;return age>30;}):openInvs;
     const totalDue=displayInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
     return<div className="modal-overlay" onClick={()=>setShowInvEmail(false)}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" onClick={()=>setShowInvEmail(false)}>×</button></div>
       <div className="modal-body">
-        {/* Sending to */}
-        <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginBottom:14}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>SENDING TO</div>
-          <div style={{fontSize:14,fontWeight:600}}>{acctContact?.name||'—'} <span style={{fontSize:12,color:'#64748b'}}>({acctContact?.role||'Primary'})</span>{acctContact?._inherited_from&&<span style={{fontSize:10,marginLeft:6,padding:'1px 6px',background:'#ede9fe',color:'#6d28d9',borderRadius:10,fontWeight:600}}>from {acctContact._inherited_from}</span>}</div>
-          <div style={{fontSize:13,color:'#2563eb'}}>{acctContact?.email||'No email on file'}</div>
-          {ccAccts.length>0&&<div style={{fontSize:11,color:'#64748b',marginTop:6}}><strong>CC:</strong> {ccAccts.map(a=>a.email+(a._inherited_from?' (from '+a._inherited_from+')':'')).join(', ')}</div>}
-          {accts.length===0&&(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Billing" to auto-send invoices there{customer.parent_id?' — or set one on the parent customer to apply to all sub-customers':''}</div>}
+        {/* Sending to — billing contacts start checked; every family contact is available, and any
+            address can be typed in. Sub-customer contacts are labelled with their account. */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>SENDING TO {invEmailTargets.length>0&&<span style={{fontWeight:400}}>({invEmailTargets.length} selected)</span>}</div>
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,background:'#f8fafc',maxHeight:190,overflowY:'auto'}}>
+            {famContacts.length===0&&invEmailCustom.length===0&&<div style={{fontSize:12,color:'#94a3b8',padding:'4px 8px'}}>No contacts on file — add an email below.</div>}
+            {famContacts.map(ct=><label key={ct.email} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'5px 8px',borderRadius:6,background:invEmailChecked[ct.email]?'#dbeafe':'transparent',marginBottom:3}}>
+              <input type="checkbox" checked={!!invEmailChecked[ct.email]} onChange={e=>setInvEmailChecked(m=>({...m,[ct.email]:e.target.checked}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+              <span style={{fontSize:12}}><strong>{ct.name||'Contact'}</strong> — {ct.email}{ct.role?' ('+ct.role+')':''}</span>
+              {ct._acct&&<span style={{marginLeft:'auto',fontSize:10,padding:'1px 6px',background:'#e0e7ff',color:'#3730a3',borderRadius:10,fontWeight:600,whiteSpace:'nowrap'}}>{ct._acct}</span>}
+            </label>)}
+            {invEmailCustom.map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'5px 8px',borderRadius:6,background:invEmailChecked[em]?'#dbeafe':'transparent',marginBottom:3}}>
+              <input type="checkbox" checked={!!invEmailChecked[em]} onChange={e=>setInvEmailChecked(m=>({...m,[em]:e.target.checked}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+              <span style={{fontSize:12}}>{em} <span style={{fontSize:10,color:'#64748b'}}>(added)</span></span>
+              <button style={{marginLeft:'auto',background:'none',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>{setInvEmailCustom(arr=>arr.filter(x=>x!==em));setInvEmailChecked(m=>{const n={...m};delete n[em];return n})}}>×</button>
+            </label>)}
+            <div style={{display:'flex',gap:6,marginTop:6}}>
+              <input className="form-input" type="email" placeholder="+ Add another email..." value={invEmailAdding} onChange={e=>setInvEmailAdding(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&invEmailAdding.includes('@')){e.preventDefault();const em=invEmailAdding.trim();setInvEmailCustom(arr=>arr.includes(em)?arr:[...arr,em]);setInvEmailChecked(m=>({...m,[em]:true}));setInvEmailAdding('')}}} style={{fontSize:12,flex:1}}/>
+              <button className="btn btn-sm btn-secondary" disabled={!invEmailAdding.includes('@')} onClick={()=>{const em=invEmailAdding.trim();setInvEmailCustom(arr=>arr.includes(em)?arr:[...arr,em]);setInvEmailChecked(m=>({...m,[em]:true}));setInvEmailAdding('')}}>Add</button>
+            </div>
+          </div>
+          {accts.length===0&&(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Billing" to pre-select them here{customer.parent_id?' — or set one on the parent customer to apply to all sub-customers':''}</div>}
         </div>
         {/* Invoice list */}
         <div style={{marginBottom:14}}>
@@ -1609,8 +1658,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             {displayInvs.length===0&&<div style={{padding:'14px',textAlign:'center',fontSize:12,color:'#94a3b8'}}>No overdue invoices</div>}
             {displayInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
               return<div key={inv.id} style={{padding:'10px 14px',borderBottom:i<displayInvs.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10}}>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span>
+                    {isP&&<span style={{fontSize:10,padding:'1px 6px',background:'#e0e7ff',color:'#3730a3',borderRadius:10,fontWeight:600}}>{inv.customer_id===customer.id?'Main account':(teamName(inv.customer_id)||gn(inv.customer_id)||'—')}</span>}
+                  </div>
                   <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||'Invoice'} · {inv.date||'—'}</div>
                 </div>
                 <div style={{textAlign:'right'}}>
@@ -1631,12 +1683,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Preview */}
         <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginTop:14,fontSize:11,color:'#64748b'}}>
-          <strong>Preview:</strong> Email will include this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
+          <strong>Preview:</strong> Email to {invEmailTargets.length>0?invEmailTargets.join(', '):'(no recipients selected)'} with this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
         </div>
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0} onClick={()=>{setShowInvEmail(false);const _ccLine=ccAccts.length>0?'\nCC: '+ccAccts.map(a=>a.email).join(', '):'';alert('📧 Invoice email sent to '+(acctContact?.email||'—')+_ccLine+'\n'+displayInvs.length+' invoice(s) (demo)')}}>📧 Send {displayInvs.length} Invoice{displayInvs.length!==1?'s':''}</button>
+        <button className="btn btn-primary" style={{background:'#dc2626'}} disabled={displayInvs.length===0||invEmailTargets.length===0} title={invEmailTargets.length===0?'Select at least one recipient':undefined} onClick={()=>{setShowInvEmail(false);alert('📧 Invoice email sent to '+invEmailTargets.join(', ')+'\n'+displayInvs.length+' invoice(s) (demo)')}}>📧 Send {displayInvs.length} Invoice{displayInvs.length!==1?'s':''}</button>
       </div>
     </div></div>})()}
 
@@ -1768,7 +1820,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const j=portalJobView.job;const so=portalJobView.so;
       const af2=safeArt(so).find(a=>a.id===j.art_file_id);
       const _jAF2=[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
-      const _jSkus2=new Set((j.items||[]).map(gi=>gi.sku).filter(Boolean));
+      // Both key forms: a garment's own mock sku (the line NAME for customer-supplied lines,
+      // which all share the SKU 'CUST-SUPPLIED') and the raw SKU its pre-fix bucket used.
+      const _jSkus2=new Set((j.items||[]).flatMap(gi=>[mockSkuOf(safeItems(so)[gi.item_idx]||gi),gi.sku]).filter(Boolean));
       const _mf2Seen=new Set();
       const _mockupFilesBase2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
       // The normal lookup misses two cases the approval gate (skusMissingMockups) already
@@ -1780,8 +1834,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const seen=new Set();const out=[];
         (j.items||[]).forEach(gi=>{
           const it=safeItems(so)[gi.item_idx];
-          const gSku=it?.sku||gi.sku||'';const gColor=it?.color||gi.color||'';
-          const srcKey=resolveMockLink(_jAF2,gSku,gColor);
+          const gColor=it?.color||gi.color||'';
+          const srcKey=resolveMockLink(_jAF2,mockSkuOf(it||gi),gColor);
           if(!srcKey)return;
           mockLinkSourceFiles(_jAF2,srcKey).forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return;seen.add(u);out.push(f)});
         });
@@ -1986,26 +2040,30 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const rows=[];let subTotal=0;
         const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
         const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
-        if(soItems.length>0){
-          soItems.forEach(it=>{
-            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
-            let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
-            if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
-            rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-            safeDecos(it).forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
-              const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-              const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-              rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-            });
+        // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+        // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+        // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+        // pricing basis so a partial never re-prices a decoration into a different tier.
+        const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice(inv,soItems);
+        _scoped.forEach(it=>{
+          const qty=it._invQty;const pq=it._soQty;
+          const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+          let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
+          if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+            const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+            const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
+            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
           });
-        }else{
-          // Some NetSuite-imported lines only carry an amount (no qty/rate/desc),
-          // so render those columns blank rather than a misleading 0 / $0.00.
-          (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty||'',style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:rate?_$(rate):'',style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
-        }
+        });
+        // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+        // document's subtotal won't reconcile to the invoice total. Some NetSuite-imported
+        // lines only carry an amount (no qty/rate/desc), so those columns render blank
+        // rather than a misleading 0 / $0.00.
+        _extra.forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty||'',style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:rate?_$(rate):'',style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
         const _ship=inv.shipping!=null?inv.shipping:(linkedSO?(linkedSO.shipping_type==='pct'?subTotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0)):0);
         const _tax=inv.tax||0;
         const billAddr=customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':'');
@@ -2054,7 +2112,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{fontSize:12,fontWeight:700,color:'#1e3a5f'}}>📦 Order Details — {linkedSO.memo||linkedSO.id}</div>
               <span style={{fontSize:10,color:'#64748b'}}>{linkedSO.id}</span>
             </div>
-            {safeItems(linkedSO).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+            {/* Scoped to the lines THIS invoice bills — a partial invoice used to list the
+                whole order here, so a customer billed for one line saw every line of the SO. */}
+            {scopeSoItemsToInvoice(inv,safeItems(linkedSO)).items.map((it,ii)=>{const qty=it._invQty;const sizes=Object.entries(it._invSizes||{}).filter(([,v])=>v>0);
               return<div key={ii} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                   <div>
@@ -2078,8 +2138,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>}
           </div>}
           {/* Invoice line items — only shown when there's no linked SO. When an SO is
-              linked, the Order Details section above already lists every item (with
-              correct pricing and sizes), so we don't repeat them here. */}
+              linked, the Order Details section above already lists the items THIS invoice
+              bills (with correct pricing and sizes), so we don't repeat them here. */}
           {inv.line_items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
             {inv.line_items.map((li,i)=>{const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):safeNum(li.qty)*rate;

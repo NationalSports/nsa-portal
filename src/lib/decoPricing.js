@@ -198,7 +198,13 @@ function _dPInner(T,d,q,artFiles,cq){
   // sell_override honors an explicit 0 (nullish check, matching the screen_print/embroidery
   // branches) — the falsy-|| form silently re-added the $6 default over a deliberate zero
   // (club conversion writes sell_override=0: names revenue is already inside unit_sell).
-  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
+  // Names bill per NAME, not per garment: return the true per-name rate and hand the
+  // application count out as _nq, exactly like the numbers branch above. The old form
+  // baked the count into the rate (rQ(nc*se/q)), so one $5 name on a 24-pc line printed
+  // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
+  // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
+  // is unchanged everywhere nc*se/q happened to land on an exact quarter.
+  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // sell_override honors an explicit 0 (nullish, not falsy-||) — synced with the App.js /
   // businessLogic.js / pricing.js copies so a deliberate $0 override isn't overwritten.

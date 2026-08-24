@@ -1,3 +1,8 @@
+# Neutral alias for netlify/functions/brevo-proxy (staff email sends + open tracking).
+# Ad blockers and network filters match the vendor name "brevo" anywhere in a URL and
+# kill the request in the browser, which surfaces as "Email send failed: Failed to
+# fetch". Must stay ABOVE the /* SPA catch-all or it would resolve to index.html.
+/api/mail-send  /.netlify/functions/brevo-proxy  200
 /roster.html  /roster.html  200
 /review       /review.html  200
 /*    /index.html   200

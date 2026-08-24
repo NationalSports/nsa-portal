@@ -8,7 +8,7 @@ import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, botProgress } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -22,19 +22,20 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
+import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
-import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
+import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
+import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
@@ -185,6 +186,23 @@ const computeOmgSoSync=(so)=>{
 // portal's syncFromSO allocation: store moves together to the SO stage, but an
 // item whose SKU+size isn't fully received holds at on-order (backorder).
 // Never downgrades, never touches shipped/cancelled. Best-effort + silent.
+// The "apply OMG funds" reminder normally fires when the store's SO finishes its final
+// job (all costs applied). This is the SAFETY-NET window: if no SO has been created
+// this long after the store was brought into the portal, remind accounting anyway so
+// the store is never forgotten. Shared by the reminder effect and the store card.
+const OMG_FUNDS_WINDOW_MS = 42*24*60*60*1000; // 6 weeks
+// ── Completed-job grace window for production surfaces ──
+// Invoicing / closing an SO sets sticky status='complete' — a FINANCIAL close that routinely
+// lands minutes after the decorator's Done click (SO-1512, 8/18: final invoice 5 minutes after
+// both jobs completed). Surfaces that treat "SO complete" as "goods out the door" were yanking
+// just-finished jobs off the Prod Board's Completed column and the deco Completed tabs before
+// shipping ever saw them. A job whose persisted completion stamp (completed_at, or the scan
+// station's decorated_at) is inside this window stays visible even once the order is complete;
+// unstamped legacy rows keep the old drop, so months of already-shipped history doesn't flood
+// back into the Completed views. Shipping the job (prod_status 'shipped') still clears it
+// immediately, grace or not.
+const JOB_COMPLETED_GRACE_MS=7*24*60*60*1000; // 7 days
+const jobRecentlyCompleted=(j)=>{const ts=j?.completed_at||j?.decorated_at;if(!ts)return false;const t=new Date(ts).getTime();return !Number.isNaN(t)&&(Date.now()-t)<JOB_COMPLETED_GRACE_MS};
 const _OMG_STAGE_ORD = { pending:0, on_order:1, received:2, in_production:3, bagging:4, shipped:5, complete:5 };
 const _OMG_STAGE_LABEL = ['pending','on_order','received','in_production','bagging','shipped'];
 // Allocate a computed SO sync (store stage + per-sku/size received qty) across a
@@ -418,6 +436,7 @@ import {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadHistInvoices,
   _dbSeed,
   _authErrorDetected,
   _bgSync,
@@ -427,6 +446,7 @@ import {
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
+  _setInvBaseProvider,
   _dbSaveEstimate,
   _dbSaveSO,
   _dbSaveArtFiles,
@@ -437,6 +457,7 @@ import {
   _onEstStatusMerge,
   _forceReauth,
   _sessionDead,
+  _isLiveSession,
   _ensureFreshSession,
   _dbSaveCustomer,
   _dbSavePromoProgram,
@@ -724,21 +745,68 @@ const _brevoKey = (process.env.REACT_APP_BREVO_ENABLED || 'true') !== 'false';
 // transactionalSMS branch to netlify/functions/brevo-proxy and route through it.
 const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
-// ─── Brevo Email Open Tracking ───
+// ─── Brevo Email Delivery Tracking ───
 // Brevo's statistics/events endpoint is aggressively rate-limited. When we get a 429,
-// pause all open-checks for a cooldown window so we stop hammering the API.
+// pause all delivery checks for a cooldown window so we stop hammering the API.
 let _brevoBackoffUntil=0;
-// Check Brevo events API for email opens by messageId
-const checkBrevoEmailOpens=async(messageId)=>{
+// Brevo event names, matched loosely because the API's casing/pluralisation varies by
+// endpoint ('hardBounces' in filters, 'hard_bounce' in some payloads).
+// A CLICK counts as proof of delivery alongside an open, and is the stronger signal of the
+// two: a coach who clicks the pay link in a client that blocks the tracking pixel registers
+// no open at all, and calling that "never arrived" would be flatly wrong.
+const _BREVO_OPEN=/opened|click|loadedbyproxy|proxy_open/i;            // the coach got it
+const _BREVO_FAIL=/hardbounce|hard_bounce|blocked|spam|invalid|error/i;// permanent — it will NEVER arrive
+// Bare 'bounce' (no hard/soft qualifier) is deliberately grouped with the SOFT cases: it is
+// ambiguous, and the cost of the two mistakes is not symmetric. Calling a soft bounce
+// "not delivered" sends a rep chasing an email that did land; calling a hard bounce
+// "delayed" just leaves the status where it already was.
+const _BREVO_SOFT=/softbounce|soft_bounce|deferred|bounce/i;           // temporary / unclear — Brevo may still retry
+// Delivery outcome for ONE sent message. Returns {status:'opened'|'failed'|'deferred', …}
+// or null when nothing conclusive is known yet.
+//
+// This used to ask only for event=opened, which made a bounced pay link and an unread
+// pay link look identical in the portal — the invoice sat on a green "✉️ Sent" badge
+// forever while the coach never received it, and no screen anywhere could say so. One
+// unfiltered call now returns every event for the message, so a send that never landed
+// is visible the same day instead of surfacing weeks later as an unpaid invoice.
+const checkBrevoDelivery=async(messageId)=>{
   if(!_brevoKey||!messageId)return null;
   if(Date.now()<_brevoBackoffUntil)return null;
   try{
-    const r=await authFetch('/.netlify/functions/brevo-proxy?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json'}});
+    // Same neutral-path-first proxy the sends use — a blocker that kills the vendor URL
+    // would otherwise leave delivery tracking permanently dark for that rep.
+    const{res:r,netErr}=await mailProxyFetch('?endpoint=stats&messageId='+encodeURIComponent(messageId)+'&limit=50',{headers:{'accept':'application/json'}});
+    if(netErr)return null;
     if(r.status===429){_brevoBackoffUntil=Date.now()+600000;return null}// rate-limited: back off 10 min
     if(!r.ok)return null;const d=await r.json();
-    if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
-    return null;
+    const evs=Array.isArray(d.events)?d.events:[];
+    if(!evs.length)return null;
+    const _ev=e=>String((e&&e.event)||'');
+    // An open OUTRANKS a bounce on purpose. One send to several contacts shares a single
+    // messageId, so a dead address alongside a coach who opened it is a delivered email —
+    // reporting that as "not delivered" would send reps chasing a link that worked.
+    const open=evs.find(e=>_BREVO_OPEN.test(_ev(e)));
+    if(open)return{status:'opened',at:open.date,email:open.email||null};
+    const bad=evs.find(e=>_BREVO_FAIL.test(_ev(e)));
+    if(bad)return{status:'failed',at:bad.date,email:bad.email||null,event:_ev(bad),reason:bad.reason||''};
+    const soft=evs.find(e=>_BREVO_SOFT.test(_ev(e)));
+    if(soft)return{status:'deferred',at:soft.date,email:soft.email||null,event:_ev(soft),reason:soft.reason||''};
+    return null;// requests/delivered only — in flight, nothing to report yet
   }catch{return null}
+};
+// Fold a delivery verdict into a document. The verdict is stamped onto the sent_history
+// entry it came from (so the log shows WHICH send bounced, and survives a reload — the
+// underscore-prefixed fields below are client-only and never persist), and the doc's
+// email_status only moves for a conclusive outcome.
+// Matched by messageId, NOT object identity: the entry we polled came from a ref snapshot
+// while the entry we patch lives in the latest state, so the two are never the same object.
+const _applyDelivery=(doc,lastSend,res)=>{
+  const hist=(doc.sent_history||[]).map(h=>(h&&h.messageId&&h.messageId===lastSend.messageId)
+    ?{...h,delivery:res.status,delivery_at:res.at||null,delivery_event:res.event||null,delivery_reason:res.reason||null,delivery_to:res.email||h.to||null}
+    :h);
+  if(res.status==='opened')return{...doc,email_status:'opened',email_opened_at:new Date(res.at).toLocaleString(),_opened_by_email:res.email||lastSend.to||'',sent_history:hist};
+  if(res.status==='failed')return{...doc,email_status:'failed',_delivery_failed_to:res.email||lastSend.to||'',_delivery_reason:res.reason||res.event||'',sent_history:hist};
+  return{...doc,sent_history:hist};// deferred — Brevo is still retrying, leave the status alone
 };
 
 
@@ -950,7 +1018,7 @@ const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
 // decoration slot ends up showing the same image twice. Collapse by filename (the
 // first/primary copy wins); files with no resolvable name are left as-is. Callers scope
 // this per slot, so two different decorations that share a filename are never merged.
-const _dedupMockDupes=arr=>{const out=[];const seen=new Set();for(const f of(arr||[])){if(!f)continue;const nm=(fileDisplayName(f)||'').trim().toLowerCase();if(nm){if(seen.has(nm))continue;seen.add(nm)}out.push(f)}return out};
+const _dedupMockDupes=dedupeMockDupes;
 // All mockups for one garment line, mirroring the Art Dashboard's slot system: one slot
 // per art decoration on the ITEM (first deco reads the base sku|color key, additional
 // decos read suffixed keys |<colorWayId> / |d1), each from that decoration's OWN art
@@ -959,10 +1027,14 @@ const _dedupMockDupes=arr=>{const out=[];const seen=new Set();for(const f of(arr
 // re-uploaded mock can leave a stale copy under an unused sub-key — reading per-deco
 // slots instead of sweeping every key on every art keeps both out of the display.
 const _prodJobItemMocks=(artFiles,so,gi)=>{
-  const sku=gi.sku;const _mk=sku+'|'+(gi.color||'');
+  // Read the identity off the LIVE line where possible: customer-supplied garments all carry the
+  // SKU 'CUST-SUPPLIED', so garmentMockKey keys them on the line name instead — without it every
+  // custom garment of one color printed the same mockup on the floor sheet (SO-2063).
+  const _line=safeItems(so)[gi.item_idx]||gi;
+  const sku=gi.sku;const _mk=garmentMockKey(_line);const _legacyMk=mockLinkKeyOf(sku,gi.color);
   // A garment linked to another garment's mockup resolves to the SOURCE garment's mock.
   // Display surfaces dedupe so it renders once for the linked set.
-  const _src=resolveMockLink(artFiles,sku,gi.color);
+  const _src=resolveMockLink(artFiles,mockSkuOf(_line),gi.color);
   if(_src)return mockLinkSourceFiles(artFiles,_src);
   const _isNN=k=>/\|(numbers|names)(_\d+)?(_b)?$/.test(k);
   const out=[];const seen=new Set();
@@ -975,12 +1047,14 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
       const m=a.item_mockups||{};
       const disc=i===0?'':(d.color_way_id||('d'+i));
       const key=_mk+(disc?('|'+disc):'');
-      // Slot key first, then the same fallback chain the approval/coach views use:
-      // base sku|color, legacy bare sku, any non-numbers/names sub-key.
+      // Slot key first, then the same fallback chain the approval/coach views use: this
+      // garment's sub-key and base key (each through the pre-fix shared bucket), legacy bare
+      // sku, any non-numbers/names sub-key.
+      const _sub=itemMockFiles(m,_line,disc?('|'+disc):'');const _bas=itemMockFiles(m,_line);
       const v=(m[key]&&m[key].length>0)?m[key]
-        :(m[_mk]&&m[_mk].length>0)?m[_mk]
-        :(m[sku]&&m[sku].length>0)?m[sku]
-        :(Object.entries(m).find(([k,arr])=>k.startsWith(_mk+'|')&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
+        :_sub.length>0?_sub
+        :_bas.length>0?_bas
+        :(Object.entries(m).find(([k,arr])=>(k.startsWith(_mk+'|')||k.startsWith(_legacyMk+'|'))&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
       _dedupMockDupes(v).forEach(push);
       // Reversible decos have a second mockup slot (Side B) keyed |<color_way_id_b> with
       // |d<i>_1 as the positional fallback — same contract as mockSlotKeys (safeHelpers).
@@ -988,12 +1062,55 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     });
   }else{
     // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
-    artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
+    artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes(itemMockFiles(m,_line)).forEach(push)});
   }
   const rank=k=>/\|numbers(_\d+)?(_b)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
-    Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
+    const _own=Object.keys(m).some(k=>k.startsWith(_mk+'|')&&_isNN(k)&&(m[k]||[]).length>0);
+    const _pfx=(_own||_mk===_legacyMk)?_mk:_legacyMk;
+    Object.keys(m).filter(k=>k.startsWith(_pfx+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
+};
+// Mockups saved in a garment's numbers / names slots — the proof of the BACK. Same key scheme
+// _prodJobItemMocks reads above (sku|color|numbers / |names, plus the _<n> / _b sub-key variants),
+// counted per kind so the sheet can call out which side has no proof on file.
+const _prodJobNnMocks=(artFiles,gi)=>nnMockCounts(artFiles,gi);
+// ── Dashboard art preview (READ-ONLY) ──
+// The mock images behind an "Art awaiting approval" to-do, so a rep can eyeball the proof
+// from the home page instead of opening the order. Scoping is the production board's
+// (_prodJobArtFiles / _prodJobItemMocks / _prodJobGenericMocks), so what shows here is the
+// same set the job sheet prints — this decides nothing, it only displays. When a job has no
+// garment mockup at all (the "set up the mockup" to-do) it falls back to the raw design art,
+// flagged as such: seeing the logo helps, and calling it a mockup is exactly the SO-1661
+// mistake. Non-renderable production formats (.ai/.eps/.dst/.psd) are skipped — the preview
+// shows what a browser can actually draw.
+const _shotUrl=f=>typeof f==='string'?f:(f?.url||'');
+const dashArtShots=(job,so)=>{
+  const empty={shots:[],hasMock:false,artFiles:[],units:0,garments:[]};
+  if(!job||!so)return empty;
+  const artFiles=_prodJobArtFiles(job,so);
+  const shots=[];const seen=new Set();
+  const push=(f,label,kind)=>{
+    const u=_shotUrl(f);if(!u||seen.has(u))return;
+    const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);
+    if(!isImg&&!isPdf)return;
+    // A PDF proof only previews if Cloudinary can rasterize page 1; anything else has no thumb.
+    const thumb=isImg?u:_cloudinaryPdfThumb(u);
+    if(!thumb)return;
+    seen.add(u);shots.push({url:u,thumb,file:f,label,kind,name:fileDisplayName(f)});
+  };
+  const garments=[];let units=0;
+  (job.items||[]).forEach(gi=>{
+    const it=safeItems(so)[gi.item_idx];if(!it)return;
+    const sku=it.sku||gi.sku||'';const color=it.color||gi.color||'';
+    const qty=Object.values(gi.sizes||safeSizes(it)||{}).reduce((a,v)=>a+(safeNum(v)||0),0);
+    units+=qty;garments.push({sku,color,name:it.name||gi.name||'',qty});
+    _prodJobItemMocks(artFiles,so,gi).forEach(f=>push(f,[sku,color].filter(Boolean).join(' · ')||'Garment mockup','mock'));
+  });
+  _prodJobGenericMocks(artFiles).forEach(f=>push(f,'Design mockup','mock'));
+  const hasMock=shots.length>0;
+  if(!hasMock)artFiles.forEach(a=>(a?.files||[]).forEach(f=>push(f,'Design art','design')));
+  return{shots,hasMock,artFiles,units,garments};
 };
 // Production Job Sheet PDF options — the single builder shared by the production-board
 // prodJobModal and the SO editor's Jobs tab so both render an identical sheet. Pure: reads
@@ -1022,8 +1139,8 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const collectItemMocks=gi=>_prodJobItemMocks(allArtFiles,so,gi);
   // A garment linked to another garment's mockup prints a one-line reference instead of
   // repeating the image; the source garment prints it once with an "also used by" caption.
-  const _linkSrcOf=g=>resolveMockLink(allArtFiles,g.sku,g.color);
-  const _linkDepsOf=g=>mockLinkDependents(allArtFiles,g.sku,g.color).filter(k=>itemDetails.some(x=>(x.sku+'|'+(x.color||''))===k));
+  const _linkSrcOf=g=>resolveMockLink(allArtFiles,mockSkuOf(g),g.color);
+  const _linkDepsOf=g=>mockLinkDependents(allArtFiles,mockSkuOf(g),g.color).filter(k=>itemDetails.some(x=>garmentMockKey(x)===k));
   const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
     'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
     'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
@@ -1153,6 +1270,18 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     // Mockup image(s) for this item immediately after its tables — all locations
     // (front + back arts, numbers/names) side by side
     const _giSrc=_linkSrcOf(gi);
+    // Back-proof gate. A garment running numbers or names has its own mockup slot for that side,
+    // and the sheet prints it whenever one exists — but nothing ever flagged its ABSENCE, so
+    // SO-1605's jerseys reached the floor with a roster, a front mockup, and no picture of the
+    // back at all. Say so on the sheet instead of leaving the press to guess the placement.
+    // Skipped for a garment that borrows another's mockup — the source garment carries the notice.
+    if(!_giSrc&&(itemNumDecos.length>0||itemNameDecos.length>0)){
+      const _nn=_prodJobNnMocks(allArtFiles,gi);
+      const _missNn=[];
+      if(itemNumDecos.length>0&&_nn.numbers===0)_missNn.push('numbers');
+      if(itemNameDecos.length>0&&_nn.names===0)_missNn.push('names');
+      if(_missNn.length>0)sHtml+='<div style="margin:8px 0;padding:9px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO BACK MOCKUP — no approved '+_missNn.join(' / ')+' mockup on file for '+gi.sku+(gi.color?' ('+gi.color+')':'')+'. Confirm placement and size with the artist before running.</div>';
+    }
     if(_giSrc){
       // Linked garment: reference the source garment's mockup instead of repeating it.
       sHtml+='<div style="margin:10px 0;padding:8px 10px;border:1px dashed #c7d2fe;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:11px;font-weight:700;text-align:center">🔗 Same mockup as '+_giSrc.split('|')[0]+'</div>';
@@ -1444,14 +1573,9 @@ const loadPdfJs=()=>{
   });
   return _pdfjsLoadPromise;
 };
-// Reject (instead of hanging forever) if a promise doesn't settle within `ms`. Used to bound PDF
-// text extraction so one corrupt / encrypted / scanned-image / huge file can't freeze the whole
-// import on "Parsing PDFs…". Note: this lets the UI recover; any orphaned pdf.js work is harmless.
-const _withTimeout=(promise,ms,msg)=>{
-  let t=null;
-  const timeout=new Promise((_,reject)=>{t=setTimeout(()=>reject(new Error(msg||('Timed out after '+ms+'ms'))),ms)});
-  return Promise.race([promise,timeout]).finally(()=>{if(t)clearTimeout(t)});
-};
+// _withTimeout (src/utils.js) bounds the extraction below so one corrupt / encrypted /
+// scanned-image / huge file can't freeze the whole import on "Parsing PDFs…". It lets the
+// UI recover; any orphaned pdf.js work left running is harmless.
 const extractPdfText=async(file,opts={})=>{
   // Bound the whole extraction so a corrupt / encrypted / scanned / huge PDF can't hang the
   // import on "Parsing PDFs…" forever — pdf.js getDocument()/getTextContent() can otherwise
@@ -1592,7 +1716,10 @@ const omgReadReportText=async(file)=>{
 const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
 const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
 const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
-const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
+// Fit range that names itself one-size ("MD-LG (ONE SIZE FITS MOST)" on Richardson caps) —
+// vendors list these as the bare 'OSFA'. Checked last so known labels keep their own answer.
+const _ONE_SIZE_PHRASE=/\bONE\s*SIZE\b|\bOSFA\b|\bOSFM\b/;
+const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}if(_ONE_SIZE_PHRASE.test(u))return'OSFA';return u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['XS','S','M','L','XL','2XL','3XL','4XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
@@ -1685,7 +1812,13 @@ function dP(d,q,artFiles,cq){
     if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
     const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
+  // Names bill per NAME, not per garment: return the true per-name rate and hand the
+  // application count out as _nq, exactly like the numbers branch above. The old form
+  // baked the count into the rate (rQ(nc*se/q)), so one $5 name on a 24-pc line printed
+  // as "24 x $0.25" and the quarter-rounding then billed $6 of sell and $6 of cost for
+  // $5 of work at $3 of cost (EST-2126). Deco walks already read _nq, so the line TOTAL
+  // is unchanged everywhere nc*se/q happened to land on an exact quarter.
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:se,cost:co,_nq:(useNc||q)*(d.reversible?2:1)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(d.dtf_size,true),cost:twaP(d.dtf_size,false)};
@@ -1697,7 +1830,10 @@ function dP(d,q,artFiles,cq){
 export { dP, rQ, parseDate, _decoUnitCostComb };
 // InvoicesPage additionally shares these (RowLink/_buildTabHref are the deep-link row
 // helpers; the brevo pair and the invoice-PDF builder move with a later comms/pdf pass).
-export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms };
+export { RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms };
+// Exported for its unit test — the dashboard's inline art preview resolves what a rep sees
+// before opening the order, so its scoping (mock vs. raw design art) is worth pinning down.
+export { dashArtShots };
 
 // ── Combined deco COST for manually-linked jobs that share a screen ──
 // Per-unit decoration COST priced at the COMBINED linked-job tier qty (from linkedArtCostQty)
@@ -1719,7 +1855,6 @@ function buildInvoicePdfRows(inv, so, fmt){
   const soArt=so?safeArt(so):[];
   const soItems=so?safeItems(so):[];
   const aqMap={};soItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aqMap[d.art_file_id]=(aqMap[d.art_file_id]||0)+q}})});
-  const soByKey={};soItems.forEach((it,idx)=>{soByKey[soLineKey(it,idx)]=idx});
   let lineItems=(inv&&inv.line_items)||[];
   if(!lineItems.length&&so){
     lineItems=soItems.map((it,idx)=>{
@@ -1728,21 +1863,11 @@ function buildInvoicePdfRows(inv, so, fmt){
       return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)};
     }).filter(Boolean);
   }
-  // Match each invoice line back to its SO item so we can re-attach the size breakdown and
-  // decoration/number detail. Try the stored line key first, then SKU, then a description prefix
-  // (mirrors the on-screen invoice view); consume matched SO items so duplicate SKUs map 1:1.
-  const usedSo=new Set();
-  const matchSoIdx=(li)=>{
-    if(li._so_line_key!=null&&soByKey[li._so_line_key]!=null&&!usedSo.has(soByKey[li._so_line_key])){const i=soByKey[li._so_line_key];usedSo.add(i);return i}
-    let i=li._sku?soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku===li._sku):-1;
-    if(i<0)i=soItems.findIndex((it,ix)=>!usedSo.has(ix)&&it.sku&&(li.desc||'').startsWith(it.sku));
-    if(i>=0){usedSo.add(i);return i}
-    return -1;
-  };
+  const soIdxByLine=matchInvoiceLinesToSo(lineItems,soItems);
   const rows=[];let subtotal=0;
-  lineItems.forEach(li=>{
+  lineItems.forEach((li,liIdx)=>{
     const qty=safeNum(li.qty);subtotal+=safeNum(li.amount);
-    const soIdx=matchSoIdx(li);const soIt=soIdx>=0?soItems[soIdx]:null;
+    const soIdx=soIdxByLine[liIdx];const soIt=soIdx>=0?soItems[soIdx]:null;
     const sku=li._sku||soIt?.sku||'';
     const nm=soIt?.name||li._name;const color=soIt?.color||li._color;
     let itemName=nm?(nm+(color?' - '+color:'')):(li.desc||'');
@@ -2160,6 +2285,13 @@ export default function App(){
   // Migrate bad SO/EST/INV IDs from localStorage (non-numeric suffixes like SO-h4o401)
   const migrateState=()=>{
     let soList=loadState('sos',D_SO);let invList=loadState('invs',D_INV);let msgList=loadState('msgs',D_MSG);let estList=loadState('ests',D_E);
+    // deco_pos is read as `(o.deco_pos||[]).forEach(...)` everywhere; `||[]` doesn't catch a value that
+    // is an object rather than an array, so one such row throws "forEach is not a function" and takes
+    // down every screen that scans SOs (global search crashed on SO-TEST-BAG's `{}` on 2026-08-12).
+    // dbEngine normalises the DB copy, but this cached copy renders first — guard it too. Only coerce
+    // a present-but-wrong value: leaving absent/null alone keeps the save path omitting the column
+    // instead of writing an empty array over the DB's deco POs.
+    [soList,estList].forEach(l=>(Array.isArray(l)?l:[]).forEach(r=>{if(r&&r.deco_pos!=null&&!Array.isArray(r.deco_pos))r.deco_pos=[]}));
     const idMap={};let needsMigrate=false;
     // Fix SO IDs
     const badSOs=soList.filter(s=>!(/^SO-\d+$/).test(s.id));
@@ -2220,6 +2352,9 @@ export default function App(){
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // NetSuite invoice history (customer_invoices table) — read-only; kept separate from portal invs state.
   const[histInvs,setHistInvs]=useState([]);
+  // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
+  const _histInvsCount=useRef(0);
+  React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
@@ -2253,6 +2388,12 @@ export default function App(){
   const[deployReloadPending,setDeployReloadPending]=useState(null);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
+  // Inventory merge-save baseline (00239): DIRECT _dbSaveProduct callers (editor
+  // Save, Auto Inventory upload) read their pre-edit baseline from the prod
+  // snapshot at call time — the diff-save effect hasn't advanced it yet at that
+  // moment. Diff-save-initiated saves don't use this (they pass the captured
+  // pre-pass item explicitly — see _diffSave).
+  React.useEffect(()=>{_setInvBaseProvider((id)=>{const s=_dbSnap.current.prod;return(s&&s.find(x=>x.id===id))||null})},[]);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
@@ -2346,6 +2487,10 @@ export default function App(){
   // Deco vendor management
   const[decoVendors,setDecoVendors]=useState([]);const[decoVendorPricing,setDecoVendorPricing]=useState([]);
   const decoVendorNames=useMemo(()=>decoVendors.filter(v=>v.is_active!==false).map(v=>v.name),[decoVendors]);
+  // Active decorators with a usable address, for the vendor order modals' "Fill from a
+  // decorator" picker. Memoized: the modals memoize their lines off props, so a fresh
+  // array each render would re-fire their SKU lookups.
+  const _decoShipPresets=useMemo(()=>decoShipToPresets({decoVendors,vendors:vend}),[decoVendors,vend]);
   // Issue logging system
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[quoteRequests,setQuoteRequests]=useState([]);
@@ -2518,6 +2663,38 @@ export default function App(){
         }else if(d.hasData){
           // If decoration queries timed out during initial load, warn user — data is incomplete
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
+          // Parent-timeout guards (2026-08-18) — same shape as the customers guard below. A timed-out
+          // sales_orders/estimates/invoices PARENT query comes back EMPTY with error:null while
+          // hasData stays true off customers, so without this the tab boots with an empty order book
+          // (zero SOs, zero counts on every customer, search finds nothing) with NO error anywhere,
+          // AND the _diffSave baseline goes empty with it. _*TimedOutBlank = "this table's load is
+          // untrustworthy": the outbox rehydrate below must not gate against it (an empty array reads
+          // as "row deleted on server" → phantom conflict cards). _*TimedOutEmpty additionally keeps
+          // the mount-time arrays in state+snapshot — NOTE: since the 2026-08-11 localStorage cache
+          // purge (dbEngine ~3300) those arrays are ALWAYS empty on a fresh boot, so today this branch
+          // only fires if a cache source returns; the user-visible boot fix is the banner below plus
+          // the poll refilling once a load completes. Mid-session blanking is prevented by the
+          // _parentTimedOut skips at the poll/realtime sites. Computed HERE — before the outbox
+          // rehydrate can splice entries into d.* — so an outbox row pushed into an otherwise-empty
+          // timed-out table can't make it look like a real load.
+          const _soTimedOutBlank=d._soTimedOut&&!d.sales_orders.length;
+          const _estTimedOutBlank=d._estTimedOut&&!d.estimates.length;
+          const _invTimedOutBlank=d._invTimedOut&&!d.invoices.length;
+          const _custTimedOutBlank=d._custTimedOut&&!d.customers.length;
+          const _msgTimedOutBlank=d._msgTimedOut&&!d.messages.length;
+          const _soTimedOutEmpty=_soTimedOutBlank&&sos.length>0;
+          const _estTimedOutEmpty=_estTimedOutBlank&&ests.length>0;
+          const _invTimedOutEmpty=_invTimedOutBlank&&invs.length>0;
+          if(_soTimedOutEmpty||_estTimedOutEmpty||_invTimedOutEmpty){
+            console.warn('[DB] Initial load: order-book parent query timed out — kept cached rows',{sos:_soTimedOutEmpty?sos.length:'loaded',ests:_estTimedOutEmpty?ests.length:'loaded',invs:_invTimedOutEmpty?invs.length:'loaded'});
+            if(typeof nf==='function')nf('Orders didn’t finish loading (usually a slow connection) — showing your last-loaded data. The portal keeps retrying automatically.','error');
+          }
+          // Timed out with nothing local to show (the normal case post-purge): the tab will show an
+          // empty order book until a load succeeds — say so instead of staying silent.
+          else if(_soTimedOutBlank||_estTimedOutBlank||_invTimedOutBlank){
+            console.warn('[DB] Initial load: order-book parent query timed out with no local cache — orders will appear once a load completes');
+            if(typeof nf==='function')nf('Orders are taking too long to load (usually a slow connection). They’ll appear automatically once loading completes.','error');
+          }
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;_syncDbMaxIds();_lastFullSyncAt=Date.now();// initial load already pulled cold tables — don't full-sync again for _FULL_SYNC_MS
           // ─── Durable-outbox rehydrate ───
@@ -2531,10 +2708,28 @@ export default function App(){
             const _obEntries=_outboxList();
             if(_obEntries.length){
               const _obTables={estimates:d.estimates,sales_orders:d.sales_orders,invoices:d.invoices,customers:d.customers,products:d.products,messages:d.messages};
+              // Tables whose load this boot is untrustworthy (parent query timed out empty; products:
+              // the essential tier-1 load SKIPS the catalog, so d.products=[] is normal, not a delete).
+              // Gating an outbox entry against such a table reads the missing row as "deleted on
+              // server" (_outboxGate → 'conflict') and raises a phantom conflict card that can discard
+              // a real unsaved edit. Instead, restore those entries via the same splice as an 'apply'
+              // verdict — the payload MUST re-enter state, because both orphan-cleanup sites (the
+              // startup sweep below and doRetry) treat a failed ID absent from state as "deleted by
+              // user" and purge its outbox entry. A genuinely-stale payload is still safe: the save
+              // paths re-check _version server-side, so a bad replay is rejected and stays failed.
+              // The entry gates normally on the next boot whose table actually loads.
+              const _obNoGate={sales_orders:_soTimedOutBlank,estimates:_estTimedOutBlank,invoices:_invTimedOutBlank,customers:_custTimedOutBlank,messages:_msgTimedOutBlank,products:!d.products.length};
               const _obConflicts=[];
               _obEntries.forEach(en=>{
                 const arr=_obTables[en.table];
                 if(!arr||!en.payload){_outboxRemove(en.table,en.id);return}
+                if(_obNoGate[en.table]&&!arr.find(r=>r.id===en.id)){
+                  arr.push(en.payload);
+                  _obApplied[en.id]=en.payload;
+                  _dbSaveFailedIds.add(en.id);
+                  console.warn('[Outbox] restored unsaved edit for',en.id,'without gating — its table didn’t load this boot');
+                  return;
+                }
                 const row=arr.find(r=>r.id===en.id);
                 const verdict=_outboxGate(en,row);
                 if(verdict==='drop'){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
@@ -2568,7 +2763,7 @@ export default function App(){
           const _custTimedOutEmpty=d._custTimedOut&&!d.customers.length&&cust.length>0;
           const _custLoaded=_custTimedOutEmpty?cust:d.customers;
           if(_custTimedOutEmpty)console.warn('[DB] Initial load: customers query timed out — kept '+cust.length+' cached customers (poll will refill)');
-          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
+          _dbSnap.current={ests:_estTimedOutEmpty?ests:d.estimates,sos:_soTimedOutEmpty?sos:d.sales_orders,invs:_invTimedOutEmpty?invs:d.invoices,msgs:d.messages,cust:_custLoaded,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
           setREPS(d.team.length?d.team:DEFAULT_REPS);
           // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
           if(_custTimedOutEmpty){/* customers timed out — state already holds the cached list; leave it */}
@@ -2577,11 +2772,11 @@ export default function App(){
           }else{setCust(d.customers)}
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
-            setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
-            setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
-            setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
+            if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
+            if(!_soTimedOutEmpty)setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
+            if(!_invTimedOutEmpty)setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
             setMsgs(prev=>d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(_obApplied[m.id]||prev.find(p=>p.id===m.id)||m):m));
-          }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
+          }else{if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));if(!_soTimedOutEmpty)setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));if(!_invTimedOutEmpty)setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           setHistInvs(d.hist_invoices||[]);
           setIssues(d.issues||[]);
@@ -2629,6 +2824,17 @@ export default function App(){
             setProd(prev=>{const base=_dbSaveFailedIds.size?pd.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):pd.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
             console.log('[DB] Tier 2: product catalog loaded ('+pd.products.length+' products)');
           }).catch(e=>{console.warn('[DB] Tier 2 product load failed:',e?.message||e)});
+        }else if(d._parentTimedOut){
+          // hasData is false because parent queries TIMED OUT (each came back empty with error:null),
+          // NOT because the DB is empty. Without this branch a slow connection that 408'd both
+          // customers AND sales_orders fell into the seed path below, saw the seed lock already
+          // "done" with "empty" tables (lockDoneButEmpty), and RE-SEEDED the live DB from this
+          // browser's defaults — upserting DEFAULT_REPS over team_members and overwriting app_state
+          // blobs (change_log/so_history/qb_config/company_info…) that the 2026-08-11 cache purge
+          // had already emptied locally. Treat it as a failed load: banner up, writes stay paused
+          // (_dbLoadSuccess stays false), the poll retries and re-enables writes when a load succeeds.
+          setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+          console.error('[DB] Initial load returned no data but parent queries timed out — treating as a FAILED load, not an empty database (seeding suppressed)');
         }else{
           // Supabase tables exist but are all empty — seed from localStorage
           // Use a lock row to prevent multiple browsers from seeding simultaneously
@@ -2660,7 +2866,13 @@ export default function App(){
             console.log('[DB] Another browser is seeding — waiting to reload');
             await new Promise(r=>setTimeout(r,5000));
             const d2=await _dbLoad({histInvoices:true,fullState:true});
-            if(d2?.hasData){
+            // Same parent-timeout rule as the main branches: a d2 with timed-out parents must neither
+            // be applied wholesale (would blank state + snapshot) nor fall through to the seed
+            // fallback (would re-seed the live DB from local defaults). Fail the load instead.
+            if(d2&&d2._parentTimedOut){
+              setDbError('This tab’s initial data load didn’t finish in time (usually a slow connection, not a server problem). Cloud saves are paused so this tab can’t overwrite good data — it will keep retrying automatically. Check your internet if this persists.');
+              console.error('[DB] Post-seed-wait load had parent-table timeouts — treating as a FAILED load (apply and fallback-seed both suppressed)');
+            }else if(d2?.hasData){
               _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues,assignedTodos:d2.assignedTodos||[]};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
               if(d2.vendors.length)setVend(d2.vendors);setProd(d2.products.length?d2.products:prod);
@@ -2732,6 +2944,11 @@ export default function App(){
         // partial — estimates/SOs would come back with empty items. Skip it so the hollowed-out
         // data never reaches state (which would then trip the "0 items but DB has N" save guard).
         if(d._decoTimedOut){console.warn('[DB] Realtime reload skipped — a child-table query timed out, preserving local data');return}
+        // Parent-table twin of the guard above (2026-08-18, same rule as the poll): a timed-out
+        // sales_orders/estimates/invoices/customers/messages PARENT query is EMPTY with error:null, and
+        // the wholesale-replace merges below would blank state + the _diffSave snapshot. Skip entirely.
+        // (_parentTimedOut is the aggregate dbEngine sets next to the per-table flags — one table list.)
+        if(d._parentTimedOut){console.warn('[DB] Realtime reload skipped — a parent-table query timed out, preserving local data');return}
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
@@ -2925,12 +3142,30 @@ export default function App(){
         _pollConsecutiveFailures=0;
         // If decoration queries timed out, skip this poll entirely to prevent data loss
         if(d._decoTimedOut){console.warn('[DB] Poll skipped — a child-table query timed out, preserving local data');schedulePoll();return}
+        // Same rule for PARENT tables (2026-08-18): a timed-out sales_orders/estimates/invoices/
+        // customers/messages parent comes back EMPTY with error:null, and the wholesale poll-merge
+        // below would replace both state and the _diffSave snapshot with an empty order book. Skip the
+        // whole poll and let the next cycle retry. Flags are only ever set for tables this load
+        // actually fetched (_lastLoadTimedOut is cleared at load start; skipped groups can't trip it);
+        // _parentTimedOut is the aggregate dbEngine sets next to the per-table flags — one table list.
+        if(d._parentTimedOut){console.warn('[DB] Poll skipped — a parent-table query timed out, preserving local data');schedulePoll();return}
         // Record a completed full sync (cold tables were applied) so the wall-time gate spaces out the next
         // heavy catalog/app_state pull. Only here — past the hasData + _decoTimedOut guards — did a full poll
         // actually reach the state setters below.
         if(!d._coreOnly)_lastFullSyncAt=Date.now();
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
+        // Self-heal the NetSuite invoice history. It loads once, at initial load, and polls never
+        // re-apply it — but customer_invoices is the only staff-gated read in the load (RLS:
+        // is_team_member(); every other table is anon-readable), so a tab whose initial load ran
+        // without a live staff session got an empty NetSuite history while everything else looked
+        // fine, and kept it empty until a hard refresh ("no NetSuite invoices on customer pages").
+        // Retry on full syncs while state has none; for anon/coach tabs the refetch is one cheap
+        // page-0 query that stays empty, so this never hammers the DB.
+        if(!d._coreOnly&&_histInvsCount.current===0){
+          const _hh=await _dbLoadHistInvoices();
+          if(_hh&&_hh.length){setHistInvs(prev=>prev.length?prev:_hh);console.log('[DB] NetSuite invoice history recovered on poll ('+_hh.length+' invoices)')}
+        }
         // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
         const _pollMerge=(dbArr,snapKey)=>(_dbSaveFailedIds.size||_dbSavePendingIds.size)?dbArr.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e):dbArr;
@@ -2986,6 +3221,12 @@ export default function App(){
           const dbPoCount=(m.items||[]).reduce((a,it)=>(it.po_lines?.length||0)+a,0);
           if(localPoCount>0&&dbPoCount===0&&m.items?.length){
             m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.po_lines?.length&&(!si.po_lines||!si.po_lines.length))return{...si,po_lines:li.po_lines};return si});
+            // Keep the hydration markers with the lines they describe. `m` is the DB row wholesale, so its
+            // _hydratedPoIds/_posHydrated come from the read that returned NO po_lines — pairing preserved
+            // local lines with "this client loaded none" left the save's restore guard unable to tell a
+            // deliberate deletion from stale state, and it re-injected the just-deleted PO (SO-2015).
+            if(Array.isArray(local._hydratedPoIds)&&local._hydratedPoIds.length)m._hydratedPoIds=[...new Set([...(Array.isArray(m._hydratedPoIds)?m._hydratedPoIds:[]),...local._hydratedPoIds])];
+            if(local._posHydrated===true)m._posHydrated=true;// only when the local copy really did load them — never assert hydration we don't have
           }
           // Protect decorations: if local items had decorations but DB items don't (timeout/mid-save), preserve them
           if(local.items?.some(it=>it.decorations?.length)&&m.items?.length&&!m.items.some(it=>it.decorations?.length)){
@@ -3056,29 +3297,33 @@ export default function App(){
       // storms, here aimed at the brevo-proxy (whose verifyUser hits the auth server + DB each call).
       // After 14 days an unopened email has realistically stopped changing state; let it rest.
       const _fresh=h=>h&&h.messageId&&(Date.now()-new Date(h.sent_at||0).getTime())<14*86400000;
+      // A 'deferred' verdict leaves email_status on 'sent', so this doc stays in the pending
+      // list and gets re-polled. Only write when the verdict actually CHANGES, or every cycle
+      // would re-stamp identical history and trigger a pointless save.
+      const _isNew=(lastSend,res)=>res&&lastSend.delivery!==res.status;
       // Check estimates with pending email_status='sent' and a recent messageId send
       const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(_fresh));
       for(const est of pendingEsts.slice(0,5)){
         const lastSend=(est.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
-        const result=await checkBrevoEmailOpens(lastSend.messageId);
-        if(result){setEsts(prev=>prev.map(e=>e.id===est.id?{...e,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:e))}
+        const result=await checkBrevoDelivery(lastSend.messageId);
+        if(_isNew(lastSend,result)){setEsts(prev=>prev.map(e=>e.id===est.id?_applyDelivery(e,lastSend,result):e))}
       }
       // Check SOs
       const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(_fresh));
       for(const so of pendingSOs.slice(0,5)){
         const lastSend=(so.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
-        const result=await checkBrevoEmailOpens(lastSend.messageId);
-        if(result){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:s))}
+        const result=await checkBrevoDelivery(lastSend.messageId);
+        if(_isNew(lastSend,result)){setSOs(prev=>prev.map(s=>s.id===so.id?_applyDelivery(s,lastSend,result):s))}
       }
       // Check invoices
       const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(_fresh));
       for(const inv of pendingInvs.slice(0,5)){
         const lastSend=(inv.sent_history||[]).filter(_fresh).slice(-1)[0];
         if(!lastSend)continue;
-        const result=await checkBrevoEmailOpens(lastSend.messageId);
-        if(result){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:i))}
+        const result=await checkBrevoDelivery(lastSend.messageId);
+        if(_isNew(lastSend,result)){setInvs(prev=>prev.map(i=>i.id===inv.id?_applyDelivery(i,lastSend,result):i))}
       }
     };
     // 5-minute cadence (was 60s). Open tracking is a dashboard nicety, not realtime data — at 60s,
@@ -3173,11 +3418,13 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c),_custDiffCmp)},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
-  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p),_prodDiffCmp)},[prod]);
+  // The second arg (pre-pass snapshot item) is the inventory merge-save
+  // baseline — the diff-save loop captures it before advancing the snapshot.
+  React.useEffect(()=>{_diffSave(prod,'prod',(p,old)=>_dbSaveProduct(p,old),_prodDiffCmp)},[prod]);
   // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
   React.useEffect(()=>{
     if(adidasBulkFetched.current||!prod||prod.length===0)return;
@@ -3376,8 +3623,13 @@ export default function App(){
       // omitted (stale/un-hydrated in-memory state), so nothing was actually lost. Record it for audit but never
       // email — on a bulk/background re-save this fires once per SO and would otherwise flood the admin inbox with
       // false "Items lost" alarms (the 2026-06-30 storm: ~340 emails across as many SOs, every SO's data intact).
-      if(kind==='po_restored'||kind==='picks_restored'){
-        logChange('data_restored','SO',soId,'Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)');
+      // item_restored belongs here for the same reason: the save layer re-added an ITEM the payload had
+      // dropped while the DB still held PO line(s) for it. Nothing is lost — falling through to the
+      // generic branch below would log it as "Items removed" and email a 🚨 alarm for a successful save.
+      if(kind==='po_restored'||kind==='picks_restored'||kind==='item_restored'){
+        logChange('data_restored','SO',soId,kind==='item_restored'
+          ?('Auto-restored '+(restored!=null?restored+' ':'')+'item(s) with purchase-order line(s) the save had dropped (stale state — no data lost)'+(reason?' — '+reason:''))
+          :('Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)'));
         return;
       }
       // verify_fail: a post-insert read-back came back short or errored. The insert-first save keeps the OLD
@@ -3450,12 +3702,35 @@ export default function App(){
     const apply=s=>{
       if(!s||s.id!==soId||!Array.isArray(s.items)||!s.items.length)return s;
       const out=s.items.slice();let applied=0;
+      const _norm=c=>String(c||'').trim().toLowerCase();
+      const _same=(it,r)=>!!it&&!(r.sku&&it.sku&&it.sku!==r.sku)&&!(r.color&&it.color&&_norm(it.color)!==_norm(r.color));
       for(const r of restores){
+        // kind 'item': the save guard rebuilt a whole item that had vanished from the payload while
+        // the DB still held PO line(s) for it. It is appended at the tail (r.idx === items.length at
+        // revive time), so re-add it here or the editor drops it again on the very next save and the
+        // guard has to revive it forever. Its po/pick lines arrive as their own entries below, which
+        // the JSON dedup then skips because the revived object already carries them.
+        if(r.kind==='item'){
+          if(_same(out[r.idx],r))continue;// already present (raced save / second sync pass)
+          if(out[r.idx]||r.idx!==out.length||!r.item)return s;// state moved on — bail untouched
+          // Copy rather than sharing the object: r.item is the very object still sitting in the save's
+          // payload array, and the engine mutates payload items in place on later saves.
+          out.push({...r.item});applied++;continue;
+        }
         const it=out[r.idx];
         // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
         // moved on mid-save and r.idx now points at another garment — bail untouched.
-        const _norm=c=>String(c||'').trim().toLowerCase();
-        if(!it||(r.sku&&it.sku&&it.sku!==r.sku)||(r.color&&it.color&&_norm(it.color)!==_norm(r.color)))return s;
+        if(!_same(it,r))return s;
+        // kind 'po_merge': the save guard merged rolled-back warehouse receiving into a line this
+        // client already HOLDS (SO-1663 receiving wipe) — replace that line in place rather than
+        // appending a duplicate of a po_id the item already carries.
+        if(r.kind==='po_merge'){
+          const cur=Array.isArray(it.po_lines)?it.po_lines:[];
+          const li=cur.findIndex(l=>l&&l.po_id===r.line.po_id);
+          if(li<0)return s;// line vanished mid-save — bail untouched; the next save re-merges
+          if(JSON.stringify(cur[li])===JSON.stringify(r.line))continue;// already merged (raced save)
+          out[r.idx]={...it,po_lines:cur.map((l,j)=>j===li?r.line:l)};applied++;continue;
+        }
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);
@@ -3867,9 +4142,12 @@ export default function App(){
       setWebTaxAgg(Object.values(byKey));
     }catch(e){console.warn('[web tax] error:',e.message)}})();
   },[pg]);
-  // OMG stores are settled from store deposit funds (not a coach payment), so
-  // 4 weeks after a store is brought into the portal, remind accounting (Andrea
-  // Jung) to apply those funds to its invoice. Stores already present when this
+  // OMG stores are settled from store deposit funds (not a coach payment). Remind
+  // accounting (Andrea Jung) to apply those funds to the store's invoice when the
+  // linked SO's FINAL JOB finishes (production done / shipped) — that's the moment
+  // every job cost is on the SO, so the invoice+commission come out right. If no SO
+  // exists yet, fall back to 6 weeks after the store was brought in (safety net so
+  // an unprocessed store is never forgotten). Stores already present when this
   // shipped are baselined (no retroactive backlog); tasks are deduped by the
   // [store-id] tag in the title.
   React.useEffect(()=>{
@@ -3881,17 +4159,25 @@ export default function App(){
     let seenChanged=false;
     omgStores.forEach(s=>{if(s&&s.id&&!seen[s.id]){seen[s.id]={at:new Date().toISOString(),baseline:firstAdoption};seenChanged=true}});
     if(seenChanged)setOmgFirstSeen(seen);
-    const FOUR_WEEKS=28*24*60*60*1000;
     const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
     const toAdd=[];
     omgStores.forEach(s=>{
       if(!s||!s.id)return;
       const rec=seen[s.id];
       if(!rec||rec.baseline)return;
-      if(now-new Date(rec.at).getTime()<FOUR_WEEKS)return;
       const tag='['+s.id+']';
       if(assignedTodos.some(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag)))return;
-      const so=sos.find(x=>x.omg_store_id===s.id);
+      const so=sos.find(x=>x.omg_store_id===s.id&&!x.deleted_at);
+      // Fire when the SO's production is finished (all job costs applied). The 6-week
+      // safety net applies REGARDLESS of whether an SO exists — a stuck, cancelled, or
+      // fully-outsourced SO (no jobs → never 'ready_to_invoice') must not hide the
+      // store's deposit funds from accounting forever.
+      let done=false;
+      if(so){
+        done=so.status==='complete';
+        if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
+      }
+      if(!done&&now-new Date(rec.at).getTime()<OMG_FUNDS_WINDOW_MS)return;
       // Settlement-aware: if the store's SO is invoiced and every invoice is
       // already paid, the funds have been applied — no reminder needed.
       if(so){const soInvs=(invs||[]).filter(i=>i.so_id===so.id);if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;}
@@ -4564,6 +4850,53 @@ export default function App(){
     },250);
     return ()=>{if(_siSearchTimer.current)clearTimeout(_siSearchTimer.current)};
   },[gSearchQ,pg]);
+  // Webstore orders aren't held in memory either — Webstores loads them per-store on demand —
+  // so global search reaches them with the same debounced-DB-query pattern (dropdown + results
+  // page). order_number is a bigint from a sequence starting at 1010000, so a pure-numeric
+  // query matches it exactly; buyer name/email and the OMG order # match by ilike.
+  const _queryWsOrders=useCallback(async(q,limit)=>{
+    const drive=(q||'').replace(/^#/,'').replace(/[,()%]/g,'').trim();
+    if(!drive)return[];
+    const like='%'+drive+'%';
+    const ors=['buyer_name.ilike.'+like,'buyer_email.ilike.'+like,'omg_order_number.ilike.'+like];
+    if(/^\d+$/.test(drive))ors.push('order_number.eq.'+drive);
+    try{
+      const{data,error}=await supabase.from('webstore_orders')
+        .select('id,store_id,order_number,omg_order_number,buyer_name,buyer_email,status,total,created_at,webstores(name,source,omg_sale_code)')
+        .or(ors.join(','))
+        .order('created_at',{ascending:false}).limit(limit);
+      return error?[]:(data||[]);
+    }catch{return[]}
+  },[]);
+  const[gWsOrders,setGWsOrders]=useState([]);const _gWsOrderTimer=useRef(null);
+  useEffect(()=>{
+    if(_gWsOrderTimer.current)clearTimeout(_gWsOrderTimer.current);
+    if(!supabase||!gQ||gQ.trim().length<2){setGWsOrders([]);return}
+    _gWsOrderTimer.current=setTimeout(async()=>{setGWsOrders(await _queryWsOrders(gQ.trim(),5))},250);
+    return()=>{if(_gWsOrderTimer.current)clearTimeout(_gWsOrderTimer.current)};
+  },[gQ]);// eslint-disable-line
+  const[wsOrderSearchResults,setWsOrderSearchResults]=useState([]);const _wsOrderSearchTimer=useRef(null);
+  useEffect(()=>{
+    if(_wsOrderSearchTimer.current)clearTimeout(_wsOrderSearchTimer.current);
+    if(!supabase||pg!=='search'||!gSearchQ||gSearchQ.trim().length<2){setWsOrderSearchResults([]);return}
+    _wsOrderSearchTimer.current=setTimeout(async()=>{setWsOrderSearchResults(await _queryWsOrders(gSearchQ.trim(),50))},250);
+    return()=>{if(_wsOrderSearchTimer.current)clearTimeout(_wsOrderSearchTimer.current)};
+  },[gSearchQ,pg]);// eslint-disable-line
+  // Open a webstore-order search hit: OMG-sourced stores route to the OMG page (its order
+  // portal owns those), everything else deep-links into Webstores via the same ?store/?tab/?order
+  // params the daily-store email uses. If Webstores is already mounted, its popstate handler
+  // reconciles from the URL (the deep-link boot only runs on mount).
+  const openWsOrderResult=(o)=>{
+    setGQ('');setGOpen(false);
+    const ws=o.webstores||{};
+    if(ws.source==='omg'){
+      const st=omgStores.find(s2=>s2._omg_sale_code&&s2._omg_sale_code===ws.omg_sale_code);
+      if(st){setOmgSel(st);setOmgFocusOrder(String(o.id));setPg('omg');return}
+    }
+    try{const u=new URL(window.location);u.searchParams.set('store',o.store_id);u.searchParams.set('tab','orders');u.searchParams.set('order',o.id);window.history.replaceState({},'',u)}catch(e){}
+    if(pg==='webstores'){try{window.dispatchEvent(new PopStateEvent('popstate'))}catch(e){}}
+    else setPg('webstores');
+  };
   useEffect(()=>{
     if(_gProdTimer.current)clearTimeout(_gProdTimer.current);
     if(!gQ||gQ.length<2){setGProdResults([]);return}
@@ -5622,6 +5955,97 @@ export default function App(){
   const toggleUiMode=()=>setUiMode(m=>{const n=m==='new'?'classic':'new';try{localStorage.setItem('nsa_ui_mode',n)}catch{}return n});
   const ActiveOrderEditor=uiMode==='new'?OrderEditor:OrderEditorClassic;// classic gets the frozen pre-redesign editor, not a reskin
   const[dashActionOpen,setDashActionOpen]=useState(null);// which dash2 action card is expanded below the grid ('art'|'todos'|'msgs') — Batch-POs-style accordion
+  const[dashArtRow,setDashArtRow]=useState(null);// dismissKey of the expanded action row showing its art mocks inline (one open at a time)
+  const[dashArtLb,setDashArtLb]=useState(null);// {shots,idx,title,sub} — full-size mock viewer opened from that inline preview
+  // Lightbox keys: Esc closes, ←/→ walk the gallery. Bound only while it's open.
+  useEffect(()=>{
+    if(!dashArtLb)return;
+    const onKey=e=>{
+      if(e.key==='Escape'){setDashArtLb(null);return}
+      if(e.key==='ArrowRight')setDashArtLb(l=>l&&l.shots.length>1?{...l,idx:(l.idx+1)%l.shots.length}:l);
+      if(e.key==='ArrowLeft')setDashArtLb(l=>l&&l.shots.length>1?{...l,idx:(l.idx-1+l.shots.length)%l.shots.length}:l);
+    };
+    window.addEventListener('keydown',onKey);
+    return()=>window.removeEventListener('keydown',onKey);
+  },[dashArtLb]);
+  // ─── Inline art decisions from the dashboard's "Art awaiting approval" panel ───
+  // Approve / Request changes without opening the order. Both write through the SAME shared
+  // transitions the order page uses (lib/artReview) — the dashboard contributes no new state
+  // rules, only the gates and the confirmation UI in front of them. {key,mode,note}: which row
+  // is mid-decision, 'confirm' (approve, awaiting the second click) or 'reject' (writing a reason).
+  const[dashArtAct,setDashArtAct]=useState(null);
+  const _dashArtReset=()=>setDashArtAct(null);
+  // Row action menu (⋯) on the expanded panel — Assign / Snooze / Dismiss, the same three the
+  // Activity Center offers, in one place instead of three buttons crowding the row. Positioned
+  // fixed from the button's rect: the panel body scrolls with overflow:auto, and an absolutely
+  // positioned menu on the last row would be clipped by it. {key,t,x,y,up} — `up` flips it above
+  // the button near the bottom of the window. Any scroll closes it rather than letting it detach.
+  const[dashRowMenu,setDashRowMenu]=useState(null);
+  const _openDashRowMenu=(e,key,t)=>{
+    const r=e.currentTarget.getBoundingClientRect();
+    const up=r.bottom+240>window.innerHeight;
+    setDashRowMenu(m=>m&&m.key===key?null:{key,t,x:r.right,y:up?r.top-6:r.bottom+6,up});
+  };
+  useEffect(()=>{
+    if(!dashRowMenu)return;
+    const close=()=>setDashRowMenu(null);
+    const onKey=e=>{if(e.key==='Escape')close()};
+    window.addEventListener('keydown',onKey);
+    window.addEventListener('scroll',close,true);
+    window.addEventListener('resize',close);
+    return()=>{window.removeEventListener('keydown',onKey);window.removeEventListener('scroll',close,true);window.removeEventListener('resize',close)};
+  },[dashRowMenu]);
+  // Both handlers re-read the SO from `sos` rather than trusting the to-do's captured snapshot,
+  // and rebuild its jobs with buildJobs — the same read the art workboard does before writing.
+  // A to-do can sit on screen for a long time; writing back a stale snapshot is how edits made
+  // elsewhere in the meantime get clobbered.
+  const _dashArtJob=(t)=>{
+    const so=sos.find(s=>s.id===(t?.so?.id));
+    if(!so){nf('That order isn\'t loaded anymore — reload the page and try again','error');return null}
+    const jobs=buildJobs(so);const j=jobs.find(x=>x.id===t.jobId);
+    if(!j){nf('That job is no longer on '+so.id+' — reload the dashboard','error');return null}
+    // The bar is only ever drawn for a job parked at waiting_approval, but the row it sits on can
+    // go stale on screen — someone else approves it, or sends it back to the artist, while the
+    // panel is open. Deciding from that stale row would silently overrule them (a send-back would
+    // jump straight back to approved). Refuse instead; the list refreshes on its own.
+    if(j.art_status!=='waiting_approval'){nf('This artwork moved on since the dashboard loaded (now: '+(ART_LABELS[j.art_status]||j.art_status)+') — open the order to see where it stands','error');return null}
+    return{so,jobs,j};
+  };
+  const _dashArtApprove=(t)=>{
+    const ctx=_dashArtJob(t);if(!ctx)return;const{so,jobs,j}=ctx;
+    // Same gates as the order page's ✅ Approve Artwork, in the same order.
+    // Per-garment mockups first: a garment whose mock was orphaned (e.g. a stock-swap SKU
+    // change) ships unmocked if this passes (SO-1480). The bar is hidden on rows that fail it,
+    // so this is the belt-and-braces check for a row that went stale on screen.
+    const _mm=skusMissingMockups(j,so);
+    if(_mm.length>0){nf(missingMockupsMsg('approve',_mm),'error');_dashArtReset();return}
+    if(jobHasUnresolvedArt(j,so,{archivedIsUnresolved:true})){nf('This job still has Art TBD — assign real artwork before approving it','error');_dashArtReset();return}
+    if(j.coach_rejected){const _lr=(j.rejections||[]).slice(-1)[0];if(!window.confirm('⚠️ The coach requested changes on this artwork'+((_lr&&_lr.reason)?(':\n\n"'+_lr.reason+'"'):'.')+'\n\nApprove it anyway? This overrides the coach’s change request.'))return}
+    const artIds=jobLiveArtIds(j,so);
+    const afs=artIds.map(id=>safeArt(so).find(a=>a.id===id));
+    const{allConfirmed,targetStatus}=artApproveTarget(afs,afs.find(Boolean)?.deco_type||j.deco_type);
+    // Split slices share one artwork by construction — approve the whole family or a sibling
+    // stays stranded in an earlier column and the artist redoes work that's already done.
+    // (buildJobs output has no _famIds marker, so this resolves the family from the list.)
+    const _fam=artFamilyIdsIn(jobs,j.id);
+    savSO(approveArtOnSO({...so,jobs},{match:jj=>_fam.includes(jj.id),artIds,targetStatus,stampProd:allConfirmed}));
+    _dashArtReset();
+    nf(targetStatus==='art_complete'?'✅ Art approved — '+(j.art_name||j.id)+' is ready for production'
+      :targetStatus==='upload_emb_files'?'✅ Art approved — now upload the embroidery files (DST + PDF)'
+      :targetStatus==='order_dtf_transfers'?'✅ Art approved — now order the DTF transfer films'
+      :'✅ Art approved — the artist still owes production separations');
+  };
+  const _dashArtSendBack=(t,reason)=>{
+    const _r=(reason||'').trim();if(!_r)return;
+    const ctx=_dashArtJob(t);if(!ctx)return;const{so,jobs,j}=ctx;
+    // Every location of the design goes back, not just the primary art_file_id — a second
+    // location left at 'approved' drags the job's derived status around (SO-1625).
+    const artIds=jobLiveArtIds(j,so);
+    const _fam=artFamilyIdsIn(jobs,j.id);
+    savSO(sendArtBackOnSO({...so,jobs},{match:jj=>_fam.includes(jj.id),artIds,reason:_r,by:cu?.name||'Rep'}));
+    _dashArtReset();
+    nf('🔄 Sent back to the artist — '+(j.art_name||j.id));
+  };
   const[workspaceItems,setWorkspaceItems]=useState([]);
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
@@ -5706,10 +6130,9 @@ export default function App(){
     window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before we unmount it to the login screen
     // Session-death capture: persist every known-dirty entity's payload to the durable outbox
     // BEFORE unmounting (localStorage needs no live session). Committed state here cannot see the
-    // draft the flush event just handed to onSave — that setState is still batched — which is why
-    // the flushed draft is captured separately at the save entry point (dbEngine's _outboxWrap
-    // capture-on-attempt runs synchronously once _sessionDead is latched, which it is by the time
-    // this callback fires). This snapshot covers everything already failed/pending in committed state.
+    // draft the flush event just handed to the editor's emergency-save callback — that setState is still
+    // batched. The callback now stages that exact draft synchronously before starting its DB save; this
+    // snapshot separately covers everything already failed/pending in committed state.
     try{
       const _dirty=new Set([..._dbSaveFailedIds,..._dbSavePendingIds]);
       if(_dirty.size){
@@ -5745,7 +6168,7 @@ export default function App(){
       // boot the user to login while the session is still being restored.
       for(let i=0;i<30&&!cancelled;i++){
         const{data}=await supabase.auth.getSession();
-        if(data?.session)return;
+        if(_isLiveSession(data?.session))return;
         await new Promise(r=>setTimeout(r,300));
       }
       if(cancelled)return;
@@ -5759,7 +6182,7 @@ export default function App(){
       if(cancelled)return;
       let _finalSession=null;
       try{const{data:_fd}=await supabase.auth.getSession();_finalSession=_fd?.session||null}catch(_){}
-      if(_finalSession||cancelled)return;
+      if(_isLiveSession(_finalSession)||cancelled)return;
       console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
       window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before unmount
       setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
@@ -6201,6 +6624,19 @@ export default function App(){
     if(prev){setEstHistory(h=>{const existing=h[e2.id]||[];return{...h,[e2.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});
     logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  // Result-checked estimate save, matching savSONow. Autosave and emergency editor flushes must enter the
+  // database queue directly instead of hoping the later [ests] diff effect runs before an unmount/reload.
+  const savENow=(e,opts)=>{
+    const e2=savE(e);if(!e2||!e2.id)return Promise.resolve(false);
+    setEEst(prev=>prev&&prev.id===e2.id?e2:prev);
+    const snap=_dbSnap.current?.ests;
+    if(Array.isArray(snap)&&snap.some(x=>x.id===e2.id))_dbSnap.current.ests=snap.map(x=>x.id===e2.id?e2:x);
+    if(opts?.stageOutbox)_outboxAdd('estimates',e2);// synchronous durability for unload / forced re-auth
+    _dbSavePendingIds.add(e2.id);
+    const _p=_dbSaveEstimate(e2);
+    Promise.resolve(_p).finally(()=>{_dbSavePendingIds.delete(e2.id)});
+    return _p;
+  };
   // ── Pending shipping charge carryover ──
   // A billable shipping charge recorded against a customer via Manual Ship when
   // they had no open order. It auto-attaches to the customer's next rep-created
@@ -6361,8 +6797,10 @@ export default function App(){
   const savSONow=(s,opts)=>{
     const sl=savSO(s,opts);
     if(!sl||!sl.id)return Promise.resolve(false);
+    setESO(prev=>prev&&prev.id===sl.id?sl:prev);
     const snap=_dbSnap.current?.sos;
     if(Array.isArray(snap)&&snap.some(x=>x.id===sl.id))_dbSnap.current.sos=snap.map(x=>x.id===sl.id?sl:x);
+    if(opts?.stageOutbox)_outboxAdd('sales_orders',sl);// synchronous durability for unload / forced re-auth
     _dbSavePendingIds.add(sl.id);
     const _p=_dbSaveSO(sl);
     Promise.resolve(_p).then(ok=>{if(ok!==false)_markRecentlyPulled(sl.id)}).finally(()=>{_dbSavePendingIds.delete(sl.id)});
@@ -6399,6 +6837,43 @@ export default function App(){
       nf(so.id+' closed — fully invoiced and production complete');
     });
   },[sos,invs,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
+  // ── Webstore settle-on-finish ──
+  // When a webstore-batched SO's FINAL JOB finishes (calcSOStatus hits ready_to_invoice),
+  // every job cost is on the SO — that's the moment to invoice and apply the store's
+  // collected funds so commissions carry all costs. Creates an accounting to-do (Andrea
+  // Jung) deduped by the [settle-SOID] tag. OMG stores get the equivalent via the
+  // "Apply OMG funds" effect above; this covers source='webstore' SOs (webstore_id set,
+  // no omg_store_id). Fully-outsourced SOs (decos, no jobs) never reach
+  // ready_to_invoice, so a 6-week-age safety net fires the reminder regardless —
+  // including for SOs manually closed to 'complete' — unless every invoice is already
+  // paid. (Verified against prod at ship time: only 3 legacy SOs qualified, all
+  // genuinely unsettled.)
+  React.useEffect(()=>{
+    if(dbLoading||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+    const andrea=REPS.find(r=>r&&/andrea\s+jung/i.test(r.name||''));
+    const toAdd=[];
+    sos.forEach(so=>{
+      if(!so||!so.webstore_id||so.omg_store_id||so.deleted_at)return;
+      // "Done" = final job finished (ready_to_invoice) or the SO was closed (complete —
+      // how fully-outsourced SOs end, since with no jobs they never hit
+      // ready_to_invoice). Safety net: an SO stuck un-done for 6+ weeks fires anyway so
+      // its store funds are never hidden from accounting indefinitely.
+      let done=so.status==='complete';
+      if(!done){try{done=calcSOStatus(so)==='ready_to_invoice'}catch{done=false}}
+      if(!done&&!(Date.now()-new Date(so.created_at).getTime()>=OMG_FUNDS_WINDOW_MS))return;
+      const tag='[settle-'+so.id+']';
+      if(assignedTodos.some(t=>t.title&&t.title.includes(tag)))return;
+      // Already fully settled (invoiced and every invoice paid) → nothing to do.
+      const soInvs=(invs||[]).filter(i=>i.so_id===so.id&&i.status!=='void'&&!i.deleted_at);
+      if(soInvs.length&&soInvs.every(i=>i.status==='paid'))return;
+      const nowIso=new Date().toISOString();
+      toAdd.push({id:'todo-settle-'+so.id+'-'+Date.now(),title:`Apply store funds & invoice — ${so.id} ${tag}`,
+        description:`The final job on webstore sales order ${so.id} has finished, so all job costs are applied. Invoice the order and apply the store's collected funds (see the Invoices settlement queue) so commissions reflect full costs.${so.memo?'\n'+so.memo:''}`,
+        created_by:cu?.id||null,assigned_to:andrea?.id||'',so_id:so.id,customer_id:so.customer_id||null,
+        priority:2,status:'open',created_at:nowIso,updated_at:nowIso,comments:[]});
+    });
+    if(toAdd.length)setAssignedTodos(prev=>[...toAdd,...prev]);
+  },[sos,invs,assignedTodos,REPS,dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
   const savI=(pid,inv,deltas,reason,adjType,availSizes)=>{
     const p=prod.find(x=>x.id===pid);
     if(deltas&&p){
@@ -6592,7 +7067,7 @@ export default function App(){
       }
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Auto-attach any pending shipping charge the customer is carrying (mirror of the newSOFn path).
     if(_convCust){const _pb=pendingShipBalance(_convCust);if(_pb.amount>0){so.pending_ship_applied=true;so.pending_ship_amount=_pb.amount;
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
@@ -6668,7 +7143,7 @@ export default function App(){
     }
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(est.art_files);
     const clonedItems=remapItemArtIds(safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone}),_artIdMap);
-    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
     setEsts(prev=>[ne,...prev]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const copySalesOrder=async so=>{
     // Auto-heal a partially-loaded sales order before copying — same failure mode the
@@ -6688,7 +7163,7 @@ export default function App(){
       const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
       if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;
       return clone}),_artIdMap);
-    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
+    const ns={id:nextSOId(sos),customer_id:so.customer_id,estimate_id:null,memo:(so.memo||'')+' (copy)',status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,expected_date:so.expected_date,production_notes:so.production_notes||'',shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,ship_to_custom:so.ship_to_custom,firm_dates:[],art_files:clonedArt,items:clonedItems,order_type:so.order_type||'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:so.booking_alert_days||100,promo_applied:false,promo_amount:0,credit_applied:false,credit_amount:0,tax_rate:so.tax_rate||0,tax_exempt:so.tax_exempt||false};
     setSOs(prev=>[ns,...prev]);_dbSaveSO(ns);const c=cust.find(x=>x.id===ns.customer_id);setESO(ns);setESOC(c);setPg('orders');nf(`${ns.id} copied from ${so.id}`)};
   // Reorder: clone a past SO (or estimate) into a NEW draft estimate and open it. Promoted from
   // the inline Quick Reorder handler so the Portal Assistant can reuse it. Mirrors
@@ -6708,7 +7183,7 @@ export default function App(){
     const{art:clonedArt,idMap:_artIdMap}=reidArtFiles(source.art_files);
     const clonedItems=remapItemArtIds(safeItems(source).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;const _szTotal=Object.values(clone.sizes||{}).reduce((a,v)=>a+safeNum(v),0);if(_szTotal===0&&safeNum(clone.est_qty)>0)clone.qty_only=true;return clone}),_artIdMap);
     const estId=nextEstId(ests);
-    const ne={id:estId,customer_id:source.customer_id,memo:(source.memo||'')+' (reorder)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:source.default_markup||c?.custom_multiplier||1.65,shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,ship_to_id:source.ship_to_id||'default',email_status:null,art_files:clonedArt,items:clonedItems};
+    const ne={id:estId,customer_id:source.customer_id,memo:(source.memo||'')+' (reorder)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:source.default_markup||c?.custom_multiplier||1.65,shipping_type:source.shipping_type||'pct',shipping_value:source.shipping_value!=null?source.shipping_value:5,ship_to_id:source.ship_to_id||'default',bill_to_id:source.bill_to_id||'default',email_status:null,art_files:clonedArt,items:clonedItems};
     if(opts.persist===false){setEEst(ne);setEEstC(c);setPg('estimates');nf(`Draft ${estId} ready from ${source.id} — review and Save to keep it`);}
     else{setEsts(prev=>[ne,...prev]);setEEst(ne);setEEstC(c);setPg('estimates');nf(`Created ${estId} — reordered ${clonedItems.length} items from ${source.id}`);}
   };
@@ -6726,11 +7201,11 @@ export default function App(){
     let targetEst;
     if(parentEst){
       // Reopen the original estimate with SO's current items/art
-      targetEst={...parentEst,status:'draft',updated_at:new Date().toLocaleString(),items:clonedItems,art_files:clonedArt,memo:so.memo||parentEst.memo,default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id};
+      targetEst={...parentEst,status:'draft',updated_at:new Date().toLocaleString(),items:clonedItems,art_files:clonedArt,memo:so.memo||parentEst.memo,default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id};
       setEsts(p=>p.map(e=>e.id===parentEst.id?targetEst:e));
     }else{
       // No parent estimate — create a new one
-      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems,promo_applied:so.promo_applied||false,promo_amount:safeNum(so.promo_amount),credit_applied:so.credit_applied||false,credit_amount:safeNum(so.credit_amount)};
+      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,bill_to_id:so.bill_to_id,email_status:null,art_files:clonedArt,items:clonedItems,promo_applied:so.promo_applied||false,promo_amount:safeNum(so.promo_amount),credit_applied:so.credit_applied||false,credit_amount:safeNum(so.credit_amount)};
       setEsts(p=>[...p,targetEst]);
     }
     // Delete the SO entirely
@@ -6747,6 +7222,19 @@ export default function App(){
     setESO(null);
     const c=cust.find(x=>x.id===targetEst.customer_id);setEEst(targetEst);setEEstC(c);setPg('estimates');
     nf(parentEst?`Reopened ${targetEst.id} from ${so.id} — SO deleted`:`${targetEst.id} created from ${so.id} — SO deleted`)};
+  // ── A closed sales order was reopened from the editor's Actions menu ──
+  // The editor writes the status change itself (through onSave, like every other action there);
+  // this hook covers the two things it can't reach. status='complete' is the one manual pin on an
+  // otherwise auto-calculated ladder, and it's easy to set by accident — a Final invoice where a
+  // Partial was meant closes the SO and hides "Create Invoice" behind a "✓ Sales Order Closed"
+  // badge (SO-1519, Aug 2026: "I accidentally closed this SO when invoicing. Is there a way to
+  // reopen it?"). Marking _autoClosedSOs keeps the fully-invoiced auto-closer above from slamming
+  // a reopened ready_to_invoice order straight back to complete on the next render.
+  const onSOReopened=(so,autoSt)=>{
+    if(!so)return;
+    _autoClosedSOs.current.add(so.id);
+    logChange('reopened','SO',so.id,'Reopened from Complete → '+(SO_STATUS_LABELS[autoSt]||autoSt));
+  };
   const aO=useMemo(()=>[
     ...ests.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const t=calcOrderTotals(e,c?.tax_rate||0).grand;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const t=calcOrderTotals(s,c?.tax_rate||0).grand;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
@@ -7101,13 +7589,16 @@ export default function App(){
   // written back). Routed to the account's assigned rep when we can resolve the coach's
   // team (explicit link → their coach_accounts row → a contact-email hit); left
   // UNASSIGNED otherwise — an empty queue beats guessing the wrong rep.
+  // Resolve a request to its customer: explicit link → coach_accounts email link →
+  // contact-email match. Shared by the TODO-routing effect and the visibility filter.
+  const matchCatReqCust=(r)=>{
+    if(r.customer_id)return cust.find(c2=>c2.id===r.customer_id)||null;
+    const linked=coachCustMap[String(r.coach_email||'').toLowerCase()];
+    if(linked){const c=cust.find(c2=>c2.id===linked);if(c)return c}
+    return cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()))||null;
+  };
   useEffect(()=>{if(!supabase||!cu?.id||!catReqs.length)return;
-    const matchCust=(r)=>{
-      if(r.customer_id)return cust.find(c2=>c2.id===r.customer_id)||null;
-      const linked=coachCustMap[String(r.coach_email||'').toLowerCase()];
-      if(linked){const c=cust.find(c2=>c2.id===linked);if(c)return c}
-      return cust.find(c2=>(c2.contacts||[]).some(ct=>(ct.email||'').toLowerCase()===(r.coach_email||'').toLowerCase()))||null;
-    };
+    const matchCust=matchCatReqCust;
     catReqs.filter(r=>!r.todo_id&&r.status==='new').slice(0,20).forEach(r=>{
       const match=matchCust(r);
       const rep=match?REPS.find(x=>x.id===match.primary_rep_id&&x.is_active!==false):null;
@@ -7223,13 +7714,28 @@ export default function App(){
     nf('Created customer '+name+' — now build the estimate');
     await _dbSaveCustomer(c);
   };
-  const renderCatReqCard=()=>catReqs.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #191919'}}>
+  // LiveLook quote requests are account-scoped: a rep only sees requests for
+  // customers assigned to them (or explicitly handed to them via Reassign);
+  // CSRs see their reps' requests. Admin/GM see everything — including
+  // requests with no customer match yet, so unowned ones still get triaged.
+  const catReqVisible=(r)=>{
+    if(!cu?.id)return false;
+    if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
+    const todoRep=r.todo_id?(assignedTodos.find(t=>t.id===r.todo_id)?.assigned_to||null):null;
+    const c=matchCatReqCust(r);
+    const owners=[todoRep,c?.primary_rep_id].filter(Boolean);
+    if(cu.role==='rep')return owners.includes(cu.id);
+    if(cu.role==='csr'){const myReps=repCsrAssignments.filter(a=>a.csr_id===cu.id&&a.is_active!==false).map(a=>a.rep_id);return owners.some(id=>myReps.includes(id))}
+    return false;
+  };
+  const visCatReqs=catReqs.filter(catReqVisible);
+  const renderCatReqCard=()=>visCatReqs.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #191919'}}>
     <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-      <h2>📥 Estimate Requests ({catReqs.filter(r=>r.status==='new').length} new)</h2>
+      <h2>📥 Estimate Requests ({visCatReqs.filter(r=>r.status==='new').length} new)</h2>
       <button className="btn btn-sm btn-primary" onClick={()=>setCatReqOpen(true)}>Review</button>
     </div>
     <div className="card-body" style={{padding:0,maxHeight:240,overflow:'auto'}}>
-      {catReqs.slice(0,8).map(r=>{const c2=cust.find(x=>x.id===r.customer_id);const lines=Array.isArray(r.lines)?r.lines:[];const units=lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);
+      {visCatReqs.slice(0,8).map(r=>{const c2=cust.find(x=>x.id===r.customer_id);const lines=Array.isArray(r.lines)?r.lines:[];const units=lines.reduce((a,l)=>a+(safeNum(l.qty)||0),0);
         return<div key={r.id} style={{padding:'9px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',display:'flex',gap:8,alignItems:'center'}} onClick={()=>setCatReqOpen(true)}>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:13,fontWeight:600}}>{r.coach_name}{r.team_name?' · '+r.team_name:''}</div>
@@ -7252,8 +7758,13 @@ export default function App(){
         <button style={{marginLeft:'auto',border:'none',background:'#f1f5f9',borderRadius:8,width:30,height:30,cursor:'pointer',fontWeight:700}} onClick={()=>setCatReqOpen(false)}>✕</button>
       </div>
       <div style={{padding:'8px 22px 20px'}}>
-        {catReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
-        {catReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');const sugg=q.length>=2?cust.filter(c2=>c2.is_active!==false&&((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase().includes(q.toLowerCase())).slice(0,6):[];
+        {visCatReqs.length===0&&<div className="empty" style={{padding:24}}>No open requests</div>}
+        {visCatReqs.map(r=>{const lines=Array.isArray(r.lines)?r.lines:[];const groups=groupReqLines(lines);const selId=catReqCustSel[r.id]||r.customer_id;const selCust2=cust.find(x=>x.id===selId);const q=(catReqSearch[r.id]||'');
+          // Match every word of the query independently ("FPU Volleyball" finds
+          // "Fresno Pacific Women's Volleyball (FPUVB)"), and cap high — the list
+          // scrolls, so big families like Fresno Pacific's 20+ teams stay reachable.
+          const qWords=q.toLowerCase().split(/\s+/).filter(Boolean);
+          const sugg=q.length>=2?cust.filter(c2=>{if(c2.is_active===false)return false;const hay=((c2.name||'')+' '+(c2.alpha_tag||'')).toLowerCase();return qWords.every(w=>hay.includes(w))}).slice(0,50):[];
           const est2=r.estimate_id?ests.find(e=>e.id===r.estimate_id):null;
           return<div key={r.id} id={'catreq-'+r.id} style={{border:r.id===catReqFocus?'2px solid #191919':'1px solid #e2e8f0',borderRadius:12,padding:'14px 16px',marginTop:12,boxShadow:r.id===catReqFocus?'0 0 0 4px rgba(25,25,25,.08)':'none'}}>
             <div style={{display:'flex',gap:10,alignItems:'baseline',flexWrap:'wrap'}}>
@@ -7273,7 +7784,7 @@ export default function App(){
               {selCust2?<span style={{fontSize:12,background:'#eff6ff',color:'#1e40af',borderRadius:8,padding:'4px 10px',fontWeight:600}}>Customer: {selCust2.name} <button style={{border:'none',background:'none',cursor:'pointer',color:'#1e40af',fontWeight:700}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:null}));setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:null}:x))}}>✕</button></span>
               :<><div style={{position:'relative'}}>
                 <input placeholder="Match customer…" value={q} onChange={e=>setCatReqSearch(s=>({...s,[r.id]:e.target.value}))} style={{padding:'6px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,width:220}}/>
-                {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280}}>
+                {sugg.length>0&&<div style={{position:'absolute',top:'100%',left:0,zIndex:10,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(15,23,42,.15)',width:280,maxHeight:260,overflowY:'auto'}}>
                   {sugg.map(c2=><div key={c2.id} style={{padding:'7px 10px',fontSize:12,cursor:'pointer',borderBottom:'1px solid #f1f5f9'}} onClick={()=>{setCatReqCustSel(s=>({...s,[r.id]:c2.id}));setCatReqSearch(s=>({...s,[r.id]:''}));if(supabase)supabase.from('catalog_order_requests').update({customer_id:c2.id}).eq('id',r.id).then(()=>{});setCatReqs(prev=>prev.map(x=>x.id===r.id?{...x,customer_id:c2.id}:x))}}>{c2.name}{c2.alpha_tag?' ('+c2.alpha_tag+')':''}</div>)}
                 </div>}
               </div><button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap'}} onClick={()=>createCustFromCatReq(r)}>+ New customer</button></>}
@@ -7504,7 +8015,9 @@ export default function App(){
           // No more invoices — SO goes back to ready_to_invoice. savSO (not a
           // bare setSOs) so this persists — same reasoning as the ShipStation
           // handlers above.
-          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
+          // _status_reverted marks this as the DELIBERATE reopen of a completed order for dbEngine's
+          // header-decision guard — without it a stale-flagged save may not pull 'complete' back open.
+          savSO({...so,status:'ready_to_invoice',_status_reverted:true,updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
@@ -7520,12 +8033,15 @@ export default function App(){
       const st=calcSOStatus(so);
       if(st==='booking')return false;
       if(st!=='complete')return true;
-      // A promo order can be financially "closed" (status='complete') while its blanks are
-      // received but not yet decorated/shipped. Keep such orders visible to the warehouse so
-      // their still-active jobs can be pulled, moved to deco, and shipped. A 'completed' job is
-      // decorated but not yet shipped, so it still belongs in Ready to Ship — only treat a job
-      // as done-for-warehouse once it is actually 'shipped' (or never left 'draft').
-      return safeJobs(so).some(j=>j.prod_status!=='shipped'&&j.prod_status!=='draft');
+      // A closed order can still owe a shipment. A promo order is financially "closed" while its
+      // blanks are received but not yet decorated; an order closed by a Final invoice (or by the
+      // rep, or by accident) can have a box still sitting on the floor. Ready to Ship is the only
+      // place a package — and therefore its shipping COST — gets created, so a closed order with
+      // work left has to stay visible or that cost never lands on the order at all.
+      // Two ways it still owes: a job that has not shipped (a 'completed' job is decorated but not
+      // yet out the door), or pulled units no shipment record covers — the blanks/no-deco case,
+      // which has no job to look at. See soHasOpenShipWork.
+      return soHasOpenShipWork(so);
     }).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
@@ -8778,7 +9294,8 @@ export default function App(){
       const _kpi=(icon,label,val,cur,prev,pct,vs)=>(<div className="dash2-kpi"><div className="dash2-kpi-top"><span className="dash2-icon">{icon}</span>{label}</div><div className="dash2-kpi-val">{val}</div><div className="dash2-kpi-foot">{_delta(cur,prev,pct)}<span className="dash2-vs">vs {vs}</span></div></div>);
       // Action-card counts — the same live set the To-Do card shows (undismissed, unsnoozed)
       const _live=adminTodos.filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
-      const _art=_live.filter(t=>['art','coach_followup','art_rejected'].includes(t.type));
+      const _ART_TYPES=['art','coach_followup','art_rejected'];
+      const _art=_live.filter(t=>_ART_TYPES.includes(t.type));
       const _artWaiting=_art.filter(t=>t.type==='coach_followup').length;
       const _due=_live.filter(t=>t.type==='deadline').length;
       const _n2=(n)=>String(n).padStart(2,'0');
@@ -8803,23 +9320,112 @@ export default function App(){
         const _isMsgs=dashActionOpen==='msgs';
         const _rows=dashActionOpen==='art'?_art:dashActionOpen==='todos'?_live:unreadMsgs;
         const _title=dashActionOpen==='art'?'Art awaiting approval':dashActionOpen==='todos'?'To-dos waiting on you':'Unread messages';
+        // Job lookup for the inline art preview, memoized per SO — several to-dos can point at
+        // the same order and buildJobs walks every line item.
+        const _jobCache=new Map();
+        const _jobOf=t=>{const so=t.so;if(!so)return null;let js=_jobCache.get(so.id);if(!js){js=buildJobs(so);_jobCache.set(so.id,js)}return js.find(j=>j.id===t.jobId)||null};
         return<div className="card dash2-expand" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2 style={{fontSize:15}}>{_title} <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>({_rows.length})</span></h2>
             <button style={{background:'none',border:'1px solid #e7e9ef',borderRadius:8,cursor:'pointer',padding:'3px 10px',fontSize:12,color:'#64748b',fontWeight:600}} onClick={()=>setDashActionOpen(null)}>Collapse ▴</button>
           </div>
-          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:480,overflow:'auto'}}>
+          {/* Taller while a mock preview is open so the gallery isn't squeezed into a scroll sliver */}
+          <div className="card-body" style={{padding:'4px 10px 10px',maxHeight:dashArtRow?760:480,overflow:'auto'}}>
             {_rows.length===0&&<div style={{padding:'20px 12px',fontSize:14,color:'#64748b'}}>✓ Nothing here — you're caught up.</div>}
             {_rows.length>0&&<div className="dash2x-head"><span>{_isMsgs?'Message':'Item'}</span><span>Account</span><span>SO / Job #</span><span style={{textAlign:'right'}}>Action</span></div>}
             {!_isMsgs&&_rows.map((t,i)=>{
               const _acct=cust.find(c=>c.id===(t.so?.customer_id||t.est?.customer_id||t.inv?.customer_id||t.customer_id))?.name||'';
               const _ref=t.so?.id||t.est?.id||t.inv?.id||(t.jobId?'Job '+t.jobId:'');
               const _sub=[_acct?null:t.detail,t.date&&_fmtDueDate?_fmtDueDate(t.date):null].filter(Boolean).join(' · ')||t.detail;
-              return<div className="dash2x-row" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openDashPriority(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openDashPriority(t)}}}>
-                <span className="dash2x-main"><strong>{t.msg}</strong><small>{_sub}</small></span>
-                <span className="dash2x-acct">{_acct||'—'}</span>
-                <span className="dash2x-ref">{_ref||'—'}</span>
-                <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button></span>
+              const _key=t.dismissKey||('row-'+i);
+              // Inline art preview — the mocks render right here so the rep can eyeball a proof
+              // without leaving the dashboard, and decide on it right there. Scoped to the art
+              // to-dos (the set the 🎨 tile counts) because resolving mocks means walking the
+              // SO's jobs. Approve / Request changes write through lib/artReview — the same
+              // transitions the order page uses — behind the same gates (_dashArtApprove).
+              // Send to Coach is NOT here: it needs the contact picker and the email/SMS
+              // composer, so it stays on the order page behind the row's action button.
+              const _job=_ART_TYPES.includes(t.type)&&t.so&&t.jobId?_jobOf(t):null;
+              const _pv=_job?dashArtShots(_job,t.so):null;
+              const _canPv=!!(_pv&&_pv.shots.length>0);
+              const _pvOpen=_canPv&&dashArtRow===_key;
+              const _togglePv=()=>{_dashArtReset();setDashArtRow(k=>k===_key?null:_key)};
+              // Approve / Request-changes bar — shown only where the order page would also offer
+              // it: the job is parked at waiting_approval and every decorated SKU has a real
+              // garment mockup. The "set up the mockup" rows deliberately get no decision bar
+              // (SO-1727 — there is no proof to approve yet), and neither does a row falling back
+              // to raw design art (_pv.hasMock false), which must never read as sign-off (SO-1661).
+              const _canDecide=!!(_job&&_job.art_status==='waiting_approval'&&_canPv&&_pv.hasMock&&skusMissingMockups(_job,t.so).length===0);
+              const _decArt=_canDecide?jobLiveArtIds(_job,t.so).map(id=>safeArt(t.so).find(a=>a.id===id)):null;
+              const _apTgt=_canDecide?artApproveTarget(_decArt,_decArt.find(Boolean)?.deco_type||_job.deco_type):null;
+              const _decAct=_canDecide&&dashArtAct&&dashArtAct.key===_key?dashArtAct:null;
+              // A previewable row opens its art on click; the action button still opens the order.
+              const _rowAct=()=>_canPv?_togglePv():_openDashPriority(t);
+              const _deco=String(_job?.deco_type||_pv?.artFiles[0]?.deco_type||'').replace(/_/g,' ');
+              const _inks=_pv?[...new Set(_pv.artFiles.flatMap(a=>String(a?.ink_colors||a?.thread_colors||'').split(/[,\n]/).map(s=>s.trim()).filter(Boolean)))]:[];
+              return<div className={`dash2x-item ${_pvOpen?'is-open':''}`} key={_key}>
+                <div className="dash2x-row" role="button" tabIndex={0} aria-expanded={_canPv?_pvOpen:undefined} onClick={_rowAct} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_rowAct()}}}>
+                  <span className="dash2x-main">
+                    {_canPv&&<span className="dash2x-thumb" aria-hidden="true"><img src={_cloudinaryDisplay(_pv.shots[0].thumb,240)} alt="" loading="lazy" onError={e=>{e.target.style.visibility='hidden'}}/>{_pv.shots.length>1&&<i>+{_pv.shots.length-1}</i>}</span>}
+                    <span className="dash2x-txt"><strong>{t.msg}</strong><small>{_sub}</small></span>
+                  </span>
+                  <span className="dash2x-acct">{_acct||'—'}</span>
+                  <span className="dash2x-ref">{_ref||'—'}</span>
+                  <span className="dash2x-act">
+                    {_canPv&&<button className="dash2x-pv" onClick={e=>{e.stopPropagation();_togglePv()}}>{_pvOpen?'Hide art ▴':(_pv.hasMock?'View mock ▾':'View art ▾')}</button>}
+                    <span className="dash2x-actrow">
+                      <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'}</button>
+                      {t.dismissKey&&<button className={`dash2x-more ${dashRowMenu&&dashRowMenu.key===_key?'is-on':''}`} aria-label="More actions" aria-haspopup="menu" aria-expanded={!!(dashRowMenu&&dashRowMenu.key===_key)}
+                        onClick={e=>{e.stopPropagation();_openDashRowMenu(e,_key,t)}}>⋯</button>}
+                    </span>
+                  </span>
+                </div>
+                {_pvOpen&&<div className="dash2x-drawer">
+                  {!_pv.hasMock&&<div className="dash2x-warn">⚠️ No garment mockup yet — this is the raw design art, not a proof. Set up a mockup before this goes to the coach.</div>}
+                  <div className="dash2x-shots">
+                    {_pv.shots.map((s,si)=><button type="button" className="dash2x-shot" key={s.url} title={s.name||s.label}
+                      onClick={e=>{e.stopPropagation();setDashArtLb({shots:_pv.shots,idx:si,title:_job.art_name||t.msg,sub:[_acct,_ref].filter(Boolean).join(' · ')})}}>
+                      <img src={_cloudinaryDisplay(s.thumb,700)} alt={s.label} loading="lazy"/>
+                      <span className="dash2x-shot-cap">{s.label}</span>
+                    </button>)}
+                  </div>
+                  <div className="dash2x-facts">
+                    {_deco&&<span className="dash2x-chip">🖨️ {_deco}</span>}
+                    {_inks.length>0&&<span className="dash2x-chip">🎨 {_inks.join(', ')}</span>}
+                    {_pv.units>0&&<span className="dash2x-chip">👕 {_pv.units} unit{_pv.units!==1?'s':''}</span>}
+                    {_pv.garments.slice(0,6).map((g,gi)=><span className="dash2x-chip soft" key={gi}>{[g.sku,g.color].filter(Boolean).join(' · ')}{g.qty?' ×'+g.qty:''}</span>)}
+                    {_pv.garments.length>6&&<span className="dash2x-chip soft">+{_pv.garments.length-6} more</span>}
+                  </div>
+                  {_canDecide&&<div className="dash2x-decide" onClick={e=>e.stopPropagation()}>
+                    {_job.sent_to_coach_at&&<div className="dash2x-decide-note">📤 With the coach since {new Date(_job.sent_to_coach_at).toLocaleDateString()} — approving here records the decision without waiting for their portal reply.</div>}
+                    {!_decAct&&<div className="dash2x-decide-row">
+                      <button className="dash2x-ok" onClick={()=>setDashArtAct({key:_key,mode:'confirm',note:''})}>✅ Approve art</button>
+                      <button className="dash2x-no" onClick={()=>setDashArtAct({key:_key,mode:'reject',note:''})}>🔄 Request changes</button>
+                      <span className="dash2x-decide-hint">{_apTgt.allConfirmed?'Approving marks it ready for production.'
+                        :_apTgt.targetStatus==='upload_emb_files'?'Approving moves it to the embroidery files step (DST + PDF).'
+                        :_apTgt.targetStatus==='order_dtf_transfers'?'Approving moves it to the DTF films step.'
+                        :'Approving moves it to production separations — the artist still owes those.'}</span>
+                    </div>}
+                    {_decAct&&_decAct.mode==='confirm'&&<div className="dash2x-decide-row">
+                      <strong className="dash2x-decide-ask">Approve this artwork{_job.sent_to_coach_at?' on the coach’s behalf':''}?</strong>
+                      <button className="dash2x-ok" onClick={()=>_dashArtApprove(t)}>Yes, approve</button>
+                      <button className="dash2x-cancel" onClick={_dashArtReset}>Cancel</button>
+                    </div>}
+                    {_decAct&&_decAct.mode==='reject'&&<div className="dash2x-decide-col">
+                      <textarea className="dash2x-note" rows={2} autoFocus placeholder="What needs to change? Colors, sizing, placement…" value={_decAct.note}
+                        onChange={e=>{const v=e.target.value;setDashArtAct(a=>(a&&a.key===_key)?{...a,note:v}:a)}}/>
+                      <div className="dash2x-decide-row">
+                        <button className="dash2x-no" disabled={!_decAct.note.trim()} onClick={()=>_dashArtSendBack(t,_decAct.note)}>Send back to artist</button>
+                        <button className="dash2x-cancel" onClick={_dashArtReset}>Cancel</button>
+                        <span className="dash2x-decide-hint">The artist sees this note, and it's logged on the job.</span>
+                      </div>
+                    </div>}
+                  </div>}
+                  <div className="dash2x-drawer-foot">
+                    <span>{t.detail}</span>
+                    <button className="dash2x-btn" onClick={e=>{e.stopPropagation();_openDashPriority(t)}}>{t.action||'Open'} →</button>
+                  </div>
+                </div>}
               </div>})}
             {_isMsgs&&_rows.map(m=>{
               const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;
@@ -8835,6 +9441,46 @@ export default function App(){
                 <span className="dash2x-act"><button className="dash2x-btn" onClick={e=>{e.stopPropagation();_open()}}>Open</button></span>
               </div>})}
           </div>
+        </div>})()}
+      {/* Row action menu — same three actions the Activity Center row offers, and the same
+          guards: rep_delivery to-dos are worked from their own button (never snoozed or handed
+          off), and Assign is rep/manager-only. Rendered once, outside the scrolling panel body. */}
+      {dashRowMenu&&(()=>{
+        const t=dashRowMenu.t;const _canAssign=t.type!=='rep_delivery'&&(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep');
+        const _canSnooze=t.type!=='rep_delivery';
+        const _close=()=>setDashRowMenu(null);
+        return<>
+          <div className="dash2menu-scrim" onClick={_close}/>
+          <div className="dash2menu" role="menu" style={{left:dashRowMenu.x,top:dashRowMenu.y,transform:'translateX(-100%)'+(dashRowMenu.up?' translateY(-100%)':'')}} onClick={e=>e.stopPropagation()}>
+            {_canAssign&&<button role="menuitem" onClick={()=>{_close();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>👤 Assign to a CSR…</button>}
+            {_canSnooze&&<><div className="dash2menu-sep">💤 Snooze for</div>
+              {[[1,'1 day'],[3,'3 days'],[5,'5 days'],[7,'1 week']].map(([d,lbl])=><button key={d} role="menuitem" onClick={()=>{_close();doSnooze(t,d)}}>{lbl}</button>)}</>}
+            <div className="dash2menu-sep"/>
+            {/* Dismissal is permanent for this user (persisted to dismissed_todos), unlike a
+                snooze — so it says so rather than reading like a "hide for now". */}
+            <button role="menuitem" className="danger" onClick={()=>{_close();dismissTodo(t.dismissKey);nf('Dismissed for good — snooze instead if you just want it back later')}}>✕ Dismiss for good</button>
+          </div>
+        </>})()}
+      {/* Full-size mock viewer for the inline art preview — display only (no upload/delete here;
+          those stay in the order editor's art panel). Esc / ← / → are bound in the state effect. */}
+      {dashArtLb&&dashArtLb.shots.length>0&&(()=>{
+        const _n=dashArtLb.shots.length;const _i=Math.min(dashArtLb.idx,_n-1);const _s=dashArtLb.shots[_i];
+        const _go=d=>setDashArtLb(l=>l?{...l,idx:(l.idx+d+_n)%_n}:l);
+        return<div className="dash2lb" onClick={()=>setDashArtLb(null)}>
+          <div className="dash2lb-bar" onClick={e=>e.stopPropagation()}>
+            <div className="dash2lb-ttl"><strong>{dashArtLb.title}</strong><span>{[dashArtLb.sub,_s.label,_n>1?(_i+1)+' of '+_n:null].filter(Boolean).join(' · ')}</span></div>
+            <button className="dash2lb-btn" onClick={()=>openFile(_s.file)}>Download</button>
+            <button className="dash2lb-btn" onClick={()=>setDashArtLb(null)} aria-label="Close preview">✕</button>
+          </div>
+          <div className="dash2lb-stage" onClick={()=>setDashArtLb(null)}>
+            {_n>1&&<button className="dash2lb-nav prev" onClick={e=>{e.stopPropagation();_go(-1)}} aria-label="Previous">&#8249;</button>}
+            <img src={_cloudinaryDisplay(_s.thumb,2000)} alt={_s.label} onClick={e=>e.stopPropagation()}/>
+            {_n>1&&<button className="dash2lb-nav next" onClick={e=>{e.stopPropagation();_go(1)}} aria-label="Next">&#8250;</button>}
+          </div>
+          {_n>1&&<div className="dash2lb-strip" onClick={e=>e.stopPropagation()}>
+            {dashArtLb.shots.map((s,si)=><button key={s.url} className={`dash2lb-th ${si===_i?'is-on':''}`} onClick={()=>setDashArtLb(l=>l?{...l,idx:si}:l)} title={s.label}>
+              <img src={_cloudinaryDisplay(s.thumb,200)} alt=""/></button>)}
+          </div>}
         </div>})()}
       <div className="dash2-sec">Performance<span className="dash2-link" onClick={()=>setPg('reports')}>View full report →</span></div>
       <div className="dash2-grid dash2-kpis">
@@ -10305,7 +10951,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -10362,7 +11008,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -10427,7 +11073,7 @@ export default function App(){
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
-      const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const statusLabel=SO_STATUS_LABELS[displayStatus]||displayStatus.replace(/_/g,' ');
       const _openSO=()=>{setESO(so);setESOC(c)};const SL=({children})=><RowLink params={{so:so.id}} onOpen={_openSO}>{children}</RowLink>;return(<tr key={so.id} style={{cursor:'pointer'}}>
       <td style={{fontWeight:700,color:'#1e40af'}}><SL>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</SL></td><td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}><SL>{fmtCreatedAt(so.created_at)}</SL></td><td><SL>{c?.name||' '} <span className="badge badge-gray">{c?.alpha_tag}</span></SL></td><td style={{fontSize:12}}><SL>{so.memo||' '}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</SL></td><td><SL>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</SL></td>
       <td><SL><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></SL></td>
@@ -11551,6 +12197,7 @@ export default function App(){
         {label:'Ship To',value:c?.name||'—',sub:shipAddrSub},
         {label:'Ship Date',value:(shipment?.ship_date)||new Date().toLocaleDateString(),sub:carrier||undefined},
         {label:'Sales Order',value:so.id},
+        ...schoolPOBoxes(so),
         ...(shipment?.tracking_number?[{label:'Tracking',value:shipment.tracking_number}]:[]),
         ...(so.memo?[{label:'Memo',value:so.memo}]:[]),
       ],
@@ -12515,17 +13162,20 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     // Once an order is closed out (final invoice / "Close Sales Order" / promo close → SO
-    // status='complete'), its decorated jobs are done and out the door. The shop rarely logs a
-    // separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board forever
-    // even though the order is finished. Treat a 'completed' job on a complete order like a shipped
-    // one and drop it from the production board. Display-only: prod_status is untouched, so the
-    // warehouse ship queue and shipped-unit math are unaffected. Completed jobs on orders that are
-    // NOT yet invoiced (ready_to_invoice, etc.) still show — those genuinely still need attention.
+    // status='complete'), its decorated jobs are USUALLY done and out the door. The shop rarely
+    // logs a separate "shipped/picked up" step, so 'completed' jobs otherwise pile up on the board
+    // forever even though the order is finished. Treat a 'completed' job on a complete order like
+    // a shipped one and drop it from the production board — EXCEPT inside the completion grace
+    // window (jobRecentlyCompleted): invoicing is a financial close that can land minutes after
+    // the decorator's Done click (SO-1512), and dropping the job that instant made it vanish from
+    // the Completed column before shipping ever saw the handoff. Display-only: prod_status is
+    // untouched, so the warehouse ship queue and shipped-unit math are unaffected. Completed jobs
+    // on orders NOT yet invoiced (ready_to_invoice, etc.) still show — those still need attention.
     const _soCompleteCache={};
     const _isSOComplete=so=>{if(!so)return false;if(_soCompleteCache[so.id]===undefined)_soCompleteCache[so.id]=calcSOStatus(so)==='complete';return _soCompleteCache[so.id];};
     const readyOnly=byDeco.filter(j=>(j.prod_status!=='hold'||isJobReady(j,j.so)))
       .filter(j=>j.prod_status!=='shipped')
-      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)));
+      .filter(j=>!(j.prod_status==='completed'&&_isSOComplete(j.so)&&!jobRecentlyCompleted(j)));
     // Decorator filtering: decorators see all Ready for Prod plus the shared In Line queue (jobs sit
     // unassigned until pulled into In Process), but only their assigned jobs in In Process/Completed
     const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.prod_status==='ready'||(j.prod_status==='staging'&&!j.assigned_to)||j.assigned_to===cu?.name):readyOnly;
@@ -13050,8 +13700,8 @@ export default function App(){
             {/* Per-item production cards — mockup, sizes, numbers/names, decoration spec, files */}
             {(()=>{
               // Linked garments reference their source garment's mockup instead of repeating it.
-              const _linkSrcOf=g=>resolveMockLink(allArtFiles,g.sku,g.color);
-              const _linkDepsOf=g=>mockLinkDependents(allArtFiles,g.sku,g.color).filter(k=>itemDetails.some(x=>(x.sku+'|'+(x.color||''))===k));
+              const _linkSrcOf=g=>resolveMockLink(allArtFiles,mockSkuOf(g),g.color);
+              const _linkDepsOf=g=>mockLinkDependents(allArtFiles,mockSkuOf(g),g.color).filter(k=>itemDetails.some(x=>garmentMockKey(x)===k));
               return<div style={{padding:20,background:'#f8fafc'}}>
                 {itemDetails.map((gi,gii)=>{
                   const it=safeItems(so)[gi.item_idx];
@@ -13689,8 +14339,7 @@ export default function App(){
                   let _grandRcvd=0;poItems.forEach((pi,ri)=>{Object.entries(pi.sizes||{}).filter(([,v])=>v>0).forEach(([sz])=>{const el=document.getElementById('rcv-'+ri+'-'+sz);_grandRcvd+=el?Math.max(0,parseInt(el.value)||0):0})});
                   if(_grandRcvd===0){nf('Enter received quantities first (or click Receive All)','warn');return}
                   const _batchStatus=_grandRcvd>=totalUnits?'received':'partial';
-                  // Update submitted batch status
-                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:_batchStatus,received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  // Batch status flips AFTER every SO save confirms (below) — never for lost receipts.
                   // Update PO lines on SOs to received — match by po_id OR batch_po_number so
                   // the NSA-#### scan also finds the source POs (PO-####-TAG) grouped under it.
                   const lcPoId=poId.toLowerCase();
@@ -13701,6 +14350,7 @@ export default function App(){
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
                   const _recvLines=[]; // actual received qtys per line — box contents (not ordered sizes)
+                  const _qSavePs=[]; // per-SO save results — success UI below waits on these (NSA 4568)
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -13747,9 +14397,19 @@ export default function App(){
                     // fire-and-forget, so on a slow device a reload could clobber the just-received line while
                     // the 4x6 label had already printed — the SO then read "unfulfilled" despite a printed
                     // label. A hard failure now surfaces to the warehouse user instead of failing silently.
-                    Promise.resolve(savSONow({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
-                      .then(ok=>{if(ok===false)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')});
+                    const _qsp=Promise.resolve(savSONow({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+                    _qsp.then(ok=>{if(ok===false)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')});
+                    _qSavePs.push(_qsp.then(ok=>({soId:so.id,ok}),()=>({soId:so.id,ok:false})));
                   });
+                  // Success UI only after every SO save confirms (NSA 4568, 2026-08-06: a batch
+                  // check-in whose saves were all lost still printed labels and read as done).
+                  Promise.all(_qSavePs).then(_qResults=>{
+                  const _qFailed=_qResults.filter(r=>r.ok===false).map(r=>r.soId);
+                  if(_qFailed.length>0){
+                    nf('⚠️ Receipts for '+_qFailed.join(', ')+' did NOT save — no labels were printed for this check-in. Fix the save (see the unsaved-changes banner) or reload and re-receive.','error');
+                    return;
+                  }
+                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:_batchStatus,received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   notifyDecoReady(_decoReady);
                   // Print label(s) after receiving — separate per source PO for batches
@@ -13762,6 +14422,7 @@ export default function App(){
                     const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
                     receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),memo:_recvMemo(_bsid),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
+                  });
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
           </div>
@@ -14018,8 +14679,8 @@ export default function App(){
       </div></div>
       </>}
       {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vend.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setSanMarPreview(null)}/>}
-      {ssOrder&&<SSOrderModal {...ssOrder} onLearnSkus={_learnSsOrderSkus} onClose={()=>setSSOrder(null)}/>}
-      {momentecOrder&&<MomentecOrderModal {...momentecOrder} onClose={()=>setMomentecOrder(null)}/>}
+      {ssOrder&&<SSOrderModal {...ssOrder} shipPresets={_decoShipPresets} onLearnSkus={_learnSsOrderSkus} onClose={()=>setSSOrder(null)}/>}
+      {momentecOrder&&<MomentecOrderModal {...momentecOrder} shipPresets={_decoShipPresets} onClose={()=>setMomentecOrder(null)}/>}
     </>);
   };
 
@@ -14428,7 +15089,7 @@ export default function App(){
     return{rev,cost,shipRev,margin:mBase-cost,pct:mBase>0?Math.round((mBase-cost)/mBase*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===rptRep});
-    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===rptRep});
+    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so,i)===rptRep});
     const filtBookingInvPOs=(invPOs||[]).filter(p=>p.is_booking).filter(p=>rptRep==='all'?true:p.created_by_id===rptRep);
 
     // Pipeline data
@@ -14450,7 +15111,7 @@ export default function App(){
       // One soCalc pass per SO; shipRev tallied so the leaderboard pct denominator matches margin
       const _sums=rSOs.reduce((a,s)=>{const m=soCalc(s);a.rev+=m.rev;a.margin+=m.margin;a.shipRev+=safeNum(m.shipRev);return a},{rev:0,margin:0,shipRev:0});
       const rev=_sums.rev,margin=_sums.margin,repShipRev=_sums.shipRev;
-      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===r.id});
+      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so,i)===r.id});
       const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
@@ -14615,7 +15276,7 @@ export default function App(){
     // the order, so the two tabs disagreed (Jered, Aug 2026: INV-63398, $526.05).
     const _custById={};(cust||[]).forEach(c=>{if(c&&c.id)_custById[c.id]=c});
     const _soByIdRpt={};(sos||[]).forEach(s=>{if(s&&s.id)_soByIdRpt[s.id]=s});
-    const _billRepId=(row)=>{const so=row&&row.so_id?_soByIdRpt[row.so_id]:null;return so?commissionRepId(_custById[so.customer_id],so):(((_custById[row.customer_id]||{}).primary_rep_id)||null)};
+    const _billRepId=(row)=>{const so=row&&row.so_id?_soByIdRpt[row.so_id]:null;return so?commissionRepId(_custById[so.customer_id],so,row):((row&&row.rep_id)||((_custById[row.customer_id]||{}).primary_rep_id)||null)};
     const _matchRep=(hi)=>rptRep==='all'?true:(_billRepId(hi)===rptRep);
     const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
     let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0;
@@ -15373,7 +16034,7 @@ export default function App(){
           const _isFut=(p)=>p.y>_tY||(p.y===_tY&&(p.mo>_tM||(p.mo===_tM&&p.d>_tD)));
           const _hSet=new Set((histInvs||[]).map(h=>h.id));
           const _bills=[];
-          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?commissionRepId(_cById(so.customer_id),so):((_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
+          (invs||[]).forEach(iv=>{if(!iv||iv.status==='void'||iv.deleted_at||_hSet.has(iv.id))return;const p=_pYMD(iv.date);if(!p)return;const so=sos.find(s=>s.id===iv.so_id);const rep=so?commissionRepId(_cById(so.customer_id),so,iv):(iv.rep_id||(_cById(iv.customer_id)||{}).primary_rep_id);const c=_cById(iv.customer_id);_bills.push({rep:rep||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&(c.name||c.alpha_tag))||iv.customer_id||'Unknown',total:safeNum(iv.total),paid:safeNum(iv.paid),status:iv.status||'open',src:'Portal',id:iv.id})});
           (histInvs||[]).forEach(hi=>{if(!hi||hi.status==='void')return;const p=_pYMD(hi.date);if(!p)return;const c=_cById(hi.customer_id);_bills.push({rep:(c&&c.primary_rep_id)||null,ym:p.y*12+p.mo,y:p.y,mo:p.mo,day:p.d,future:_isFut(p),customer:(c&&c.name)||hi.raw_customer_name||hi.customer_id||'Unknown',total:safeNum(hi.total),paid:safeNum(hi.paid),status:hi.status||'paid',src:'NetSuite',id:hi.id})});
           const _allReps=rptRep==='all';
           const _scoped=_allReps?_bills:_bills.filter(b=>b.rep===rptRep);
@@ -16290,13 +16951,17 @@ export default function App(){
           if(decoTimeF==='ytd')return d.getFullYear()===now.getFullYear();
           return true;
         };
-        // Completed jobs
+        // Completed jobs. A complete SO no longer hides its jobs outright — invoicing is a
+        // financial close, and it can land minutes after the Done click; recently-stamped
+        // completions stay in the report (jobRecentlyCompleted), unstamped legacy rows drop
+        // as before.
         const completedDecoJobs=[];
-        sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+        sos.forEach(so=>{
+          const _st=calcSOStatus(so);if(_st==='booking')return;
           const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
           const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-          safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+          safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
             if(!decoInRange(j.completed_at||j.updated_at||so.updated_at))return;
             completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
               artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
@@ -16998,8 +17663,12 @@ export default function App(){
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
       if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
         if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')+' '+(s._omg_sale_code||'')).toLowerCase().includes(q))return false}
-      // Date range filter — based on open_date or close_date
-      if(omgFilter.dateRange!=='all'){
+      // Date range filter — based on open_date or close_date. Open and draft
+      // (pending/scheduled) stores are never date-hidden: many OMG pulls carry no
+      // open/close date, so the fallback to _last_synced silently dropped still-active
+      // stores off a rep's default 30-day view (Chase's OLU Cross Country / SO-1465,
+      // Aug 2026). Only closed/complete history trims by date.
+      if(omgFilter.dateRange!=='all'&&s.status!=='open'&&s.status!=='draft'){
         const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
         const cutoff=new Date(Date.now()-days*86400000);
         const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):s._last_synced?new Date(s._last_synced):null;
@@ -17301,7 +17970,11 @@ export default function App(){
             </div>}
             {(()=>{const rec=omgFirstSeen[s.id];const tag='['+s.id+']';const task=assignedTodos.find(t=>t.title&&t.title.startsWith('Apply OMG funds')&&t.title.includes(tag));
               if(task){const who=REPS.find(r=>r.id===task.assigned_to)?.name||'accounting';return<div style={{marginTop:6,padding:'6px 12px',background:task.status==='completed'?'#f0fdf4':'#faf5ff',borderRadius:6,fontSize:11,color:task.status==='completed'?'#166534':'#6d28d9',fontWeight:600}}>{task.status==='completed'?'✅ OMG funds applied':`💰 ${who} reminded to apply OMG funds`}</div>}
-              if(rec&&!rec.baseline){const days=Math.ceil((28*864e5-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'}</div>}
+              if(rec&&!rec.baseline){
+                // With a linked SO the reminder fires when its final job finishes; without
+                // one, the 6-week safety-net countdown applies.
+                if(sos.some(so=>so.omg_store_id===s.id&&!so.deleted_at))return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds when the SO's final job finishes</div>;
+                const days=Math.ceil((OMG_FUNDS_WINDOW_MS-(Date.now()-new Date(rec.at).getTime()))/864e5);return<div style={{marginTop:6,padding:'6px 12px',background:'#fffbeb',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>⏳ Accounting will be reminded to apply OMG funds in {Math.max(0,days)} day{days===1?'':'s'} (no SO yet)</div>}
               return null})()}
           </div>
         </div></div>
@@ -18215,6 +18888,39 @@ export default function App(){
     return{soId:so.id,custName:cc?.name||'',repName:_repNameForSO(so,cc),lines:_receiptLines(so,itemQtyMap),deco:decoG?decoG.jobs:[]};
   };
   const _showMobileReceipt=(payload)=>{const groups=(payload?.groups||[]).filter(Boolean);if(groups.length)setMobileReceipt({...payload,groups})};
+  // Server-authoritative warehouse decrement (00237): sends the pulled DELTAS to
+  // pull_house_inventory, which decrements the LIVE product_inventory rows
+  // (clamped at 0) and returns post-pull quantities we adopt into local state —
+  // so two staff pulling the same product concurrently no longer overwrite each
+  // other's decrement through the absolute diff-save. Falls back to the legacy
+  // local-absolute write ONLY when the RPC isn't deployed yet.
+  const pullHouseInv=(prodPatches,pulls)=>{
+    const legacy=()=>{if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x))};
+    if(!supabase){legacy();return}// unconfigured/demo env: pure local decrement, as before 00237
+    if(!pulls||!pulls.length){legacy();return}
+    supabase.rpc('pull_house_inventory',{p_pulls:pulls}).then(({data,error})=>{
+      if(error){
+        const msg=(error.message||'')+' '+(error.code||'');
+        if(/42883|42P01|does not exist|schema cache/i.test(msg)){legacy();return}
+        console.error('[pull] house inventory decrement failed:',error.message);
+        nf('⚠️ Inventory decrement failed — check stock counts: '+error.message);
+        return;
+      }
+      const byPid={};
+      ((data&&data.rows)||[]).forEach(r=>{if(r.found===false)return;(byPid[r.product_id]=byPid[r.product_id]||{})[r.size]=r.quantity});
+      if(Object.keys(byPid).length>0){
+        const adopt=(pp)=>pp.map(x=>byPid[x.id]?{...x,_inv:{...(x._inv||{}),...byPid[x.id]}}:x);
+        // Server truth, not a local edit: advance the diff-save snapshot IN THE
+        // SAME step. Adopting into state alone would make the prod effect see
+        // "local changed vs snapshot" and re-send the pull as a merge delta
+        // (base = pre-pull snapshot) — and the 00239 RPC would then decrement
+        // the pull a SECOND time. With the snapshot advanced there is nothing
+        // to save: the server already holds these quantities.
+        if(_dbSnap.current.prod)_dbSnap.current.prod=adopt(_dbSnap.current.prod);
+        setProd(adopt);
+      }
+    }).catch(e=>console.error('[pull] house inventory decrement error:',e));
+  };
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
@@ -18231,10 +18937,10 @@ export default function App(){
     });
     const _newJobs=recalcJobFulfillment(so,updatedItems);
     const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
-    // Deduct warehouse inventory for what was pulled
-    const prodPatches={};
-    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[p.id]=newInv});
-    if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+    // Deduct warehouse inventory for what was pulled — server-side (00237), see pullHouseInv.
+    const prodPatches={};const housePulls=[];
+    Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const p=prod.find(x=>x.id===it.product_id)||prod.find(x=>x.sku===it.sku);if(!p)return;const newInv={...(prodPatches[p.id]||p._inv||{})};Object.entries(qtys).forEach(([sz,v])=>{if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[p.id]=newInv});
+    pullHouseInv(prodPatches,housePulls);
     savSO(updatedSO,{skipMerge:true});
     // Atomic per-line DB sync for cross-tab consistency (mirrors desktop pull)
     Object.entries(pullMap).forEach(([ii,qtys])=>{const pq={};Object.keys(qtys).forEach(sz=>{pq[sz]=qtys[sz]||0});_dbUpdatePickLineStatus(soId,parseInt(ii),pickId,'pulled',pq)});
@@ -18280,8 +18986,10 @@ export default function App(){
     // Result-checked save (see the desktop Confirm-Received path): synchronous pending-id + direct
     // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful result
     // so a hard save failure surfaces instead of failing silently. Phone/tablet is the slowest link.
-    Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
-      .then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
+    // The promise is also RETURNED (saveP) so callers gate the confirmation/print screen on it —
+    // the NSA 4568 batch check-in (2026-08-06) printed labels for receipts that never persisted.
+    const saveP=Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+    saveP.then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
     acts.forEach(a=>addWhAction(a));
     const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
     // Aggregate what was received per item (across POs) for the confirmation summary.
@@ -18307,20 +19015,41 @@ export default function App(){
     if(!opts.defer){
       nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
       notifyDecoReady(decoJobs);
-      // Show the confirmation screen (labels print from there on tap) instead of auto-printing.
-      _showMobileReceipt({kind:'received',units:grand,labels,groups:[group]});
+      // Confirmation screen (labels print from there on tap) only AFTER the save confirms — a
+      // check-in label must never exist for a receipt the DB doesn't hold.
+      saveP.then(ok=>{if(ok!==false)_showMobileReceipt({kind:'received',units:grand,labels,groups:[group]})});
     }
-    return{labels,decoJobs,units:grand,group};
+    return{labels,decoJobs,units:grand,group,saveP};
   };
   // Mobile batch check-in: apply every SO's receipts, then ONE combined print job (one page
   // per source PO) and ONE deco-ready toast. Fired after MobilePortal's summary toast so the
   // "🎽 Ready for decoration" notice is what stays on screen instead of being clobbered.
-  const mobileReceiveSOPOBatch=(entries)=>{
-    const labels=[],deco=[],groups=[];let units=0;
-    (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r){labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units}});
-    if(units===0)return;
-    notifyDecoReady(deco);
-    _showMobileReceipt({kind:'received',units,labels,groups});
+  // Truth-checked (NSA 4568, 2026-08-06: all three SO saves of a batch check-in were lost while the
+  // labels still printed): every per-SO receipt is applied, then we WAIT for all the saves. Only SOs
+  // whose save confirmed contribute labels/receipt; failures get a blocking error toast; the batch PO
+  // is marked received (parity with the desktop batch screen) only when every save landed.
+  // Returns a promise of true (all saved) / false so MobilePortal can hold its Saving state.
+  const mobileReceiveSOPOBatch=(entries,opts={})=>{
+    const perSo=[];
+    (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r)perSo.push({soId,r})});
+    if(perSo.length===0)return Promise.resolve(true);
+    return Promise.all(perSo.map(({soId,r})=>Promise.resolve(r.saveP).then(ok=>({soId,ok}),()=>({soId,ok:false})))).then(results=>{
+      const failed=new Set(results.filter(x=>x.ok===false).map(x=>x.soId));
+      const saved=perSo.filter(({soId})=>!failed.has(soId));
+      const labels=[],deco=[],groups=[];let units=0;
+      saved.forEach(({r})=>{labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units});
+      if(failed.size===0&&Array.isArray(opts.batchNos)&&opts.batchNos.length){
+        const _now=new Date().toLocaleString();
+        setSubmittedBatches(prev=>prev.map(sb=>opts.batchNos.includes(sb.po_number)&&sb.status!=='received'?{...sb,status:'received',received_at:_now,received_by:cu?.name||'warehouse'}:sb));
+      }
+      if(units>0){
+        nf('Received '+units+' unit'+(units!==1?'s':'')+' across '+saved.length+' order'+(saved.length!==1?'s':''));
+        notifyDecoReady(deco);
+        _showMobileReceipt({kind:'received',units,labels,groups});
+      }
+      if(failed.size>0)nf('⚠️ Receipts for '+[...failed].join(', ')+' did NOT save — re-receive those orders (their labels were not printed)','error');
+      return failed.size===0;
+    });
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
@@ -18535,6 +19264,7 @@ export default function App(){
         infoBoxes:[
           {label:'Ship To',value:grp.cName,sub:shipAddrSub},
           {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
+          ...schoolPOBoxes(soIds.map(id=>grp.soMap[id])),
         ],
         tables:[{
           title:'Items in this Shipment',
@@ -18715,10 +19445,10 @@ export default function App(){
                       // Recalculate job item_status after pulling — mirrors PO receive flow so the warehouse "Ready for Deco" tab and job-level todos reflect stock-pull fulfillment.
                       const _newJobs=recalcJobFulfillment(so,updatedItems);
                       const updatedSO={...so,items:updatedItems,jobs:_newJobs,updated_at:new Date().toLocaleString()};
-                      // Inventory adjustments per item product
-                      const prodPatches={};
-                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0)newInv[sz]=Math.max(0,(newInv[sz]||0)-v)});prodPatches[pi.p.id]=newInv});
-                      if(Object.keys(prodPatches).length>0)setProd(pp=>pp.map(x=>prodPatches[x.id]?{...x,_inv:prodPatches[x.id]}:x));
+                      // Inventory adjustments per item product — server-side (00237), see pullHouseInv.
+                      const prodPatches={};const housePulls=[];
+                      pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[pi.p.id]=newInv});
+                      pullHouseInv(prodPatches,housePulls);
                       if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                         const shipments=[...(updatedSO._shipments||[])];
                         boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
@@ -19345,6 +20075,9 @@ export default function App(){
                   // of the box that was just put away — not the entire PO.
                   const justReceived=[];
                   const _decoReady=[];
+                  // Per-SO save results — the confirmation tail below waits on these so labels never
+                  // print (and the batch never flips to received) for receipts the DB doesn't hold.
+                  const _soSavePs=[];
 
                   // --- SO PO Lines: group by SO to avoid overwrite race ---
                   if(soPOLines.length>0){
@@ -19383,16 +20116,14 @@ export default function App(){
                       // Result-checked save (see the Confirm-Received path): synchronous pending-id + direct
                       // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful
                       // result so a hard save failure surfaces instead of failing silently.
-                      Promise.resolve(savSONow({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
-                        .then(ok=>{if(ok===false)nf('⚠️ '+grpSO.id+': receipt did not save — please retry','error')});
+                      const _sp=Promise.resolve(savSONow({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+                      _soSavePs.push(_sp.then(ok=>({soId:grpSO.id,ok}),()=>({soId:grpSO.id,ok:false})));
                     });
                   }
 
-                  // --- Batch PO status ---
-                  if(batchMatch&&batchMatch.status!=='received'){
-                    setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
-                    anyReceived=true;
-                  }
+                  // --- Batch PO status --- (flipped to received AFTER every SO save confirms, below)
+                  const _batchToFlip=!!(batchMatch&&batchMatch.status!=='received');
+                  if(_batchToFlip)anyReceived=true;
 
                   // --- Inventory POs ---
                   if(invMatch){
@@ -19412,7 +20143,19 @@ export default function App(){
                       received_at:new Date().toLocaleString(),received_by:cu.name}:p));
                   }
 
+                  // Wait for every SO save to confirm before flipping the batch, logging, printing
+                  // labels, or reporting success (NSA 4568, 2026-08-06: a batch check-in whose saves
+                  // were all lost still printed labels and looked done).
+                  Promise.all(_soSavePs).then(_saveResults=>{
+                  const _failedSo=_saveResults.filter(r=>r.ok===false).map(r=>r.soId);
+                  if(_batchToFlip&&_failedSo.length===0){
+                    setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  }
                   setWhReceiving(false);
+                  if(_failedSo.length>0){
+                    nf('⚠️ Receipts for '+_failedSo.join(', ')+' did NOT save — no labels were printed for this check-in. Fix the save (see the unsaved-changes banner) or reload and re-receive.','error');
+                    return;
+                  }
                   if(anyReceived){
                     // Log receive to recent actions
                     const soIds=[...new Set(poItems.filter(it=>it.soId).map(it=>it.soId))];const custNames=[...new Set(poItems.filter(it=>it.customer).map(it=>it.customer))];
@@ -19443,6 +20186,7 @@ export default function App(){
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
+                  });
                 }}>{whReceiving?'Saving...':'✓ Confirm Received'}</button>
               </div>}
 
@@ -20080,6 +20824,7 @@ export default function App(){
                       infoBoxes:[
                         {label:'Ship To',value:shipModal.grp.cName,sub:boxAddrSub},
                         {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'ups').toUpperCase()},
+                        ...schoolPOBoxes(Object.values(shipModal.soMap||shipModal.grp.soMap||{})),
                         ...(box.tracking_number?[{label:'Tracking',value:box.tracking_number}]:[]),
                       ],
                       tables:[{
@@ -21846,7 +22591,11 @@ export default function App(){
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(!_inFam(j,jj))return jj;
-        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // _art_moved marks this as a DELIBERATE status transition for dbEngine's art-status
+        // regression guard — a workboard drag may legitimately move a job backward (e.g. back to
+        // In Progress), which an unstamped save from a stale tab would otherwise defer to the DB.
+        // One-shot: dbEngine consumes it on the save that carries it, never persisted as a column.
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist,_art_moved:true};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
         // it set with art_status ahead is the SO-1199 contradictory shape.
@@ -22311,25 +23060,30 @@ export default function App(){
         // Resolve which art_file owns the mockups for a given item — falls back to the job's primary art.
         // Items may use a different art_file than the job's primary (e.g. shorts using a separate logo art),
         // so the mockup display and upload routing must follow the item's own decorations.
-        const resolveItemArtId=(sku)=>{
-          const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
+        const resolveItemArtId=(g)=>{
+          // Match the garment LINE, not its SKU: every customer-supplied line carries the SKU
+          // 'CUST-SUPPLIED', so a find() on sku alone routed the upload to the first custom
+          // garment's art file instead of this one's (SO-2063).
+          const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
           const itIdx=skuItem?.item_idx;
           const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
           const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
           // Prefer art files this item actually uses; if multiple, take the first; fall back to the job's primary
           return skuArtIds[0]||j.art_file_id||null;
         };
-        // Composite key for per-item mockups: SKU + color, so the same SKU in
-        // different colors doesn't collapse onto a single entry.
-        const _mockKey=(sku,color)=>sku+'|'+(color||'');
-        // Read with fallback to the legacy plain-SKU key so existing data still renders.
-        const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
-        const handleMockupUploadForItem=async(files,sku,color,targetArtId,slotKey)=>{
+        // Composite key for per-item mockups: SKU + color, so the same SKU in different colors
+        // doesn't collapse onto a single entry — via garmentMockKey, which keys the hand-typed
+        // lines (all of them SKU 'CUST-SUPPLIED') on their name so they don't collapse either.
+        const _mockKey=(g)=>garmentMockKey(g);
+        // Read with fallback to the legacy shared / plain-SKU keys so existing data still renders.
+        const _getMocks=(artF,g)=>itemMockFiles(artF?.item_mockups,g);
+        const handleMockupUploadForItem=async(files,g,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
+          const sku=g?.sku;const color=g?.color;
           setArtJobDetailUploading(true);
           try{
-            const artId=targetArtId||resolveItemArtId(sku);
-            const mk=slotKey||_mockKey(sku,color);
+            const artId=targetArtId||resolveItemArtId(g);
+            const mk=slotKey||_mockKey(g);
             if(typeof nf==='function')nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
             const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
             const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
@@ -22345,7 +23099,7 @@ export default function App(){
               const curItemMockups=liveAf?.item_mockups||{};
               // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
               // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
-              const existing=curItemMockups[mk]||(mk===_mockKey(sku,color)?(curItemMockups[sku]||[]):[]);
+              const existing=curItemMockups[mk]||(mk===_mockKey(g)?(curItemMockups[sku]||[]):[]);
               const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
               updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
@@ -22421,17 +23175,7 @@ export default function App(){
           setArtJobDetailUploading(true);
           try{
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            const updArt=safeArt(liveSO).map(a=>{
-              if(a.id!==_linkAnchorId)return a;
-              const links={...mockLinksOf(a)};
-              let root=sourceKey;
-              const seen=new Set([memberKey]);
-              while(root&&links[root]&&!seen.has(root)){seen.add(root);root=links[root]}
-              if(root===memberKey)root=sourceKey===memberKey?null:sourceKey; // never self-link via chain
-              if(root)links[memberKey]=root;else delete links[memberKey];
-              Object.keys(links).forEach(k=>{if(links[k]===memberKey)links[k]=root||memberKey;if(links[k]===k)delete links[k]});
-              return{...a,mock_links:links};
-            });
+            const updArt=applyMockLink(safeArt(liveSO),_linkAnchorId,memberKey,sourceKey);
             const newSO=savSO({...liveSO,art_files:updArt});
             setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
             const ok=await _dbSaveSO(newSO);
@@ -22453,7 +23197,7 @@ export default function App(){
           </div>
           <div className="modal-body" style={{padding:0}}>
             {/* General mockup — only shown if no per-item mockups have been uploaded */}
-            {!itemDetails.some(gi=>_getMocks(af,gi.sku,gi.color).length>0)&&<div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
+            {!itemDetails.some(gi=>_getMocks(af,gi).length>0)&&<div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
               {mockupFiles.length>0?<>
                 {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                   return<div key={i} style={{width:'100%',maxWidth:600,marginBottom:i<mockupFiles.length-1?12:0,borderRadius:12,background:'white',border:'1px solid #e2e8f0',overflow:'hidden'}}>
@@ -22509,16 +23253,16 @@ export default function App(){
                 // THE SAME MOCKUP AS another garment (e.g. the same logo on three black polos).
                 // Links live on the job's primary design (af.mock_links); a linked garment shows a
                 // compact reference instead of its own slots, the source gets an "also used by" badge.
-                const _linkOf=gi=>af?resolveMockLink([af],gi.sku,gi.color):null;
-                const _depsOf=gi=>af?mockLinkDependents([af],gi.sku,gi.color).filter(k=>itemDetails.some(g=>_mockKey(g.sku,g.color)===k)):[];
-                const _garmentByKey=k=>itemDetails.find(g=>_mockKey(g.sku,g.color)===k);
+                const _linkOf=gi=>af?resolveMockLink([af],mockSkuOf(gi),gi.color):null;
+                const _depsOf=gi=>af?mockLinkDependents([af],mockSkuOf(gi),gi.color).filter(k=>itemDetails.some(g=>_mockKey(g)===k)):[];
+                const _garmentByKey=k=>itemDetails.find(g=>_mockKey(g)===k);
                 // "Use same mockup as …" chips: one per other garment, single click to link.
-                const _linkChips=gi=>{if(!af||itemDetails.length<2)return null;const myKey=_mockKey(gi.sku,gi.color);
-                  const others=itemDetails.filter(g=>_mockKey(g.sku,g.color)!==myKey);
+                const _linkChips=gi=>{if(!af||itemDetails.length<2)return null;const myKey=_mockKey(gi);
+                  const others=itemDetails.filter(g=>_mockKey(g)!==myKey);
                   if(others.length===0)return null;
                   return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:8}}>
                     <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>or use the same mockup as:</span>
-                    {others.map((g,oi)=>{const theirKey=_mockKey(g.sku,g.color);const hasMock=_getMocks(af,g.sku,g.color).length>0;
+                    {others.map((g,oi)=>{const theirKey=_mockKey(g);const hasMock=_getMocks(af,g).length>0;
                       return<button key={oi} disabled={artJobDetailUploading} onClick={()=>setMockLink(myKey,theirKey)}
                         style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:artJobDetailUploading?'wait':'pointer'}}
                         title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')}>
@@ -22542,7 +23286,7 @@ export default function App(){
                   const repItemPFs=artDecos.filter(d=>d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f)})));
                   // One mockup slot per decoration (reversible color ways + numbers/names each get a box).
                   // Slot keys are computed identically to the artist modal so uploads from either side line up.
-                  const _repSkBase=_mockKey(gi.sku,gi.color);
+                  const _repSkBase=_mockKey(gi);
                   const _repSlots=[];
                   // A reversible garment prints on both color ways, so each reversible deco gets TWO
                   // mockup panels (Side A / Side B). Slot keys come from mockSlotKeys (safeHelpers) —
@@ -22550,12 +23294,12 @@ export default function App(){
                   // and the send-for-approval check always line up.
                   mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
                     if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                      _repSlots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'art',primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
-                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                      _repSlots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                     else{const d=nameDecos[sd.idx];
-                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
-                  if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
+                      _repSlots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
+                  if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -22590,7 +23334,7 @@ export default function App(){
                           <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>🔗 Same mockup as {srcSku}{(srcG?.color||srcColor)?' — '+(srcG?.color||srcColor):''}</div>
                           <div style={{fontSize:10,color:srcFiles.length>0?'#64748b':'#b45309'}}>{srcFiles.length>0?'Approval uses that mockup for this garment too.':'Waiting on that garment’s mockup.'}</div>
                         </div>
-                        <button className="btn btn-sm" disabled={artJobDetailUploading} style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLink(_mockKey(gi.sku,gi.color),null)}>Unlink</button>
+                        <button className="btn btn-sm" disabled={artJobDetailUploading} style={{fontSize:10,padding:'3px 10px',flexShrink:0}} onClick={()=>setMockLink(_mockKey(gi),null)}>Unlink</button>
                       </div>;})()
                     :<div style={{padding:12,borderBottom:'1px solid #e2e8f0',background:'#f8fafc'}}>
                       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
@@ -22599,7 +23343,7 @@ export default function App(){
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
                        :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
-                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slotMockFiles(slot,_repSlots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         // Reused/pre-digitized art has no per-garment mocks — the approval gate and the SO
                         // page accept the general bucket / sew-out proof instead, so the slot must show it
@@ -22607,7 +23351,7 @@ export default function App(){
                         // prod_files/mockup_files, not this slot, so no × here — uploading replaces it.
                         const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
                         const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,slot.artId,slot.key)};
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
                         return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
                           <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
@@ -22845,21 +23589,22 @@ export default function App(){
           setArtJobDetailEditCW(null);
           nf('Color way updated');
         };
-        // Composite key for per-item mockups: SKU + color, so the same SKU in
-        // different colors doesn't collapse onto a single entry.
-        const _mockKey=(sku,color)=>sku+'|'+(color||'');
-        // Read with fallback to the legacy plain-SKU key so existing data still renders.
-        const _getMocks=(artF,sku,color)=>{const m=artF?.item_mockups||{};const v=m[_mockKey(sku,color)];return v&&v.length>0?v:(m[sku]||[]);};
+        // Composite key for per-item mockups: SKU + color, so the same SKU in different colors
+        // doesn't collapse onto a single entry — via garmentMockKey, which keys the hand-typed
+        // lines (all of them SKU 'CUST-SUPPLIED') on their name so they don't collapse either.
+        const _mockKey=(g)=>garmentMockKey(g);
+        // Read with fallback to the legacy shared / plain-SKU keys so existing data still renders.
+        const _getMocks=(artF,g)=>itemMockFiles(artF?.item_mockups,g);
         // Copy mockup helper
-        const _copyMockup=(fromSku,fromColor,toSku,toColor)=>{
-          const fromMocks=_getMocks(af,fromSku,fromColor);
+        const _copyMockup=(fromG,toG)=>{
+          const fromMocks=_getMocks(af,fromG);
           if(fromMocks.length===0)return;
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const toKey=_mockKey(toSku,toColor);
+          const toKey=_mockKey(toG);
           const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:{...(a.item_mockups||{}),[toKey]:[...fromMocks]}}:a);
           savSO({...liveSO,art_files:updArt});
           setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
-          nf('Mockup copied from '+fromSku+' to '+toSku);
+          nf('Mockup copied from '+(fromG?.name||fromG?.sku)+' to '+(toG?.name||toG?.sku));
         };
 
         // Art messages for this job (stored on the job) + SO message replies from rep
@@ -22941,13 +23686,16 @@ export default function App(){
         // Upload handler for per-item mockups.
         // targetArtId: which art_file this mockup applies to. If omitted, derives from the SKU's decorations
         // (the first art_file used on this SKU), falling back to the job's primary art.
-        const handleItemMockupUpload=async(files,sku,color,targetArtId,slotKey)=>{
+        const handleItemMockupUpload=async(files,g,targetArtId,slotKey)=>{
+          const sku=g?.sku;const color=g?.color;
           setArtJobDetailUploading(true);
           try{
-            // Derive art_file_id from the SKU's decorations if not explicitly passed
+            // Derive art_file_id from this garment LINE's decorations if not explicitly passed.
+            // Matching on SKU alone routed every customer-supplied line (all 'CUST-SUPPLIED') to
+            // the first custom garment's art (SO-2063).
             let artId=targetArtId;
             if(!artId){
-              const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
+              const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
               const itIdx=skuItem?.item_idx;
               const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
               const skuArtIds=decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id);
@@ -22955,8 +23703,8 @@ export default function App(){
               // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
-            const mk=slotKey||_mockKey(sku,color);
-            nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
+            const mk=slotKey||_mockKey(g);
+            nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+(g?.name||sku)+'...');
             const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
             const uploaded=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
             const failedNames=results.map((r,i)=>r.status==='rejected'?files[i].name:null).filter(Boolean);
@@ -22969,7 +23717,7 @@ export default function App(){
             const curItemMockups=liveAf?.item_mockups||{};
             // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
             // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
-            const existing=curItemMockups[mk]||(mk===_mockKey(sku,color)?(curItemMockups[sku]||[]):[]);
+            const existing=curItemMockups[mk]||(mk===_mockKey(g)?(curItemMockups[sku]||[]):[]);
             const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
             let updArt;
             let newArtFileId=artId;
@@ -23079,21 +23827,21 @@ export default function App(){
 
         // Kick off per-item mockup upload: auto-route to the art used by the SKU's decorations.
         // If the SKU uses multiple arts (multi-art decoration), open a picker so the artist tags which art the mockup shows.
-        const startMockupUpload=(files,sku,color,targetArtId,slotKey)=>{
+        const startMockupUpload=(files,g,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           // When the drop happened on an art-specific zone we already know the target art — skip the picker.
-          if(targetArtId){handleItemMockupUpload(files,sku,color,targetArtId,slotKey);return;}
-          const skuItem=(j.items||[]).find(gi=>gi.sku===sku);
+          if(targetArtId){handleItemMockupUpload(files,g,targetArtId,slotKey);return;}
+          const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
           const itIdx=skuItem?.item_idx;
           const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
           const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id))];
           const skuArts=skuArtIds.map(aid=>allArtFiles.find(a=>a.id===aid)).filter(Boolean);
           if(skuArts.length<=1||allArtFiles.length<=1){
             // single art — just upload
-            handleItemMockupUpload(files,sku,color,skuArts[0]?.id);
+            handleItemMockupUpload(files,g,skuArts[0]?.id);
           }else{
             // multiple arts on this SKU — prompt artist to pick which one this mockup shows
-            setMockupArtPicker({files,sku,color,arts:skuArts});
+            setMockupArtPicker({files,g,sku:g?.sku,color:g?.color,arts:skuArts});
           }
         };
 
@@ -23177,7 +23925,7 @@ export default function App(){
               </div>
               {/* Per-item grouped cards */}
               {itemDetails.map((gi,gii)=>{
-                const itemMocks=_getMocks(af,gi.sku,gi.color);
+                const itemMocks=_getMocks(af,gi);
                 // Per-item decoration data
                 const _gk=gi.sku+'|'+gi.color;
                 const _decos=_perItemDecos[gi.item_idx]||[];
@@ -23196,7 +23944,7 @@ export default function App(){
                 // Per-item production files
                 const _itemPFs=(cu.role==='production'||cu.role==='prod_assistant')?[]:_decos.filter(d=>d.kind==='art'&&d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:_decos.filter(d2=>d2.kind==='art').length>1?d.artName:''})));
                 // Copy mockup candidates
-                const _copyFromOthers=itemMocks.length===0?itemDetails.filter((oi,oii)=>oii!==gii&&_getMocks(af,oi.sku,oi.color).length>0):[];
+                const _copyFromOthers=itemMocks.length===0?itemDetails.filter((oi,oii)=>oii!==gii&&_getMocks(af,oi).length>0):[];
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'#fafbfc'}}>
                   {/* Item header */}
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -23221,7 +23969,7 @@ export default function App(){
                   {/* Mockup display + upload zone — one labeled drop zone per art on this item (side by side) */}
                   <div style={{padding:10}}>
                     {(()=>{
-                      const _skBase=_mockKey(gi.sku,gi.color);
+                      const _skBase=_mockKey(gi);
                       // One mockup slot per decoration so reversibles (same logo on different color ways) and
                       // numbers/names each get their own labeled box. The first art deco keeps the bare sku|color
                       // key (backward-compatible + drives the approval gate); others get a suffixed key.
@@ -23232,22 +23980,22 @@ export default function App(){
                       // check always line up.
                       mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
                         if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
-                          _slots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'art',primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
-                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                          _slots.push({key:sd.key,kind:'numbers',primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
                         else{const d=_nameDecos[sd.idx];
-                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
-                      if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
+                          _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
+                      if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
-                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slotMockFiles(slot,_slots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         // Reused/pre-digitized art: no per-garment mocks anywhere, so show the same
                         // general-bucket / sew-out proof the approval gate + SO page accept, instead of
                         // an empty upload zone (SO-1638). Read-only here — uploading replaces it.
                         const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
                         const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
-                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,slot.artId,slot.key)};
+                        const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
                         return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
                           <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
@@ -23290,7 +24038,7 @@ export default function App(){
                     })()}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}
-                  {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,oi.color,gi.sku,gi.color)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
+                  {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi,gi)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
                   {/* ─── Decoration Spec ─── */}
                   {_hasDecoData&&<div style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
                     <div style={{padding:'8px 14px 0'}}>
@@ -23663,14 +24411,14 @@ export default function App(){
             {/* Mockup art picker — must render regardless of art_status so per-item mockup
                 drops on multi-art SKUs (which call setMockupArtPicker) actually surface. */}
             {mockupArtPicker&&(()=>{
-                const {files,sku,color,arts}=mockupArtPicker;
+                const {files,g,sku,arts}=mockupArtPicker;
                 return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(15,23,42,0.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}} onClick={()=>!artJobDetailUploading&&setMockupArtPicker(null)}>
                   <div style={{background:'white',borderRadius:12,padding:20,maxWidth:480,width:'100%'}} onClick={e=>e.stopPropagation()}>
                     <div style={{fontSize:16,fontWeight:800,color:'#1e293b',marginBottom:4}}>Which art is this mockup showing?</div>
                     <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>{sku} has {arts.length} different arts. Pick the one the mockup {files.length>1?'files show':'file shows'} so they're saved to the right art's folder.</div>
                     <div style={{fontSize:11,color:'#94a3b8',marginBottom:10}}>{files.length} file{files.length>1?'s':''}: {files.map(f=>f.name).join(', ')}</div>
                     <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:14}}>
-                      {arts.map(a=><button key={a.id} className="btn" style={{padding:'10px 14px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,textAlign:'left',cursor:'pointer'}} disabled={artJobDetailUploading} onClick={async()=>{setMockupArtPicker(null);await handleItemMockupUpload(files,sku,color,a.id)}}>
+                      {arts.map(a=><button key={a.id} className="btn" style={{padding:'10px 14px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,textAlign:'left',cursor:'pointer'}} disabled={artJobDetailUploading} onClick={async()=>{setMockupArtPicker(null);await handleItemMockupUpload(files,g,a.id)}}>
                         <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f'}}>{a.name||'Unnamed'}</div>
                         <div style={{fontSize:10,color:'#64748b'}}>{(a.deco_type||'').replace(/_/g,' ')}{a.art_size?' · '+a.art_size:''}</div>
                       </button>)}
@@ -23779,13 +24527,17 @@ export default function App(){
     const inProcessJobs=active.filter(t=>t.prodStatus==='in_process');
     const waitingJobs=active.filter(t=>!t.isReady&&t.prodStatus!=='in_process');
 
-    // Completed jobs for the Completed tab (not shipped — those auto-fall off)
+    // Completed jobs for the Completed tab (not shipped — those auto-fall off). Invoicing the
+    // SO (sticky status='complete') must not yank a just-decorated job off this tab — recently
+    // stamped completions stay through the grace window (jobRecentlyCompleted); unstamped
+    // legacy rows drop as before so old history doesn't flood in.
     const completedDecoJobs=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+    sos.forEach(so=>{
+      const _st=calcSOStatus(so);if(_st==='booking')return;
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-      safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+      safeJobs(so).filter(j=>j.prod_status==='completed'&&(_st!=='complete'||jobRecentlyCompleted(j))).forEach(j=>{
         completedDecoJobs.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,
           artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
           prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
@@ -26575,6 +27327,7 @@ export default function App(){
     const _applyFreightToSOs=(bill,soIds)=>{
       const billFreight=safeNum(bill.freight||0);
       if(!billFreight||!soIds.length)return;
+      const _dupSkips=[];// shipments already billed to a line — skipped, not double-counted
       const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
       const billedBySku={};const costBySku={};
       bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
@@ -26602,6 +27355,7 @@ export default function App(){
           });
           // Find PO lines on this SO whose po_id starts with the bill PO number
           const skuCostApplied={};// track how much cost has been applied per SKU to handle rounding on last item
+          let _anyApplied=false,_anyDup=false;// freight must not double either when the whole bill re-lands
           const updatedItems=(s.items||[]).map(it=>{
             const matchPO=it.po_lines?.find(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
             if(!matchPO)return it;
@@ -26623,6 +27377,13 @@ export default function App(){
             return{...it,po_lines:it.po_lines.map(po=>{
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return po;
+              // Duplicate-shipment guard: this (tracking/doc + sizes) is already on the line —
+              // skip re-billing it rather than double-counting (see duplicateBillDetail). The two
+              // sibling apply paths below have carried this guard; this one did not, which is how
+              // one bill landing twice compounded billed qty and _bill_cost on the same line.
+              const _dup=duplicateBillDetail(po._bill_details,{doc:bill.doc_number,tracking:bill.tracking,sizes:itemBilled});
+              if(_dup){_anyDup=true;_dupSkips.push((it.sku||'?')+' '+(po.po_id||'')+' — '+(bill.tracking?'tracking '+bill.tracking:'doc '+bill.doc_number)+' already billed'+(_dup.doc&&_dup.doc!==bill.doc_number?' (as '+_dup.doc+')':''));return po;}
+              _anyApplied=true;
               const existingBilled=po.billed||{};
               const newBilled={...existingBilled};
               const _pk=_poLineSizeKeys(po);
@@ -26644,12 +27405,19 @@ export default function App(){
                 _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:appliedCost}]};
             })};
           });
-          const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          // Freight rides the same re-apply: when every line this bill touched was skipped as an
+          // already-billed duplicate, its freight is already on the SO too. Only suppressed when a
+          // duplicate was actually seen, so an SO with no lines on this bill still takes its share.
+          const _freightAdd=(_anyDup&&!_anyApplied)?0:perSOFreight;
+          const updatedSO={...s,_inbound_freight:Math.round((prevFreight+_freightAdd)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
           _billApplySave(bill,updatedSO);
           return updatedSO;
         });
         return changed?next:prev;
       });
+      // setSOs runs its updater asynchronously, so the length test itself has to wait for the
+      // commit — otherwise a real skip goes unreported on the render where it happened.
+      setTimeout(()=>{if(_dupSkips.length)nf('Skipped '+_dupSkips.length+' already-billed shipment(s): '+_dupSkips.join('; '),'error')},0);
     };
 
     // Selection-agnostic: does this parsed bill have a valid push target (auto-matched PO or a
@@ -31866,6 +32634,13 @@ export default function App(){
     const openKey=openAnchor?groupKey(openAnchor):null;
     const openMsgs=openKey?[...msgs].filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
     const openRootMsg=openMsgs[0]||openAnchor;
+    // Context for the open thread — who the order is for and its memo, so the reader
+    // knows what the conversation is about without opening the order. Jobs carry so_id,
+    // so the same lookup covers SO / Job; estimates match on entity_id.
+    const openEntity=openRootMsg?(sos.find(s=>s.id===openRootMsg.so_id||s.id===openRootMsg.entity_id)||ests.find(e=>e.id===openRootMsg.entity_id)||null):null;
+    const openWctx=openRootMsg&&openRootMsg.entity_type==='webstore_order'?wsoCtx[String(openRootMsg.entity_id)]:null;
+    const openCustName=openWctx?([openWctx.buyer,openWctx.storeName].filter(Boolean).join(' · ')||null):(openEntity?(cust.find(cc=>cc.id===openEntity.customer_id)?.name||null):null);
+    const openMemo=openEntity?.memo||null;
     // Entity type stats
     const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
     const estCount=allM.filter(m=>m.entity_type==='estimate').length;
@@ -31992,11 +32767,17 @@ export default function App(){
           </div></div>})}</div></div>
     {/* Thread panel */}
     {mThread&&openRootMsg&&<MsgDropZone className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}} setItems={setMThreadAtt} setBusy={setMThreadAttBusy} nf={nf} label="Drop to attach to this reply">
-      <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
+      <div className="card-header" style={{display:'block',borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
         <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
         <h2 style={{margin:0,fontSize:14,display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(openRootMsg),color:entityColor(openRootMsg)}}>{entityLabel(openRootMsg)}</span><span style={{color:entityColor(openRootMsg)}}>{openRootMsg.entity_id||openRootMsg.so_id}</span></h2>
         <span style={{fontSize:11,color:'#64748b'}}>{openMsgs.length} {openMsgs.length===1?'message':'messages'}</span>
         <button style={{fontSize:10,padding:'3px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#1e40af',cursor:'pointer',fontWeight:600,marginLeft:'auto'}} onClick={()=>navigateToEntity(openRootMsg)}>Open {entityLabel(openRootMsg)}</button>
+        </div>
+        {(openCustName||openMemo)&&<div style={{display:'flex',gap:8,alignItems:'baseline',marginTop:4,paddingLeft:28,minWidth:0}}>
+          {openCustName&&<span style={{fontSize:12,fontWeight:600,color:'#475569',whiteSpace:'nowrap'}}>{openCustName}</span>}
+          {openMemo&&<span style={{fontSize:11,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={openMemo}>— {openMemo}</span>}
+        </div>}
       </div>
       <div className="card-body" style={{flex:1,overflow:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
         {/* Full conversation — every message for this entity, oldest first */}
@@ -35009,7 +35790,7 @@ export default function App(){
           case 'date':return ymdInt(i.date);
           case 'due_date':return ymdInt(i.due_date);
           case 'customer':return custHay(custById(i.customer_id));
-          case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id));
+          case 'rep':return commissionRepId(custById(i.customer_id),soById(i.so_id),i);
           case 'customer_id':return String(i.customer_id||'').toLowerCase();
           case 'text':return ((i.id||'')+' '+(i.memo||'')+' '+(custById(i.customer_id)?.name||'')).toLowerCase();
           default:return '';}};
@@ -35582,7 +36363,11 @@ export default function App(){
     // apply the same all-tokens-must-match narrowing so "PO 3522 CMSF" matches "PO3522CMSF" etc.
     const _siHay=(d)=>((d.po_number||'')+' '+(d.supplier||'')+' '+(d.supplier_doc_number||'')+' '+(d.matched_po_id||'')+' '+(d.matched_so_id||'')+' '+(d.si_doc_number||'')).toLowerCase();
     const rsi=(siSearchResults||[]).filter(d=>_toks.every(t=>_siHay(d).includes(t)));
-    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length;
+    // Webstore orders — fetched into wsOrderSearchResults by the debounced effect above; same
+    // all-tokens-must-match narrowing. '#1010492' should match too, so strip leading '#' per token.
+    const _wsoHay=(o)=>((o.order_number||'')+' '+(o.omg_order_number||'')+' '+(o.buyer_name||'')+' '+(o.buyer_email||'')+' '+(o.webstores?.name||'')+' '+(o.status||'')).toLowerCase();
+    const rwso=(wsOrderSearchResults||[]).filter(o=>_toks.every(t=>_wsoHay(o).includes(t.replace(/^#/,''))));
+    const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length+rwso.length;
     const row=(children,onClick,key)=><div key={key} style={{padding:'10px 14px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',borderTop:'1px solid #f1f5f9'}} onClick={onClick}>{children}</div>;
     const section=(label,items,render)=>items.length>0&&<div className="card" style={{marginBottom:12}}>
       <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -35606,6 +36391,7 @@ export default function App(){
         {section('Customers',rc,cc=>row(<><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span>{cc.alpha_tag&&<span className="badge badge-gray">{cc.alpha_tag}</span>}</>,()=>{setSelC(cc);setPg('customers')},cc.id))}
         {section('Sales Orders',rs,so=>{const cc=cust.find(x=>x.id===so.customer_id);return row(<><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setESO(so);setESOC(cc);setPg('orders')},so.id)})}
         {section('Estimates',re,e=>{const cc=cust.find(x=>x.id===e.customer_id);return row(<><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span>{e.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</>,()=>{setEEst(e);setEEstC(cc);setPg('estimates')},e.id)})}
+        {section('Webstore Orders',rwso,o=>row(<><Icon name="store" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>#{o.order_number||o.omg_order_number}</span><span>{o.buyer_name||o.buyer_email||''}</span>{o.webstores?.name&&<span style={{color:'#64748b',fontSize:11}}>{o.webstores.name}</span>}<span style={{fontWeight:700,marginLeft:'auto'}}>${(Number(o.total)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><span className={`badge ${o.status==='paid'||o.status==='shipped'||o.status==='completed'?'badge-green':o.status==='cancelled'||o.status==='refunded'?'badge-gray':'badge-blue'}`}>{o.status}</span></>,()=>openWsOrderResult(o),'wso-'+o.id))}
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
         {section('Ordered Items (sold before, not in catalog)',rti,ti=>row(<><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569'}}>{ti.sku}</span>{ti.name&&<span>{ti.name}</span>}
           {ti.archive&&<span style={{fontSize:11,color:'#64748b'}}>{ti.archive.txn_count} NetSuite txn{ti.archive.txn_count===1?'':'s'} · {String(ti.archive.first_date||'').slice(0,4)}–{String(ti.archive.last_date||'').slice(0,4)} · ${Math.round(Number(ti.archive.total_amount)||0).toLocaleString()}</span>}
@@ -35819,12 +36605,15 @@ export default function App(){
             const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s)).slice(0,4);
             // Vendors
             const rv=vend.filter(v=>(v.name+' '+(v.rep_name||'')).toLowerCase().includes(s)).slice(0,4);
-            const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
+            const rwso=gWsOrders.slice(0,5);
+            const tot=rc.length+re.length+rs.length+rp.length+rti.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rwso.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
                 {rc.map(cc=><a key={cc.id} href={_newTabHref({cust:cc.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></a>)}</>}
               {rs.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Sales Orders</div>
                 {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<a key={so.id} href={_newTabHref({so:so.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
+              {rwso.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Webstore Orders</div>
+                {rwso.map(o=><div key={'wso-'+o.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>openWsOrderResult(o)}><Icon name="store" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>#{o.order_number||o.omg_order_number}</span><span>{o.buyer_name||o.buyer_email||''}</span>{o.webstores?.name&&<span style={{color:'#64748b',fontSize:11,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{o.webstores.name}</span>}<span className={`badge ${o.status==='paid'||o.status==='shipped'||o.status==='completed'?'badge-green':o.status==='cancelled'||o.status==='refunded'?'badge-gray':'badge-blue'}`} style={{marginLeft:'auto'}}>{o.status}</span></div>)}</>}
               {re.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Estimates</div>
                 {re.map(est=>{const cc=cust.find(x=>x.id===est.customer_id);return<a key={est.id} href={_newTabHref({est:est.id})} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',color:'inherit',textDecoration:'none'}} onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();setEEst(est);setEEstC(cc);setPg('estimates');setGQ('');setGOpen(false)}}><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{est.id}</span><span>{est.memo}</span>{cc&&<span style={{color:'#64748b',fontSize:11}}>{cc.alpha_tag||cc.name}</span>}</a>})}</>}
               {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>

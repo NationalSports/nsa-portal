@@ -2,8 +2,9 @@
  * syncJobs existing-job matching.
  *
  * Jobs are primarily matched by stable decoration signature (`job.key`). When a
- * key changes (regroup / position rename), we fall back to `art_file_id` so
- * workflow fields aren't lost.
+ * key changes (regroup / position rename / assigning real art to an unassigned
+ * decoration), we fall back to the live item+decoration claims and then to
+ * `art_file_id` so workflow fields and split lineage aren't lost.
  *
  * That fallback is unsafe when multiple jobs share one art file. Copying the
  * first job registered for that art id bleeds `rejections` / `coach_rejected` /
@@ -13,9 +14,23 @@
  *
  * Rules:
  *  1. Prefer exact key match.
- *  2. Art-id fallback only when exactly one non-split existing job owns that art id.
- *  3. Never hand the same existing job to two rebuilt jobs in one sync pass.
+ *  2. Claim fallback only when every overlapping claim points to one non-split job.
+ *  3. Art-id fallback only when exactly one non-split existing job owns that art id.
+ *  4. Never hand the same existing job to two rebuilt jobs in one sync pass.
  */
+
+/** Stable item+decoration claims carried by a job snapshot. */
+export function jobDecoClaimKeys(job) {
+  const keys = new Set();
+  (job?.items || []).forEach((gi) => {
+    if (!gi || gi.item_idx == null) return;
+    const dis = Array.isArray(gi.deco_idxs) && gi.deco_idxs.length
+      ? gi.deco_idxs
+      : (gi.deco_idx != null ? [gi.deco_idx] : []);
+    dis.forEach((di) => keys.add(String(gi.item_idx) + '::' + String(di)));
+  });
+  return [...keys];
+}
 
 /** Count how many non-split jobs reference each art id. */
 export function countJobsByArtId(existingJobs) {
@@ -52,17 +67,31 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
   );
   const existingJobMap = {};
   const existingByArtId = {};
+  const existingByDecoClaim = {};
+  const ambiguousDecoClaims = new Set();
   const artIdCounts = countJobsByArtId(pool);
+  const claimOwners = {};
+  pool.forEach((j) => {
+    if (!j || j.split_from) return;
+    jobDecoClaimKeys(j).forEach((claim) => {
+      if (!claimOwners[claim]) claimOwners[claim] = [];
+      claimOwners[claim].push(j);
+    });
+  });
   pool.forEach((j) => {
     if (!j || j.split_from) return;
     existingJobMap[j.key || j.id] = j;
+    jobDecoClaimKeys(j).forEach((claim) => {
+      if (claimOwners[claim]?.length === 1) existingByDecoClaim[claim] = j;
+      else if (claimOwners[claim]?.length > 1) ambiguousDecoClaims.add(claim);
+    });
     const ids = j._art_ids || [j.art_file_id].filter(Boolean);
     ids.forEach((aid) => {
       if (!aid || artIdCounts[aid] !== 1) return;
       if (!existingByArtId[aid]) existingByArtId[aid] = j;
     });
   });
-  return { existingJobMap, existingByArtId, artIdCounts };
+  return { existingJobMap, existingByArtId, existingByDecoClaim, ambiguousDecoClaims, artIdCounts };
 }
 
 /**
@@ -70,16 +99,33 @@ export function buildExistingJobLookups(existingJobs, preservedIds) {
  * @param {{key?:string, art_file_id?:string|null}} built
  * @param {{existingJobMap:object, existingByArtId:object}} lookups
  * @param {Set<string>} claimedIds — existing job ids already matched this pass
- * @returns {{existing: object|null, matchedBy: 'key'|'art_file_id'|null}}
+ * @returns {{existing: object|null, matchedBy: 'key'|'deco_claim'|'art_file_id'|null}}
  */
 export function matchExistingJob(built, lookups, claimedIds = new Set()) {
-  const { existingJobMap, existingByArtId } = lookups || {};
+  const { existingJobMap, existingByArtId, existingByDecoClaim, ambiguousDecoClaims } = lookups || {};
   if (!built) return { existing: null, matchedBy: null };
 
   const byKey = built.key != null ? existingJobMap?.[built.key] : null;
   if (byKey) {
     if (byKey.id) claimedIds.add(byKey.id);
     return { existing: byKey, matchedBy: 'key' };
+  }
+
+  // Assigning artwork changes the signature from an unassigned token to the real art id.
+  // The item_idx+deco_idx claim does not change, so it is the safest identity fallback. Only
+  // accept one unambiguous owner: a newly consolidated build can overlap several old jobs,
+  // and arbitrarily stealing one of those ids would lose the others' workflow history.
+  const builtClaims = jobDecoClaimKeys(built);
+  const hasAmbiguousClaim = builtClaims.some((claim) => ambiguousDecoClaims?.has(claim));
+  const claimMatches = [...new Set(builtClaims
+    .map((claim) => existingByDecoClaim?.[claim])
+    .filter(Boolean))];
+  if (!hasAmbiguousClaim && claimMatches.length === 1) {
+    const byClaim = claimMatches[0];
+    if (!byClaim.id || !claimedIds.has(byClaim.id)) {
+      if (byClaim.id) claimedIds.add(byClaim.id);
+      return { existing: byClaim, matchedBy: 'deco_claim' };
+    }
   }
 
   const aid = built.art_file_id;
@@ -91,6 +137,36 @@ export function matchExistingJob(built, lookups, claimedIds = new Set()) {
 
   if (byArt.id) claimedIds.add(byArt.id);
   return { existing: byArt, matchedBy: 'art_file_id' };
+}
+
+/**
+ * Repair a split child whose stored parent id no longer exists.
+ *
+ * A regroup used to mint a new root id when art was assigned after a by-SKU split. The
+ * child kept pointing at the retired root, so the rebuilt root reclaimed the child's
+ * garment at full quantity and Merge Back failed with "Parent job ... not found". When
+ * exactly one current root covers every decoration claim carried by the orphan, that root
+ * is the displaced parent. Re-point the child; ambiguous/no-claim cases remain untouched.
+ */
+export function reparentOrphanSplitJobs(jobs) {
+  const list = (jobs || []).filter(Boolean);
+  const ids = new Set(list.map((j) => j.id).filter(Boolean));
+  const roots = list.filter((j) => j.id && !j.split_from);
+  const rootClaims = new Map(roots.map((j) => [j.id, new Set(jobDecoClaimKeys(j))]));
+  let changed = false;
+  const repaired = list.map((j) => {
+    if (!j?.split_from || ids.has(j.split_from)) return j;
+    const claims = jobDecoClaimKeys(j);
+    if (!claims.length) return j;
+    const candidates = roots.filter((root) => {
+      const owned = rootClaims.get(root.id);
+      return claims.every((claim) => owned.has(claim));
+    });
+    if (candidates.length !== 1) return j;
+    changed = true;
+    return { ...j, split_from: candidates[0].id };
+  });
+  return changed ? repaired : list;
 }
 
 /**
@@ -254,6 +330,260 @@ export function splitClosedJobAdditions(rebuiltItems, committedItems) {
 }
 
 /**
+ * Prod statuses at which a frozen job may still be re-shaped by the consolidation below. A job
+ * that is staging/in_process (in line, on press, clocked in) or finished has committed to the
+ * run it was printed for — its garment/decoration set must not change underneath the floor.
+ */
+const CONSOLIDATABLE_PROD_STATUSES = new Set(['', 'draft', 'hold', 'ready']);
+
+/** True when a frozen job hasn't started and can safely absorb / claim more decorations. */
+const isOpenForConsolidation = (j) => !!j
+  && CONSOLIDATABLE_PROD_STATUSES.has(j.prod_status || '')
+  && !j.decorated_at && !j.packed_at && !j.run1_done && !j.run2_done
+  && !j.split_from && !j.split_group
+  && !(j.items || []).some((gi) => gi && (gi._artSplit || gi.split_group));
+
+const decoIdxsOf = (gi) => (Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length
+  ? gi.deco_idxs
+  : (gi?.deco_idx != null ? [gi.deco_idx] : []));
+
+const rowKeyOf = (gi) => gi.item_idx + '-' + (gi.sku || '');
+const jobRowSig = (j) => (j.items || []).map(rowKeyOf).sort().join('|');
+
+/** Union of a job's declared methods — deco_type plus every entry of deco_types. */
+const methodsOf = (j) => [j?.deco_type, ...(Array.isArray(j?.deco_types) ? j.deco_types : [])].filter(Boolean);
+
+const joinUnique = (parts) => [...new Set(parts.map((p) => String(p || '').trim()).filter(Boolean))].join(', ');
+
+/**
+ * ── Frozen-job decoration consolidation ──
+ *
+ * A garment carrying several in-house decorations belongs on ONE production job — one sheet, one
+ * unit count. The auto-builder already groups that way (`__combined`), but it CANNOT touch a
+ * decoration a released/merged job froze. So the moment one decoration on a garment is released
+ * for art, every other decoration on that same garment is locked out of the frozen job and forms a
+ * second job: the floor gets one sheet per decoration type for the same physical garments, and the
+ * board's Total Units counts those garments once per sheet (SO-1605: 18 jerseys → an 18-unit patch
+ * job plus an 18-unit numbers job = 36; SO-1774 / SO-1766 / SO-1598 / SO-1777 / SO-1905 the same).
+ *
+ * Two passes, both restricted to frozen jobs that have not started (isOpenForConsolidation):
+ *
+ *   1. ABSORB — frozen siblings covering the SAME garment rows with DISJOINT decoration claims are
+ *      one job that got split; fold them into the first. Skipped when the sources disagree on coach
+ *      state, so a merge can never invent (or destroy) a customer approval.
+ *   2. EXPAND — a frozen job claims any remaining in-house decoration on the garments it already
+ *      owns, provided nothing else has claimed it. That is exactly the auto-builder's own rule,
+ *      applied to the rows the frozen job holds.
+ *
+ * art_status is never recomputed by either pass. ABSORB takes the least-advanced status among its
+ * sources (mergeJobsArtState), so a merge can only under-report. EXPAND relies on the caller
+ * marking any decoration with live art workflow as `consolidatable:false` — a design still being
+ * proofed keeps its own job until it settles, so nothing strands a coach approval mid-flight and no
+ * job can read further along than the artwork it now carries.
+ *
+ * @param {object[]} frozenJobs — released + merged jobs, already claim-healed, in stable order
+ * @param {(itemIdx:number) => Array<{deco_idx:number,kind:string,method:string,position:string,
+ *          art_file_id?:string|null,label:string,consolidatable:boolean}>|null} resolveItemDecos
+ *        — the live in-house decorations on that garment line, or null when the line is gone or
+ *          not fully hydrated (then the row is left untouched). `consolidatable:false` marks a
+ *          decoration that must keep its own job: a split-art share, or artwork not yet finished.
+ * @param {Set<string>=} reservedPairs — 'itemIdx::decoIdx' pairs owned by a NON-frozen job that has
+ *        already started; never claimed away from it.
+ * @returns {{jobs: object[], absorbedIds: string[], changed: boolean}}
+ */
+export function consolidateFrozenJobDecos(frozenJobs, resolveItemDecos, reservedPairs) {
+  const jobs = (frozenJobs || []).filter(Boolean);
+  if (jobs.length === 0) return { jobs, absorbedIds: [], changed: false };
+  const reserved = reservedPairs || new Set();
+  const pairKey = (ii, di) => ii + '::' + di;
+
+  // ── Pass 1: absorb frozen siblings covering identical garment rows ──
+  const absorbedIds = [];
+  const absorbed = new Set();
+  const bySig = new Map();
+  jobs.forEach((j, idx) => {
+    if (!isOpenForConsolidation(j) || !(j.items || []).length) return;
+    const sig = jobRowSig(j);
+    if (!bySig.has(sig)) bySig.set(sig, []);
+    bySig.get(sig).push(idx);
+  });
+  const merges = new Map();// target index -> merged job
+  bySig.forEach((idxs) => {
+    if (idxs.length < 2) return;
+    const group = idxs.map((i) => jobs[i]);
+    // Disjoint claims only: overlapping decoration claims mean these are size/art SPLITS of the
+    // same work, not complementary halves of one garment's decoration set.
+    const seen = new Set();
+    for (const j of group) {
+      for (const gi of (j.items || [])) {
+        for (const di of decoIdxsOf(gi)) {
+          const k = pairKey(gi.item_idx, di);
+          if (seen.has(k)) return;
+          seen.add(k);
+        }
+      }
+    }
+    // Coach state must agree — otherwise a merge would either strand a rejection or let one
+    // design's approval speak for another's. Leave those split (status quo) rather than guess.
+    if (group.some((j) => j.coach_rejected)) return;
+    const approved = group.filter((j) => j.coach_approved_at).length;
+    if (approved !== 0 && approved !== group.length) return;
+
+    const targetIdx = idxs[0];
+    const target = jobs[targetIdx];
+    const others = idxs.slice(1).map((i) => jobs[i]);
+    const art = mergeJobsArtState(group);
+    const rowDecos = new Map();
+    group.forEach((j) => (j.items || []).forEach((gi) => {
+      const k = rowKeyOf(gi);
+      if (!rowDecos.has(k)) rowDecos.set(k, new Set());
+      decoIdxsOf(gi).forEach((di) => rowDecos.get(k).add(di));
+    }));
+    const items = (target.items || []).map((gi) => {
+      const dis = [...(rowDecos.get(rowKeyOf(gi)) || [])].sort((a, b) => a - b);
+      return { ...gi, deco_idx: dis[0] != null ? dis[0] : gi.deco_idx, deco_idxs: dis };
+    });
+    merges.set(targetIdx, {
+      ...target,
+      items,
+      _art_ids: art._art_ids,
+      art_file_id: art.art_file_id,
+      art_status: art.art_status,
+      assigned_artist: art.assigned_artist,
+      art_requests: art.art_requests,
+      art_messages: art.art_messages,
+      sent_history: art.sent_history,
+      rejections: art.rejections,
+      // Keep every source's declared methods so the next pass's stale-claim heal recognises the
+      // absorbed decorations as legitimate (_declaredMethodSet reads deco_type + deco_types).
+      deco_types: [...new Set(group.flatMap(methodsOf))],
+      positions: joinUnique(group.flatMap((j) => String(j.positions || '').split(','))),
+      prod_status: group.map((j) => j.prod_status).find((s) => s === 'hold' || s === 'ready') || target.prod_status,
+      numbers_done: group.map((j) => j.numbers_done).find((n) => n && Object.keys(n).length > 0) || target.numbers_done || null,
+      _released: group.some((j) => j._released) || target._released || undefined,
+      _merged: true,
+    });
+    others.forEach((j) => { absorbed.add(j); if (j.id) absorbedIds.push(j.id); });
+  });
+  let out = jobs.map((j, i) => merges.get(i) || j).filter((j) => !absorbed.has(j));
+
+  // ── Pass 2: claim the remaining in-house decorations on garments a frozen job already owns ──
+  const claimed = new Set(reserved);
+  out.forEach((j) => (j.items || []).forEach((gi) => decoIdxsOf(gi).forEach((di) => claimed.add(pairKey(gi.item_idx, di)))));
+  out = out.map((j) => {
+    if (!isOpenForConsolidation(j)) return j;
+    const addedArtIds = []; const addedMethods = []; const addedPositions = [];
+    let touched = false;
+    const items = (j.items || []).map((gi) => {
+      const live = resolveItemDecos(gi.item_idx);
+      if (!live) return gi;// line gone or not hydrated — leave the snapshot alone
+      const dis = decoIdxsOf(gi);
+      const add = live.filter((d) => d.consolidatable && !claimed.has(pairKey(gi.item_idx, d.deco_idx)));
+      if (!add.length) return gi;
+      add.forEach((d) => {
+        claimed.add(pairKey(gi.item_idx, d.deco_idx));
+        if (d.art_file_id && d.art_file_id !== '__tbd') addedArtIds.push(d.art_file_id);
+        if (d.method) addedMethods.push(d.method);
+        if (d.position) addedPositions.push(d.position);
+      });
+      touched = true;
+      const next = [...new Set([...dis, ...add.map((d) => d.deco_idx)])].sort((a, b) => a - b);
+      return { ...gi, deco_idx: next[0] != null ? next[0] : gi.deco_idx, deco_idxs: next };
+    });
+    if (!touched) return j;
+    const declared = (j._art_ids && j._art_ids.length ? j._art_ids : [j.art_file_id]).filter((id) => id && id !== '__tbd');
+    const artIds = [...new Set([...declared, ...addedArtIds])];
+    return {
+      ...j,
+      items,
+      ...(artIds.length ? { _art_ids: artIds, art_file_id: j.art_file_id || artIds[0] } : {}),
+      deco_types: [...new Set([...methodsOf(j), ...addedMethods])],
+      positions: joinUnique([...String(j.positions || '').split(','), ...addedPositions]),
+      _merged: true,
+    };
+  });
+  return { jobs: out, absorbedIds, changed: absorbedIds.length > 0 || out.some((j, i) => j !== jobs[i]) };
+}
+
+/**
+ * Describe one garment line's live IN-HOUSE decorations for the consolidation above.
+ *
+ * Kept here rather than in the editors because both copies need the identical reading of a
+ * decoration, and because the `consolidatable` rule is the load-bearing one: it decides whether a
+ * decoration may be folded into a frozen job.
+ *
+ *   - Anything routed to an outside decorator is not in-house work and is omitted entirely.
+ *   - Numbers / names always consolidate — they carry no art workflow to strand.
+ *   - Art consolidates only once its file reaches `art_complete`. A design still being proofed
+ *     keeps its own job so folding it in can't move garments out from under an open art request or
+ *     coach send, and can't leave a job reading further along than the artwork it carries. Judged on
+ *     the FILE, not the owning job's stored art_status, which goes stale (SO-1774's patch job still
+ *     read waiting_approval long after its file was approved with production files attached).
+ *   - Split-art shares carry their own per-size allocation and always keep their own job.
+ *
+ * Returns null when the caller can't vouch for the line (missing, or art declared but not hydrated)
+ * — never reshape a frozen job off a half-loaded order.
+ *
+ * @param {object[]} decos — the line's decorations, in index order
+ * @param {{findArt:(id:string)=>object|undefined, artStatusOf:(art:object|null,fallbackDt:string)=>string,
+ *          isOutsourced:(deco:object, method:string)=>boolean}} deps
+ */
+export function liveItemDecoDescriptors(decos, deps) {
+  const { findArt, artStatusOf, isOutsourced } = deps || {};
+  const out = [];
+  const list = Array.isArray(decos) ? decos : [];
+  for (let di = 0; di < list.length; di += 1) {
+    const d = list[di];
+    if (!d) continue;
+    if (d.kind !== 'art' && d.kind !== 'numbers' && d.kind !== 'names') continue;
+    let method; let label; let artFileId = null; let consolidatable = true;
+    if (d.kind === 'art') {
+      const artF = d.art_file_id ? findArt(d.art_file_id) : null;
+      if (d.art_file_id && d.art_file_id !== '__tbd' && !artF) return null;// declared art not hydrated
+      method = (artF && artF.deco_type) || d.deco_type || 'screen_print';
+      label = (artF && artF.name) || ('Unassigned Art (' + String(d.position || '') + ')');
+      artFileId = d.art_file_id || null;
+      const isSplitShare = !!(d.split_group && d.split_sizes && Object.keys(d.split_sizes).length > 0);
+      consolidatable = !isSplitShare && artStatusOf(artF || null, d.deco_type) === 'art_complete';
+    } else if (d.kind === 'numbers') {
+      method = d.num_method || 'heat_transfer';
+      label = 'Numbers — ' + method.replace(/_/g, ' ');
+    } else {
+      method = d.name_method || 'heat_press';
+      label = 'Names — ' + method.replace(/_/g, ' ');
+    }
+    if (isOutsourced(d, method)) continue;
+    out.push({
+      deco_idx: di, kind: d.kind, method, position: String(d.position || ''),
+      art_file_id: artFileId, label, consolidatable,
+    });
+  }
+  return out;
+}
+
+/**
+ * Display labels for the non-art decorations a frozen job claims ("Numbers — heat transfer",
+ * "Names — embroidery"), in the auto-builder's wording and order.
+ *
+ * A released job's art_name is refreshed from its linked ART files only, so a job that consolidated
+ * a numbers/names decoration would still read as the logo alone on the board and the job sheet.
+ * Same resolver as consolidateFrozenJobDecos; deduped because one roster spans many garment lines.
+ */
+export function frozenJobNonArtLabels(job, resolveItemDecos) {
+  const out = []; const seen = new Set();
+  (job?.items || []).forEach((gi) => {
+    const live = resolveItemDecos(gi.item_idx);
+    if (!live) return;
+    const dis = new Set(decoIdxsOf(gi));
+    live.forEach((d) => {
+      if (!dis.has(d.deco_idx) || d.kind === 'art' || !d.label || seen.has(d.label)) return;
+      seen.add(d.label); out.push(d.label);
+    });
+  });
+  return out;
+}
+
+/**
  * Workflow fields that must not cross-contaminate across distinct jobs.
  * Copied only when matchExistingJob found a real match (key or unique art id).
  */
@@ -348,4 +678,146 @@ export function mergeJobsArtState(sources) {
     rejections: rejections.length ? rejections : null,
     coachApproved,
   };
+}
+
+/**
+ * (item_idx-sku) keys of the garments owned by the split slices under `parentId` —
+ * TRANSITIVELY across the whole split family, not just direct children.
+ *
+ * syncJobs uses this to keep the parent's rebuild from re-adding a garment a split
+ * carved off. Scanning only direct children (`split_from === parentId`) misses a
+ * slice of a slice: SO-1634 split KC4512 off to JOB-1634-01-B, then split it again
+ * to JOB-1634-01-B-B — the grandchild's garment matched no direct child, so every
+ * sync re-added the full 27-unit line to JOB-1634-01 and the family double-counted
+ * the joggers (0/27 on both jobs, 29→56 units on the board).
+ *
+ * `excludeSlice(job)` marks slices whose claims are preserved elsewhere this pass
+ * (released/merged snapshots hold their garments via frozenItemDecos, so those rows
+ * never reach the rebuild and must not be treated as slice-owned here). Excluded
+ * slices still link the family walk — a slice under a merged slice still owns its
+ * garments.
+ *
+ * The walk is cycle-safe: `fam` only grows, so a corrupted split_from loop simply
+ * stops adding members.
+ */
+export function splitSliceOwnedKeys(jobs, parentId, excludeSlice) {
+  const owned = new Set();
+  if (!parentId) return owned;
+  const list = (jobs || []).filter((j) => j && j.id);
+  const fam = new Set([parentId]);
+  for (let grew = true; grew;) {
+    grew = false;
+    list.forEach((j) => {
+      if (j.split_from && fam.has(j.split_from) && !fam.has(j.id)) { fam.add(j.id); grew = true; }
+    });
+  }
+  list.forEach((j) => {
+    if (j.id === parentId || !fam.has(j.id)) return;
+    if (excludeSlice && excludeSlice(j)) return;
+    (j.items || []).forEach((gi) => owned.add(gi.item_idx + '-' + gi.sku));
+  });
+  return owned;
+}
+
+/** Ids of every job in `jobId`'s split family — its root and all descendants (cycle-safe). */
+export function splitFamilyMembers(jobs, jobId) {
+  const list = (jobs || []).filter((j) => j && j.id);
+  const byId = new Map(list.map((j) => [j.id, j]));
+  let cur = byId.get(jobId);
+  const seen = new Set();
+  while (cur && cur.split_from && byId.has(cur.split_from) && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    cur = byId.get(cur.split_from);
+  }
+  const fam = new Set([(cur && cur.id) || jobId]);
+  for (let grew = true; grew;) {
+    grew = false;
+    list.forEach((j) => {
+      if (j.split_from && fam.has(j.split_from) && !fam.has(j.id)) { fam.add(j.id); grew = true; }
+    });
+  }
+  return fam;
+}
+
+/** Slices quiet enough to prune — nobody has taken them to the floor yet. */
+export const SLICE_PRUNE_STATUSES = new Set(['', 'draft', 'hold', 'ready']);
+
+/**
+ * Drop stale garment rows from PRESERVED split slices.
+ *
+ * The parent's rebuild drops rows a slice owns (see `splitSliceOwnedKeys`), but slices
+ * themselves are preserved verbatim and never rebuilt — so a row that another member of
+ * the family has since taken over sits on the slice forever. SO-1110: JN3647 was carved
+ * onto JOB-1110-02-A by the closed-job addition rule while JOB-1110-02-S-S already held
+ * it, leaving a 1-unit phantom job on the production board that no sync could clear.
+ *
+ * The stale signature is narrow on purpose: a row with NO per-size allocation (a
+ * whole-line claim, the shape a rebuild produces) for a garment that ANOTHER job in the
+ * same split family holds WITH an explicit per-size allocation. Every real split stamps
+ * sizes on both halves (splitCustom / splitByReceived) or moves the row outright
+ * (splitBySku), so a legitimate partial claim is never sizes-less while a sibling is
+ * sized — which is what keeps a genuine size-partitioned split from being pruned.
+ *
+ * A slice whose every row is stale is a phantom and is dropped entirely. Slices outside
+ * `SLICE_PRUNE_STATUSES` (already in production) are never touched — once work has started,
+ * the row stays and a human decides.
+ *
+ * `resolveLine(item_idx)` — optional — reports the SO line behind a row as
+ * `{ units, received }` (live quantity, and units received or pulled), or null when there
+ * is no such line. It adds a SECOND stale signature: a row whose line still EXISTS but has
+ * been zeroed to nothing, with no receipts and nothing fulfilled on the row. A slice's
+ * quantities are frozen by design (`_refreshGarmentIdentity` refreshes identity only), so
+ * zeroing a line — or swapping its garment onto another line — used to strand the slice's
+ * claim forever. SO-1048: 29 KV2197 tees were swapped to KV4651 on another line, and
+ * JOB-1048-04-S kept showing a 29-unit screen-print job for a garment the order no longer
+ * carries, while the real 29 units ran on JOB-1048-05.
+ *
+ * A line that is GONE entirely (no entry at that index) is left alone — index drift must
+ * never silently delete work, the same rule allocateJobFulfillment follows. Receipts also
+ * hold a row: goods in hand are a human's call, not a sync's (the absorb write-off case).
+ */
+export function pruneStaleSliceRows(slices, allJobs, resolveLine) {
+  const list = (allJobs || []).filter((j) => j && j.id);
+  const num = (v) => (typeof v === 'number' && !isNaN(v) ? v : 0);
+  const rowKey = (gi) => gi.item_idx + '-' + gi.sku;
+  const isSized = (gi) => !!(gi && gi.sizes && Object.keys(gi.sizes).length > 0);
+  const out = [];
+  (slices || []).forEach((sj) => {
+    if (!sj) return;
+    if (!SLICE_PRUNE_STATUSES.has(sj.prod_status || '')) { out.push(sj); return; }
+    const rows = sj.items || [];
+    const rowFulfilled = rows.reduce((a, gi) => a + num(gi?.fulfilled), 0);
+    // Some legacy snapshots carry fulfillment only on the job aggregate. Until that count can
+    // be attributed to rows, deleting any row could erase received work. Hold the slice safely.
+    const hasUnallocatedFulfillment = num(sj.fulfilled_units) > rowFulfilled;
+    // A row whose line was zeroed out is stale whatever its shape, so the sizes-less
+    // shortcut below can only skip the family walk when no row is dead-lined either.
+    const deadLine = (gi) => {
+      if (!resolveLine || !gi) return false;
+      if (hasUnallocatedFulfillment) return false;
+      if (num(gi.fulfilled) > 0) return false;
+      const line = resolveLine(gi.item_idx);
+      return !!line && num(line.units) === 0 && num(line.received) === 0;
+    };
+    if (!rows.some((gi) => (gi && !isSized(gi)) || deadLine(gi))) { out.push(sj); return; }
+    const fam = splitFamilyMembers(list, sj.id);
+    const sizedElsewhere = new Set();
+    list.forEach((j) => {
+      if (!fam.has(j.id) || j.id === sj.id) return;
+      (j.items || []).forEach((gi) => { if (isSized(gi)) sizedElsewhere.add(rowKey(gi)); });
+    });
+    const kept = rows.filter((gi) => !deadLine(gi) && (isSized(gi) || !sizedElsewhere.has(rowKey(gi))));
+    if (kept.length === rows.length) { out.push(sj); return; }
+    if (!kept.length) return; // every row was stale — the slice is a phantom
+    const total = kept.reduce((a, gi) => a + num(gi.units), 0);
+    const ful = kept.reduce((a, gi) => a + num(gi.fulfilled), 0);
+    out.push({
+      ...sj,
+      items: kept,
+      total_units: total,
+      fulfilled_units: ful,
+      item_status: ful >= total && total > 0 ? 'items_received' : ful > 0 ? 'partially_received' : 'need_to_order',
+    });
+  });
+  return out;
 }

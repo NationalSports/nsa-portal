@@ -355,6 +355,41 @@ WHERE ci.customer_id IS NULL
   AND ci.raw_customer_nsid IS NOT NULL
   AND c.netsuite_internal_id = ci.raw_customer_nsid;
 """)
+    # Second pass: link by customer NAME. The nsid pass above almost never fires
+    # -- these exports carry the TRANSACTION internal id in the customer column
+    # (raw_customer_nsid = netsuite_internal_id on 9,199 of 9,213 rows), so the
+    # join finds nothing and every freshly imported invoice stays orphaned. An
+    # invoice with a NULL customer_id is invisible in the portal: the customer
+    # page filters with ids.includes(o.customer_id) (CustDetail.js), so it shows
+    # on no customer at all. That is what stranded all 131 rows of the
+    # 2026-08-20 import until someone backfilled them by hand.
+    #
+    # NetSuite renders the customer as "<acct#> <Name>" or "<Parent> : <Child>";
+    # portal customers.name holds the trailing part. Strip whichever prefix is
+    # present and match case-insensitively, and only where exactly ONE customer
+    # owns that name so an ambiguous name never picks a side. Checked against
+    # the 8,654 rows already linked: this rule reproduces 8,345 of them and
+    # disagrees with none of the orphans it would newly fill.
+    #
+    # Still NULL-only, so a manual override or an nsid match is never rewritten.
+    lines.append("""
+UPDATE customer_invoices ci
+SET customer_id = m.cid
+FROM (
+  SELECT lower(btrim(name)) AS norm_name, min(id) AS cid
+  FROM customers
+  WHERE name IS NOT NULL AND btrim(name) <> ''
+  GROUP BY 1
+  HAVING count(*) = 1
+) m
+WHERE ci.customer_id IS NULL
+  AND ci.raw_customer_name IS NOT NULL
+  AND m.norm_name = lower(btrim(
+        CASE WHEN position(' : ' IN ci.raw_customer_name) > 0
+             THEN regexp_replace(ci.raw_customer_name, '^.* : ', '')
+             ELSE regexp_replace(ci.raw_customer_name, '^[0-9]+\\s+', '')
+        END));
+""")
     lines.append("COMMIT;")
 
     args.out_sql.write_text("\n".join(lines))

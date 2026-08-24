@@ -123,9 +123,13 @@ export default function CommissionsPage(){
     // never change a GP number. Detail rows are SO-level (unscaled); the returned
     // `scale` says what fraction of the SO this invoice covers.
     const calcGP=(inv,dtl)=>{
-      // Commission revenue excludes CC surcharges: recordPayment folds card fees into inv.total
-      // (tracked in inv.cc_fee), and reps must not earn GP on a processing-fee pass-through.
-      const invRev=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0));
+      // Commission revenue excludes CC surcharges AND sales tax: recordPayment folds card fees
+      // into inv.total (tracked in inv.cc_fee), and inv.total also includes collected sales tax
+      // (inv.tax) — both are pass-throughs NSA remits, not margin, so reps must not earn GP on
+      // them. Dropping tax also fixes `scale` below: invRev previously carried tax while soTotal
+      // (product+deco+ship) never did, so every taxable invoice scaled cost AND GP up by the tax
+      // rate (~7-10%) and the commission statement never matched the SO's margin tile.
+      const invRev=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0)-safeNum(inv.tax||0));
       const so=sos.find(s=>s.id===inv.so_id);
       if(!so)return{rev:invRev,cost:0,gp:invRev,shipRev:0,shipCost:0,inboundFreight:0,scale:1};
       const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
@@ -184,12 +188,12 @@ export default function CommissionsPage(){
       return invs.filter(inv=>{
         if(!isCommissionEarnedInvoice(inv))return false;
         const so=sos.find(s=>s.id===inv.so_id);
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so,inv)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===commissionRepId(c,so));
+        const rep=REPS.find(r=>r.id===commissionRepId(c,so,inv));
         const gp=calcGP(inv);
         // GP cost reflects a shared screen run across manually-linked jobs on other SOs.
         const _combLinked=!!so&&Object.keys(linkedArtCostQty(so,{},sos)).length>0;
@@ -198,7 +202,12 @@ export default function CommissionsPage(){
         // flipped the 30%/15% rate and moved the line to a different statement month whenever
         // payment rows hadn't hydrated. A paid invoice with no payment rows falls back to the
         // invoice date (days-to-pay 0 → standard rate, statement month = invoice month).
-        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):invDate;
+        // LATEST payment by date, not the last array slot: the save path's payment-restore merge
+        // appends rows the client never loaded onto the END of the array (dbEngine _restore), so
+        // position does not track chronology — and on a partially-restored invoice the last slot
+        // could be an older payment, booking the line to the wrong statement month.
+        const _payDates=(inv.payments||[]).map(p=>parseDate(p.date)).filter(d=>d&&!isNaN(d.getTime()));
+        const paidDate=_payDates.length?new Date(Math.max(..._payDates)):invDate;
         const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
@@ -215,7 +224,7 @@ export default function CommissionsPage(){
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
         const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
-        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so),commBasis:revBasis?'revenue':'gp'};
+        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so,inv),commBasis:revBasis?'revenue':'gp'};
         // Frozen line: money fields come from the snapshot; _live keeps today's computation
         // around for the admin Re-freeze action (deliberate corrections only).
         const snap=snaps&&snaps[inv.id];
@@ -233,12 +242,12 @@ export default function CommissionsPage(){
         const so=sos.find(s=>s.id===inv.so_id);
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so,inv)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===commissionRepId(c,so));
+        const rep=REPS.find(r=>r.id===commissionRepId(c,so,inv));
         const gp=calcGP(inv);
         const invDate=new Date(inv.date);
         const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
@@ -247,7 +256,7 @@ export default function CommissionsPage(){
         const expRate=_revB?(safeNum(rep.commission_rate)||0.01):(willBeLate?0.15:0.30);
         const expComm=Math.round((_revB?gp.rev:gp.gp)*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:commissionRepId(c,so),type:'invoice'};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:commissionRepId(c,so,inv),type:'invoice'};
       });
       // IDs of SOs that already have invoices
       const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
@@ -268,7 +277,7 @@ export default function CommissionsPage(){
         const outByItem=outsourcedDecoTypes(so);
         safeItems(so).forEach((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
-          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=qty*_decoUnitCostComb(d,qty,af,cq,_comb)});
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
         });
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
@@ -286,16 +295,22 @@ export default function CommissionsPage(){
       return[...invLines,...soLines];
     };
 
+    // Promo cost lines key off the SO, not an invoice — but once that SO is invoiced its revenue
+    // follows any per-invoice rep override (see commissionRepId). Deduct the promo cost from whoever
+    // was credited the sale, or an overridden invoice pays one rep and bills another for its promo.
+    const _soRepOvr={};invs.forEach(i=>{if(i&&i.so_id&&i.rep_id&&!_soRepOvr[i.so_id])_soRepOvr[i.so_id]=i.rep_id});
+    const _ovrOf=soId=>_soRepOvr[soId]?{rep_id:_soRepOvr[soId]}:null;
+
     // Build promo cost lines from SOs with promo_applied
     const buildPromoLines=(repFilter)=>{
       return sos.filter(so=>{
         if(!so.promo_applied)return false;
         if(so.status==='deleted')return false;
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===so.customer_id);return commissionRepId(cc,so)===repFilter}
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===so.customer_id);return commissionRepId(cc,so,_ovrOf(so.id))===repFilter}
         return true;
       }).map(so=>{
         const c=cust.find(x=>x.id===so.customer_id);
-        const rep=REPS.find(r=>r.id===commissionRepId(c,so));
+        const rep=REPS.find(r=>r.id===commissionRepId(c,so,_ovrOf(so.id)));
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const _comb=linkedArtCostQty(so,_aq,sos);
         const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
@@ -305,7 +320,7 @@ export default function CommissionsPage(){
           if(it.is_promo){
             productCost+=qty*safeNum(it.nsa_cost);
             const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
-            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=qty*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=qty*rQ(dp2.sell*1.25)});
+            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=eq*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=eq*rQ(dp2.sell*1.25)});
           }
         });
         // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
@@ -315,7 +330,7 @@ export default function CommissionsPage(){
         const totalCost=productCost+decoCost+shipCost;
         const soDate=so.created_at?so.created_at.substring(0,10):'';
         const soMonth=soDate?soDate.substring(0,7):'';
-        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:commissionRepId(c,so)};
+        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:commissionRepId(c,so,_ovrOf(so.id))};
       });
     };
 
@@ -487,7 +502,9 @@ export default function CommissionsPage(){
                 </div>
               </td>}
             </tr>)}
-            {monthLines.length>0&&(()=>{const earnedRev=monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0);const earnedGpPct=earnedRev>0?Math.round(monthGP/earnedRev*100):0;return<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+            {/* Sum the rows' own gp.rev (commissionable revenue: net of CC fees and sales tax) so the
+                EARNED row equals the column above it — inv.total would re-add the tax the lines exclude. */}
+            {monthLines.length>0&&(()=>{const earnedRev=monthLines.reduce((a,l)=>a+l.gp.rev,0);const earnedGpPct=earnedRev>0?Math.round(monthGP/earnedRev*100):0;return<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
               <td colSpan={isAdmin?3:2}>EARNED</td>
               <td style={{textAlign:'right'}}>${earnedRev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthLines.reduce((a,l)=>a+l.gp.cost,0).toLocaleString()}</td>
@@ -517,13 +534,15 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right'}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.balance>0&&l.gp.gp/l.balance>=0.3?'#dcfce7':'#fef3c7',color:l.balance>0&&l.gp.gp/l.balance>=0.3?'#166534':'#92400e'}}>{l.balance>0?Math.round(l.gp.gp/l.balance*100):0}%</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>)}
-            {monthPipeline.length>0&&(()=>{const pipeRev=monthPipeline.reduce((a,l)=>a+l.balance,0);const pipeGP=monthPipeline.reduce((a,l)=>a+l.gp.gp,0);const pipeGpPct=pipeRev>0?Math.round(pipeGP/pipeRev*100):0;return<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+            {/* Revenue column stays the tax-inclusive balance (what's actually awaiting payment);
+                GP% is computed on commissionable revenue (gp.rev) to match the per-row badges. */}
+            {monthPipeline.length>0&&(()=>{const pipeRev=monthPipeline.reduce((a,l)=>a+l.balance,0);const pipeGP=monthPipeline.reduce((a,l)=>a+l.gp.gp,0);const pipeCommRev=monthPipeline.reduce((a,l)=>a+l.gp.rev,0);const pipeGpPct=pipeCommRev>0?Math.round(pipeGP/pipeCommRev*100):0;return<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
               <td colSpan={isAdmin?3:2}>PIPELINE</td>
               <td style={{textAlign:'right'}}>${pipeRev.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
@@ -556,7 +575,7 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.balance>0&&l.gp.gp/l.balance>=0.3?'#dcfce7':'#fef3c7',color:l.balance>0&&l.gp.gp/l.balance>=0.3?'#166534':'#92400e'}}>{l.balance>0?Math.round(l.gp.gp/l.balance*100):0}%</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}>{l.daysOpen!=null?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span>:'\u2014'}</td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>

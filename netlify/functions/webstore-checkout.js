@@ -18,6 +18,7 @@
 const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
+const { SO_DONE } = require('./backorder-ready-sweep'); // one definition of "SO finished"
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -167,11 +168,41 @@ async function checkStock(sb, store, lines) {
   if (!singles.length) return { error: null, holds: [] };
   const ids = [...new Set(singles.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
+    .select('webstore_product_id,product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
   if (error) return { error: null, holds: [] }; // parity with the client: don't block checkout on a lookup failure
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
   const need = {}; singles.forEach((l) => { const k = l.wp.id + '|' + l.size; need[k] = (need[k] || 0) + l.qty; });
+
+  // Cumulative backorder claims: open needs-ledger rows (teamshop and club
+  // alike, ANY store) already promise units of on-hand + incoming stock to
+  // earlier orders — the sweep allocates FIFO by order date, so a new buyer
+  // only truly gets what's left after those claims. Loaded once per checkout,
+  // only for products this cart backorders against; fail-open on any error
+  // (parity with the stock lookup above).
+  const claimed = {}; // '<product_id>|<size>' -> promised qty on unfinished SOs
+  const capPids = [...new Set((data || []).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
+  if (capPids.length) {
+    try {
+      const nd = await sb.from('teamshop_auto_po_needs')
+        .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2000);
+      const rows = (!nd.error && nd.data) || [];
+      const soIds = [...new Set(rows.map((n) => n.so_id).filter(Boolean))];
+      const soRes = soIds.length ? await sb.from('sales_orders').select('id,status').in('id', soIds) : { data: [], error: null };
+      if (!soRes.error) {
+        // Statuses unreadable → count NO claims (fail-open, matching the stock
+        // lookup) rather than counting finished SOs' settled claims and
+        // over-blocking real buyers.
+        const done = new Set((soRes.data || [])
+          .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
+        rows.forEach((n) => {
+          if (done.has(n.so_id)) return; // finished SO — its claim is settled
+          const k = n.product_id + '|' + (n.size || '');
+          claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
+        });
+      }
+    } catch (_) { /* fail-open: an unreadable ledger must not block checkout */ }
+  }
   const short = []; const holds = [];
   Object.entries(need).forEach(([k, q]) => {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
@@ -183,7 +214,24 @@ async function checkStock(sb, store, lines) {
     // (same rule as its hasStockData fallback). Synced-and-zero still blocks below.
     if (p.size_stock == null && p.vendor_size_stock == null) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
-    if (incoming) return; // backorder allowed
+    if (incoming) {
+      // Backorder allowed — but no longer unlimited. When the incoming QUANTITY
+      // is known (on_order_qty), this line is capped at on-hand + on-order
+      // MINUS what the open backorder ledger already promises to earlier
+      // orders (loaded above), so a burst of orders can't all sell against the
+      // same 20 incoming units. ETA-only signals (a vendor restock date with
+      // no qty) keep the uncapped allowance — there is no number to cap
+      // against. Remaining honest limit: an accepted order's claim appears in
+      // the ledger only at conversion (club: instant; teamshop: store close),
+      // so unconverted teamshop demand isn't counted yet.
+      const onOrder = Number(p.on_order_qty) || 0;
+      if (onOrder > 0) {
+        const avail = _availForSize(p, size);
+        const promised = claimed[(p.product_id || '') + '|' + size] || 0;
+        if (avail + onOrder - promised < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+      }
+      return;
+    }
     const avail = _availForSize(p, size);
     if (avail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
     holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, label: `${p.name || 'item'} (size ${size})` });
@@ -628,9 +676,20 @@ async function placeOrder(sb, body) {
         amount: Math.round(total * 100),
         currency: 'usd',
         automatic_payment_methods: { enabled: true },
-        receipt_email: order.buyer_email || undefined,
-        metadata: { webstore_order_id: order.id, store_slug: store.slug, source: 'nsa_webstore' },
-        description: `${store.name} webstore — order ${order.id}`,
+        // NO receipt_email — deliberately. Setting it makes Stripe send its own receipt
+        // on top of our confirmation (sendOrderConfirmation), so every card buyer got two
+        // emails for one order: ours, and one titled by Stripe's internal receipt number
+        // with no order number the buyer or a rep could act on. Stripe's receipt subject
+        // isn't customizable, so the fix is to send one email — ours, which carries the
+        // order number, the line items with sizes/numbers, the totals, the ship-to
+        // address, and the tracking link. Adding this key back re-enables the duplicate.
+        metadata: { webstore_order_id: order.id, webstore_order_number: order.order_number != null ? String(order.order_number) : '', store_slug: store.slug, source: 'nsa_webstore' },
+        // The description is what Stripe prints on the card statement and in the
+        // Dashboard, so it has to be the human order number staff see everywhere else
+        // (portal, confirmation email, support). The raw UUID meant nobody — buyer or
+        // rep — could match a charge to an order. order_number is a sequence default,
+        // so it's on the row the insert/RPC just returned.
+        description: `${store.name} webstore — order ${order.order_number != null ? '#' + order.order_number : order.id}`,
       }, { idempotencyKey: 'wsorder_' + order.id });
     } catch (e) {
       await rollback();
@@ -754,8 +813,14 @@ async function finalize(sb, body) {
   // stripe-webhook fallback below picks it up if this never lands.
   if (order.order_source === 'club' && !order.so_id) {
     try {
-      const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
+      const { data: convData, error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
       if (convErr) console.error('[webstore-checkout] club conversion failed (order stays paid; stripe-webhook will retry):', convErr.message);
+      else if (convData && convData.so_id) {
+        // Best-effort auto-PO generation (00202, club-enabled) — idempotent
+        // (client_ref + needs-row marker); a failure never fails the checkout,
+        // and the Auto POs tab sweep catches it up.
+        await require('./teamshop-auto-po').generateForSoSafe(sb, convData.so_id, 'webstore-checkout', 'webstore-checkout');
+      }
     } catch (e) {
       console.error('[webstore-checkout] club conversion error:', e.message);
     }

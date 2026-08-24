@@ -263,7 +263,12 @@ async function reconcileInvoiceFromIntent(admin, pi) {
   }
   const feeTotal = Math.max(0, Math.round((collected - balTotal) * 100) / 100);
   const nowIso = new Date().toISOString();
-  const payDate = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+  // Pacific, not the function's UTC clock. A payment's date decides which month the rep's
+  // commission lands in, and a Netlify function runs in UTC — so a card taken after 5pm PT was
+  // stamped with TOMORROW's date (INV-63438 and INV-63489 both carry a day that never happened
+  // in the office). On the last evening of a month that silently books the commission to the
+  // next month, which is the exact failure INV-1053 was reported for.
+  const payDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
   const reconciled = [];
   for (const r of targets) {
     const bal = (Number(r.total) || 0) - (Number(r.paid) || 0);

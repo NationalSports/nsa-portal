@@ -12,6 +12,20 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── PO-line fulfilled units for one size ──
+// Drop-ship PO lines never get a warehouse check-in (the vendor ships direct to the
+// customer), so their `received` map stays empty forever and receipt-only fulfillment
+// counters hold the SO at partial for life (SO-1727: 71% with every warehouse line in).
+// Credit a drop-ship line's billed quantities as fulfilled — the vendor bill is the
+// ship signal, the same rule the inbound-tracking board uses to call a drop-ship PO
+// "shipped". max (not +) so a drop-ship line that somehow also got checked in manually
+// can never count the same units twice. Mirrored in businessLogic.js (test mirror of
+// calcSOStatus) and lib/opsRecap.js (standalone CommonJS for the Netlify digest).
+export const poLineFulfilledQty = (pk, sz) => {
+  const rcvd = safeNum((pk?.received || {})[sz]);
+  return pk?.drop_ship ? Math.max(rcvd, safeNum((pk?.billed || {})[sz])) : rcvd;
+};
+
 // ── Roster scoping ──
 // A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
 // "copy numbers from another item" brings the source's whole size curve, and a line's
@@ -173,6 +187,41 @@ export const shippedSizesByLine = (shipments) => {
   return m;
 };
 
+// ── Units pulled from the warehouse but not yet shipped ──
+// "Does this order still have shipping to do?" cannot be answered from jobs alone: a no-deco /
+// blanks line never creates a job, so a closed blanks order with a pulled-but-unshipped box looks
+// finished and drops out of the warehouse queues (which is where packages and their costs are
+// created). Counts pulled units per sku|color against what the shipment records already cover,
+// with a running tally so two lines sharing a sku|color don't each subtract the full shipped qty
+// (mirrors buildWarehouseData's soShipConsumed).
+// Drop-ship lines never get pulled — the vendor ships direct — so they contribute 0 and can never
+// hold a closed order in the queue forever.
+export const unshippedPulledUnits = (so) => {
+  const shipped = shippedSizesByLine(so?._shipments);
+  const used = {};
+  let open = 0;
+  safeItems(so).forEach((it) => {
+    const szKeys = Object.keys(safeSizes(it));
+    const pulled = safePicks(it).filter((pk) => pk?.status === 'pulled')
+      .reduce((a, pk) => a + szKeys.reduce((b, sz) => b + safeNum(pk[sz]), 0), 0);
+    if (pulled <= 0) return;
+    const key = safeStr(it?.sku) + '|' + safeStr(it?.color);
+    const shippedQty = Object.values(shipped[key] || {}).reduce((a, v) => a + safeNum(v), 0);
+    const already = used[key] || 0;
+    const credit = Math.min(pulled, Math.max(0, shippedQty - already));
+    used[key] = already + credit;
+    open += pulled - credit;
+  });
+  return open;
+};
+
+// True when a sales order still has warehouse work worth showing, whatever its status says.
+// A closed SO is normally hidden from the warehouse queues; these are the two ways one can still
+// owe a shipment — a job that has not shipped, or pulled units no shipment record covers.
+export const soHasOpenShipWork = (so) =>
+  safeJobs(so).some((j) => j.prod_status !== 'shipped' && j.prod_status !== 'draft')
+  || unshippedPulledUnits(so) > 0;
+
 // How many of THIS job's units have shipped? Crediting a job with its line's whole
 // sku|color shipped count over-credits art-split slices: sibling designs partition the
 // same line, so design A's shipped box would read as covering design B too — flipping B
@@ -227,14 +276,37 @@ export const soLineKey = (it, idx) => (safeStr(it?.sku)||'')+'|'+(safeStr(it?.co
 // key off this, and a drift between them would silently disarm the guards.
 export const soItemKey = (it) => ((safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'')).toLowerCase();
 
+// ── Provisional PO numbers ──
+// The Create-PO form DISPLAYS a number before any PO owns it: one is drawn from the sequence when
+// the form opens, and it only becomes a real PO when Create is clicked. Reps copy that number to
+// paste into the vendor's own order site — that is what the 📋 button next to it is for — so a form
+// abandoned after a copy leaves the vendor holding a PO number this portal never created. Their
+// invoice then references a PO that does not exist and matches nothing: PO 23801 JMHF on SO-1615
+// ($144.78) and PO 26702 LAF on SO-1664 ($432.86), both Augusta bills still unapplied weeks later,
+// each one number above the PO that actually was created (23800 / 26701).
+// True when the order carries no product PO line and no deco PO with this id — i.e. the number was
+// handed out but never issued. Trimmed on both sides; a blank id is never "missing" (nothing to warn
+// about). Deliberately id-only: the vendor and items don't matter, the number's existence does.
+export const poIdMissingFromOrder = (o, poId) => {
+  const id = safeStr(poId).trim();
+  if (!id) return false;
+  const onLine = safeItems(o).some((it) => safePOs(it).some((p) => safeStr(p?.po_id).trim() === id));
+  if (onLine) return false;
+  return !safeArr(o?.deco_pos).some((dp) => safeStr(dp?.po_id).trim() === id);
+};
+
 // Returns a Map of soLineKey -> total invoiced qty across the given invoices.
 // Matches first by exact key, then degrades to sku+color, then to sku alone,
 // for items from invoices written before the key existed or that lost their
 // color metadata. Deposit invoices bill a percentage of the whole order and
 // do NOT lock specific units, so their line qty is intentionally ignored
 // here — callers should credit the deposit amount as $ paid instead.
-export const buildInvoicedQtyMap = (so, invoicesForSO) => {
+// Core reconciliation of "how much of each SO line has already been invoiced".
+// Returns the per-line qty map AND the invoice lines that matched no SO line at all
+// (`orphans`) — see invoicedLineOrphans below for why those matter.
+const _reconcileInvoicedQty = (so, invoicesForSO) => {
   const map = new Map();
+  const orphans = [];
   const items = safeItems(so);
   // Pre-seed all keys to 0 so callers can read .get(key) || 0
   items.forEach((it, idx) => map.set(soLineKey(it, idx), 0));
@@ -296,10 +368,103 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
         || skuColorBuckets.get(sku+'|')
         || skuBuckets.get(sku)
         || [];
+      // Nothing on the SO carries this sku any more — the line was billed and then the
+      // order was edited out from under it. Record it instead of dropping it on the
+      // floor; pourInto() would silently discard the qty (empty bucket = early return),
+      // which is how SO-1804 ended up showing "Ready to Invoice" with $130 of paid,
+      // billed goods invisible to the remaining-to-invoice math.
+      if (bucket.length === 0) {
+        orphans.push({
+          invoice_id: safeStr(inv?.id),
+          inv_type: safeStr(inv?.inv_type),
+          sku, color, desc,
+          qty: q,
+          amount: safeNum(li?.amount),
+        });
+        return;
+      }
       pourInto(bucket, q);
     });
   });
-  return map;
+  return { map, orphans };
+};
+
+export const buildInvoicedQtyMap = (so, invoicesForSO) =>
+  _reconcileInvoicedQty(so, invoicesForSO).map;
+
+// Invoice lines already billed against this SO that no longer match any line ON the SO.
+// A non-empty result means the order was edited after it was invoiced: those goods were
+// charged (and possibly paid) but are no longer part of the order, so every "remaining to
+// invoice" figure silently excludes them. Never auto-credit this — whether a removed line
+// was a swap (nothing more owed) or a genuine reduction (a refund) is a human call. Surface
+// it so the rep sees the divergence before billing again.
+export const invoicedLineOrphans = (so, invoicesForSO) =>
+  _reconcileInvoicedQty(so, invoicesForSO).orphans;
+
+// Match each invoice line back to its SO item so callers can re-attach whatever only the SO
+// knows — the size breakdown, decoration/number detail. Try the stored line key first, then
+// SKU, then a description prefix (mirrors the on-screen invoice view); matched SO items are
+// consumed so duplicate SKUs map 1:1. Returns one SO index per line (-1 when unmatched).
+export const matchInvoiceLinesToSo = (lineItems, soItems) => {
+  const items = safeArr(soItems);
+  const soByKey = {}; items.forEach((it, idx) => { soByKey[soLineKey(it, idx)] = idx });
+  const usedSo = new Set();
+  return safeArr(lineItems).map(li => {
+    if (li?._so_line_key != null && soByKey[li._so_line_key] != null && !usedSo.has(soByKey[li._so_line_key])) { const i = soByKey[li._so_line_key]; usedSo.add(i); return i }
+    let i = li?._sku ? items.findIndex((it, ix) => !usedSo.has(ix) && it?.sku === li._sku) : -1;
+    if (i < 0) i = items.findIndex((it, ix) => !usedSo.has(ix) && it?.sku && safeStr(li?.desc).startsWith(it.sku));
+    if (i >= 0) { usedSo.add(i); return i }
+    return -1;
+  });
+};
+
+// Total units on one SO line (sized lines by their size boxes, unsized ones by est_qty).
+export const soLineQty = (it) => {
+  const sq = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+  return sq > 0 ? sq : safeNum(it?.est_qty);
+};
+
+// ── Scope a sales order's items to what ONE invoice actually bills ──
+// Every invoice document (portal PDF, emailed PDF, order-editor review, coach portal)
+// walks the SALES ORDER, because that's where the size breakdown and decoration detail
+// live. Walking it raw prints the whole order on a partial invoice: INV-63640 billed 94
+// hoodies for $3,487.52 and printed all 8 lines of SO-1101 with a $14,117.45 subtotal.
+// Returns:
+//   items      — the SO items this invoice bills, in SO order, each carrying
+//                `_invQty` (units billed here) and `_invSizes` (the SO size map when the
+//                whole line is billed, else null — the invoice never records WHICH sizes
+//                were billed, so a short line prints no breakdown rather than one that
+//                doesn't add up). Pricing must still be looked up at the SO line's own
+//                quantity, so `_soQty` carries it, and `_soIdx` keeps the line's original
+//                position in the SO for callers that key off it.
+//   extraLines — invoice lines with no SO match (hand-added lines, NetSuite imports).
+//                Callers render these as plain rows so the document's subtotal still
+//                reconciles to the invoice.
+// Deposits bill a percentage of the entire order, so they keep every line. So does an
+// invoice with no stored line_items (legacy rows) — there's nothing to scope by.
+export const scopeSoItemsToInvoice = (inv, soItems) => {
+  const items = safeArr(soItems);
+  const lines = safeArr(inv?.line_items);
+  const all = () => items.map((it, idx) => ({ ...it, _soIdx: idx, _invQty: soLineQty(it), _soQty: soLineQty(it), _invSizes: safeSizes(it) })).filter(it => it._invQty > 0);
+  if (!items.length) return { items: [], extraLines: lines };
+  if (inv?.inv_type === 'deposit' || !lines.length) return { items: all(), extraLines: [] };
+  const idxByLine = matchInvoiceLinesToSo(lines, items);
+  const qtyByIdx = new Map(); const extraLines = [];
+  lines.forEach((li, i) => {
+    const idx = idxByLine[i];
+    if (idx < 0) { extraLines.push(li); return }
+    qtyByIdx.set(idx, (qtyByIdx.get(idx) || 0) + safeNum(li?.qty));
+  });
+  const scoped = items.map((it, idx) => {
+    const q = qtyByIdx.get(idx);
+    if (!(q > 0)) return null;
+    const soQty = soLineQty(it);
+    return { ...it, _soIdx: idx, _invQty: q, _soQty: soQty, _invSizes: q === soQty ? safeSizes(it) : null };
+  }).filter(Boolean);
+  // Every line matched to a zero-qty / missing SO item: fall back to the full order rather
+  // than printing an invoice with no items at all.
+  if (!scoped.length && !extraLines.length) return { items: all(), extraLines: [] };
+  return { items: scoped, extraLines };
 };
 
 // Sum of paid-but-non-unit-billing invoice amounts on an SO (deposits today).
@@ -337,6 +502,59 @@ export const safeFirm = (o) => safeArr(o?.firm_dates);
 // resolver still follows chains defensively, with a cycle guard.
 export const mockLinksOf = (a) => safeObj(a?.mock_links);
 export const mockLinkKeyOf = (sku, color) => (sku || '') + '|' + (color || '');
+
+// ── Which SKU a garment's mockups key on ──
+// Lines the rep types by hand — customer-supplied blanks and one-off custom products — all
+// carry the SAME placeholder SKU ('CUST-SUPPLIED' / 'CUSTOM', occasionally blank), because
+// there is no catalog product behind them. Keying their mockups on `sku|color` therefore
+// collapses EVERY custom garment of one color into a single bucket: on SO-2063 the red long
+// sleeve and the red short sleeve both read `CUST-SUPPLIED|Red`, so the mockup uploaded for
+// one showed on the other, the midlayer hoody showed the women's crew, and the approval gate
+// counted all four as mocked. Their real identity is the line NAME — the rep types the style
+// number there ("6014457-600 - Long Sleeve") — so a placeholder-SKU line keys on its name.
+// Catalog garments (a real SKU) are untouched: same key as before, byte for byte.
+const PLACEHOLDER_SKU = /^(?:cust[-_ ]?supplied|custom|tbd|n\/a|none)?$/i;
+export const isPlaceholderSku = (sku) => PLACEHOLDER_SKU.test(safeStr(sku).trim());
+export const mockSkuOf = (it) => {
+  if (!isPlaceholderSku(it?.sku)) return it?.sku;
+  // '|' separates key segments, so a name carrying one would forge a sub-key.
+  const nm = safeStr(it?.name).trim().replace(/\|/g, '/');
+  return nm || it?.sku;
+};
+// A garment line's mock bucket key. THE key builder — every surface that reads, writes or
+// links per-garment mockups goes through it so the rep view, the artist modal, the coach
+// portal, the floor sheet and the approval gate can't drift onto different keys.
+export const garmentMockKey = (it) => mockLinkKeyOf(mockSkuOf(it), it?.color);
+// The bucket a placeholder-SKU garment's mockups may STILL sit under: everything written
+// before the key above existed shares `CUST-SUPPLIED|<color>` with its siblings. Null for a
+// garment whose key never changed (a real SKU), i.e. nothing to fall back to.
+export const legacyMockKeyOf = (it) => {
+  const k = mockLinkKeyOf(it?.sku, it?.color);
+  return k === garmentMockKey(it) ? null : k;
+};
+// Read one garment's mock bucket out of an art file's item_mockups: its own key, else the
+// legacy shared bucket (`sub` selects a slot sub-key such as '|numbers'). The fallback keeps
+// pre-fix orders rendering exactly as they do today — wrongly shared on the few colliding
+// ones — until either the rep re-uploads (which writes the garment's own key and wins here)
+// or the buckets are split. It never makes an order worse than it is now.
+export const itemMockFiles = (mocks, it, sub) => {
+  const m = safeObj(mocks);
+  const ownKey = garmentMockKey(it) + (sub || '');
+  const own = safeArr(m[ownKey]);
+  // Presence is intentional even when the bucket is empty: removing the last file leaves []
+  // behind. Falling through in that state would resurrect the pre-fix shared mockup the user
+  // just removed and could let it satisfy the approval gate again. Only orders that have never
+  // written this garment's own key should read the legacy shared bucket.
+  if (Object.prototype.hasOwnProperty.call(m, ownKey)) return own;
+  const lk = legacyMockKeyOf(it);
+  const legacyKey = lk && (lk + (sub || ''));
+  if (legacyKey && Object.prototype.hasOwnProperty.call(m, legacyKey)) return safeArr(m[legacyKey]);
+  // The oldest orders used a bare SKU bucket. It was only ever a primary/front bucket, never
+  // a color-way, numbers or names sub-slot. Keep that final compatibility read centralized here
+  // so every caller honors the empty-own-bucket tombstone above.
+  if (!sub && it?.sku != null && Object.prototype.hasOwnProperty.call(m, it.sku)) return safeArr(m[it.sku]);
+  return own;
+};
 // Resolve the root source key this garment is linked to, or null when unlinked.
 export const resolveMockLink = (anchorArts, sku, color) => {
   const links = {};
@@ -367,6 +585,45 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
   }
   return [];
 };
+// Apply ONE garment -> source link on the art file `artId`: chains are flattened (linking
+// to an already-linked garment stores its root) and anything that pointed AT the member is
+// re-pointed at the new root, so the map never grows a hop. sourceKey null = unlink.
+// Pure: returns a NEW array only when the map actually changed, else the same reference.
+// Extracted from the three hand-synced setMockLink handlers (SO page x2, Art Dashboard) so
+// the group writer below can't drift from single-click linking.
+export const applyMockLink = (artFiles, artId, memberKey, sourceKey) => {
+  const arr = safeArr(artFiles);
+  if (!artId || !memberKey || memberKey === sourceKey) return arr;
+  let changed = false;
+  const out = arr.map(a => {
+    if (!a || a.id !== artId) return a;
+    const before = mockLinksOf(a);
+    const links = { ...before };
+    let root = sourceKey;
+    const seen = new Set([memberKey]);
+    while (root && links[root] && !seen.has(root)) { seen.add(root); root = links[root]; }
+    if (root === memberKey) root = sourceKey === memberKey ? null : sourceKey;
+    if (root) links[memberKey] = root; else delete links[memberKey];
+    Object.keys(links).forEach(k => {
+      if (links[k] === memberKey) links[k] = root || memberKey;
+      if (links[k] === k) delete links[k];
+    });
+    const keys = Object.keys(links);
+    if (keys.length === Object.keys(before).length && keys.every(k => before[k] === links[k])) return a;
+    changed = true;
+    return { ...a, mock_links: links };
+  });
+  return changed ? out : arr;
+};
+// Squash several garments onto ONE mockup in a single write: the FIRST key is the source
+// (it keeps its own mock), every later key links to it. Used by the art-request modal so a
+// near-identical group is grouped BEFORE the artist starts and only one mock gets built.
+// Nothing is moved or deleted — unchecking/unlinking restores per-garment behavior exactly.
+export const squashMockLinks = (artFiles, artId, memberKeys) => {
+  const keys = [...new Set(safeArr(memberKeys).filter(Boolean))];
+  if (keys.length < 2) return safeArr(artFiles);
+  return keys.slice(1).reduce((acc, k) => applyMockLink(acc, artId, k, keys[0]), safeArr(artFiles));
+};
 
 // ── Mocks follow the garment when its identity changes ──
 // Per-garment mockups and mock links are keyed `sku|color`, so an IN-PLACE sku or color
@@ -383,6 +640,62 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
 // opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
 // SKU, so callers must pass false when another live line still carries the old SKU in a
 // different color — moving the bare bucket would steal that line's legacy fallback.
+const _ART_TRACKED_ARRAY_FIELDS = ['files', 'mockup_files', 'prod_files', 'sample_art', 'web_logos'];
+const _ART_TRACKED_FIELDS = [..._ART_TRACKED_ARRAY_FIELDS, 'item_mockups', 'mock_links', 'preview_url', 'web_logo_url'];
+const _artMutationUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+const _uniqTruthy = (arr) => [...new Set(safeArr(arr).filter(Boolean))];
+// Stamp explicit art removals/asset replacements as client-only one-save intent. A conflict merge otherwise
+// has no safe way to distinguish “the rep removed this” from “this stale tab never loaded it”, so it must union
+// arrays and would resurrect deleted mockups/files. Existing markers are reconciled so undo-before-save works.
+export const markArtFieldEdit = (art, field, value) => {
+  if (!art) return art;
+  const next = { ...art, [field]: value };
+  const edited = new Set(safeArr(art._artEditedFields)); edited.add(field);
+  next._artEditedFields = [...edited];
+  const deletes = { ...(art._artDeletes || {}) };
+  if (_ART_TRACKED_ARRAY_FIELDS.includes(field)) {
+    const live = new Set(safeArr(value).map(_artMutationUrl).filter(Boolean));
+    const removed = safeArr(art[field]).map(_artMutationUrl).filter(u => u && !live.has(u));
+    const prior = safeArr(deletes[field]).filter(u => !live.has(u));
+    const gone = _uniqTruthy([...prior, ...removed]);
+    if (gone.length) deletes[field] = gone; else delete deletes[field];
+  } else if (field === 'item_mockups') {
+    const priorMap = art.item_mockups || {}; const liveMap = value || {}; const dm = { ...(deletes.item_mockups || {}) };
+    new Set([...Object.keys(priorMap), ...Object.keys(liveMap), ...Object.keys(dm)]).forEach(k => {
+      const live = new Set(safeArr(liveMap[k]).map(_artMutationUrl).filter(Boolean));
+      const removed = safeArr(priorMap[k]).map(_artMutationUrl).filter(u => u && !live.has(u));
+      const gone = _uniqTruthy([...safeArr(dm[k]).filter(u => !live.has(u)), ...removed]);
+      if (gone.length) dm[k] = gone; else delete dm[k];
+    });
+    if (Object.keys(dm).length) deletes.item_mockups = dm; else delete deletes.item_mockups;
+  } else if (field === 'mock_links') {
+    const live = value || {};
+    const removed = Object.keys(art.mock_links || {}).filter(k => !(k in live));
+    const gone = _uniqTruthy([...safeArr(deletes.mock_links).filter(k => !(k in live)), ...removed]);
+    if (gone.length) deletes.mock_links = gone; else delete deletes.mock_links;
+  }
+  if (Object.keys(deletes).length) next._artDeletes = deletes; else delete next._artDeletes;
+  return next;
+};
+// File-upload/reuse helpers often construct a whole art_files array rather than calling uArt. Diff the fields
+// whose conflict semantics need explicit intent and carry the same markers into that immediate save.
+export const markArtChanges = (before, after) => {
+  const prev = new Map(safeArr(before).filter(Boolean).map(a => [a.id, a]));
+  return safeArr(after).map(a => {
+    const old = a && prev.get(a.id); if (!old) return a;
+    let next = { ...a };
+    if (old._artDeletes && !next._artDeletes) next._artDeletes = old._artDeletes;
+    if (old._artEditedFields && !next._artEditedFields) next._artEditedFields = old._artEditedFields;
+    _ART_TRACKED_FIELDS.forEach(f => {
+      let changed = old[f] !== a[f];
+      if (changed && (typeof old[f] === 'object' || typeof a[f] === 'object')) {
+        try { changed = JSON.stringify(old[f]) !== JSON.stringify(a[f]); } catch (_) { changed = true; }
+      }
+      if (changed) next = markArtFieldEdit({ ...next, [f]: old[f] }, f, a[f]);
+    });
+    return next;
+  });
+};
 // Strip a mockup image (by URL) from art files, scoped to ONE garment on the art files a job owns.
 // The SO-page "×" lives on a single garment's mock card inside a single job's panel, so a removal
 // must only clear THAT garment's mock keys on the art files the job owns. The old order-wide strip
@@ -399,8 +712,13 @@ export const removeMockFromArtFiles = (artFiles, url, scope = {}) => {
   const urlOf = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
   const strip = (arr) => safeArr(arr).filter((f) => urlOf(f) !== url);
   const ids = Array.isArray(scope.artFileIds) ? new Set(scope.artFileIds.filter(Boolean)) : null;
-  const mk = scope.sku != null ? scope.sku + '|' + (scope.color || '') : null;
-  const ownKey = (k) => mk == null || k === mk || k === scope.sku || k.startsWith(mk + '|');
+  // `scope.item` is the garment LINE (preferred — placeholder-SKU lines key on their name via
+  // garmentMockKey); `scope.sku`/`scope.color` remain accepted for callers that have only those.
+  const mk = scope.item ? garmentMockKey(scope.item) : (scope.sku != null ? scope.sku + '|' + (scope.color || '') : null);
+  const legacy = scope.item ? legacyMockKeyOf(scope.item) : null;
+  const rawSku = scope.item ? scope.item.sku : scope.sku;
+  const ownKey = (k) => mk == null || k === mk || k === rawSku || k.startsWith(mk + '|')
+    || (!!legacy && (k === legacy || k.startsWith(legacy + '|')));
   return safeArr(artFiles).map((a) => {
     if (!a) return a;
     if (ids && !ids.has(a.id)) return a;
@@ -538,7 +856,7 @@ export const lookupColorwayImage = (map, item) => {
 // or an existing link. Pure: returns the same reference when nothing changed.
 export const linkSwappedGarmentMock = (artFiles, srcItem, newSku, newColor) => {
   if (!srcItem || (srcItem.color || '') !== (newColor || '')) return artFiles;
-  const oldKey = mockLinkKeyOf(srcItem.sku, srcItem.color);
+  const oldKey = garmentMockKey(srcItem);
   const newKey = mockLinkKeyOf(newSku, newColor);
   if (oldKey === newKey || !newSku) return artFiles;
   const artIds = [...new Set(safeDecos(srcItem)
@@ -604,6 +922,69 @@ export const mockSlotKeys = (base, decos) => {
     }
   });
   return slots;
+};
+
+/**
+ * How many mockups a garment has in its numbers / names slots — the proof of the BACK.
+ * Keys follow mockSlotKeys: `sku|color|numbers` / `|names`, plus the `_<n>` / `_b` variants.
+ * Counted per kind so a surface can say WHICH side has no proof on file.
+ */
+export const nnMockCounts = (artFiles, it) => {
+  const base = garmentMockKey(it);
+  const legacy = legacyMockKeyOf(it);
+  let numbers = 0; let names = 0;
+  safeArr(artFiles).forEach((a) => {
+    const m = safeObj(a?.item_mockups);
+    const anyOwn = Object.keys(m).some((k) => k.startsWith(base + '|') && safeArr(m[k]).length > 0);
+    const pfx = (anyOwn || !legacy) ? base : legacy;
+    Object.keys(m).forEach((k) => {
+      if (!k.startsWith(pfx + '|')) return;
+      const n = safeArr(m[k]).filter(Boolean).length;
+      if (!n) return;
+      if (/\|numbers(_\d+)?(_b)?$/.test(k)) numbers += n;
+      else if (/\|names(_\d+)?(_b)?$/.test(k)) names += n;
+    });
+  });
+  return { numbers, names };
+};
+
+/**
+ * The mockup files one slot should DISPLAY.
+ *
+ * Slot keys are positional: the first art decoration on a garment owns the bare `sku|color` key
+ * and every later one gets a discriminated key (`|<colorWayId>` / `|d1`). That position depends on
+ * how many decorations the JOB claims — so a design that used to run on its own job stored its
+ * mock under the bare key (it was that job's primary slot), and folding several designs onto one
+ * job demotes it to a discriminated key it has nothing under. The slot then renders as an empty
+ * upload box and invites a duplicate re-upload, while the job sheet — which reads through a
+ * fallback chain (_prodJobItemMocks) — still shows the mock. SO-1840's CUI Basketball and Talon
+ * both sit under `JW6602|Black` for exactly this reason.
+ *
+ * So an ART slot with nothing under its own key falls back to the bare-key read, but ONLY when its
+ * art file is not shared with another slot on this garment: a shared file is precisely what the
+ * discriminator exists to separate (reversible Side A/B, per-color-way mocks), and falling back
+ * there would show one side's image in both boxes.
+ *
+ * Numbers and names never fall back. Their slots hang off the job's primary artwork, so a fallback
+ * would put the garment's FRONT mockup in the back-proof box — worse than showing it empty.
+ *
+ * `it` is the garment LINE (sku, color, name) — garmentMockKey, not the raw SKU, decides the base
+ * key, so customer-supplied lines don't all read one another's bucket.
+ */
+export const slotMockFiles = (slot, slots, it) => {
+  const art = slot?.artFile;
+  const mocks = safeObj(art?.item_mockups);
+  const bareRead = () => itemMockFiles(mocks, it);
+  if (slot?.primary) return bareRead();
+  // Sub-key slots read through the same legacy fallback: the sub-key part (`|<cwid>`, `|numbers`)
+  // hangs off whichever base the mock was written under.
+  const base = garmentMockKey(it);
+  const own = safeStr(slot?.key).startsWith(base)
+    ? itemMockFiles(mocks, it, safeStr(slot.key).slice(base.length))
+    : safeArr(mocks[slot?.key]);
+  if (own.length > 0 || slot?.kind !== 'art' || !art) return own;
+  const shared = safeArr(slots).some((s) => s && s !== slot && s.artFile && s.artFile.id === art.id);
+  return shared ? own : bareRead();
 };
 
 // ── Approval-proof fallback for reused / pre-digitized art ──
@@ -678,6 +1059,10 @@ export const skusMissingMockups = (job, so) => {
     // The mockup screen keys off it.sku/it.color (App.js itemDetails), so the gate must
     // check the same garment — otherwise it reports a phantom SKU (A325) as missing while
     // the artist sees and mocks the real one (A515).
+    const mLine = it || gi || {};
+    // What the rep is told is missing. Every customer-supplied line reads 'CUST-SUPPLIED',
+    // so name those by their line name — otherwise the message repeats one useless word.
+    const mLabel = mockSkuOf(mLine) || '';
     const mSku = it?.sku || gi?.sku || '';
     const mColor = it?.color || gi?.color || '';
     // If this garment is linked to another garment's mockup, the SOURCE garment's mock is
@@ -685,20 +1070,22 @@ export const skusMissingMockups = (job, so) => {
     // otherwise (the linked garment's own per-item mock is intentionally ignored while
     // linked). Anchors: the job's primary design plus any art this garment uses.
     const linkAnchors = [allArt.find(a => a?.id === job?.art_file_id), ...artFiles].filter(Boolean);
-    const srcKey = resolveMockLink(linkAnchors, mSku, mColor);
+    const srcKey = resolveMockLink(linkAnchors, mockSkuOf(mLine), mColor);
     if (srcKey) {
       // Look the source's mocks up across ALL the job's art (the source garment may pull
       // its art from a different file than this garment's anchors).
       const allAnchors = [...new Set([...linkAnchors, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
-      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mSku) missing.push(mSku);
+      if (mockLinkSourceFiles(allAnchors, srcKey).length === 0 && mLabel) missing.push(mLabel);
       return;
     }
     // Mockups are keyed by `sku|color` to disambiguate items that share a SKU across
-    // colors. Older data may use a plain SKU key — accept either.
-    const mockKey = mSku + '|' + mColor;
+    // colors — through garmentMockKey, so customer-supplied lines (which ALL carry the SKU
+    // 'CUST-SUPPLIED') get one bucket each instead of one per color. Keyed on the raw SKU,
+    // one garment's mockup satisfied this gate for every other custom garment of that color
+    // and unmocked garments went to the coach (SO-2063). Older data may use a plain SKU key
+    // or the legacy shared bucket — accept either.
     const perSku = artFiles.flatMap(a => {
-      const byKey = safeArr(a?.item_mockups?.[mockKey]);
-      return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
+      return itemMockFiles(a?.item_mockups, mLine);
     });
     if (perSku.length > 0) {
       // Primary mock present — additionally require every slot a REVERSIBLE decoration
@@ -709,11 +1096,15 @@ export const skusMissingMockups = (job, so) => {
       // mockup_files bucket (handled below) are left alone.
       const _idxs = jobItemDecoIdxs(gi);
       const anchors = [...new Set([...artFiles, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      const mockKey = garmentMockKey(mLine);
       const missSlots = mockSlotKeys(mockKey, safeDecos(it))
         .filter(s => s.reversible && !s.primary && (!_idxs || _idxs.includes(s.di)))
-        .filter(s => !anchors.some(a => safeArr(a?.item_mockups?.[s.key]).length > 0));
-      if (missSlots.length > 0 && mSku) {
-        missing.push(mSku + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
+        .filter(s => {
+          const sub = safeStr(s.key).startsWith(mockKey) ? safeStr(s.key).slice(mockKey.length) : '';
+          return !anchors.some(a => itemMockFiles(a?.item_mockups, mLine, sub).length > 0);
+        });
+      if (missSlots.length > 0 && mLabel) {
+        missing.push(mLabel + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
       }
       return;
     }
@@ -735,7 +1126,7 @@ export const skusMissingMockups = (job, so) => {
     // art its two compliant paths (reuse an approved prior mock, or send to the artist
     // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
     // so approval screens still show what exists — it just can't pass the gate.
-    if (mSku) missing.push(mSku);
+    if (mLabel) missing.push(mLabel);
   });
   return missing;
 };
@@ -823,11 +1214,14 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
     // A garment linked to another garment's mockup is an explicit decision — its mock
     // comes from the source garment, so there's no reuse ambiguity to double-check.
     const linkAnchors = [allArt.find(a => a?.id === job?.art_file_id), ...artFilesForItem].filter(Boolean);
-    if (resolveMockLink(linkAnchors, mSku, mColor)) return;
-    const mockKey = mSku + '|' + mColor;
-    // A key belongs to THIS garment if it's the exact sku|color, the legacy bare sku, or a
-    // color-way sub-key of this garment (sku|color|cwid).
-    const isOwnKey = k => k === mockKey || k === mSku || k.startsWith(mockKey + '|');
+    if (resolveMockLink(linkAnchors, mockSkuOf(it), mColor)) return;
+    const mockKey = garmentMockKey(it);
+    // A key belongs to THIS garment if it's the exact sku|color, the legacy bare sku, the
+    // legacy shared placeholder bucket it may still sit in, or a color-way sub-key of this
+    // garment (sku|color|cwid).
+    const legacyKey = legacyMockKeyOf(it);
+    const isOwnKey = k => k === mockKey || k === mSku || k.startsWith(mockKey + '|')
+      || (!!legacyKey && (k === legacyKey || k.startsWith(legacyKey + '|')));
     // Each art file on the garment that lacks its OWN mock but carries prior mocks from other
     // garments needs a check — list them all, so a garment decorated by two designs (e.g. a
     // front and a back) shows both.

@@ -81,7 +81,7 @@ const SCREEN_TARGETS = [
   // present whenever the user is on that screen. The two oe-* live inside the shared
   // order/estimate editor, so they only spotlight once a record is open (the step's
   // instruction should tell the user to open the record first).
-  { id: 'global-search', screen: '', label: 'Global search box (top bar)', desc: 'Searches orders, jobs, POs, invoices, customers; Enter opens the full results page.' },
+  { id: 'global-search', screen: '', label: 'Global search box (top bar)', desc: 'Searches orders, jobs, POs, invoices, customers, webstore orders; Enter opens the full results page.' },
   { id: 'new-estimate-btn', screen: 'estimates', label: 'New Estimate button', desc: 'Opens a blank estimate to build a new quote.' },
   { id: 'estimates-search', screen: 'estimates', label: 'Estimates search box', desc: 'Filters the estimate list by customer or id.' },
   { id: 'orders-search', screen: 'orders', label: 'Sales Orders search box', desc: 'Filters sales orders by customer, SKU, or PO#.' },
@@ -110,6 +110,7 @@ const SCREEN_TARGETS = [
   { id: 'ws-launch-store', screen: '', label: '🚀 Launch store button', desc: 'In a store\'s detail header — relaunches a closed or scheduled store so it accepts orders again. Only shown when the store is not currently open.' },
   { id: 'ws-detail-settings', screen: '', label: '⚙ Settings button (store detail)', desc: 'In a store\'s detail header — opens the store settings form, where the close date lives.' },
   { id: 'ws-close-date', screen: '', label: 'Close date field (store settings)', desc: 'The store\'s end date — change it to extend how long the store stays open. On the Setup page of the store settings form.' },
+  { id: 'ws-close-time', screen: '', label: 'Close time field (store settings)', desc: 'The Pacific time the store stops taking orders on the close date. Defaults to 11:59 PM so the store runs through the whole day; set it earlier to cut the store off mid-day. Next to the close date on the Setup page.' },
   { id: 'ws-save', screen: '', label: 'Save changes button (store settings)', desc: 'Saves the store settings, including the new close date — the last step of extending a store.' },
 ];
 

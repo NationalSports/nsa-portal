@@ -3,6 +3,11 @@
 const stripe = require('stripe');
 const crypto = require('crypto');
 const { verifyUser, verifyAdmin, getSupabaseAdmin, reconcileInvoiceFromIntent } = require('./_shared');
+const { sendRefundNotice } = require('./_webstoreEmail');
+
+// Dollar formatting for the refund message posted into the order thread — the
+// email builds its own via _webstoreEmail's `money`.
+const usd = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
@@ -243,6 +248,9 @@ exports.handler = async (event) => {
       const v = await verifyUser(event);
       if (!v.ok) return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       const { webstore_order_id, amount_cents, reason, attempt_id } = body;
+      // Staff-written note for the buyer's email (the compose step in the Manage panel).
+      // Bounded and escaped downstream — it is rendered into HTML.
+      const customerMessage = String(body.customer_message || '').slice(0, 2000).trim() || null;
       if (!webstore_order_id) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'webstore_order_id required' }) };
       if (!attempt_id) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'attempt_id required' }) };
 
@@ -289,7 +297,47 @@ exports.handler = async (event) => {
       if (rpc && rpc.ok === false) {
         return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: rpc.error === 'exceeds_total' ? 'Amount exceeds the refundable balance.' : (rpc.error || 'Refund rejected.'), ...rpc }) };
       }
-      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, ...(rpc || {}) }) };
+
+      // Tell the family. Money moved and it's recorded, so from here everything is
+      // best-effort: a Brevo or message-insert failure must never turn a completed
+      // refund into an error response, or staff would retry it and refund twice.
+      // Re-read the order so the notice quotes the post-refund refunded_amt the RPC
+      // just wrote, not the stale pre-refund value read above.
+      let notified = false;
+      let notifyError = null;
+      try {
+        const { data: fresh } = await admin.from('webstore_orders')
+          .select('id,store_id,order_number,buyer_name,buyer_email,total,refunded_amt,payment_mode').eq('id', order.id).limit(1);
+        const row = (fresh && fresh[0]) || order;
+        // Report what actually happened, not whether an address existed. `notified` used
+        // to be `!!row.buyer_email`, which claimed success for an email that may never
+        // have left the building — the one thing this notice must not do quietly.
+        const notice = await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason, message: customerMessage });
+        notified = !!(notice && notice.sent);
+        if (!notified) {
+          notifyError = (notice && notice.reason) || 'unknown';
+          console.error('[stripe-payment] refund EMAIL NOT SENT for order', order.id, 'refund', stripeRefundId, '-', notifyError);
+        }
+        // Mirror it into the order's message thread — the same `messages` rows the
+        // Manage-orders panel and the buyer's order page already render — so staff
+        // can see at a glance that the family was told, and the family has it in
+        // the thread as well as their inbox. No message-notify email here: the
+        // refund email above is the notification.
+        await admin.from('messages').insert({
+          id: 'm' + Date.now() + Math.random().toString(36).slice(2, 7),
+          entity_type: 'webstore_order', entity_id: String(order.id),
+          author: 'NSA Team', author_id: v.teamMemberId || null,
+          // Record what the buyer was actually told, not just that something was sent —
+          // the next person on this order needs to read the same words the family did.
+          text: `Refund issued: ${usd(cents / 100)}${kind === 'credit' ? ' (credited to the team account)' : ' back to the card on file'}${reason ? ` — ${reason}` : ''}.`
+            + (customerMessage ? `\n\n${notified ? 'Emailed' : 'Message (NOT emailed)'}: ${customerMessage}` : '')
+            + (notified ? '' : `\n⚠️ Confirmation email did not send${notifyError ? ` (${notifyError})` : ''}.`),
+          ts: new Date().toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true,
+        });
+      } catch (e) {
+        console.error('[stripe-payment] refund notice failed for order', order.id, 'refund', stripeRefundId, '-', e.message);
+      }
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, notified, notify_error: notifyError, ...(rpc || {}) }) };
     }
 
     if (action === 'refund') {
@@ -323,7 +371,9 @@ exports.handler = async (event) => {
         try {
           const admin = getSupabaseAdmin();
           const ref = 'Refund ' + refund.id;
-          const payDate = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+          // Pacific, not the function's UTC clock — same reason as reconcileInvoiceFromIntent
+          // in _shared.js: an evening refund stamped with tomorrow's date can cross a month end.
+          const payDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: '2-digit', day: '2-digit', year: 'numeric' });
           const { data: existing } = await admin.from('invoice_payments').select('id').eq('invoice_id', invoice_id).eq('ref', ref).limit(1);
           if (!existing || !existing.length) {
             await admin.from('invoice_payments').insert({ invoice_id, amount: -(refund.amount / 100), method: 'cc', ref, date: payDate });

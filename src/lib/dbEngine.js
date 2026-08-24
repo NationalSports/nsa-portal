@@ -18,7 +18,7 @@ import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
-import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems } from '../businessLogic';
+import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 
@@ -251,6 +251,24 @@ const _fetchTxnItemHistory=async(item,limit=1500)=>{
   }catch(e){console.warn('[DB] txn_item_history RPC error:',e.message);return null}
 };
 
+// ─── Line items for one NetSuite-imported (_hist) invoice ───
+// hist invoices load header-only: their lines live in customer_invoice_lines, which is far too
+// large to pull with the rest of the app state. Every screen that renders a hist invoice's items
+// fetches them on open through here. Returns [] when the invoice has no lines on file, so a caller
+// can tell "none recorded" from a failed fetch (null).
+const _fetchHistInvoiceLines=async(netsuiteInternalId)=>{
+  if(!supabase||!netsuiteInternalId)return null;
+  try{
+    const{data,error}=await supabase
+      .from('customer_invoice_lines')
+      .select('line_seq,item,description,line_memo,quantity,rate,amount')
+      .eq('netsuite_internal_id',netsuiteInternalId)
+      .order('line_seq',{ascending:true});
+    if(error){console.warn('[DB] customer_invoice_lines fetch failed:',error.message);return null}
+    return(data||[]).map(l=>({sku:l.item||'',name:l.line_memo||l.description||'',qty:l.quantity,rate:l.rate,amount:l.amount}));
+  }catch(e){console.warn('[DB] customer_invoice_lines fetch error:',e.message);return null}
+};
+
 // ─── Server-side customer search (paginated, leverages DB trigram indexes) ───
 const _searchCustomersServer=async(query,repId,page=0,pageSize=50)=>{
   if(!supabase)return null;
@@ -313,6 +331,41 @@ const _sbGetMyProfile=async()=>{
   if(!supabase)return null;
   const{data}=await supabase.rpc('get_my_profile');
   return data?.[0]||null;
+};
+// Reshape one customer_invoices row into the read-only _hist invoice object the app merges into
+// allOrders — one mapper shared by the initial load and the poll's self-heal refetch below.
+const _mapHistInvoice=hi=>({
+  id:hi.document_number||hi.id,
+  _hist_id:hi.id,
+  customer_id:hi.customer_id,
+  date:hi.invoice_date,
+  total:hi.total!=null?Number(hi.total):null,
+  memo:hi.memo||'',
+  status:hi.status||'paid',
+  type:'invoice',
+  _hist:true,
+  netsuite_internal_id:hi.netsuite_internal_id,
+  document_number:hi.document_number,
+  subsidiary:hi.subsidiary,
+  rep_name:hi.rep_name,
+  subtotal:hi.subtotal!=null?Number(hi.subtotal):null,
+  tax:hi.tax!=null?Number(hi.tax):null,
+  raw_customer_nsid:hi.raw_customer_nsid,
+  raw_customer_name:hi.raw_customer_name,
+  invoice_type:hi.type,
+});
+// One-table refetch of the NetSuite invoice history, for the poll's self-heal. customer_invoices
+// is the only STAFF-GATED read in the whole load (RLS: authenticated + is_team_member(); every
+// other table is anon-readable) and it's fetched exactly once, at initial load. A tab whose
+// initial load ran without a live staff session (expired/refreshing token, tab opened at the
+// login screen) therefore loads the entire portal fine EXCEPT NetSuite invoices — and kept them
+// empty until a hard refresh, because polls never re-applied them. Returns the mapped list, or
+// null on a failed page ([] is authoritative for anon/coach tabs — the RLS-denied read).
+const _dbLoadHistInvoices=async()=>{
+  if(!supabase)return null;
+  const r=await _safeQuery('customer_invoices',{order:'invoice_date',orderOpts:{ascending:false},limit:20000});
+  if(r.error)return null;// a failed/partial page — don't apply (a stale _lastLoadTimedOut entry from a prior load can't be trusted here, so judge by this result alone)
+  return (r.data||[]).map(_mapHistInvoice);
 };
 const _dbLoad = async (opts={}) => {
   const {coreOnly=false, histInvoices=false, only=null, fullState=false, essential=false} = opts;
@@ -456,6 +509,18 @@ const _dbLoad = async (opts={}) => {
       // _saveAppStateCAS. version is undefined until the migration lands — treated as 0.
       if(!r.id.startsWith('_pimg_'))_appStateVersions[r.id]={v:r.version||0,s:r.value};});
     // ─── Reconstruct nested objects ───
+    // deco_pos is read as `(o.deco_pos||[]).forEach(...)` at ~100 call sites. The `||[]` only covers
+    // null/undefined, so a row whose jsonb holds an OBJECT sails through and throws "forEach is not a
+    // function" — and because global search and the dashboards scan every SO, one malformed row
+    // white-screens the whole portal (SO-TEST-BAG carried `{}`, crashing global search 2026-08-12).
+    // Normalise on the way in so a bad row degrades to "no deco POs" instead of taking the app down.
+    // Returns {} — not {deco_pos:[]} — when the column is absent/null so the save path keeps omitting
+    // the column rather than writing an empty array over the DB's deco POs.
+    const _decoPosGuard=(row)=>{
+      if(row?.deco_pos==null||Array.isArray(row.deco_pos))return{};
+      console.warn('[DB]',row.id,'has a non-array deco_pos ('+typeof row.deco_pos+') — treating it as empty');
+      return{deco_pos:[]};
+    };
     // Product image backups from app_state (reliable fallback when image columns are missing)
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
@@ -487,7 +552,7 @@ const _dbLoad = async (opts={}) => {
       // _itemsHydrated: true only when estimate_items loaded cleanly this session. Lets save guards tell a
       // deliberate rep deletion (hydrated→empty) apart from items vanishing on a timed-out load (never hydrated).
       const _estItemsHydrated=!_lastLoadTimedOut.has('estimate_items');if(_estItemsHydrated)_everHydratedItems.add(est.id);
-      return{...est,items,art_files,_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      return{...est,items,art_files,..._decoPosGuard(est),_itemsHydrated:_estItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('estimate_item_decorations')&&!_lastLoadTimedOut.has('estimate_items'),_artHydrated:!_lastLoadTimedOut.has('estimate_art_files'),_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
       // Recycled-number carry-over guard: a reused SO id can inherit jobs/art from the order that
@@ -542,7 +607,10 @@ const _dbLoad = async (opts={}) => {
           if(sizes._billed&&!recovered.billed){recovered.billed=sizes._billed;delete recovered._billed}
           if(sizes._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=sizes._tracking_numbers;delete recovered._tracking_numbers}
           return recovered});
-        const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
+        // sizes defaults to {} — a sparse so_items row (e.g. one written by the item-revive path from a
+        // row that itself only carried sku/color) has sizes NULL, and every consumer treats item.sizes as
+        // a size→qty map. Handing null up crashed OrderEditor's size grid on SO-1971 (2026-08-14).
+        const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,sizes:rest.sizes||{},decorations,pick_lines,po_lines}});
       // _itemsHydrated: true only when so_items loaded cleanly this session. Save guards use it to distinguish a
       // deliberate rep deletion (hydrated→empty) from items vanishing on a timed-out load (never hydrated).
       // _hydratedPoIds: the set of PO ids present when this SO loaded cleanly. The save uses it to tell a deliberate
@@ -552,7 +620,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
       const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
+      return{...so,items,art_files,firm_dates,jobs,..._decoPosGuard(so),_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -562,26 +630,7 @@ const _dbLoad = async (opts={}) => {
       const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
       return{...inv,payments,items:items.length?items:undefined,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
-    const hist_invoices=d(rHistInvs).map(hi=>({
-      id:hi.document_number||hi.id,
-      _hist_id:hi.id,
-      customer_id:hi.customer_id,
-      date:hi.invoice_date,
-      total:hi.total!=null?Number(hi.total):null,
-      memo:hi.memo||'',
-      status:hi.status||'paid',
-      type:'invoice',
-      _hist:true,
-      netsuite_internal_id:hi.netsuite_internal_id,
-      document_number:hi.document_number,
-      subsidiary:hi.subsidiary,
-      rep_name:hi.rep_name,
-      subtotal:hi.subtotal!=null?Number(hi.subtotal):null,
-      tax:hi.tax!=null?Number(hi.tax):null,
-      raw_customer_nsid:hi.raw_customer_nsid,
-      raw_customer_name:hi.raw_customer_name,
-      invoice_type:hi.type,
-    }));
+    const hist_invoices=d(rHistInvs).map(_mapHistInvoice);
     // Messages: attach read_by array and parse tagged_members
     const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
@@ -601,7 +650,20 @@ const _dbLoad = async (opts={}) => {
     // hasData stays true off sales_orders, so the load looks successful and the empty list would blank
     // every customer to "Unknown". The initial-load apply reads this to keep the cached list instead.
     const _custTimedOut=_lastLoadTimedOut.has('customers');
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_coreOnly:coreOnly};
+    // Same gap for the other order-book PARENT tables (2026-08-18, the "rep's portal shows zero SOs /
+    // zero counts on every customer" report): a timed-out sales_orders/estimates/invoices/messages
+    // query returns EMPTY with error:null (408), hasData stays true off customers, and the apply paths
+    // would replace both state and the _diffSave snapshot with an empty order book. Callers use these
+    // flags to keep cached data (initial load) or skip the apply entirely (poll / realtime reload).
+    const _soTimedOut=_lastLoadTimedOut.has('sales_orders');
+    const _estTimedOut=_lastLoadTimedOut.has('estimates');
+    const _invTimedOut=_lastLoadTimedOut.has('invoices');
+    const _msgTimedOut=_lastLoadTimedOut.has('messages');
+    // Aggregate for the "don't trust this load" call sites (poll skip, realtime skip, the seed
+    // branch's is-the-DB-really-empty check) so the table list lives HERE, next to where the flags
+    // are set, instead of being hand-synced across App.js call sites.
+    const _parentTimedOut=_custTimedOut||_soTimedOut||_estTimedOut||_invTimedOut||_msgTimedOut;
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,hist_invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,_decoTimedOut,_custTimedOut,_soTimedOut,_estTimedOut,_invTimedOut,_msgTimedOut,_parentTimedOut,_coreOnly:coreOnly};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -811,8 +873,14 @@ const _artGapMsg=(table,dropped)=>_schemaGapMsg('Artwork',table,dropped);
 // filtered out as "stale". Instead we 3-way-merge: start from the DB row (keeps concurrent approval/status/mockup
 // changes), overlay THIS client's user-authored content, and union file collections so neither side's uploads are
 // lost. _version itself is never written (the DB trigger owns it), so the merged row upserts cleanly.
-const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','notes','archived','prod_files_attached'];
-const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art'];
+// prod_files_attached is deliberately NOT user-authored content: it is a review DECISION (the
+// production-files confirmation an approval stamps), sibling to `status` — and like status the DB
+// copy must win on conflict. Overlaying the client's value let a stale tab silently un-confirm a
+// just-approved design (SO-1131, 2026-08-19: a warehouse tab reverted prod_files_attached true→
+// false 17 minutes after the rep's approval set it, alongside the so_jobs art_status clobber).
+const _ART_CONTENT_FIELDS=['name','deco_type','ink_colors','thread_colors','stitches','art_size','art_sizes','garment_colors','color_ways','design_id','location','notes','archived'];
+const _ART_FILE_COLLECTIONS=['files','mockup_files','prod_files','sample_art','web_logos'];
+const _ART_EXPLICIT_SCALAR_FIELDS=new Set(['preview_url','web_logo_url']);
 const _artFileUrl=f=>typeof f==='string'?f:(f&&(f.url||f.name))||'';
 const _unionArtFiles=(dbArr,clientArr)=>{
   // Both scalar (e.g. a single preview/sample url): prefer the client's value, falling back to the DB's.
@@ -821,6 +889,31 @@ const _unionArtFiles=(dbArr,clientArr)=>{
   const seen=new Set(out.map(_artFileUrl).filter(Boolean));
   (Array.isArray(clientArr)?clientArr:[]).forEach(f=>{const k=_artFileUrl(f);if(!k){out.push(f)}else if(!seen.has(k)){seen.add(k);out.push(f)}});
   return out;
+};
+// A version conflict cannot infer whether a missing array entry was deliberately deleted in this tab or was
+// merely never loaded here. Editors therefore stamp narrow, one-save tombstones on explicit removals. Apply
+// them AFTER the conservative DB+client union so concurrent additions survive while the exact user deletion
+// still lands. Tombstones are client-only and are consumed only after a confirmed write.
+const _applyArtDeletes=(merged,clientArt)=>{
+  const d=clientArt?._artDeletes;if(!d||typeof d!=='object')return merged;
+  _ART_FILE_COLLECTIONS.forEach(f=>{
+    const gone=new Set(Array.isArray(d[f])?d[f]:[]);if(!gone.size||!Array.isArray(merged[f]))return;
+    merged[f]=merged[f].filter(x=>!gone.has(_artFileUrl(x)));
+  });
+  if(d.item_mockups&&typeof d.item_mockups==='object'){
+    const im={...(merged.item_mockups||{})};
+    Object.entries(d.item_mockups).forEach(([k,urls])=>{
+      const gone=new Set(Array.isArray(urls)?urls:[]);if(!gone.size)return;
+      im[k]=(Array.isArray(im[k])?im[k]:[]).filter(x=>!gone.has(_artFileUrl(x)));
+      // Keep an explicitly emptied garment bucket as []: itemMockFiles treats key presence as a
+      // tombstone that blocks legacy shared/bare-SKU fallback (SO-2063 / PR #2039).
+    });
+    merged.item_mockups=im;
+  }
+  if(Array.isArray(d.mock_links)&&d.mock_links.length){
+    const ml={...(merged.mock_links||{})};d.mock_links.forEach(k=>delete ml[k]);merged.mock_links=ml;
+  }
+  return merged;
 };
 const _mergeArtConflict=(clientArt,dbRow)=>{
   const merged={...dbRow};// base = DB row: keeps status/preview/uploaded and anything another user changed
@@ -832,8 +925,12 @@ const _mergeArtConflict=(clientArt,dbRow)=>{
   // mock_links: small {garmentKey -> sourceKey} map. Shallow-merge so neither side's reuse links are
   // dropped on a concurrent edit; the client's link wins for any key it set.
   merged.mock_links={...(dbRow.mock_links||{}),...(clientArt.mock_links||{})};
+  // Preview / web-logo replacements are user-authoritative only when this tab actually edited the field.
+  // Otherwise the DB copy wins so an unrelated stale save cannot restore an older asset URL.
+  const edited=new Set(Array.isArray(clientArt._artEditedFields)?clientArt._artEditedFields:[]);
+  _ART_EXPLICIT_SCALAR_FIELDS.forEach(f=>{if(edited.has(f))merged[f]=clientArt[f]});
   if(!merged.preview_url&&clientArt.preview_url)merged.preview_url=clientArt.preview_url;
-  return merged;
+  return _applyArtDeletes(merged,clientArt);
 };
 // Resolve which art rows to persist given the client's art_files and the live full DB rows. Conflicting rows
 // (DB _version ahead of the client's) are field-merged onto the DB copy; the rest pass through unchanged. Returns
@@ -849,6 +946,14 @@ const _resolveArtRows=(clientArtFiles,dbRows,parentId)=>{
   });
   if(conflicts)console.warn('[DB]',conflicts,'art file(s) for',parentId,'field-merged with newer DB copy (concurrent edit) — your content preserved');
   return out;
+};
+// Adopt the exact conflict-resolved row back into the live object. Rebasing only `_version` poisons the
+// client: its stale status/files then look current and the NEXT save can undo the protection. Preserve
+// client-only UI keys via Object.assign, but consume the one-save edit/deletion markers after success.
+const _adoptResolvedArtRow=({client,row,baseVersion})=>{
+  Object.assign(client,row,{_version:baseVersion+1});
+  delete client._artDeletes;delete client._artEditedFields;
+  return client;
 };
 const _EST_STATUS_RANK={draft:0,open:1,sent:2,approved:3,converted:4};
 const _mergeDbEstStatus=async(est)=>{
@@ -1144,7 +1249,7 @@ const _dbSaveEstimateInner = async (est) => {
           if(_dbNotify)_dbNotify(_artGapMsg('estimate_art_files',afDropped),'error');
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+        if(_afOk)_resolved.forEach(_adoptResolvedArtRow);
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(est._hydratedArtIds)?est._hydratedArtIds:[]);
@@ -1254,7 +1359,7 @@ const _dbSaveSOInner = async (so) => {
     const finalUpdatedAt=soRow.updated_at;
     const soRowInitial={..._pick(soRow,_soCols)};
     // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
-    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at,deco_pos,created_at').eq('id',so.id).maybeSingle();
+    const{data:existingSO,error:existErr}=await supabase.from('sales_orders').select('updated_at,deco_pos,created_at,status,po_number').eq('id',so.id).maybeSingle();
     if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
     // Confident-new only when the lookup succeeded AND returned no row — never on a network/SELECT error,
     // otherwise we could purge a live order's children below.
@@ -1309,6 +1414,23 @@ const _dbSaveSOInner = async (so) => {
         if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_missingDeco.length});
       }
     }
+    // Header-decision guard (audit-log sweep after SO-1131, 2026-08-19): the same stale whole-row
+    // upsert clobbers header decision columns — po_number was nulled 12 times and 'complete' status
+    // reverted from stale copies in the prior 30 days. When the version check flagged this save as
+    // stale, keep the DB's decisions: never null a non-null po_number, and never pull a completed
+    // order back open unless this save deliberately reverted it (so._status_reverted — stamped by
+    // the invoice-delete handler, the one path that legitimately reopens a completed order;
+    // session-only one-shot, consumed below on success). Current tabs pass untouched either way.
+    if(_versionConflict&&existingSO){
+      if(existingSO.po_number!=null&&('po_number'in soRowInitial)&&(soRowInitial.po_number==null||soRowInitial.po_number==='')){
+        soRowInitial.po_number=existingSO.po_number;
+        console.warn('[DB] Preserved po_number on',so.id,'that a stale save would have cleared');
+      }
+      if(existingSO.status==='complete'&&soRowInitial.status!=='complete'&&!so._status_reverted){
+        soRowInitial.status='complete';
+        console.warn('[DB] Preserved completed status on',so.id,'that a stale save would have reopened');
+      }
+    }
     // Brand-new orders INSERT rather than upsert: nextSOId (App.js) mints ids from _dbMaxIds, which is only
     // synced at page load, so a stale tab can re-mint an id another tab already saved (the SO-1514 incident)
     // — an upsert would then silently REPLACE that order's header while the item-write guards below block
@@ -1346,6 +1468,7 @@ const _dbSaveSOInner = async (so) => {
       }
       else console.warn('[DB] SO saved with core columns only')
     }
+    if(!saveFailed&&so._status_reverted)delete so._status_reverted;// one-shot marker — consumed by the save that carried it
     // Recycled-number guard: a brand-new SO id can collide with a deleted order whose number was reused.
     // Any so_jobs/so_art_files still sitting under this id are orphans from that prior order — purge them
     // before we write this order's real children, so they can't silently re-attach by so_id. (Orphan
@@ -1398,10 +1521,17 @@ const _dbSaveSOInner = async (so) => {
     // passes every hydration gate below (exactly how SO-1333 lost its IND4000 line + S&S PO on
     // 2026-06-30). Block and prompt a reload; a rep who genuinely wants a line removed just reloads and
     // removes it again, conflict-free.
+    // Session tombstones (_deletedItemKeys) are excluded: the editor stamps a line's OLD sku|color key
+    // when the rep deletes it (rmI) or re-keys it in place (Change SKU / color change), so those keys
+    // are THIS session's deliberate work, not another session's. Without this, changing a SKU while the
+    // version had moved (even benignly) hard-blocked every save — "SO-2021 was changed in another
+    // session (hr8470 black … would be dropped)", 2026-08-17. Same tombstone contract, and the same
+    // accepted trade-off, as the pure-deletion guard below.
     if(_versionConflict&&oldItemIds.length>0&&_clientSoItemCount>0){
       const _dbKeyCounts={};_oldSoItems.forEach(r=>{const k=soItemKey(r);_dbKeyCounts[k]=(_dbKeyCounts[k]||0)+1});
       (items||[]).forEach(it=>{const k=soItemKey(it);if(_dbKeyCounts[k])_dbKeyCounts[k]--});
-      const _uncovered=Object.entries(_dbKeyCounts).filter(([,n])=>n>0).map(([k])=>k.split('|').filter(Boolean).join(' ')||'(custom line)');
+      const _tombKeys=new Set(Array.isArray(so._deletedItemKeys)?so._deletedItemKeys:[]);
+      const _uncovered=Object.entries(_dbKeyCounts).filter(([k,n])=>n>0&&!_tombKeys.has(k)).map(([k])=>k.split('|').filter(Boolean).join(' ')||'(custom line)');
       if(_uncovered.length){
         console.error('[DB] SAFETY: Blocking stale SO save for',so.id,'— server version moved (v'+_versionConflict.local+'→v'+_versionConflict.server+') and DB items missing from this tab\'s copy:',_uncovered.join(', '));
         if(_dbNotify)_dbNotify('Save blocked — '+so.id+' was changed in another session ('+_uncovered.join(', ')+' would be dropped). Please reload the page.','error');
@@ -1434,7 +1564,7 @@ const _dbSaveSOInner = async (so) => {
           if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
-        if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+        if(_afOk)_resolved.forEach(_adoptResolvedArtRow);
       }
       // Delete only art the client deliberately removed: it had loaded the row and no longer holds it.
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
@@ -1584,6 +1714,9 @@ const _dbSaveSOInner = async (so) => {
     // would be silently wiped. We read the live DB PO lines and re-inject any the client was never aware of, so
     // ONLY deliberate deletions (a PO the client loaded and then removed) actually stick.
     const _restoredLines=[];// restored PO/pick lines, pushed back into React state after both restore passes
+    // Non-size metadata keys on an in-memory po_line — everything else that's a positive number is a
+    // size qty. Shared by the receiving-rollback merge below and the duplicate-PO guard further down.
+    const _poMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
     if(oldItemIds.length){
       const{data:_dbPoRows,error:_dbPoErr}=await _retryNet(()=>supabase.from('so_item_po_lines').select('*').in('so_item_id',oldItemIds));
       if(_dbPoErr){
@@ -1601,6 +1734,27 @@ const _dbSaveSOInner = async (so) => {
         // these is an intentional deletion; a DB po_id in neither set is one this client never saw.
         const _knownPoIds=new Set([..._clientPoIds,...(Array.isArray(so._hydratedPoIds)?so._hydratedPoIds:[])]);
         const _posHydrated=so._posHydrated!==false;
+        // Session tombstone stamped by the editor's Delete PO (same pattern as _deletedDecoPoIds above and
+        // _deletedItemKeys below). Intent is knowledge only the client has, and inferring it from
+        // _hydratedPoIds alone fails whenever that marker is lost or was never set — a poll merge that kept
+        // local po_lines over an empty DB read, or a load whose so_item_po_lines read timed out
+        // (_posHydrated false). Both cases restored the very PO the rep had just deleted, so the deletion
+        // silently came back on the next reload (SO-2015 / "PO 57204 SAHV", 2026-08-17). A po_id can only be
+        // deleted from a screen that is showing it, so an explicit tombstone is always deliberate.
+        const _deletedPoIds=new Set(Array.isArray(so._deletedPoIds)?so._deletedPoIds:[]);
+        // RECEIVING ROLLBACK GUARD (SO-1663 / batch "NSA 4563" fulfillment wipe + SO-1837 /
+        // "PO 48200 CIVVB", 2026-08-19). Every skip below trusts the client's own copy of a po_id
+        // it holds — but a long-lived tab's copy predates receiving/billing another session wrote
+        // (warehouse check-in), so its next full-SO save re-inserted the line with received:{} and
+        // the units silently un-fulfilled themselves hours after being scanned in. Receiving is
+        // warehouse-owned state: a save may only REDUCE a line's received units when this session
+        // deliberately edited or deleted a receipt (stamped in _receiptEditedPoIds by the editors'
+        // receipt-edit/delete flows — the same session-tombstone pattern as _deletedPoIds above).
+        // Any unstamped reduction is stale client state: merge the DB row's warehouse fields
+        // forward into the client's line (per-size max on received/billed, union on shipments/
+        // tracking/bill docs) before the line is re-serialized.
+        const _receiptEdited=new Set(Array.isArray(so._receiptEditedPoIds)?so._receiptEditedPoIds:[]);
+        const _rcvMergedPoIds=[];
         // Money/goods already moved on this line: billed or received units, shipments, tracking, or bill
         // docs inside sizes. Such a line must never vanish just because its ITEM disappeared from the
         // payload — the UI blocks deleting items with PO lines (rmI), so an item-with-billed-PO vanishing
@@ -1614,8 +1768,59 @@ const _dbSaveSOInner = async (so) => {
           const sz=r.sizes||{};
           return(typeof sz._bill_cost==='number'&&sz._bill_cost>0)||(Array.isArray(sz._bill_details)&&sz._bill_details.length>0);
         };
-        let _restored=0,_unrestorable=0,_histBlocked=0;
-        _dbPoRows.forEach(row=>{
+        let _restored=0,_unrestorable=0,_histBlocked=0,_revived=0;
+        // Bring back an ITEM that vanished from this payload while the DB still holds PO line(s) for it.
+        // The editor refuses to delete an item carrying PO(s) (OrderEditor rmI), so such an item going
+        // missing is lost/stale client state, not a deliberate removal. Blocking (what this used to do)
+        // preserved the PO but left the rep with an order that tab could never save again: the toast
+        // re-fired on every page and the only escape was discarding the edit (SO-1951, 2026-08-13).
+        // Rebuilding the item from its DB row — with its decorations — preserves the PO *and* lets the
+        // rep's other edits land. Appended at the TAIL rather than spliced at its old position so that no
+        // OTHER item's index moves — jobs address items positionally (so_jobs.items[].item_idx), and
+        // shifting the payload's own lines would re-point every job after the insert. The revived item
+        // itself does land on a new index, so a DB job that pointed at its old one is not re-linked; that
+        // is unavoidable once a payload's item list has diverged from the DB's, and it is strictly less
+        // damage than the alternatives (blocking forever, or attaching the PO to the wrong garment).
+        // Pick lines need no special handling: the pick-restore pass below re-attaches them once the item
+        // is back in `items`. Fails closed — if the decoration read errors we block as before rather than
+        // re-inserting the item without its decorations.
+        // Memo key is the item_index, not the row id: an interrupted save swap can leave two DB rows for
+        // the SAME line (the duplicates the loader's item_index dedup collapses), and both carry PO rows.
+        // A sku'd line is safe either way — once the first is revived _matchRestoreItem finds it for the
+        // second — but a custom, sku-less line can't be matched, so keying on the row id would revive it
+        // twice and duplicate the garment on the order.
+        const _revivedByKey=new Map(),_revivedLabels=[];let _reviveReadFailed=false;
+        const _reviveKey=oi=>oi.item_index!=null?('ix:'+oi.item_index):('id:'+oi.id);
+        const _reviveItem=async oi=>{
+          const _k=_reviveKey(oi);
+          if(_revivedByKey.has(_k))return _revivedByKey.get(_k);
+          if(_reviveReadFailed)return -1;
+          const{data:_decoRows,error:_decoErr}=await supabase.from('so_item_decorations').select('*').eq('so_item_id',oi.id);
+          if(_decoErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— decoration read failed:',_decoErr.message);return -1}
+          const decorations=(_decoRows||[]).slice().sort((a,b)=>(a.deco_index||0)-(b.deco_index||0)).map(d=>{const{id:_di,so_item_id:_ds,deco_index:_dx,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
+          // Re-read the FULL row. `oi` comes from _oldSoItems, which is a 5-column projection
+          // (id,item_index,sku,color,product_id) selected for the delete/guard passes — reviving from
+          // it rebuilt the garment as a husk carrying only sku+color, and since the revived object is
+          // both re-inserted by this save and pushed into live React state, that husk REPLACED the real
+          // line: name, sizes, costs, unit_sell and vendor all gone, and the editor then crashed reading
+          // item.sizes on it (SO-1971 "112 Split Black/White", 2026-08-14). Fails closed on a read error
+          // like the decoration read above; a row that is simply gone falls back to the projection, which
+          // still preserves the PO and is all that is left of the line at that point.
+          let _srcRow=oi;
+          const{data:_fullRow,error:_rowErr}=await supabase.from('so_items').select('*').eq('id',oi.id).maybeSingle();
+          if(_rowErr){_reviveReadFailed=true;console.error('[DB] Cannot restore missing item',oi.id,'on',so.id,'— item read failed:',_rowErr.message);return -1}
+          if(_fullRow)_srcRow=_fullRow;
+          else console.warn('[DB] Restoring item',oi.id,'on',so.id,'from sku/color only — its so_items row is gone');
+          const{id:_oid,so_id:_osid,item_index:_oidx,...itemRest}=_srcRow;
+          // sizes:{} — same normalization the loader does. The revived item is persisted by this save and
+          // rendered by the editor, and every consumer treats item.sizes as a size→qty map.
+          const revived={...itemRest,sizes:itemRest.sizes||{},decorations,po_lines:[],pick_lines:[]};
+          const idx=items.length;items.push(revived);_revivedByKey.set(_k,idx);_revived++;
+          _revivedLabels.push([revived.sku,revived.color].filter(Boolean).join(' ')||('item '+oi.id));
+          _restoredLines.push({idx,sku:revived.sku||null,color:revived.color||null,kind:'item',item:revived});
+          return idx;
+        };
+        for(const row of _dbPoRows){
           const poId=row.po_id;
           // A placed vendor/API order writes ONE row per item, all sharing this po_id and carrying
           // api_order_id (inside the row's sizes jsonb). The skips below key on po_id alone, so if a client
@@ -1627,39 +1832,105 @@ const _dbSaveSOInner = async (so) => {
           const oi=_oldById.get(row.so_item_id);
           // Match by original position first, falling back to SKU(+color) across all items so a
           // removed/reordered sibling line doesn't make this row unmatchable and block the save.
-          const _ti=oi?_matchRestoreItem(oi,items):-1;
-          const ci=_ti>=0?items[_ti]:null;
+          let _ti=oi?_matchRestoreItem(oi,items):-1;
+          let ci=_ti>=0?items[_ti]:null;
+          // Last resort when no current item can take this row: rebuild the row's own item (above).
+          // Only called on the paths that would otherwise count _unrestorable and block the save.
+          const _revive=async()=>{if(!oi)return false;const i=await _reviveItem(oi);if(i<0)return false;_ti=i;ci=items[i];return true};
+          // Receiving-rollback merge (see _receiptEditedPoIds comment above): runs before every skip
+          // branch, because the skips are exactly where the client's stale copy of a held line wins.
+          // Two independently-triggered halves: RECEIVED (tombstone-gated — receipt edit/delete is a
+          // legitimate reduction) and BILLED/bill docs/tracking (never gated — every billed write in
+          // the app is additive, so any billed rollback is stale state; this also covers drop-ship
+          // lines, whose fulfillment lives entirely in billed with received always empty).
+          if(ci){
+            const cl=(ci.po_lines||[]).find(p=>p&&p.po_id===poId);
+            if(cl){
+              const dbRcv=row.received||{},clRcv=cl.received||{};
+              const _rolledRcv=!_receiptEdited.has(poId)&&Object.entries(dbRcv).some(([sz,v])=>typeof v==='number'&&v>0&&(typeof clRcv[sz]==='number'?clRcv[sz]:0)<v);
+              const dbBld=row.billed||{},clBld=cl.billed||{};
+              const _rolledBld=Object.entries(dbBld).some(([sz,v])=>typeof v==='number'&&v>0&&(typeof clBld[sz]==='number'?clBld[sz]:0)<v);
+              const _dbBills=Array.isArray((row.sizes||{})._bill_details)?row.sizes._bill_details:[];
+              const _clDocs=new Set((Array.isArray(cl._bill_details)?cl._bill_details:[]).map(b=>b&&b.doc));
+              const _addBills=_dbBills.filter(b=>b&&!_clDocs.has(b.doc));
+              if(_rolledRcv||_rolledBld||_addBills.length){
+                const merged={...cl};
+                if(_rolledRcv){
+                  merged.received={...clRcv};
+                  Object.entries(dbRcv).forEach(([sz,v])=>{if(typeof v==='number'&&v>(merged.received[sz]||0))merged.received[sz]=v});
+                  const _clShipSigs=new Set((Array.isArray(cl.shipments)?cl.shipments:[]).map(s=>JSON.stringify(s)));
+                  const _missingShips=(Array.isArray(row.shipments)?row.shipments:[]).filter(s=>!_clShipSigs.has(JSON.stringify(s)));
+                  if(_missingShips.length)merged.shipments=[...(Array.isArray(cl.shipments)?cl.shipments:[]),..._missingShips];
+                  // Same cancel-aware status derivation every receive screen uses, from the merged units.
+                  // Only when received changed: a drop-ship line's stored status is billing-driven.
+                  const _anyRcv=Object.values(merged.received).some(v=>typeof v==='number'&&v>0);
+                  const _openTot=Object.keys(merged).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof merged[k]==='number').reduce((a,sz)=>a+Math.max(0,(merged[sz]||0)-(merged.received[sz]||0)-((merged.cancelled||{})[sz]||0)),0);
+                  merged.status=_openTot<=0&&_anyRcv?'received':_anyRcv?'partial':(merged.status||'waiting');
+                }
+                if(_rolledBld){
+                  merged.billed={...clBld};
+                  Object.entries(dbBld).forEach(([sz,v])=>{if(typeof v==='number'&&v>(merged.billed[sz]||0))merged.billed[sz]=v});
+                }
+                if(_addBills.length){
+                  merged._bill_details=[...(Array.isArray(cl._bill_details)?cl._bill_details:[]),..._addBills];
+                  merged._bill_cost=merged._bill_details.reduce((a,b)=>a+(Number(b&&b.cost)||0),0);
+                }
+                const _clTrk=new Set(Array.isArray(cl.tracking_numbers)?cl.tracking_numbers:[]);
+                const _addTrk=(Array.isArray(row.tracking_numbers)?row.tracking_numbers:[]).filter(t=>!_clTrk.has(t));
+                if(_addTrk.length)merged.tracking_numbers=[...(Array.isArray(cl.tracking_numbers)?cl.tracking_numbers:[]),..._addTrk];
+                ci.po_lines=(ci.po_lines||[]).map(p=>p===cl?merged:p);
+                _rcvMergedPoIds.push(poId);
+                _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po_merge',line:merged});
+              }
+            }
+          }
           if(_isApiOrder&&_clientPoIds.has(poId)){
             // Partial loss of a placed order: the client still holds this po_id on at least one item, so this is
             // NOT a whole-PO removal. Preserve this item's row unless the matched item already carries a line for
             // this po_id (in which case that item re-saves its own copy).
-            if(ci&&(ci.po_lines||[]).some(p=>p.po_id===poId))return;
-            if(!ci){_unrestorable++;return;}
+            if(ci&&(ci.po_lines||[]).some(p=>p.po_id===poId))continue;
+            if(!ci&&!(await _revive())){_unrestorable++;continue;}
           }else{
             // Client still holds this PO somewhere — it will re-save its own (possibly edited) copy. Skip to avoid dupes.
             // EXCEPTION: when this row's ITEM is gone from the payload (ci null) and the line has billed/received/
             // shipment history, do NOT honor the drop — the item's disappearance would silently destroy money records.
             // Deliberate line-level removals on a surviving item (PO edit modal) still pass: ci exists there.
-            if(_clientPoIds.has(poId)){if(ci||!_poRowHasHistory(row))return;_histBlocked++;_unrestorable++;return;}
+            if(_clientPoIds.has(poId)){if(ci||!_poRowHasHistory(row))continue;if(!(await _revive())){_histBlocked++;_unrestorable++;continue;}}
             // Deliberately deleted: the client loaded this PO cleanly and chose to drop it. Honor the deletion.
             // (For an API order this branch is reached only when the client holds NONE of its lines — a genuine
             // whole-PO removal — so an intentional full deletion is still honored.) Same exception as above: a
             // vanished item may not take billed/received history down with it.
-            if(_posHydrated&&_knownPoIds.has(poId)){if(ci||!_poRowHasHistory(row))return;_histBlocked++;_unrestorable++;return;}
+            else if(_deletedPoIds.has(poId)||(_posHydrated&&_knownPoIds.has(poId))){if(ci||!_poRowHasHistory(row))continue;if(!(await _revive())){_histBlocked++;_unrestorable++;continue;}}
             // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
-            if(!ci){_unrestorable++;return;}
+            else if(!ci&&!(await _revive())){_unrestorable++;continue;}
           }
           const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
           if(recovered._billed&&!recovered.billed){recovered.billed=recovered._billed;delete recovered._billed;}
           if(recovered._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=recovered._tracking_numbers;delete recovered._tracking_numbers;}
           ci.po_lines=[...(ci.po_lines||[]),recovered];_restored++;
           _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po',line:recovered});
-        });
+        }
+        if(_revived){
+          const _revLbl=_revivedLabels.join(', ');
+          console.warn('[DB] Restored',_revived,'item(s) to',so.id,'that vanished from this save while still holding PO line(s):',_revLbl);
+          if(_dataLossAlert)_dataLossAlert({kind:'item_restored',soId:so.id,restored:_revived,reason:'item(s) missing from save payload but still carrying DB PO line(s), re-added with their decorations: '+_revLbl});
+        }
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
+        if(_rcvMergedPoIds.length){
+          const _uniqMerged=[...new Set(_rcvMergedPoIds)];
+          console.warn('[DB] Restored received/billing data on',_rcvMergedPoIds.length,'PO line(s) for',so.id,'that this save would have rolled back:',_uniqMerged.join(', '));
+          if(_dataLossAlert)_dataLossAlert({kind:'received_restored',soId:so.id,restored:_rcvMergedPoIds.length,reason:'stale client state would have rolled back warehouse receiving on: '+_uniqMerged.join(', ')});
+        }
         if(_unrestorable){
-          // An undeleted PO couldn't be matched to a current item — block rather than silently lose it.
-          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items'+(_histBlocked?' ('+_histBlocked+' with billed/received history on removed item(s))':''));
-          if(_dbNotify)_dbNotify(_histBlocked?'Save blocked — an item with billed/received PO history is missing from this order. Please reload the page; to remove it, clear its billing/receiving first.':'Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
+          // An undeleted PO couldn't be matched to a current item AND its item couldn't be rebuilt
+          // (the decoration read failed) — block rather than silently lose it. Reviving the item is
+          // the normal outcome now, so reaching here means the DB read itself is unhealthy: a reload
+          // is genuinely the right advice, and the retry loop must not spin on it.
+          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items'+(_reviveReadFailed?' (item rebuild unavailable — decoration read failed)':'')+(_histBlocked?' ('+_histBlocked+' with billed/received history on removed item(s))':''));
+          // The billed/received wording only fits a genuine history conflict. When we got here because the
+          // rebuild's decoration read failed, "clear its billing/receiving first" is wrong advice — the rep
+          // has nothing to clear — so use the generic message, which still points at the right action (reload).
+          if(_dbNotify)_dbNotify(_histBlocked&&!_reviveReadFailed?'Save blocked — an item with billed/received PO history is missing from this order. Please reload the page; to remove it, clear its billing/receiving first.':'Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'+(_histBlocked?' ('+_histBlocked+' billed/received on removed item(s))':'')});
           // TERMINAL for auto-retry: the unmatched PO line lives on an item this tab's copy doesn't
           // have, so retrying the identical payload re-fails deterministically. Route to the conflict
@@ -1676,7 +1947,6 @@ const _dbSaveSOInner = async (so) => {
     // where the counter advanced (so the new po_id differs) but the units were already covered.
     if(items&&items.length){
       const _dbPoIdSet=new Set((oldItemIds.length?(await(async()=>{try{const r=await supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds);return(r.data||[]).map(x=>x.po_id).filter(Boolean)}catch{return[]}})()):[]));
-      const _poMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
       const _sizeSig=pl=>{const ks=Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof pl[k]==='number'&&pl[k]>0).sort();return ks.map(k=>k+':'+pl[k]).join('|')};
       const _isClean=pl=>{
         if(pl.status&&pl.status!=='waiting'&&pl.status!=='queued')return false;
@@ -1762,6 +2032,11 @@ const _dbSaveSOInner = async (so) => {
     // patches this save's payload: the editor never learns about the lines, drops them again on its
     // next save, and the guard re-restores forever — turning into a hard block as soon as the
     // line-item structure shifts (the SO-1132 failure).
+    // Revived items are re-read from `items` here rather than trusting the object captured at revive
+    // time: the duplicate-PO guard above replaces items[i] wholesale, so the captured reference can
+    // still hold a line that guard dropped. (The over-commit guard runs after this sync and so is not
+    // reflected — the same pre-existing limitation the 'po'/'pick' entries have.)
+    if(_restoredLines.length)_restoredLines.forEach(r=>{if(r.kind==='item'&&items&&items[r.idx])r.item=items[r.idx]});
     if(_restoredLines.length&&_restoredLinesSync){try{_restoredLinesSync(so.id,_restoredLines)}catch(e){console.warn('[DB] restored-line state sync failed:',e)}}
     // Cross-type over-commit guard (SO-1514, so_items 228531): one re-save persisted BOTH a carried-over
     // batch-PO line (all 26 units, already API-ordered) AND a freshly generated pick line for the same
@@ -1858,10 +2133,10 @@ const _dbSaveSOInner = async (so) => {
       // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
       // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
       // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
-      {const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
-      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected').eq('so_id',so.id);
+      const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
+      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected,art_status,_version,fulfilled_units,item_status,art_messages,sent_history,rejections').eq('so_id',so.id);
       const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
-      let _preserved=0;
+      {let _preserved=0;
       jobRows.forEach((row,i)=>{
         if(dedupedJobs[i]._coach_cleared)return;
         const db=_dbCoachById.get(row.id);if(!db)return;
@@ -1869,6 +2144,81 @@ const _dbSaveSOInner = async (so) => {
         if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
       });
       if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
+      // Art-status regression guard (SO-1131, 2026-08-19): the same blind whole-row upsert lets a
+      // STALE tab (its so_jobs snapshot behind the DB row's _version) silently un-approve artwork —
+      // a warehouse tab open since before a rep's approval wrote waiting_approval back over
+      // art_complete 17 minutes later, resurrecting the "Mockup ready for review" to-do the rep had
+      // already cleared. A stale copy may never move art_status BACKWARD through the review
+      // pipeline; the DB's more-advanced status is kept instead. Deliberate pull-backs still pass:
+      // recall / send-back-to-artist / artist resubmit stamp _coach_cleared (ART_PULLBACK_CLEARS),
+      // and the art workboard's drag stamps _art_moved (both one-shot, consumed below on success).
+      // Forward and equal-rank moves always pass — approving from a stale tab is exactly what the
+      // rep wants persisted. The three production-files stages share one rank: which of them a job
+      // sits in is a per-deco routing detail, not review progress.
+      {const _ART_RANK={needs_art:0,art_requested:1,art_in_progress:2,waiting_approval:3,production_files_needed:4,order_dtf_transfers:4,upload_emb_files:4,art_complete:5};
+      let _artKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];if(j._coach_cleared||j._art_moved)return;
+        const db=_dbCoachById.get(row.id);if(!db||!db.art_status)return;
+        const _stale=(j._version||0)<(db._version||0);
+        if(_stale&&(_ART_RANK[row.art_status]??-1)<(_ART_RANK[db.art_status]??-1)){row.art_status=db.art_status;_artKept++}
+      });
+      if(_artKept)console.warn('[DB] Preserved',_artKept,'art status(es) on',so.id,'that a stale save would have regressed (client job copy behind DB _version)');}
+      // Receipt-state regression guard (same SO-1131 incident — the stale save also wiped the job's
+      // received count 6→0 and flipped it back to Need to Order; 124 such regressions in the prior
+      // 30 days). A stale copy may not LOWER a job's fulfilled_units. Restored as a PAIR with
+      // item_status, which is derived from fulfilled_units — restoring one without the other would
+      // write a contradictory shape. Version-gated: a current tab's deliberate un-receive / receipt
+      // edit passes untouched, and the receiving flows re-derive both on their own saves anyway.
+      {let _rcptKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
+        const _stale=(j._version||0)<(db._version||0);
+        const _dbFul=Number(db.fulfilled_units)||0;
+        if(_stale&&('fulfilled_units'in row)&&(Number(row.fulfilled_units)||0)<_dbFul){
+          row.fulfilled_units=db.fulfilled_units;
+          if(('item_status'in row)&&db.item_status)row.item_status=db.item_status;
+          _rcptKept++;
+        }
+      });
+      if(_rcptKept)console.warn('[DB] Preserved',_rcptKept,'job receipt state(s) on',so.id,'that a stale save would have lowered (client job copy behind DB _version)');}
+      // Append-only history guard: art_messages / sent_history / rejections only ever GROW — no UI
+      // deletes an artist message, a coach-send record, or a rejection. A stale copy writing its
+      // shorter list permanently drops entries another session appended since this tab loaded
+      // (46 / 17 / 5 shrink-writes respectively in the 30 days before this guard) — unlike the
+      // status columns those never self-heal. On a stale copy, union DB + client entries (DB order
+      // first, client-only entries appended, so a fresh reply still lands at the end) instead of
+      // overwriting. Applies regardless of the deliberate-move markers: a send-back's new rejection
+      // is an APPEND, so the union keeps it while also rescuing entries the stale copy never saw.
+      {const _HIST_COLS=['art_messages','sent_history','rejections'];
+      // rejections key deliberately ignores timestamps: the coach portal writes the decision
+      // server-first (apply_coach_art_decision stamps its own `at`) and then echoes a client save
+      // whose copy of the SAME rejection carries the browser's timestamp (and a richer per-garment
+      // `items` breakdown) — timestamp-keyed dedupe would keep both and show the coach's feedback
+      // twice. by+reason identifies the logical decision across both writes.
+      const _histKey=(c,e)=>{
+        if(!e||typeof e!=='object')return JSON.stringify(e);
+        if(c==='rejections')return (e.by||'')+'|'+(e.reason||'');
+        return e.id||e.sent_at||e.rejected_at||e.at||e.ts||JSON.stringify(e);
+      };
+      let _histKept=0;
+      jobRows.forEach((row,i)=>{
+        const j=dedupedJobs[i];const db=_dbCoachById.get(row.id);if(!db)return;
+        if(((j._version||0)>=(db._version||0)))return;// current copy — its list is authoritative
+        _HIST_COLS.forEach(c=>{
+          if(!Array.isArray(db[c])||!db[c].length||!(c in row))return;
+          const client=Array.isArray(row[c])?row[c]:[];
+          // DB order first; where the client holds its own copy of the same logical entry, the
+          // client's copy wins in place (it is at least as informative — e.g. the portal echo's
+          // rejection carries the per-garment breakdown the RPC's record lacks). Client-only
+          // entries append at the end, so a fresh reply still lands last.
+          const _cByKey=new Map(client.map(e=>[_histKey(c,e),e]));
+          const _dbKeys=new Set(db[c].map(e=>_histKey(c,e)));
+          const merged=[...db[c].map(e=>{const k=_histKey(c,e);return _cByKey.has(k)?_cByKey.get(k):e}),...client.filter(e=>!_dbKeys.has(_histKey(c,e)))];
+          if(merged.length!==client.length||merged.some((e,x)=>e!==client[x])){row[c]=merged;_histKept++}
+        });
+      });
+      if(_histKept)console.warn('[DB] Merged',_histKept,'job history list(s) on',so.id,'that a stale save would have truncated (client job copy behind DB _version)');}
       // Per-missing-column recovery (audit A9) now comes from the shared helper. main's parallel fix
       // raised this path's private retry budget to 8 because so_jobs was missing FOUR columns the
       // client sends on every save (_draft, priced_separately, price_override, split_group) — one
@@ -1883,7 +2233,22 @@ const _dbSaveSOInner = async (so) => {
         if(!jobErr&&_dbNotify)_dbNotify(_schemaGapMsg('Jobs','so_jobs',jobDropped),'error');
       }
       if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
-      else dedupedJobs.forEach(j=>{if(j._coach_cleared)delete j._coach_cleared});// one-shot marker — consumed by the save that carried it
+      else dedupedJobs.forEach((j,i)=>{
+        // Adopt every DB-protected/merged field we actually wrote, not just its version. Otherwise the
+        // protected first save promotes stale local content to the current version and a second save can
+        // regress art status, receipts, or append-only history with the guards now disarmed.
+        Object.assign(j,jobRows[i]);
+        if(j._coach_cleared)delete j._coach_cleared;// one-shot markers — consumed by the save that carried them
+        if(j._art_moved)delete j._art_moved;
+        // Rebase this client's in-memory job copy onto its own write, mirroring the DB trigger's
+        // _version bump (same trick the art-file path plays with baseVersion+1). so_jobs versions
+        // were never rebased before, so after ONE save every tab read as "stale" forever — which
+        // would make the regression guard above block this tab's own later deliberate backward
+        // moves (order-page art heals, job merges). Single-writer tabs now stay current; only a
+        // copy genuinely behind ANOTHER client's write is treated as stale.
+        const _db=_dbCoachById.get(j.id);
+        j._version=((_db?_db._version:j._version)||0)+1;
+      });
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
@@ -1905,7 +2270,7 @@ const _dbSaveSOInner = async (so) => {
       // Delete Job button). Auto needs_art placeholders still delete freely: that is the JOB-1057
       // retirement case, and syncJobs regenerates them from live decorations anyway.
       const _explicitDel=new Set(Array.isArray(so._deleteJobIds)?so._deleteJobIds:[]);
-      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status,art_file_id,_art_ids').eq('so_id',so.id);
+      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status,art_file_id,_art_ids,items').eq('so_id',so.id);
       if(_dbJobErr){
         console.error('[DB] SAFETY: skipping so_jobs wipe for',so.id,'— could not read existing jobs:',_dbJobErr.message);
       }else{
@@ -1924,17 +2289,17 @@ const _dbSaveSOInner = async (so) => {
         // the protection.
         if(_blocked.length){
           try{
-            const{data:_artRows,error:_ae}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
+            const{data:_artRows,error:_ae}=await supabase.from('so_art_files').select('id,deco_type').eq('so_id',so.id);
             if(_ae)throw _ae;
-            const{data:_itRows,error:_ie}=await supabase.from('so_items').select('id').eq('so_id',so.id);
+            const{data:_itRows,error:_ie}=await supabase.from('so_items').select('id,item_index').eq('so_id',so.id);
             if(_ie)throw _ie;
-            let _hasDeco=false;
+            let _decoRows=[];
             if((_itRows||[]).length){
-              const{data:_decoRows,error:_de}=await supabase.from('so_item_decorations').select('id').in('so_item_id',(_itRows||[]).map(r=>r.id)).limit(1);
+              const{data:_dr,error:_de}=await supabase.from('so_item_decorations').select('so_item_id,deco_index,kind,fulfillment,deco_po_id,deco_type,art_file_id,num_method,name_method').in('so_item_id',(_itRows||[]).map(r=>r.id));
               if(_de)throw _de;
-              _hasDeco=(_decoRows||[]).length>0;
+              _decoRows=_dr||[];
             }
-            if(!_hasDeco){
+            if(!_decoRows.length){
               const _liveArt=new Set((_artRows||[]).map(r=>r.id));
               const _dead=_blocked.filter(r=>{
                 const _ids=[...(Array.isArray(r._art_ids)?r._art_ids:[]),r.art_file_id].filter(id=>id&&id!=='__tbd');
@@ -1945,6 +2310,33 @@ const _dbSaveSOInner = async (so) => {
                 _blocked=_blocked.filter(r=>!_deadIds.has(r.id));
                 _dead.forEach(r=>_delIds.push(r.id));
                 console.warn('[DB] Retired',_dead.length,'dead job(s) on',so.id,'— DB has no decorations on this SO and the job\'s art file(s) no longer exist:',_dead.map(r=>r.id).join(', '));
+              }
+            }
+            // OUTSOURCED RETIREMENT (SO-1403, 2026-08-19): syncJobs retires a released job whose
+            // every remaining claimed decoration is routed to an outside decorator (jobAllRoutedOutside
+            // — deleted claims are neutral). When that was the SO's LAST job the save lands here with
+            // jobs:[], and the protection above blocked the retirement forever: every open re-computed
+            // the retirement, the wipe was blocked, and the rep got the data-loss banner + email on a
+            // loop. Per this guard's own rule, liveness is decided by the DATABASE: rebuild the order
+            // shape from the DB's own rows (items, decorations, PO lines, deco POs, art types) and
+            // retire a protected job only when the DB itself proves every remaining claim vendor-routed.
+            // A stale/short-loaded client payload can't fake that. Any read error keeps the protection.
+            if(_blocked.length&&(_itRows||[]).length){
+              const{data:_poRows,error:_pe}=await supabase.from('so_item_po_lines').select('so_item_id,po_type,deco_type').in('so_item_id',(_itRows||[]).map(r=>r.id));
+              if(_pe)throw _pe;
+              const{data:_dpRow,error:_dpe}=await supabase.from('sales_orders').select('deco_pos').eq('id',so.id).maybeSingle();
+              if(_dpe)throw _dpe;
+              const _idxById={};(_itRows||[]).forEach(r=>{_idxById[r.id]=r.item_index});
+              const _dbO={id:so.id,deco_pos:_dpRow?.deco_pos||null,art_files:_artRows||[],items:[]};
+              (_itRows||[]).forEach(r=>{if(r.item_index!=null)_dbO.items[r.item_index]={decorations:[],po_lines:[]}});
+              _decoRows.forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];if(it&&d.deco_index!=null)it.decorations[d.deco_index]=d});
+              (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];if(it)it.po_lines.push(p)});
+              const _routed=_blocked.filter(r=>jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
+              if(_routed.length){
+                const _routedIds=new Set(_routed.map(r=>r.id));
+                _blocked=_blocked.filter(r=>!_routedIds.has(r.id));
+                _routed.forEach(r=>_delIds.push(r.id));
+                console.warn('[DB] Retired',_routed.length,'outsourced job(s) on',so.id,'— the DB shows every remaining claimed decoration routed to an outside decorator:',_routed.map(r=>r.id).join(', '));
               }
             }
           }catch(err){console.error('[DB] SAFETY: dead-job liveness check failed on',so.id,'— keeping protection:',err?.message||err)}
@@ -2185,7 +2577,7 @@ const _dbSaveArtFilesInner = async (so) => {
           console.warn('[DB] so_art_files is missing column(s):',afDropped.join(', '),'— those fields were not saved');
           if(_dbNotify)_dbNotify(_artGapMsg('so_art_files',afDropped),'error');
         }
-        _resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
+        _resolved.forEach(_adoptResolvedArtRow);
       }
       const currentAfIds=new Set(art_files.map(a=>a.id).filter(Boolean));
       const _knownArtIds=new Set(Array.isArray(so._hydratedArtIds)?so._hydratedArtIds:[]);
@@ -2217,12 +2609,25 @@ const _dbSaveArtFilesInner = async (so) => {
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveArtFilesInner), true/*addOnly: art-only success must not clear a failed full-SO payload*/);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','po_number','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
-// po_number is in _invExtraCols too so a save still lands (minus the PO) if the column-add
-// migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','po_number','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+// po_number and rep_id are in _invExtraCols too so a save still lands (minus that field) if the
+// column-add migration hasn't reached this environment's DB yet — the upsert retries without extra cols.
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','bill_to_id','shipping_name','shipping_address','po_number','rep_id','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
+  // NETSUITE GUARD (2026-08-12, INV62383). hist_invoices are read-only NetSuite records, keyed by
+  // their DOCUMENT NUMBER ("INV62383") rather than a portal id ("INV-62383"). Writing one here
+  // mints a SECOND invoice under that number in the portal table — header-only, $0, no lines —
+  // which then shadows the real record everywhere the UI looks an invoice up by id: the detail
+  // page's `invs.find(...)` renders the empty shell, and deleteInvoice — which checks histInvs
+  // first — would delete the NetSuite row while the shell survives. Three such rows (INV62383,
+  // INV63316, INV63043) were minted by the invoice detail page's Edit Invoice modal, which had no
+  // idea the invoice it was editing was a NetSuite one. Refuse the write so no path can mint more.
+  if(inv&&(inv._hist||inv.netsuite_internal_id)){
+    console.warn('[DB] Refusing to write NetSuite invoice',inv.id,'into the portal invoices table — it is read-only here.');
+    if(_dbNotify)_dbNotify(inv.id+' is a NetSuite invoice — it can only be edited in NetSuite.','error');
+    return false;
+  }
   return _dbSavingGuard(async()=>{try{
     // Optimistic concurrency (00180) — same _checkVersion auto-heal the SO/estimate/customer saves
     // use: a numeric return means another session saved after our copy loaded; adopt the server
@@ -2320,6 +2725,7 @@ const _dbSaveInvoiceInner = async (inv) => {
     // user (or this user, before a clean load) recorded. Read the live DB payments and re-inject any ref the client
     // was never aware of, so only a payment the client loaded and then deleted is actually removed.
     let _payments=payments;
+    let _dbPayRows=[];
     {
       const{data:_dbPays,error:_dbPayErr}=await supabase.from('invoice_payments').select('*').eq('invoice_id',inv.id);
       if(_dbPayErr){
@@ -2327,6 +2733,7 @@ const _dbSaveInvoiceInner = async (inv) => {
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing payments. Please reload the page.','error');
         _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments SELECT errored: '+_dbPayErr.message);_persistFailedIds();return false;
       }
+      _dbPayRows=_dbPays||[];
       if(_dbPays&&_dbPays.length){
         const _clientRefs=new Set((payments||[]).map(p=>p.ref).filter(Boolean));
         const _knownRefs=new Set([..._clientRefs,...(Array.isArray(inv._hydratedPayRefs)?inv._hydratedPayRefs:[])]);
@@ -2343,12 +2750,31 @@ const _dbSaveInvoiceInner = async (inv) => {
     }
     // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
     if(_payments?.length){
-      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
+      // cc_fee is coerced: the column is NOT NULL, and an undefined here would make PostgREST
+      // reject the whole batch rather than default it.
+      const payRows=_payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:Number(p.cc_fee)||0}));
       const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
       if(payErr){
-        // Fallback: DELETE+INSERT if upsert constraint doesn't exist
-        await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
-        await supabase.from('invoice_payments').insert(payRows);
+        // FAIL CLOSED (2026-08-12, INV-1053). The old fallback here deleted every payment row on the
+        // invoice and then re-inserted the SAME payload that had just failed — so a schema or
+        // constraint error (this table was missing the cc_fee column the payload always carried, and
+        // the unique index the upsert targets) destroyed the invoice's payment history and swallowed
+        // both errors. Not one payment recorded through the portal ever reached the DB, and with no
+        // payment rows CommissionsPage falls back to the INVOICE date — quietly paying reps their
+        // commission in the wrong month.
+        //
+        // A payment is a financial record and its date decides a rep's statement month: never delete
+        // on a failed write. Try a plain insert of the rows the DB does not already hold, and if that
+        // fails too, fail the save so the retry loop keeps the payment instead of dropping it.
+        const _known=new Set(_dbPayRows.map(r=>String(r.ref)));
+        const _missing=payRows.filter(r=>!_known.has(String(r.ref)));
+        const{error:insErr}=_missing.length?await supabase.from('invoice_payments').insert(_missing):{error:null};
+        if(insErr){
+          console.error('[DB] invoice_payments write failed for',inv.id,'— upsert:',payErr.message,'/ insert:',insErr.message);
+          if(_dbNotify)_dbNotify('Payment NOT saved on '+inv.id+' — the payment record failed to write, so this invoice would commission in the wrong month. Retrying; reload if it persists.','error');
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_payments: '+payErr.message+' | insert fallback: '+insErr.message);_persistFailedIds();return false;
+        }
+        console.warn('[DB] invoice_payments upsert failed for',inv.id,'—',payErr.message,'; inserted',_missing.length,'new payment(s) instead (existing rows left intact)');
       }else{
         // Delete payments beyond current set
         const{data:existingPays}=await supabase.from('invoice_payments').select('id,ref').eq('invoice_id',inv.id);
@@ -2440,6 +2866,13 @@ const _isAuthError=(err)=>{
   const m=(err.message||'').toLowerCase();
   return m.includes('row-level security')||m.includes('jwt expired')||m.includes('jwt is expired')||m.includes('invalid jwt')||m.includes('not authenticated')||m.includes('no api key');
 };
+// A stored session object is not proof that the user is authenticated: supabase-js can
+// leave the expired object in storage after refreshSession() rejects a dead/rotated refresh token.
+// Only a token with a real, future expiry may short-circuit recovery or the page-load login guard.
+const _isLiveSession=(session,nowSeconds=Math.floor(Date.now()/1000))=>{
+  const expiresAt=Number(session?.expires_at);
+  return !!session?.access_token&&Number.isFinite(expiresAt)&&expiresAt>nowSeconds;
+};
 // Classify a refreshSession() outcome. 'ok' = refreshed; 'transient' = a network/blip failure — retry
 // and DO NOT sign the user out; 'fatal' = the refresh token itself was rejected (invalid / already-used
 // / expired), the ONLY case that should force a re-login. A thrown error is transient (it is almost
@@ -2477,7 +2910,7 @@ const _recoverSession=async()=>{
   // is actually healthy. A transient/network failure never latches dead: the caller keeps the entity
   // queued and we retry on the next save / poll / tab-focus instead of forcing a login.
   if(res&&res.fatal){
-    try{const{data:{session}}=await supabase.auth.getSession();if(session){_sessionDead=false;return true}}catch(_){}
+    try{const{data:{session}}=await supabase.auth.getSession();if(_isLiveSession(session)){_sessionDead=false;return true}}catch(_){}
     _sessionDead=true;
     // Telemetry: the rep is about to be bounced to the login screen. The session is dead here, so
     // send asAnon — explicitly under the anon key, which the anon INSERT whitelist accepts
@@ -2572,7 +3005,7 @@ const _verifyPermDenialHasSession=async(id)=>{
   if(!supabase||_sessionDead)return;
   try{
     const{data:{session}}=await supabase.auth.getSession();
-    if(session&&!(session.expires_at&&session.expires_at<=Math.floor(Date.now()/1000)))return;// real session behind the write — genuine denial
+    if(_isLiveSession(session))return;// real, unexpired session behind the write — genuine denial
     if(id)_recordSaveError(id,'session expired — sign in again to save');
     _recoverSession();// no live session behind the "denial" — it's a dead login; refresh or bounce to the login screen
   }catch(_){/* can't tell — keep the permission-denied classification rather than churn recovery */}
@@ -2613,8 +3046,8 @@ const _ensureFreshSession=async()=>{
     // write about to go out will be sent as the anon role and rejected by RLS. Run recovery NOW so a
     // truly-dead login latches _sessionDead and bounces to re-login (outbox keeps the edit) instead of
     // burning the attempt on a doomed anon write. Coach-portal saves (no nsa_user) are untouched.
-    if(!session){if(_expectsStaffSession())await _recoverSession();return}
-    if(session.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
+    if(!_isLiveSession(session)){if(_expectsStaffSession())await _recoverSession();return}
+    if(session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
   }catch{}
 };
 const _dbSaveCustomer = (c) => _outboxWrap('customers', c, _dbSaveCustomerInner(c));
@@ -2797,8 +3230,32 @@ const _dbDeletePendingShipUsage = async (soId) => {
 };
 const _dbDuplicateSkuIds=new Set(JSON.parse(localStorage.getItem('nsa_duplicate_sku_ids')||'[]'));// product IDs with duplicate SKU — skip saves entirely
 const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify([..._dbDuplicateSkuIds]))};
-const _dbSaveProduct = (p) => _outboxWrap('products', p, _dbSaveProductInner(p));
-const _dbSaveProductInner = async (p) => {
+// ── Inventory merge-save plumbing (00239) ─────────────────────────────────────
+// product_inventory is written as a BASELINE-RELATIVE merge, not an absolute
+// upsert: the RPC applies (quantity - base) to the LIVE row, so a warehouse
+// pull (00237) landing between this tab's last sync and its save survives the
+// save. base comes from the diff-save snapshot — the last state this tab
+// loaded or saved:
+//   • diff-save-initiated saves pass the pre-pass snapshot item explicitly
+//     (the App.js _diffSave loop captures it BEFORE advancing the snapshot);
+//   • direct callers (editor Save button, Auto Inventory upload) omit it and
+//     the provider below reads the not-yet-advanced snapshot at call time.
+// Both paths therefore compute the SAME payload for the same logical edit,
+// which is what makes _invMergeSent (below) a safe dedupe: a manual save and
+// the diff-save effect it triggers apply the delta ONCE. A genuinely new edit
+// always changes the payload (same quantity + same base = delta 0 = no-op),
+// so nothing real is ever skipped. Cleared on failure so retries run.
+let _invBaseProvider=null;
+const _setInvBaseProvider=(fn)=>{_invBaseProvider=fn};
+const _invMergeSent={};// product id -> last successfully-initiated payload JSON
+// Pure (unit-tested): one row per size present in inv or alerts, sorted for a
+// stable dedupe key. base null (no snapshot) = absolute set, legacy semantics.
+const _buildInvMergeRows=(inv,alerts,base)=>{
+  const sizes=[...new Set([...Object.keys(inv||{}),...Object.keys(alerts||{})])].sort();
+  return sizes.map(sz=>({size:sz,quantity:Number((inv||{})[sz])||0,base:base==null?null:(Number(base[sz])||0),alert_threshold:(alerts||{})[sz]||null}));
+};
+const _dbSaveProduct = (p, snapBaseline) => _outboxWrap('products', p, _dbSaveProductInner(p, snapBaseline));
+const _dbSaveProductInner = async (p, snapBaseline) => {
   if(!supabase)return;
   // Never save a product with no id: the row would violate products.id NOT NULL, and adding
   // a null id to _dbSaveFailedIds jams the retry loop on [null] forever (the Costs-tab
@@ -2852,8 +3309,33 @@ const _dbSaveProductInner = async (p) => {
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
     if(allSizes.size>0){
-      const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
-      await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
+      // Merge-save (00239): apply this edit as a delta from the tab's baseline
+      // so it can't overwrite a concurrent pull. See _buildInvMergeRows above.
+      const _snapItem=snapBaseline!==undefined?snapBaseline:(_invBaseProvider?_invBaseProvider(p.id):null);
+      const _base=(_snapItem&&_snapItem._inv)||null;
+      const rows=_buildInvMergeRows(_inv,_alerts,_base);
+      const _payload=JSON.stringify(rows);
+      if(_invMergeSent[p.id]!==_payload){
+        _invMergeSent[p.id]=_payload;// set BEFORE the await — the diff-save double-fire arrives while this is in flight
+        const rpc=await supabase.rpc('merge_product_inventory',{p_product_id:p.id,p_rows:rows});
+        if(rpc.error){
+          delete _invMergeSent[p.id];// failed — a retry (or the fallback) must be allowed to run
+          const _m=(rpc.error.message||'')+' '+(rpc.error.details||'');
+          if(rpc.error.code==='42883'||/could not find|does not exist|schema cache/i.test(_m)){
+            // 00239 not applied yet — legacy absolute upsert (the pre-merge behavior).
+            await supabase.from('product_inventory').upsert([...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null})),{onConflict:'product_id,size'});
+          }else{
+            // A real failure must fail the save. Unlike the old absolute upsert
+            // (self-healing: any later save rewrote the full map), a lost DELTA
+            // is gone forever if we report success here — the snapshot would
+            // advance and the next save's delta would be 0. Marking failed makes
+            // _diffSave roll the snapshot back and the retry loop re-send it.
+            console.error('[DB] inventory merge failed for',p.id,':',rpc.error.message);
+            _dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'inventory: '+rpc.error.message);_persistFailedIds();
+            return false;
+          }
+        }
+      }
     }
     _dbSaveFailedIds.delete(p.id);_clearSaveError(p.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,e.message||String(e));_persistFailedIds();return false}
@@ -3034,24 +3516,37 @@ const _dbPersistNewPoLine=async(soId,itemIndex,poLine)=>{
   }catch(e){console.error('[DB] persist new PO line error for',soId,'item',itemIndex,':',e?.message||e)}});
 };
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
-// When a save is in-progress and a newer version arrives, the newer version is queued.
-// After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
+// When a save is in-progress and a newer version arrives, the newer version is queued. Consecutive pending
+// saves of the SAME kind coalesce to the latest payload; different kinds (full SO vs art-only) stay serialized.
 const _dbSaveInFlight={};// id → true if a save is currently running
-const _dbSavePending={};// id → {data, saveFn} latest pending save data
-const _queuedEntitySave=async(id,data,saveFn)=>{
-  _dbSavePending[id]={data,saveFn};
-  if(_dbSaveInFlight[id])return;// save running — pending data will be picked up when it finishes
+const _dbSavePending={};// id → [{data,saveFn,waiters}] serialized pending batches
+const _drainEntitySaveQueue=async(id)=>{
   _dbSaveInFlight[id]=true;
-  let lastResult;
   try{
-    while(_dbSavePending[id]){
-      const{data:toSave,saveFn:fn}=_dbSavePending[id];
-      delete _dbSavePending[id];
-      lastResult=await fn(toSave);
+    while(_dbSavePending[id]?.length){
+      const batch=_dbSavePending[id].shift();
+      if(!_dbSavePending[id].length)delete _dbSavePending[id];
+      try{
+        const result=await batch.saveFn(batch.data);
+        batch.waiters.forEach(w=>w.resolve(result));
+      }catch(error){batch.waiters.forEach(w=>w.reject(error))}
     }
-  }finally{delete _dbSaveInFlight[id]}
-  return lastResult;
+  }finally{
+    delete _dbSaveInFlight[id];
+    // A caller can enqueue in the narrow gap after the loop observes empty but before `finally` clears
+    // in-flight. Hand that batch to a new drain instead of leaving it stranded forever.
+    if(_dbSavePending[id]?.length)_drainEntitySaveQueue(id);
+  }
 };
+const _queuedEntitySave=(id,data,saveFn)=>new Promise((resolve,reject)=>{
+  const queue=_dbSavePending[id]||(_dbSavePending[id]=[]);
+  const tail=queue[queue.length-1];
+  // Latest-wins coalescing is safe only within the same operation kind. A full-SO save and an art-only
+  // save share an entity id but must both run, in order; dropping either can lose non-art or art changes.
+  if(tail&&tail.saveFn===saveFn){tail.data=data;tail.waiters.push({resolve,reject})}
+  else queue.push({data,saveFn,waiters:[{resolve,reject}]});
+  if(!_dbSaveInFlight[id])_drainEntitySaveQueue(id);
+});
 // Track recently-pulled SOs — prevents poll/realtime from reverting pulls for 30s after a warehouse pull
 // This is a safety net for slow connections where the full SO save might not complete before the next poll
 const _recentlyPulledSOs=new Map();// soId → timestamp
@@ -3100,7 +3595,14 @@ const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_sa
 // Track WHY each save failed — surfaced in the banner so the team can see real DB errors
 // instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
 const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
-const _recordSaveError=(id,msg)=>{if(!id)return;_dbSaveFailedErrors.set(id,{msg:String(msg||'unknown error').slice(0,400),ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}};
+// Telemetry for NON-auth save failures (NSA 4568, 2026-08-06: three receipt saves vanished with zero
+// client_events rows — only auth failures were instrumented). Fire-and-forget via the session client
+// (client_events_insert allows any event for authenticated), throttled per entity like auth_save_failed.
+// Auth-flavored messages are skipped: _handleAuthSaveFailure already logs those as auth_save_failed.
+const _saveFailLoggedAt=new Map();// entity id → last save_failed telemetry ts (10-min throttle)
+const _recordSaveError=(id,msg)=>{if(!id)return;const _m=String(msg||'unknown error').slice(0,400);_dbSaveFailedErrors.set(id,{msg:_m,ts:Date.now()});try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}
+  if(!/session expired|permission denied/i.test(_m)){const _tnow=Date.now();if((_saveFailLoggedAt.get(id)||0)<_tnow-600000){_saveFailLoggedAt.set(id,_tnow);_logClientEvent('save_failed',{id,reason:_m.slice(0,200)})}}
+};
 const _clearSaveError=(id)=>{if(!id)return;_permDenialStreak.delete(id);if(_dbSaveFailedErrors.delete(id)){try{_lsSet('nsa_save_failed_errors',JSON.stringify(Object.fromEntries(_dbSaveFailedErrors)))}catch{}}};
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
@@ -3291,6 +3793,7 @@ export {
   _searchProductsServer,
   _searchTxnItemsServer,
   _fetchTxnItemHistory,
+  _fetchHistInvoiceLines,
   _searchCustomersServer,
   _sbSignIn,
   _sbSignUp,
@@ -3301,6 +3804,7 @@ export {
   _sbLinkTeamAuth,
   _sbGetMyProfile,
   _dbLoad,
+  _dbLoadHistInvoices,
   _dbSeed,
   _truncatedTables,
   _authErrorDetected,
@@ -3311,6 +3815,8 @@ export {
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
+  _setInvBaseProvider,
+  _buildInvMergeRows,
   _dbSaveEstimate,
   _dbSaveSO,
   _dbSaveArtFiles,
@@ -3387,12 +3893,14 @@ export {
   _unionArtFiles,
   _mergeArtConflict,
   _resolveArtRows,
+  _adoptResolvedArtRow,
   _writeRowsSchemaSafe,
   _matchRestoreItem,
   _sanitizeArtRow,
   _isNetErr,
   _retryNet,
   _isAuthError,
+  _isLiveSession,
   _isPermissionDenied,
   _classifyRefresh,
   _expectsStaffSession,

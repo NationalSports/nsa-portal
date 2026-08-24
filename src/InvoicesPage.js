@@ -4,13 +4,19 @@
 // behavior-identical to the old closure call.
 import React from 'react';
 import { useAppData } from './AppContext';
-import { D_V, PRINT_CSS } from './constants';
-import { supabase, _dbSaveInvoice } from './lib/dbEngine';
+import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
+import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
-import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo } from './components';
+import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
-import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms } from './App';
+import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
+
+// The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
+// Read from history rather than the client-only _delivery_* fields so the failure is
+// still visible after a page reload — an invoice whose pay link bounced is exactly the
+// one a rep will come back to days later.
+export const _deliveryFailure=(doc)=>(doc&&doc.sent_history||[]).filter(h=>h&&h.delivery==='failed').slice(-1)[0]||null;
 
 // Fires its `run` callback exactly once, when it mounts. Used to auto-trigger the
 // invoice PDF download when an invoice is opened from an email "Download" deep-link
@@ -23,7 +29,30 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+
+    // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
+    // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
+    // editing the rep on a single invoice reassigned the customer's whole history — every other
+    // invoice, SO and estimate, plus already-paid commission lines, since attribution is resolved
+    // live rather than frozen at snapshot time. Account-level reassignment still lives on the
+    // customer record and in the SO editor's rep control; this control is deliberately narrower.
+    // The `invs` effect in App.js persists the change (_dbSaveInvoice) off the state update.
+    const setInvoiceRep=React.useCallback((inv,newRepId)=>{
+      const next=newRepId||null;
+      if((inv.rep_id||null)===next)return;
+      if(inv._hist){nf('NetSuite invoices can only be changed in NetSuite','error');return}
+      setInvs(prev=>prev.map(x=>x.id===inv.id?{...x,rep_id:next}:x));
+      const acctRep=REPS.find(r=>r.id===cust.find(c=>c.id===inv.customer_id)?.primary_rep_id);
+      nf(next
+        ?inv.id+' assigned to '+(REPS.find(r=>r.id===next)?.name||'rep')+' (this invoice only)'
+        :inv.id+' returned to the account rep'+(acctRep?' ('+acctRep.name+')':''));
+    },[setInvs,REPS,cust,nf]);
+
+    // Packing slip builder — what's actually going in the box for this invoice. Local to the
+    // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
+    // up over a different invoice.
+    const [packSlip,setPackSlip]=React.useState(null);
 
     // Invoices usually go to a coach plus a billing/AP contact, so the greeting names whoever
     // is checked ("Hi Cam and Hillary,"). Only the greeting line is swapped — edits below it stay.
@@ -31,6 +60,38 @@ export default function InvoicesPage(){
       return[...Object.entries(si.checked||{}).filter(([,v])=>v).map(([k])=>k),...(si.customEmails||[])].join('|')},[invSendModalDirect]);
     React.useEffect(()=>{if(!_siToKey)return;
       setInvSendModalDirect(s=>s?{...s,msg:withGreeting(s.msg,greetLine(_siToKey.split('|'),s.sendContacts))}:s)},[_siToKey,setInvSendModalDirect]);
+
+    // Heal a NetSuite invoice opened as a bare object that lost its _hist flag (rows rebuilt
+    // field-by-field, stale client copies, deep links). Without this the render-level guard below
+    // shows the read-only record but the line-item fetch never fires — it keys on _hist — so the
+    // page still reads "No line items recorded" (INV60425). Swapping state to the real record makes
+    // that fetch run. Only when NO portal invoice owns the id, so a portal row is never displaced;
+    // once swapped, _hist is set and this no-ops (no loop).
+    React.useEffect(()=>{
+      const iv=viewInvoice;
+      if(!iv||iv._hist||!iv.id)return;
+      if(invs.some(i=>i.id===iv.id))return;
+      const h=(histInvs||[]).find(x=>x.id===iv.id);
+      if(h)setViewInvoice(h);
+    },[viewInvoice,invs,histInvs,setViewInvoice]);
+
+    // NetSuite-imported (_hist) invoices load header-only — their lines live in
+    // customer_invoice_lines. Fetch them when one is opened so the detail page shows the real
+    // items instead of "No line items recorded" (same lazy load the coach-portal view does).
+    React.useEffect(()=>{
+      const iv=viewInvoice;
+      if(!iv||!iv._hist||!iv.netsuite_internal_id||iv.line_items?.length)return;
+      let cancelled=false;
+      (async()=>{
+        const rows=await _fetchHistInvoiceLines(iv.netsuite_internal_id);
+        if(cancelled||!rows||!rows.length)return;
+        // This table renders `desc`; the NetSuite line carries the item code and its description
+        // separately, so join them the way the printed invoice reads.
+        const line_items=rows.map(l=>({...l,desc:[l.sku,l.name].filter(Boolean).join(' ')}));
+        setViewInvoice(prev=>prev&&prev.netsuite_internal_id===iv.netsuite_internal_id?{...prev,line_items}:prev);
+      })();
+      return()=>{cancelled=true};
+    },[viewInvoice,setViewInvoice]);
 
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
@@ -91,12 +152,24 @@ export default function InvoicesPage(){
 
     // ═══ INVOICE DETAIL PAGE ═══
     if(viewInvoice){
-      const inv=invs.find(i=>i.id===viewInvoice.id)||viewInvoice;
+      // A NetSuite (_hist) invoice is keyed by its document number, which can collide with a row in
+      // the portal `invoices` table — never let that row stand in for it here (INV62383 rendered as
+      // $0 with no lines because a header-only shell had been minted under the same number).
+      // The reverse guard too: when the object handed in LOST its _hist flag (a stale client-state
+      // copy, a stripped search/deep-link record) and NO portal invoice exists under that id, resolve
+      // to the NetSuite record from histInvs — otherwise the page renders it as an editable $0 portal
+      // invoice with "No line items recorded" (INV60425), and Edit/Delete on it endanger the real
+      // NetSuite record.
+      const inv=viewInvoice._hist?viewInvoice:(invs.find(i=>i.id===viewInvoice.id)||(histInvs||[]).find(h=>h.id===viewInvoice.id)||viewInvoice);
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
       // Older invoices have no shipping override stored — fall back to the SO's selected ship-to
       const invShipSel=(inv.shipping_name||inv.shipping_address)?null:resolveOrderShipTo(so,ic);
-      const repObj=REPS.find(r=>r.id===(ic?.primary_rep_id||so?.created_by))||null;
+      // Per-invoice override first, then the account rep, then the SO creator — the same order
+      // commissionRepId() pays on, so the rep printed here is always the rep who earns it.
+      const repObj=REPS.find(r=>r.id===(inv.rep_id||ic?.primary_rep_id||so?.created_by))||null;
+      const repIsOverride=!!(inv.rep_id&&inv.rep_id!==ic?.primary_rep_id);
+      const acctRepName=REPS.find(r=>r.id===ic?.primary_rep_id)?.name||'none';
       const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
@@ -140,15 +213,20 @@ export default function InvoicesPage(){
       const overdue=dd!==null&&dd<0&&inv.status!=='paid';
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
 
+      // Bill-to / ship-to / PO as they print. Hoisted out of buildInvDocOpts so the packing slip
+      // addresses the delivery exactly the way the invoice does (override → SO ship-to → customer).
+      const docBillToName=inv.billing_name||ic?.name||'—';
+      const docBillToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+      const docBillAddr=docBillToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+      const docShipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
+      const docShipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+      const docShipAddr=docShipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
+      const docPoNum=inv.po_number||inv._po_number||so?.po_number;
+
       const buildInvDocOpts=()=>{
         const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        const billToName=inv.billing_name||ic?.name||'—';
-        const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-        const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
-        const shipToName=inv.shipping_name||invShipSel?.name||ic?.name||'—';
-        const shipToOverrideSub=inv.shipping_name?(inv.shipping_address||'').replace(/\n/g,'<br/>')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
-        const shipAddr=shipToOverrideSub||(invShipSel?orderShipToSub(so,ic):'')||custShipAddrSub(ic);
-        const poNum=inv.po_number||inv._po_number||so?.po_number;
+        // Local aliases so the document body below reads (and prints) exactly as it always has.
+        const billToName=docBillToName,billAddr=docBillAddr,shipToName=docShipToName,shipAddr=docShipAddr,poNum=docPoNum;
         const {rows:pRows,subtotal:pSubTotal}=buildInvoicePdfRows(inv,so,_$);
         return{title:billToName,docNum:inv.id,docType:'INVOICE',date:inv.date,
           headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
@@ -176,6 +254,53 @@ export default function InvoicesPage(){
         const billToName=inv.billing_name||ic?.name||'';
         await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
       };
+      // ── Packing slip ──
+      // Units on one picked line: sized lines are driven by their size boxes, unsized ones by a
+      // plain quantity, so the slip totals whatever the picker actually shows.
+      const packLineUnits=(l)=>l.hasSizes?Object.values(l.sizes||{}).reduce((a,v)=>a+safeNum(v),0):safeNum(l.qty);
+      // Seed the picker from this invoice's lines. The invoice only carries a total qty per line,
+      // so the size breakdown comes off the matching sales-order line — that's what lets a rep
+      // send a slip for a partial delivery ("6 of the 12, sizes M and L"). Lines with no SO match
+      // (hand-added, or a NetSuite import) fall back to a single editable quantity.
+      const openPackSlip=()=>{
+        const soItems=so?safeItems(so):[];
+        const soIdxByLine=matchInvoiceLinesToSo(lineItems,soItems);
+        const lines=lineItems.map((li,i)=>{
+          const soIt=soIdxByLine[i]>=0?soItems[soIdxByLine[i]]:null;
+          const soSizes=soIt?safeSizes(soIt):{};
+          const sizes={};orderedSizeKeys(Object.keys(soSizes)).forEach(sz=>{const v=safeNum(soSizes[sz]);if(v>0)sizes[sz]=v});
+          const hasSizes=Object.keys(sizes).length>0;
+          return{include:true,hasSizes,sizes,
+            sku:li._sku||soIt?.sku||'',
+            name:soIt?.name||li._name||li.desc||'',
+            color:soIt?.color||li._color||'',
+            isFootwear:!!soIt?.is_footwear,
+            qty:safeNum(li.qty),invQty:safeNum(li.qty)};
+        });
+        setPackSlip({invId:inv.id,shipDate:new Date().toLocaleDateString(),notes:'',lines});
+      };
+      const buildPackSlipOpts=(ps)=>{
+        const sel=(ps.lines||[]).filter(l=>l.include&&packLineUnits(l)>0);
+        const rows=sel.map(l=>{
+          const szStr=l.hasSizes?orderedSizeKeys(Object.keys(l.sizes)).filter(sz=>safeNum(l.sizes[sz])>0).map(sz=>safeNum(l.sizes[sz])+(l.isFootwear?'/':' ')+sz).join(', '):'';
+          return{cells:[{value:l.sku||'',style:'font-family:monospace;font-weight:700'},{value:l.name||''},{value:l.color||'—'},{value:szStr||'—',style:'font-size:11px'},{value:packLineUnits(l),style:'text-align:center;font-weight:700'}]};
+        });
+        const units=sel.reduce((a,l)=>a+packLineUnits(l),0);
+        return{title:docShipToName,docNum:inv.id,docType:'PACKING SLIP',showPricing:false,
+          headerRight:'<div class="ta" style="font-size:20px">'+units+' Total Units</div><div class="ts">Invoice '+inv.id+'</div>',
+          infoBoxes:[
+            ...(docShipAddr?[{label:'Ship To',value:docShipToName,sub:docShipAddr}]:[{label:'Ship To',value:docShipToName}]),
+            {label:'Ship Date',value:ps.shipDate||new Date().toLocaleDateString()},
+            {label:'Invoice',value:inv.id,sub:so?'SO: '+so.id:''},
+            // Labelled the way the warehouse packing lists label it, so a school matching the
+            // shipment against its own paperwork sees the same words on either slip.
+            ...(docPoNum?[{label:'School PO #',value:'<span style="font-family:monospace;font-weight:700">'+docPoNum+'</span>'}]:[]),
+          ],
+          tables:[{title:'Items in this Delivery',headers:['SKU','Item','Color','Sizes','Qty'],aligns:['left','left','left','left','center'],rows}],
+          notes:(ps.notes||'').trim()||'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+          footer:'NO PRICING — Packing Slip',companyInfo:companyInfo};
+      };
+
       // Auto-download when opened from an email "Download" deep-link (?inv=<id>&dl=1):
       // reuse the exact client PDF path as the button, gated by the portal's own
       // session (same as the "Open →" links). One-shot — the flag is stripped from
@@ -221,12 +346,14 @@ export default function InvoicesPage(){
           <div className="card-body" style={{padding:'10px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8}}>
             <span style={{fontSize:12,fontWeight:600,color:'#475569'}}>Rep:</span>
             {editingInvRep
-              ?<><select className="form-select" style={{width:180,fontSize:12,padding:'2px 6px'}} defaultValue={repObj?.id||''} onChange={e=>{changeDocRep(ic,e.target.value,inv.id);setEditingInvRep(false)}}>
-                <option value="">— None —</option>
+              ?<><select className="form-select" style={{width:200,fontSize:12,padding:'2px 6px'}} defaultValue={inv.rep_id||''} onChange={e=>{setInvoiceRep(inv,e.target.value);setEditingInvRep(false)}}>
+                <option value="">Account rep — {acctRepName}</option>
                 {REPS.filter(r=>r.is_active!==false&&(isCommissionRep(r))).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button></>
+              </select><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditingInvRep(false)}>Cancel</button>
+              <span style={{fontSize:10,color:'#94a3b8'}}>Applies to {inv.id} only — the account stays with {acctRepName}.</span></>
               :<><span style={{fontSize:12,color:'#1e293b'}}>{repObj?.name||'—'}</span>
-              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change rep" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
+              {repIsOverride&&<span style={{fontSize:10,padding:'1px 6px',background:'#ede9fe',color:'#6d28d9',borderRadius:10,fontWeight:600}} title={'This invoice only — the account rep is '+acctRepName}>this invoice only</span>}
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:'0 4px'}} title="Change the rep on this invoice" onClick={()=>setEditingInvRep(true)}>✏️</button></>}
           </div>
 
           {/* Sent History */}
@@ -235,6 +362,7 @@ export default function InvoicesPage(){
               <span style={{fontSize:12,fontWeight:700,color:'#475569'}}>Send History</span>
               {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>✉️ Sent</span>}
               {inv.email_status==='opened'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>👁️ Opened {inv.email_opened_at||''}</span>}
+              {inv.email_status==='failed'&&<span title={_deliveryFailure(inv)?.delivery_reason||'The email provider rejected this address.'} style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ Not delivered — pay link never arrived</span>}
               {inv.follow_up_at&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {new Date(inv.follow_up_at).toLocaleDateString()}{new Date(inv.follow_up_at)<new Date()?' (overdue)':''}</span>}
             </div>
             {(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
@@ -243,6 +371,10 @@ export default function InvoicesPage(){
               <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
               {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
               {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+              {/* Per-send outcome, so a resend that worked isn't tarred by an earlier bounce */}
+              {h.delivery==='failed'&&<span title={h.delivery_reason||h.delivery_event||''} style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fee2e2',color:'#b91c1c',fontWeight:700}}>⚠️ bounced{h.delivery_to?' ('+h.delivery_to+')':''}</span>}
+              {h.delivery==='deferred'&&<span title={h.delivery_reason||h.delivery_event||''} style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>⏳ delayed</span>}
+              {h.delivery==='opened'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>👁️ opened</span>}
             </div>):<div style={{fontSize:11,color:'#64748b'}}>Sent {inv.email_sent_at}</div>}
           </div>}
           {/* Action buttons */}
@@ -252,6 +384,10 @@ export default function InvoicesPage(){
             {inv.status==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&ic&&!ic.tax_exempt&&<button className="btn btn-sm" style={{background:'#1e40af',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
               onClick={()=>fileTaxCloud(inv)} title="Report this paid invoice to TaxCloud for state filing (1 manual call)">File to TaxCloud</button>}
             {inv.tc_reported&&<span style={{fontSize:12,padding:'6px 10px',color:'#166534',fontWeight:600}}>✓ Filed to TaxCloud{inv.tc_tax?' ($'+Number(inv.tc_tax).toLocaleString()+')':''}</span>}
+            {inv._hist&&<span style={{fontSize:12,padding:'6px 10px',color:'#475569',fontWeight:600}} title="Imported from NetSuite — line items and totals live there, so this record is read-only in the portal">NetSuite invoice — read-only</span>}
+            {/* Portal-only actions. A NetSuite invoice carries no line items here, so editing it
+                writes an empty shell, and printing/sending it would show the customer a $0 document. */}
+            {!inv._hist&&<>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
@@ -269,6 +405,7 @@ export default function InvoicesPage(){
                   billing_name:inv.billing_name||'',
                   billing_address:inv.billing_address||'',
                   billing_custom:_billingCustom,
+                  bill_to_id:inv.bill_to_id||'',
                   shipping_name:inv.shipping_name||'',
                   shipping_address:inv.shipping_address||'',
                   shipping_custom:!!(inv.shipping_name||inv.shipping_address),
@@ -295,7 +432,7 @@ export default function InvoicesPage(){
                 const _job=((so?.memo||inv.memo)||'').trim();
                 const msg=greetLine(Object.keys(checked).filter(em=>checked[em]),sendContacts)+'\n\nAttached below is your invoice'+(_job?' for "'+_job+'"':'')+', totalling '+emailMoney(inv.total)+(inv.due_date?', due on '+inv.due_date:'')+'.'+(portalUrl?'\n\nYou can also view it anytime through your portal:\n'+portalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: '+(portalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic?.alpha_tag||''));
-                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
+                setInvSendModalDirect({inv,sendContacts,checked,customEmail:'',customEmails:[],msg,review:false,portalUrl,smsEnabled:_smsUiEnabled&&!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7,followUp:seedFollowUp(inv)});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -307,6 +444,10 @@ export default function InvoicesPage(){
               onClick={async()=>{
                 try{await downloadInvoicePdf();}catch(err){console.warn('PDF download failed:',err)}
               }}>📥 Download PDF</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} disabled={lineItems.length===0}
+              title="Build a no-pricing packing slip — pick the items and sizes actually going in this delivery"
+              onClick={openPackSlip}>📦 Packing Slip</button>
+            </>}
             {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
               onClick={()=>{const purl='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag);navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
@@ -441,7 +582,7 @@ export default function InvoicesPage(){
         {/* Email status */}
         {inv.email_sent_at&&<div className="card" style={{marginBottom:16}}>
           <div className="card-body" style={{padding:'12px 16px',fontSize:12,color:'#64748b'}}>
-            Email sent: {inv.email_sent_at} · Status: <span style={{fontWeight:600,color:'#166534'}}>{inv.email_status||'sent'}</span>
+            Email sent: {inv.email_sent_at} · Status: <span style={{fontWeight:600,color:inv.email_status==='failed'?'#b91c1c':'#166534'}}>{inv.email_status==='failed'?'not delivered':(inv.email_status||'sent')}</span>
           </div>
         </div>}
 
@@ -476,6 +617,12 @@ export default function InvoicesPage(){
                 <div><div style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>Coach opened invoice</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{inv.email_opened_at||'Timestamp not recorded'}</div></div>
               </div>}
+              {(()=>{const f=_deliveryFailure(inv);return f&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#fef2f2',borderRadius:6,border:'1px solid #fecaca',marginTop:4}}>
+                <span style={{fontSize:16}}>⚠️</span>
+                <div><div style={{fontSize:13,fontWeight:700,color:'#b91c1c'}}>Not delivered — the coach never got this invoice</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{[f.delivery_to||f.to,f.delivery_reason||f.delivery_event,f.delivery_at?new Date(f.delivery_at).toLocaleString():null].filter(Boolean).join(' · ')||'Rejected by the recipient mail server'}</div>
+                <div style={{fontSize:11,color:'#b91c1c',marginTop:2}}>Check the address, then resend — or send the portal pay link from your own email.</div></div>
+              </div>})()}
               {inv.follow_up_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(new Date(inv.follow_up_at)<new Date()?'#fecaca':'#fde68a'),marginTop:4}}>
                 <span style={{fontSize:16}}>⏰</span>
                 <div><div style={{fontSize:13,fontWeight:600,color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>Follow-up {new Date(inv.follow_up_at)<new Date()?'overdue':'scheduled'}</div>
@@ -652,6 +799,79 @@ export default function InvoicesPage(){
             </div>
           </div>})()}
 
+        {/* ═══ PACKING SLIP MODAL ═══ */}
+        {/* Keyed to this invoice so a slip left open never renders over a different one. */}
+        {packSlip&&packSlip.invId===inv.id&&(()=>{
+          const psLines=packSlip.lines||[];
+          const totalUnits=psLines.filter(l=>l.include).reduce((a,l)=>a+packLineUnits(l),0);
+          const upLine=(i,patch)=>setPackSlip(s=>({...s,lines:s.lines.map((l,x)=>x===i?{...l,...patch}:l)}));
+          const upSize=(i,sz,v)=>setPackSlip(s=>({...s,lines:s.lines.map((l,x)=>x===i?{...l,sizes:{...l.sizes,[sz]:Math.max(0,safeNum(v))}}:l)}));
+          const setAll=(on)=>setPackSlip(s=>({...s,lines:s.lines.map(l=>({...l,include:on}))}));
+          return<div className="modal-overlay" onClick={()=>setPackSlip(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+            <div className="modal-header" style={{background:'#166534',color:'white'}}><h2 style={{color:'white'}}>📦 Packing Slip — {inv.id}</h2><button className="modal-close" style={{color:'white'}} onClick={()=>setPackSlip(null)}>×</button></div>
+            <div className="modal-body" style={{overflow:'auto',flex:1}}>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Pick what's actually going out in this delivery — uncheck a line, or drop the quantities to ship part of it. The slip prints with <strong>no pricing</strong>.</div>
+              <div style={{display:'flex',gap:12,alignItems:'flex-end',marginBottom:12}}>
+                <div style={{width:180}}>
+                  <label className="form-label">Ship Date</label>
+                  <input className="form-input" value={packSlip.shipDate} onChange={e=>setPackSlip(s=>({...s,shipDate:e.target.value}))}/>
+                </div>
+                <div style={{flex:1}}>
+                  <label className="form-label">Ship To</label>
+                  <div style={{fontSize:12,color:'#475569'}}><strong>{docShipToName}</strong></div>
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setAll(true)}>All</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setAll(false)}>None</button>
+                </div>
+              </div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+                {psLines.map((l,i)=>{
+                  const units=packLineUnits(l);
+                  return<div key={i} style={{padding:'10px 14px',borderBottom:i<psLines.length-1?'1px solid #f1f5f9':'none',background:l.include?'#f0fdf4':'#f8fafc'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10}}>
+                      <input type="checkbox" checked={l.include} onChange={e=>upLine(i,{include:e.target.checked})} style={{accentColor:'#166534',width:16,height:16,cursor:'pointer'}}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:600,fontSize:12}}>{l.sku?<span style={{fontFamily:'monospace',color:'#475569',marginRight:6}}>{l.sku}</span>:null}{l.name}{l.color?' — '+l.color:''}</div>
+                        <div style={{fontSize:11,color:'#94a3b8'}}>Invoiced qty: {l.invQty}{l.hasSizes?'':' · no size breakdown on the sales order'}</div>
+                      </div>
+                      {l.hasSizes
+                        ?<div style={{fontSize:12,fontWeight:700,color:units>0?'#166534':'#94a3b8'}}>{units} shipping</div>
+                        :<div style={{display:'flex',alignItems:'center',gap:6}}>
+                          <span style={{fontSize:11,color:'#64748b'}}>Qty</span>
+                          <input className="form-input" type="number" min="0" value={l.qty} disabled={!l.include}
+                            onChange={e=>upLine(i,{qty:Math.max(0,safeNum(e.target.value))})} style={{width:70,padding:'3px 6px',fontSize:12,textAlign:'center'}}/>
+                        </div>}
+                    </div>
+                    {l.hasSizes&&<div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,paddingLeft:26}}>
+                      {orderedSizeKeys(Object.keys(l.sizes)).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                        <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>{sz}</div>
+                        <input className="form-input" type="number" min="0" value={l.sizes[sz]} disabled={!l.include}
+                          onChange={e=>upSize(i,sz,e.target.value)} style={{width:52,padding:'3px 4px',fontSize:12,textAlign:'center'}}/>
+                      </div>)}
+                    </div>}
+                  </div>})}
+                {psLines.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:12}}>No line items on this invoice</div>}
+              </div>
+              <div style={{marginTop:12}}>
+                <label className="form-label">Notes on the slip</label>
+                <textarea className="form-input" rows={2} value={packSlip.notes} placeholder="Leave blank for the standard inspect-on-receipt note"
+                  onChange={e=>setPackSlip(s=>({...s,notes:e.target.value}))} style={{fontSize:12}}/>
+              </div>
+            </div>
+            <div className="modal-footer" style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#166534',marginRight:'auto'}}>{totalUnits} unit{totalUnits===1?'':'s'} on this slip</div>
+              <button className="btn btn-secondary" onClick={()=>setPackSlip(null)}>Cancel</button>
+              <button className="btn btn-secondary" disabled={totalUnits===0}
+                onClick={()=>{printDoc(buildPackSlipOpts(packSlip));setPackSlip(null)}}>Print</button>
+              <button className="btn btn-primary" style={{background:'#166534'}} disabled={totalUnits===0}
+                onClick={async()=>{
+                  try{await downloadDoc(buildPackSlipOpts(packSlip),'Packing-Slip-'+inv.id);setPackSlip(null)}
+                  catch(err){console.warn('Packing slip PDF failed:',err);nf('Could not generate the packing slip PDF','error')}
+                }}>📥 Download PDF</button>
+            </div>
+          </div></div>})()}
+
         {/* ═══ SPLIT INVOICE MODAL ═══ */}
         {splitModal&&(()=>{
           const si=splitModal.inv;
@@ -785,14 +1005,18 @@ export default function InvoicesPage(){
                   const parentC=emCust?.parent_id?cust.find(c=>c.id===emCust.parent_id):emCust;
                   const altAddrs=(parentC?.alt_billing_addresses||[]).filter(a=>a.label||a.street);
                   const defaultLabel='Customer default'+(emCust?.billing_address_line1?' — '+emCust.billing_address_line1+(emCust.billing_city?', '+emCust.billing_city:'')+(emCust.billing_state?' '+emCust.billing_state:''):' (no address on file)');
-                  const matchingAlt=em.billing_name&&!em.billing_custom?altAddrs.find(a=>(a.label||'')===em.billing_name):null;
+                  // Prefer the saved bill_to_id — it is exact. Invoices written before the id
+                  // existed only have the name, so keep the legacy label match as a fallback.
+                  const _btAlt=em.bill_to_id&&em.bill_to_id!=='default'&&em.bill_to_id!=='custom'
+                    ?altAddrs.find(a=>billToIdFor(emCust,cust,a)===em.bill_to_id):null;
+                  const matchingAlt=em.billing_custom?null:(_btAlt||(em.billing_name?altAddrs.find(a=>(a.label||'')===em.billing_name):null));
                   const selValue=em.billing_custom?'__custom__':matchingAlt?JSON.stringify(matchingAlt):'';
                   return<>
                     <select className="form-select" value={selValue} onChange={e=>{
                       const v=e.target.value;
-                      if(v==='__custom__')setInvEditModal(s=>({...s,billing_custom:true,billing_name:s.billing_name||emCust?.name||'',billing_address:s.billing_address||''}));
-                      else if(v==='')setInvEditModal(s=>({...s,billing_custom:false,billing_name:'',billing_address:''}));
-                      else{const a=JSON.parse(v);setInvEditModal(s=>({...s,billing_custom:false,billing_name:a.label||'',billing_address:[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}))}
+                      if(v==='__custom__')setInvEditModal(s=>({...s,billing_custom:true,bill_to_id:'custom',billing_name:s.billing_name||emCust?.name||'',billing_address:s.billing_address||''}));
+                      else if(v==='')setInvEditModal(s=>({...s,billing_custom:false,bill_to_id:'default',billing_name:'',billing_address:''}));
+                      else{const a=JSON.parse(v);setInvEditModal(s=>({...s,billing_custom:false,bill_to_id:billToIdFor(emCust,cust,a),billing_name:a.label||'',billing_address:[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}))}
                     }} style={{fontSize:12}}>
                       <option value="">{defaultLabel}</option>
                       {altAddrs.map((a,i)=><option key={i} value={JSON.stringify(a)}>{(a.label||'Alt '+(i+1))+' — '+[a.street,a.city,a.state,a.zip].filter(Boolean).join(', ')}</option>)}
@@ -875,6 +1099,7 @@ export default function InvoicesPage(){
                 po_number:em.po_number?em.po_number.trim():null,
                 billing_name:em.billing_name||null,
                 billing_address:em.billing_address||null,
+                bill_to_id:em.bill_to_id||null,
                 shipping_name:em.shipping_name||null,
                 shipping_address:em.shipping_address||null,
                 shipping:safeNum(em.shipping),
@@ -923,6 +1148,12 @@ export default function InvoicesPage(){
                   <button className="btn btn-sm btn-secondary" disabled={!(si.customEmail||'').includes('@')} onClick={()=>{const em=(si.customEmail||'').trim();if(em)setInvSendModalDirect(s=>({...s,customEmails:s.customEmails.includes(em)?s.customEmails:[...s.customEmails,em],customEmail:''}))}} style={{fontSize:10,whiteSpace:'nowrap'}}>+ Add</button>
                 </div>
               </div>
+              {/* The "View Invoice in Portal" pay button is built from the customer's alpha tag.
+                  Without one it was simply dropped and the email went out anyway — a pay-link
+                  email with no pay link, and nothing on screen said so. */}
+              {!si.portalUrl&&<div style={{marginBottom:12,padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#b91c1c'}}>
+                <strong>No pay link on this email.</strong> This customer has no portal tag, so the “View &amp; Pay in Portal” button can’t be built. Set an alpha tag on the customer to include it.
+              </div>}
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
               <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:12,padding:10,background:si.review?'#eff6ff':'#f8fafc',border:'1px solid '+(si.review?'#93c5fd':'#e2e8f0'),borderRadius:8}}>
@@ -1077,7 +1308,7 @@ export default function InvoicesPage(){
     // Enrich invoices with computed fields — portal invs plus NetSuite invoice history (read-only).
     const enrichedInvs=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
       const overdue=dd!==null&&dd<0&&i.status!=='paid';
-      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=c?.primary_rep_id||so?.created_by||null;
+      const so=sos.find(s=>s.id===i.so_id);const c=cust.find(x=>x.id===i.customer_id);const rep=i.rep_id||c?.primary_rep_id||so?.created_by||null;
       return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
 
     // ── Store settlement proposals (OMG deposit funds + webstore Stripe) ──
@@ -1413,7 +1644,10 @@ export default function InvoicesPage(){
               background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
-              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</>)}</td>
+              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}
+              {/* An unpaid invoice whose email bounced looks exactly like one the coach is
+                  ignoring. Flag it in the list, where reps actually scan for what to chase. */}
+              {inv.email_status==='failed'&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#fee2e2',color:'#b91c1c',marginLeft:3,verticalAlign:'middle'}} title="The last send bounced — the coach never received this invoice or its pay link.">⚠️ NOT DELIVERED</span>}</>)}</td>
             <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
@@ -1658,6 +1892,13 @@ export default function InvoicesPage(){
                   Include portal pay link
                 </label>
               </div>
+              {/* Ticking "Include portal pay link" is not a guarantee: the button is built from
+                  each customer's alpha tag, and one without a tag silently gets an email with no
+                  way to pay. Name them here, before the send, not after. */}
+              {(()=>{const noTag=sendableCustomers.filter(t=>!t.customer.alpha_tag);
+                return pd.options.includePayLink&&noTag.length>0&&<div style={{marginTop:8,padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#b91c1c'}}>
+                  <strong>No pay link for {noTag.length} customer{noTag.length===1?'':'s'}</strong> (no portal tag): {noTag.map(t=>t.customer.name||'—').join(', ')}. They’ll get the statement without a Pay button.
+                </div>})()}
             </div>
             {/* Message template */}
             <div style={{marginBottom:12}}>

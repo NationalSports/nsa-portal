@@ -9,6 +9,7 @@ const {
   calcQualifyingSpend,
   itemEditReconciles, itemsWithWipedQty,
   jobAllRoutedOutside,
+  planSizeCut, absorbedSizes, garmentCost,
 } = require('./businessLogic');
 
 // ═══════════════════════════════════════════════
@@ -295,11 +296,43 @@ describe('Pricing Functions', () => {
       expect(result.cost).toBe(3);
     });
 
-    test('names with actual names calculates per-unit', () => {
+    test('names price per name, billed at the name count via _nq', () => {
       const d = { kind: 'names', sell_each: 6, cost_each: 3, names: { S: ['Smith', 'Jones'], M: ['Brown'] } };
       const result = dP(d, 24, [], 24);
-      // 3 names * $6 / 24 units = $0.75
-      expect(result.sell).toBe(rQ(3 * 6 / 24));
+      // 3 names on a 24-pc line: the rate is the per-NAME price and _nq is the application
+      // count, so a deco walk bills 3 x $6 = $18 -- the same total the old per-unit spread
+      // produced here, but the rate now reads $6.00 instead of $0.75 on the estimate.
+      expect(result.sell).toBe(6);
+      expect(result.cost).toBe(3);
+      expect(result._nq).toBe(3);
+      expect(result._nq * result.sell).toBe(18);
+    });
+
+    test('one name on a 24-pc line bills $5, not $6 (EST-2126)', () => {
+      // rQ(1 * 5 / 24) = $0.25, and 24 x $0.25 = $6.00 -- the old spread quarter-rounded a
+      // $5 charge up to $6 and printed a $0.25 rate the rep never typed.
+      const d = { kind: 'names', sell_override: 5, sell_each: 6, cost_each: 3, names: { S: ['SPARTANS'] } };
+      const result = dP(d, 24, [], 24);
+      expect(result.sell).toBe(5);
+      expect(result._nq).toBe(1);
+      expect(result._nq * result.sell).toBe(5);
+      expect(result._nq * result.cost).toBe(3);
+    });
+
+    test('names with no roster still bill the full garment count', () => {
+      const d = { kind: 'names', sell_each: 6, cost_each: 3, names: {} };
+      const result = dP(d, 24, [], 24);
+      expect(result.sell).toBe(6);
+      expect(result._nq).toBe(24);
+      expect(result._nq * result.sell).toBe(144);
+    });
+
+    test('reversible names double the application count', () => {
+      const d = { kind: 'names', sell_each: 6, cost_each: 3, reversible: true, names: { S: ['Smith', 'Jones'] } };
+      const result = dP(d, 24, [], 24);
+      expect(result.sell).toBe(6);
+      expect(result._nq).toBe(4);
+      expect(result._nq * result.sell).toBe(24);
     });
 
     test('outside_deco uses sell_each and cost_each', () => {
@@ -2894,5 +2927,165 @@ describe('jobAllRoutedOutside', () => {
     const so = makeSO({ items: [], art_files: [] });
     expect(jobAllRoutedOutside(so, job([]))).toBe(false);
     expect(jobAllRoutedOutside(so, job([{ item_idx: 3, deco_idxs: [0] }]))).toBe(false);
+  });
+
+  test('outside-routed deco + deleted-deco claim → true (SO-1403: dead claim is neutral)', () => {
+    // JOB-1403-02: the tee's front logo went to an outside decorator, the pant's deco was deleted
+    // entirely. The dead claim must not veto routed-outside — the vendor produces all remaining work.
+    const so = makeSO({
+      items: [
+        makeSOItem({ decorations: [
+          { kind: 'art', art_file_id: 'a1', position: 'Front Center', fulfillment: 'outside', vendor: 'Silver Screen' },
+        ] }),
+        makeSOItem({ decorations: [] }), // pant — deco deleted after release
+      ],
+      art_files: [mkArtFile('a1', 'screen_print')],
+    });
+    expect(jobAllRoutedOutside(so, job([
+      { item_idx: 0, deco_idxs: [0] },
+      { item_idx: 1, deco_idxs: [0] },
+    ]))).toBe(true);
+  });
+
+  test('in-house deco + deleted-deco claim → false (job still produced in-house)', () => {
+    const so = makeSO({
+      items: [
+        makeSOItem({ decorations: [{ kind: 'art', art_file_id: 'a1', position: 'Front Center' }] }),
+        makeSOItem({ decorations: [] }),
+      ],
+      art_files: [mkArtFile('a1', 'screen_print')],
+    });
+    expect(jobAllRoutedOutside(so, job([
+      { item_idx: 0, deco_idxs: [0] },
+      { item_idx: 1, deco_idxs: [0] },
+    ]))).toBe(false);
+  });
+
+  test('only deleted-deco claims → false (retirement belongs to the live-deco rule)', () => {
+    const so = makeSO({
+      items: [makeSOItem({ decorations: [] })],
+      art_files: [],
+    });
+    expect(jobAllRoutedOutside(so, job([{ item_idx: 0, deco_idxs: [0] }]))).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// planSizeCut / absorbedSizes — reducing a size the POs already cover (SO-1845)
+// ═══════════════════════════════════════════════
+describe('planSizeCut — write-off of already-received units', () => {
+  // NEA225 Shadow Grey as it stood on SO-1845: 3 XL ordered by mistake, received and billed.
+  const item = (over = {}) => ({
+    sku: 'NEA225', color: 'ShdGyHthr', nsa_cost: 15.64,
+    sizes: { L: 3, XL: 3 }, pick_lines: [],
+    po_lines: [{ po_id: 'PO 45800', status: 'received', L: 3, XL: 3, received: { L: 3, XL: 3 }, unit_cost: 15.64 }],
+    ...over,
+  });
+
+  test('leaves an uncommitted size alone', () => {
+    const p = planSizeCut(item({ sizes: { L: 3, XL: 3, '2XL': 4 } }), '2XL', 1);
+    expect(p.kind).toBe('plain');
+    expect(p.po_lines).toBeNull();
+  });
+
+  test('an increase is never a cut', () => {
+    expect(planSizeCut(item(), 'XL', 9).kind).toBe('plain');
+  });
+
+  test('open PO units still come down as a plain cut — no write-off', () => {
+    const it = item({ sizes: { XL: 8 }, po_lines: [{ po_id: 'PO 53350', status: 'waiting', XL: 8 }] });
+    const p = planSizeCut(it, 'XL', 5);
+    expect(p.kind).toBe('cut');
+    expect(p.cut).toBe(3);
+    expect(p.absorb).toBe(0);
+    expect(p.po_lines[0].XL).toBe(5);
+  });
+
+  test('received units are absorbed, and the PO keeps them', () => {
+    const p = planSizeCut(item(), 'XL', 0);
+    expect(p.kind).toBe('absorb');
+    expect(p.absorb).toBe(3);
+    expect(p.cut).toBe(0);
+    expect(p.absorbPoIds).toEqual(['PO 45800']);
+    // the receiving history is untouched — that is what keeps the cost on the SO
+    expect(p.po_lines[0].XL).toBe(3);
+    expect(p.po_lines[0].received.XL).toBe(3);
+  });
+
+  test('open units are trimmed first, only the received remainder is absorbed', () => {
+    const it = item({
+      sizes: { XL: 8 },
+      po_lines: [
+        { po_id: 'PO 45800', status: 'received', XL: 3, received: { XL: 3 } },
+        { po_id: 'PO 53350', status: 'waiting', XL: 5 },
+      ],
+    });
+    const p = planSizeCut(it, 'XL', 1);
+    expect(p.kind).toBe('absorb');
+    expect(p.cut).toBe(5);          // the whole open line comes off
+    expect(p.absorb).toBe(2);       // 3 received, 1 still sold
+    expect(p.poIds).toEqual(['PO 53350']);
+    expect(p.absorbPoIds).toEqual(['PO 45800']);
+    expect(p.po_lines).toHaveLength(1);
+    expect(p.po_lines[0].po_id).toBe('PO 45800');
+  });
+
+  test('picked units are a hard floor — return the pick instead', () => {
+    const it = item({ sizes: { XL: 5 }, pick_lines: [{ status: 'pulled', XL: 2 }], po_lines: [{ po_id: 'PO 45800', status: 'received', XL: 3, received: { XL: 3 } }] });
+    expect(planSizeCut(it, 'XL', 1).kind).toBe('blocked');
+    expect(planSizeCut(it, 'XL', 2).kind).toBe('absorb');  // down to the picked floor is fine
+    expect(planSizeCut(it, 'XL', 2).absorb).toBe(3);
+  });
+
+  test('queued and outside-deco lines are never trimmed, only absorbed', () => {
+    const it = item({ sizes: { XL: 4 }, po_lines: [{ po_id: 'PO 53351', status: 'queued', XL: 4 }] });
+    const p = planSizeCut(it, 'XL', 0);
+    expect(p.kind).toBe('absorb');
+    expect(p.cut).toBe(0);
+    expect(p.po_lines[0].XL).toBe(4);
+  });
+
+  test('stamps who wrote the units off, under a key no size walk reads', () => {
+    const p = planSizeCut(item(), 'XL', 0, { by: 'Chase Koissian', at: '2026-08-12T22:13:00.000Z' });
+    expect(p.po_lines[0]._absorbed).toEqual([{ sz: 'XL', qty: 3, by: 'Chase Koissian', at: '2026-08-12T22:13:00.000Z' }]);
+  });
+
+  test('never mutates the item it was handed', () => {
+    const it = item();
+    planSizeCut(it, 'XL', 0);
+    expect(it.po_lines[0]._absorbed).toBeUndefined();
+    expect(it.sizes.XL).toBe(3);
+  });
+});
+
+describe('absorbedSizes / garmentCost — the cost stays on the order', () => {
+  const absorbed = {
+    sku: 'NEA225', nsa_cost: 15.64, sizes: { L: 3, XL: 0 }, pick_lines: [],
+    po_lines: [{ po_id: 'PO 45800', status: 'received', L: 3, XL: 3, received: { L: 3, XL: 3 }, unit_cost: 15.64 }],
+  };
+
+  test('reports the units received against a size the order no longer sells', () => {
+    expect(absorbedSizes(absorbed)).toEqual({ XL: 3 });
+  });
+
+  test('a fully covered line has nothing written off', () => {
+    expect(absorbedSizes({ ...absorbed, sizes: { L: 3, XL: 3 } })).toEqual({});
+  });
+
+  test('a vendor over-ship shows up the same way', () => {
+    expect(absorbedSizes({ ...absorbed, sizes: { L: 3, XL: 3 }, po_lines: [{ po_id: 'P', L: 3, XL: 3, received: { L: 3, XL: 4 } }] })).toEqual({ XL: 1 });
+  });
+
+  test('the absorbed units keep costing what we paid for them', () => {
+    expect(garmentCost(absorbed).cost).toBeCloseTo(93.84, 2);   // 6 bought, 3 sold
+  });
+
+  test('zeroing every size does not make the bought goods free', () => {
+    expect(garmentCost({ ...absorbed, sizes: { L: 0, XL: 0 } }).cost).toBeCloseTo(93.84, 2);
+  });
+
+  test('an empty line with no receiving history still costs nothing', () => {
+    expect(garmentCost({ sku: 'X', nsa_cost: 10, sizes: {}, po_lines: [] }).cost).toBe(0);
+    expect(garmentCost({ sku: 'X', nsa_cost: 10, sizes: {}, po_lines: [{ po_id: 'P', XL: 4 }] }).cost).toBe(0);
   });
 });

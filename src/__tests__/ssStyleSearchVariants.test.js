@@ -43,10 +43,34 @@ describe('ssStyleSearchVariants', () => {
     ]);
   });
 
-  test('a trailing color suffix is dropped as a (non-strict) fallback', () => {
+  test('a numeric color suffix searches the base style first (synced sku fast path)', () => {
     expect(ssStyleSearchVariants('AT300-50')).toEqual([
-      { code: 'AT300-50', strict: false },
       { code: 'AT300', strict: false },
+      { code: 'AT300-50', strict: false },
+    ]);
+  });
+
+  test('a non-numeric dash suffix keeps the as-is code first', () => {
+    expect(ssStyleSearchVariants('PC54-P')).toEqual([
+      { code: 'PC54-P', strict: false },
+      { code: 'PC54', strict: false },
+    ]);
+  });
+
+  test('a spelled-out colorway suffix strips down to the base style (SO-2030 match failures)', () => {
+    // Synced skus that repeat the whole color NAME never matched: only the LAST dash segment
+    // was stripped, so "AT101-BLACK-WHITE" searched "AT101-BLACK" and never reached "AT101".
+    expect(ssStyleSearchVariants('AT101-BLACK-WHITE')).toEqual([
+      { code: 'AT101-BLACK-WHITE', strict: false },
+      { code: 'AT101', strict: false },
+    ]);
+    expect(ssStyleSearchVariants('AT101-TEAM-POWER-RED-WHITE')).toEqual([
+      { code: 'AT101-TEAM-POWER-RED-WHITE', strict: false },
+      { code: 'AT101', strict: false },
+    ]);
+    expect(ssStyleSearchVariants('AT101-MEDIUM-GREY-HEATHER-BLACK')).toEqual([
+      { code: 'AT101-MEDIUM-GREY-HEATHER-BLACK', strict: false },
+      { code: 'AT101', strict: false },
     ]);
   });
 

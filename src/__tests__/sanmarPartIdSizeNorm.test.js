@@ -53,6 +53,29 @@ describe('normSzName — toddler labels collapse to <n>T (SanMar Part ID match)'
   });
 });
 
+describe('normSzName — a fit range that declares itself one-size collapses to OSFA', () => {
+  // Richardson 112 (SO-1971) came through the batch as "MD-LG (ONE SIZE FITS MOST)" while
+  // SanMar lists the cap as the bare OSFA, so the line stayed without a Part ID and blocked
+  // the whole 11-line SanMar order. The parenthetical is what carries the meaning.
+  test.each([
+    'MD-LG (ONE SIZE FITS MOST)',
+    'MD-LG (One Size Fits Most)',
+    'SM-MD (ONE SIZE FITS ALL)',
+    'Adjustable (One Size)',
+    'OSFM',
+  ])('%s → OSFA', (label) => {
+    expect(normSzName(label)).toBe('OSFA');
+    expect(matches(label, 'OSFA')).toBe(true);
+  });
+
+  // The guard: a fit range that does NOT declare itself one-size stays its own size, so a
+  // style SanMar really does list in S/M and M/L can never resolve to the wrong cap.
+  test.each(['MD-LG', 'SM-MD', 'S/M', 'L/XL'])('%s is NOT treated as one-size', (label) => {
+    expect(normSzName(label)).not.toBe('OSFA');
+    expect(matches(label, 'OSFA')).toBe(false);
+  });
+});
+
 describe('normSzName — standard sizes still round-trip unchanged (no regression)', () => {
   test.each(['S', 'M', 'L', 'XL', '2XL', 'OSFA', '4T', 'YS'])('%s is stable', (s) => {
     expect(matches(s, s)).toBe(true);

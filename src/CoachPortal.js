@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
+import { ptDateLabel } from './lib/storeClock';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -448,6 +449,65 @@ function CoachRosterManager({ store, initialRoster }) {
     </div>
   );
 }
+// ── Coach art review: the two decisions worth testing on their own ──
+
+// Statuses that mean "the artist still owes this design", from the coach's side.
+const CP_UPCOMING_ART = new Set(['needs_art', 'art_requested', 'art_in_progress']);
+
+/**
+ * The designs a coach is still WAITING on — what feeds the queue's "Still being designed"
+ * group. Art reaches a coach one job at a time (the artist finishes job 1 Monday, job 2
+ * Wednesday), so a queue that lists only the ready ones reads as the whole order and a
+ * half-delivered order looks forgotten. Listing the rest, greyed and non-actionable, is
+ * what makes the queue honest.
+ *
+ * `waiting_approval` WITHOUT sent_to_coach_at belongs here, not in the actionable list:
+ * the mockup exists but the rep hasn't forwarded it, so from the coach's side it is still
+ * in progress. That also keeps audit A1's gate intact — un-sent art stays un-approvable.
+ *
+ * A job that declares no artwork at all (names/numbers only) never produces a mockup, so
+ * promising one would be a lie; it's excluded. A '__tbd' placeholder DOES mean art is
+ * coming and stays in.
+ */
+export function cpUpcomingArtJobs(jobs) {
+  return (jobs || []).filter((j) => {
+    if (!j) return false;
+    const ids = ((j._art_ids && j._art_ids.length ? j._art_ids : [j.art_file_id]) || []).filter(Boolean);
+    if (ids.length === 0) return false;
+    return CP_UPCOMING_ART.has(j.art_status) || (j.art_status === 'waiting_approval' && !j.sent_to_coach_at);
+  });
+}
+
+/** What a not-yet-ready design is doing. A job pulled back by the coach's OWN change
+ *  request reads differently from one that was never drawn yet. */
+export const cpUpcomingArtLabel = (j) =>
+  (j && j.art_status === 'art_requested' && j.coach_rejected) ? 'Your changes are being made' : 'Mockup in progress';
+
+/**
+ * The note a mixed per-garment decision sends to the rep and artist.
+ *
+ * Naming the APPROVED garments matters as much as naming the rejected ones — "everything
+ * but the hoodie" is the actual message, and leaving that half implicit is what pushed
+ * coaches into writing paragraphs. `general` is the coach's free-text box and leads, since
+ * it's the one part they wrote as a whole thought.
+ *
+ * Returns the composed text; callers store it as the rejection's `reason`, which is the
+ * field every existing reader (dashboard to-dos, art card, rep email) already displays.
+ */
+export function cpComposeArtFeedback({ general, approved, flagged } = {}) {
+  const lines = [];
+  const g = (general || '').trim();
+  if (g) lines.push(g);
+  const ok = (approved || []).filter(Boolean);
+  const no = (flagged || []).filter(Boolean);
+  if (ok.length) lines.push('✅ Approved: ' + ok.map((x) => x.label).join(', '));
+  if (no.length) {
+    lines.push('✏️ Changes needed:');
+    no.forEach((x) => { const n = (x.note || '').trim(); lines.push('• ' + x.label + (n ? ': ' + n : '')); });
+  }
+  return lines.join('\n');
+}
+
 const cpRosTh = { padding: '6px 8px', whiteSpace: 'nowrap' };
 const cpRosTd = { padding: '6px 8px', verticalAlign: 'middle' };
 const cpRosInput = (w) => ({ width: w, border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 9px', fontSize: 13, boxSizing: 'border-box' });
@@ -558,7 +618,7 @@ function CoachStoreCard({ store: s, d }) {
   const allOpen = visibleRows.length > 0 && visibleRows.every((r) => open[r.id]);
   const toggleAll = () => { if (allOpen) { setOpen({}); } else { const m = {}; visibleRows.forEach((r) => { m[r.id] = true; }); setOpen(m); } };
 
-  const closeStr = s.close_at ? (new Date(s.close_at) < new Date() ? `Store closed ${_cpFmtDate(s.close_at)}` : `Closes ${_cpFmtDate(s.close_at)}`) : '';
+  const closeStr = s.close_at ? (new Date(s.close_at) < new Date() ? `Store closed ${ptDateLabel(s.close_at)}` : `Closes ${ptDateLabel(s.close_at)}`) : '';
 
   // ── Reusable style atoms ──
   const disp = { fontFamily: "'Barlow Condensed',sans-serif" };
@@ -737,6 +797,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[estView,setEstView]=useState(null);
   const[soView,setSoView]=useState(null);
   const[comment,setComment]=useState('');
+  // Per-garment marks on the OPEN proof, keyed `sku|color`. Presence = the coach flagged
+  // that garment for changes; absence = approved. Only multi-garment jobs offer the marks
+  // (a one-garment job's decision IS the job's, so it keeps the plain two-button form).
+  // Keying by garment rather than by mock URL means a mid-review artist re-upload doesn't
+  // wipe what the coach has already marked.
+  const[itemMarks,setItemMarks]=useState({});
   const[contactEdit,setContactEdit]=useState(null);
   const[contactMsg,setContactMsg]=useState('');
   const[updateRequestText,setUpdateRequestText]=useState('');
@@ -775,6 +841,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
   const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
+  // Marks belong to ONE proof — clear them whenever a different job opens (including the
+  // ‹ › queue walk, which swaps jobView without unmounting this component). Keyed on the
+  // job identity rather than the object so a live-state re-render doesn't wipe them.
+  const _openJobKey=jobView?(String(jobView.so?.id||'')+'|'+String(jobView.job?.id||'')):'';
+  useEffect(()=>{setItemMarks({})},[_openJobKey]);
   // Deep-link: emails/texts can point straight at one estimate (?est=<id>), art
   // proof (?so=<id>&job=<id>), or invoice (?inv=<id>) instead of the portal home. The params ride on the
   // portal's own URL when it's opened directly; embedded in the marketing /coach
@@ -968,6 +1039,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // INTERNAL rep review first, and listing those here let a coach approve a draft the
   // rep never sent — bypassing the rep-review gate entirely (audit A1).
   const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval'&&j.sent_to_coach_at);
+  // The designs a coach is still WAITING on — greyed and non-actionable in the queue, so a
+  // coach who received one proof of three can see the other two coming. See cpUpcomingArtJobs.
+  const upcomingArtJobs=cpUpcomingArtJobs(allPortalJobs);
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
@@ -1079,6 +1153,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     return ()=>window.removeEventListener('popstate',onPop);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The confirmation banner renders near the top of the page; a buyer who paid from
+  // partway down the billing list would never see it otherwise.
+  const _scrollToConfirmation=()=>{try{window.scrollTo({top:0,behavior:'smooth'})}catch{try{window.scrollTo(0,0)}catch{}}};
+
   const handlePaymentSuccess=(result)=>{
     // Async methods (ACH/bank, and occasionally cards) come back as 'processing': the payment is
     // submitted but not settled, so we must NOT mark the invoice paid yet — settlement is confirmed
@@ -1088,6 +1166,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       setReceiptEmail(contactEmail||'');setReceiptStatus(null);
       setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices||[],intentId:result.intentId,processing:true});
       setShowPay(null);setInvView(null);setPayLoading(false);
+      _scrollToConfirmation();
       return;
     }
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
@@ -1114,6 +1193,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     setReceiptEmail(contactEmail||'');setReceiptStatus(null);
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices,intentId:result.intentId});
     setShowPay(null);setInvView(null);setPayLoading(false);
+    _scrollToConfirmation();
   };
 
   // Email a full itemized receipt for the just-completed payment. Content is built server-side from
@@ -1268,7 +1348,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
           {(est.items||[]).map((it,i)=>{const _sq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qty=_sq>0?_sq:safeNum(it.est_qty);const lineTotal=qty*safeNum(it.unit_sell);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))});
-            let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);decoTotal+=qty*dp2.sell});
+            let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);decoTotal+=eq*dp2.sell});
             return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
                 <div>
@@ -1561,11 +1641,42 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // Mock links: a garment the rep linked to another garment shows a "same mockup as X"
     // note instead of repeating the image; the source garment shows it once with an
     // "also applies to" caption. Unlinked garments keep their own per-item mock.
-    const _linkOfC=gi=>resolveMockLink(_jobArtFiles,gi.sku,gi.color);
-    const _depsOfC=gi=>mockLinkDependents(_jobArtFiles,gi.sku,gi.color);
+    // Mock keys read off the LIVE SO line: customer-supplied garments all share the SKU
+    // 'CUST-SUPPLIED', so garmentMockKey keys them on the line name instead.
+    const _lineOf=gi=>safeItems(so)[gi?.item_idx]||gi;
+    const _linkOfC=gi=>resolveMockLink(_jobArtFiles,mockSkuOf(_lineOf(gi)),gi.color);
+    const _depsOfC=gi=>mockLinkDependents(_jobArtFiles,mockSkuOf(_lineOf(gi)),gi.color);
     const mockups=(()=>{const _g=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));return _g.length>0?_g:_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.prod_files||[]))})();
-    const _hasAnyItemMockup=gi=>{const src=_linkOfC(gi);if(src)return _filterDisplayable(mockLinkSourceFiles(_jobArtFiles,src)).length>0;const _mk=gi.sku+'|'+(gi.color||'');return _jobArtFiles.some(_af=>{const m=_af?.item_mockups||{};const v=m[_mk]&&m[_mk].length>0?m[_mk]:(m[gi.sku]||[]);return _filterDisplayable(v).length>0})};
+    const _hasAnyItemMockup=gi=>{const src=_linkOfC(gi);if(src)return _filterDisplayable(mockLinkSourceFiles(_jobArtFiles,src)).length>0;return _jobArtFiles.some(_af=>_filterDisplayable(itemMockFiles(_af?.item_mockups,_lineOf(gi))).length>0)};
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
+    // ── Per-garment approve / request-changes marking ──
+    // The coach decides ONE garment at a time, but the JOB still moves as a unit: art_status
+    // is a single column, so a job can't be half-approved without splitting it. A mixed
+    // decision therefore submits down the existing reject path — the whole job goes back to
+    // the artist — with a note that names exactly which garments passed and which didn't.
+    // That's the clarity coaches were missing; it is NOT a partial production release.
+    const _canDecide=j.art_status==='waiting_approval'&&!!j.sent_to_coach_at;
+    // One garment = the job. Marking it adds nothing over the plain buttons, so single-garment
+    // proofs stay exactly as they were.
+    const _marking=_canDecide&&items.length>1;
+    const _gKey=gi=>garmentMockKey(_lineOf(gi));
+    const _gLabel=gi=>(gi.fullName||gi.sku||'Garment')+(gi.color?' — '+gi.color:'');
+    // Garments with no mockup yet. The rep's Send to Coach is gated by this same helper
+    // (OrderEditor "don't send them a broken proof in the first place"), so reaching a coach
+    // in this state means the art changed after it was sent — rare, but it must not read as
+    // approvable. skusMissingMockups reports bare SKUs, so a same-SKU/other-color sibling can
+    // be flagged too; erring toward "not ready" is the safe direction here.
+    const _missingMockSkus=new Set(skusMissingMockups(j,so));
+    const _isMissingMock=gi=>_missingMockSkus.has(safeItems(so)[gi.item_idx]?.sku||gi.sku);
+    const _flaggedItems=_marking?items.filter(gi=>itemMarks[_gKey(gi)]):[];
+    const _approvedItems=_marking?items.filter(gi=>!itemMarks[_gKey(gi)]&&!_isMissingMock(gi)):[];
+    const _setMark=(gi,on)=>setItemMarks(prev=>{const k=_gKey(gi);if(!on){const n={...prev};delete n[k];return n}return{...prev,[k]:prev[k]||{note:''}}});
+    const _setMarkNote=(gi,note)=>setItemMarks(prev=>({...prev,[_gKey(gi)]:{...(prev[_gKey(gi)]||{}),note}}));
+    const _composeFeedback=()=>cpComposeArtFeedback({
+      general:comment,
+      approved:_approvedItems.map(gi=>({label:_gLabel(gi)})),
+      flagged:_flaggedItems.map(gi=>({label:_gLabel(gi),note:itemMarks[_gKey(gi)]?.note||''})),
+    });
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
@@ -1583,17 +1694,42 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:12,opacity:0.7}}>{so.memo} · {j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>
           </div>
         </div>
+        {/* ── Queue walk ──
+            Art is sent one job at a time, so a coach with several designs open used to have to
+            return to the portal home between each. This bar rides on EVERY proof still awaiting
+            them (not just after a decision, which is when the old "Review next" button appeared),
+            so they can page straight through. It reads off live state: an approved job leaves
+            waitingArtJobs and the bar disappears with it, handing off to the post-decision
+            "Review next artwork" button below. */}
+        {_canDecide&&(()=>{
+          const _q=waitingArtJobs;const _qi=_q.findIndex(w=>w.so&&w.so.id===so.id&&w.id===j.id);
+          if(_qi<0||_q.length<2)return null;
+          const _go=t=>{setSoView(t.so);setJobView({job:t,so:t.so});setComment('');setItemMarks({})};
+          const _prev=_q[_qi-1],_next=_q[_qi+1];
+          const _btn=on=>({background:on?'rgba(255,255,255,0.18)':'transparent',border:'none',color:'#fff',borderRadius:8,padding:'7px 12px',fontSize:13,fontWeight:700,cursor:on?'pointer':'default',opacity:on?1:0.3});
+          return<div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 14px',background:'#1e3a5f',color:'#fff'}}>
+            <button style={_btn(!!_prev)} disabled={!_prev} onClick={()=>_prev&&_go(_prev)}>‹ Prev</button>
+            <div style={{fontSize:12,fontWeight:700,opacity:0.9,whiteSpace:'nowrap'}}>Design {_qi+1} of {_q.length}</div>
+            {/* One button, not a Skip AND a Next doing the same thing: on a proof still
+                awaiting a decision, moving on IS skipping it. It stays in the queue. */}
+            <button style={_btn(!!_next)} disabled={!_next} onClick={()=>_next&&_go(_next)}>Skip for now ›</button>
+          </div>;
+        })()}
         <div style={{padding:'20px 24px'}}>
           {/* ── Per-item mockups + art details (linked garments reference their source's mock) ── */}
           {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];
             const _mySrc=_linkOfC(gi);
-            const _myDeps=_depsOfC(gi).filter(k=>items.some(g=>(g.sku+'|'+(g.color||''))===k));
+            const _myDeps=_depsOfC(gi).filter(k=>items.some(g=>garmentMockKey(_lineOf(g))===k));
             const _itemArtIds=srcItem?[...new Set(safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))]:[];
             const _itemArtFiles=(_itemArtIds.length>0?_itemArtIds:[...new Set([artFile?.id,...(j._art_ids||[])].filter(Boolean))]).map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
-            const _mk=gi.sku+'|'+(gi.color||'');
-            const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
+            // Customer-supplied garments all carry the SKU 'CUST-SUPPLIED', so key on the LINE
+            // (garmentMockKey) or every one of a colour shows the same mockup (SO-2063). _mkL is
+            // the pre-fix shared bucket, still read as a fallback.
+            const _line=srcItem||gi;const _mk=garmentMockKey(_line);const _mkL=legacyMockKeyOf(_line);
+            const _mkPfx=k=>k.startsWith(_mk+'|')||(!!_mkL&&k.startsWith(_mkL+'|'));
+            const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=itemMockFiles(im,_line);if(v.length>0)return v[0];const de=Object.entries(im).find(([k])=>_mkPfx(k));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
             // Linked garment → no images of its own (a note references the source); else per-item.
-            const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(_itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr)))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
+            const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const im=af3?.item_mockups||{};const v=itemMockFiles(im,_line,disc?('|'+disc):'');if(v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>itemMockFiles(_af?.item_mockups,_line))).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(_itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>_mkPfx(k)&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr)))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
             // No per-item mock and no link: fall back to the art's proof files (reused library
             // art with no per-garment mocks anywhere). Only on multi-item jobs — a single-item
             // job already shows the identical files via the job-level `mockups` ladder above,
@@ -1645,12 +1781,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:10}}>
                 {gi.image_url?<img src={gi.image_url} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0}}/>
                 :<div style={{width:44,height:44,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:18}}>👕</div></div>}
-                <div style={{flex:1}}>
+                <div style={{flex:1,minWidth:0}}>
                   <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
                   <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
                   <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {artPos.length>0?artPos.join(', '):(j.positions||'—')} · {gi.units} units</div>
                 </div>
+                {/* Per-garment decision. Nothing is pre-selected: an untouched garment counts as
+                    approved, so a coach who agrees with the whole proof never taps a card. */}
+                {_marking&&(_isMissingMock(gi)
+                  ?<span style={{flexShrink:0,fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',border:'1px solid #fde047',borderRadius:999,padding:'5px 10px',whiteSpace:'nowrap'}}>Mockup coming</span>
+                  :(()=>{const _fl=!!itemMarks[_gKey(gi)];
+                    return<div style={{flexShrink:0,display:'flex',gap:6}}>
+                      <button aria-label={'Approve '+_gLabel(gi)} onClick={()=>_setMark(gi,false)} style={{cursor:'pointer',fontSize:15,lineHeight:1,padding:'7px 10px',borderRadius:9,border:_fl?'1px solid #e2e8f0':'2px solid #22c55e',background:_fl?'#fff':'#f0fdf4',opacity:_fl?0.45:1}}>✅</button>
+                      <button aria-label={'Request changes to '+_gLabel(gi)} onClick={()=>_setMark(gi,true)} style={{cursor:'pointer',fontSize:15,lineHeight:1,padding:'7px 10px',borderRadius:9,border:_fl?'2px solid #dc2626':'1px solid #e2e8f0',background:_fl?'#fef2f2':'#fff',opacity:_fl?1:0.45}}>✏️</button>
+                    </div>})())}
               </div>
+              {/* The note rides with the garment it belongs to, so the artist reads "which one"
+                  and "what's wrong" together instead of matching prose back to a mockup. */}
+              {_marking&&!!itemMarks[_gKey(gi)]&&<div style={{marginBottom:10,padding:'10px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#991b1b',marginBottom:6}}>What needs to change on this one?</div>
+                <textarea className="form-input" rows={2} value={itemMarks[_gKey(gi)]?.note||''} onChange={e=>_setMarkNote(gi,e.target.value)} placeholder="e.g. logo sits too high, make the mascot bigger…" style={{fontSize:12,resize:'vertical',borderRadius:8}}/>
+              </div>}
               {/* Per-item art details */}
               {artFile&&<div style={{padding:'10px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:10}}>
                 {(()=>{
@@ -1756,11 +1907,26 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
             {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
+            {_marking&&<div style={{marginBottom:10,fontSize:12,color:'#92400e',lineHeight:1.5}}>
+              {_flaggedItems.length===0
+                ?<>Approving all {items.length} garments above. Tap <strong>✏️</strong> on any one you'd like changed.</>
+                :<><strong>{_approvedItems.length} approved · {_flaggedItems.length} need{_flaggedItems.length===1?'s':''} changes.</strong> We'll send your rep the whole list.</>}
+            </div>}
             <div style={{marginBottom:10}}>
-              <textarea className="form-input" rows={3} placeholder="Add a note (optional for approval, required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical',borderRadius:10}}/>
+              <textarea className="form-input" rows={3} placeholder={_flaggedItems.length>0?'Anything else to add? (optional)':'Add a note (optional for approval, required for rejection)...'} value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical',borderRadius:10}}/>
             </div>
+            {/* A garment with no mockup blocks approval outright — the job can't reach production
+                until every garment is mocked. Say so HERE, before the tap, instead of firing an
+                alert() after it. Request Changes stays available so the coach isn't dead-ended. */}
+            {_missingMockSkus.size>0&&<div style={{padding:'12px 16px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:10,marginBottom:10}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#9a3412'}}>⏳ Waiting on {_missingMockSkus.size} more mockup{_missingMockSkus.size===1?'':'s'}</div>
+              <div style={{fontSize:11,color:'#9a3412',marginTop:4,lineHeight:1.5}}>We can't take your approval until every garment has one — your rep is on it. You can still send them a note below.</div>
+            </div>}
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
+              {/* Hidden once a garment is flagged: approving and requesting changes in the same
+                  submission is the one combination that can't exist, so don't offer it. The
+                  live re-check below stays regardless — this is a UI gate, not the safety gate. */}
+              {_flaggedItems.length===0&&_missingMockSkus.size===0&&<button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 // A coach must never approve a proof with unmocked garments — they'd be
                 // approving art they can't see. Same per-garment gate the rep side enforces
@@ -1805,14 +1971,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
-              }}>✅ Approve Artwork</button>
+              }}>{items.length>1?'✅ Approve All '+items.length+' Garments':'✅ Approve Artwork'}</button>}
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
-                if(!comment.trim()){alert('Please describe what changes you need.');return}
+                // A note is required, but it can come from EITHER box — a coach who flags three
+                // garments and explains all three in one place shouldn't be blocked for leaving
+                // the per-garment fields empty.
+                const _anyItemNote=_flaggedItems.some(gi=>(itemMarks[_gKey(gi)]?.note||'').trim());
+                if(!comment.trim()&&!_anyItemNote){alert(_flaggedItems.length>0?'Please describe what needs to change.':'Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const _fb=comment.trim();
+                // Composed: names the approved garments as well as the flagged ones, so the rep
+                // and artist read one message instead of reconstructing intent from prose.
+                const _fb=_flaggedItems.length>0?_composeFeedback():comment.trim();
                 const _rejAt=new Date().toISOString();
                 // Both key spellings on purpose: the portal reads `at`, the dashboard todo reads `rejected_at`.
-                const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
+                // `items` carries the per-garment breakdown in structured form for anything that
+                // wants to render it later; `reason` stays the composed text every existing
+                // reader (dashboard to-dos, art card, rep email) already displays.
+                const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt,
+                  ...(_flaggedItems.length>0?{items:[
+                    ..._approvedItems.map(gi=>({garment:_gLabel(gi),sku:gi.sku,color:gi.color||'',decision:'approved'})),
+                    ..._flaggedItems.map(gi=>({garment:_gLabel(gi),sku:gi.sku,color:gi.color||'',decision:'changes',note:(itemMarks[_gKey(gi)]?.note||'').trim()})),
+                  ]}:{})};
                 const rArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const _curJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id);
                 const _newRejections=[...((_curJob&&_curJob.rejections)||[]),rej];
@@ -1831,8 +2010,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(!_res.ok){alert(_res.error||'Could not send your request — please try again or contact your rep.');return}
                 const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null,coach_approved_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                setComment('');// stay on the job view — it re-renders from live state to show the "changes requested" banner
-              }}>❌ Request Changes</button>
+                setComment('');setItemMarks({});// stay on the job view — it re-renders from live state to show the "changes requested" banner
+              }}>{_flaggedItems.length>0?'📩 Send Feedback ('+_approvedItems.length+' approved · '+_flaggedItems.length+' to change)':'❌ Request Changes'}</button>
             </div>
           </div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
@@ -1866,24 +2045,28 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       const rows=[];let subTotal=0;
       const soItems=linkedSO?safeItems(linkedSO):[];const soArt=linkedSO?safeArt(linkedSO):[];
       const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2*(d.reversible?2:1)}})});
-      if(soItems.length>0){
-        soItems.forEach(it=>{
-          const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-          const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
-          const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
-          let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
-          if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
-          rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
-          safeDecos(it).forEach(d=>{
-            const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
-            const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
-            const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
-            rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
-          });
+      // A partial invoice bills only some of the order's lines, so the SO walk below is scoped
+      // to the lines THIS invoice charges for — walking the SO raw printed the whole order on
+      // every partial. `qty` is what's billed here; `pq` (the SO line's own quantity) stays the
+      // pricing basis so a partial never re-prices a decoration into a different tier.
+      const {items:_scoped,extraLines:_extra}=scopeSoItemsToInvoice(inv,soItems);
+      _scoped.forEach(it=>{
+        const qty=it._invQty;const pq=it._soQty;
+        const szStr=it._invSizes?sizeBreakdownStr(it._invSizes,it.is_footwear):'';
+        const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+        let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
+        if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+        rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+        safeDecos(it).forEach(d=>{
+          const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:pq;const dp2=dP(d,pq,soArt,cq);
+          const eq=dp2._nq!=null?(pq>0&&qty!==pq?Math.round(dp2._nq*qty/pq):dp2._nq):(d.reversible?qty*2:qty);const decoAmt=Math.round(eq*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+          const artF=soArt.find(a2=>a2.id===d.art_file_id);const posLabel=d.position?' — '+d.position:'';
+          rows.push({_class:'deco-row',cells:[{value:eq,style:'text-align:center'},{value:'',style:''},{value:'<span style="padding-left:16px">'+pdfDecoLabel(d,artF)+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right'},{value:_$(decoAmt),style:'text-align:right'}]});
         });
-      }else{
-        (inv.line_items||[]).forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty,style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:_$(rate),style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
-      }
+      });
+      // Lines with no SO match (hand-added, NetSuite import) still have to print, or the
+      // document's subtotal won't reconcile to the invoice total.
+      _extra.forEach(li=>{const qty=safeNum(li.qty);const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):qty*rate;subTotal+=amt;rows.push({cells:[{value:qty,style:'text-align:center'},{value:li._sku||li.sku||'',style:'font-weight:700'},{value:safeStr(li._name||li.name||li.desc)||'Item'},{value:_$(rate),style:'text-align:right'},{value:_$(amt),style:'text-align:right;font-weight:600'}]})});
       const _ship=inv.shipping!=null?inv.shipping:(linkedSO?(linkedSO.shipping_type==='pct'?subTotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0)):0);
       const _tax=inv.tax||0;
       const billAddr=customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':'');
@@ -1936,10 +2119,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{fontSize:12,fontWeight:700,color:'#1e3a5f'}}>📦 Order Details — {linkedSO.memo||linkedSO.id}</div>
               <span style={{fontSize:10,color:'#64748b'}}>{linkedSO.id}</span>
             </div>
-            {safeItems(linkedSO).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+            {/* Scoped to the lines THIS invoice bills — a partial invoice used to list the
+                whole order here, so a school billed for 94 hoodies saw all 2,000 units of
+                the SO. `_soIdx` keeps the original SO position for the line-rate lookup. */}
+            {scopeSoItemsToInvoice(inv,safeItems(linkedSO)).items.map((it,ii)=>{const qty=it._invQty;const sizes=Object.entries(it._invSizes||{}).filter(([,v])=>v>0);
               const decos=safeDecos(it).filter(d=>d.type||d.deco_type||d.kind);
               const decoLabels=decos.map(d=>{const t=d.type||d.deco_type||d.kind||'';const pos=d.position||'';return(t.charAt(0).toUpperCase()+t.slice(1).replace(/_/g,' '))+(pos?' — '+pos:'')}).filter(Boolean);
-              const matchedJobs=soJobs.filter(j=>(j.items||[]).some(ji=>ji===it.id||ji===ii)||(!j.items&&soAF.some(af=>af.id===j.art_file_id&&decos.some(d=>d.art_file_id===af.id))));
+              const matchedJobs=soJobs.filter(j=>(j.items||[]).some(ji=>ji===it.id||ji===it._soIdx)||(!j.items&&soAF.some(af=>af.id===j.art_file_id&&decos.some(d=>d.art_file_id===af.id))));
               const jobDecoLabels=matchedJobs.map(j=>{const t=j.deco_type||'';return(t.charAt(0).toUpperCase()+t.slice(1).replace(/_/g,' '))+(j.art_name?' — '+j.art_name:'')}).filter(Boolean);
               const allDecoLabels=[...new Set([...decoLabels,...jobDecoLabels])];
               return<div key={ii} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
@@ -1955,7 +2141,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                         the invoice total (INV-63089: $16 shown for an $18 all-in item). Match by the
                         canonical soLineKey (same helper that stamped _so_line_key at invoice creation);
                         the fallback requires sku + color + qty and refuses ambiguous matches. */}
-                    <div style={{fontSize:10,color:'#64748b'}}>${(()=>{const lis=inv.line_items||[];let li=lis.find(l=>l._so_line_key===soLineKey(it,ii));if(!li){const cands=lis.filter(l=>(l._sku||l.sku)===it.sku&&(l._color==null||l._color===it.color)&&safeNum(l.qty)===qty);if(cands.length===1)li=cands[0]}return safeNum(li&&li.rate!=null?li.rate:it.unit_sell)})().toFixed(2)}/ea</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>${(()=>{const lis=inv.line_items||[];let li=lis.find(l=>l._so_line_key===soLineKey(it,it._soIdx));if(!li){const cands=lis.filter(l=>(l._sku||l.sku)===it.sku&&(l._color==null||l._color===it.color)&&safeNum(l.qty)===qty);if(cands.length===1)li=cands[0]}return safeNum(li&&li.rate!=null?li.rate:it.unit_sell)})().toFixed(2)}/ea</div>
                   </div>
                 </div>
                 {allDecoLabels.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
@@ -1973,8 +2159,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>}
           </div>})()}
           {/* Invoice line items — only shown when there's no linked SO. When an SO is
-              linked, the Order Details section above already lists every item (with
-              correct pricing and sizes), so we don't repeat them here. */}
+              linked, the Order Details section above already lists the items THIS invoice
+              bills (with correct pricing and sizes), so we don't repeat them here. */}
           {inv.line_items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
             {inv.line_items.map((li,i)=>{const rate=safeNum(li.rate!=null?li.rate:li.unit_sell);const amt=li.amount!=null?safeNum(li.amount):safeNum(li.qty)*rate;
@@ -2242,7 +2428,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               // Surface an open team store right on the dashboard — a live store is
               // time-sensitive (it closes), so it earns a tile, not just the nav tab.
               const _openStore=cpStores.find(s=>s.status==='open');
-              const _storeClose=_openStore&&_openStore.close_at?new Date(_openStore.close_at).toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'}):'';
+              const _storeClose=_openStore&&_openStore.close_at?(ptDateLabel(_openStore.close_at)||''):'';
               const qa=[
               {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
               // Estimates live inside the Orders section now (the "Estimates to Approve"
@@ -2282,15 +2468,19 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   <button className="nsa-dbtn nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:8,cursor:'pointer'}}>Approve</button>
                 </div>})}
             </div>);})()}
-            {(()=>{const jobs=waitingArtJobs.slice(0,3);return(
+            {/* Designs to Review — the whole queue, not a sample. It used to show the first three,
+                which on a busy order read as "that's all of it". Below the actionable ones sits
+                what's still being drawn, so a coach who got one proof of three can SEE the other
+                two are coming instead of assuming the order was half-forgotten. */}
+            {(()=>{const jobs=waitingArtJobs;const upcoming=upcomingArtJobs;return(
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
-                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review</div>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review{jobs.length>0?' ('+jobs.length+')':''}</div>
                 <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
               </div>
-              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>No proofs waiting on you right now.</div>:
+              {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>{upcoming.length>0?'Nothing to approve yet — the designs below are still being drawn.':'No proofs waiting on you right now.'}</div>:
                jobs.map((j,ix)=>{const so=j.so;
-                return<div key={j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
+                return<div key={so.id+'|'+j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
                   <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:12,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16}}>{String(ix+1).padStart(2,'0')}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{j.art_name||so.memo||'Artwork'}</div>
@@ -2298,6 +2488,21 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <button className="nsa-dbtn nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:8,cursor:'pointer'}}>Review</button>
                 </div>})}
+              {upcoming.length>0&&<>
+                <div style={{padding:'12px 22px 6px',borderTop:'1px solid #EEF1F6',background:'#FAFBFC'}}>
+                  <div className="nsa-disp" style={{fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',color:'#94A0B0'}}>Still being designed ({upcoming.length})</div>
+                  <div style={{fontSize:12,color:'#94A0B0',marginTop:2}}>Nothing for you to do yet — we'll email you as each one is ready.</div>
+                </div>
+                {upcoming.map(u=><div key={u.so.id+'|'+u.id} style={{display:'flex',alignItems:'center',gap:12,padding:'10px 22px',background:'#FAFBFC'}}>
+                  <div style={{width:46,height:46,flexShrink:0,borderRadius:12,background:'#EEF1F6',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>🎨</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:'#94A0B0',lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{u.art_name||u.so.memo||'Artwork'}</div>
+                    <div style={{fontSize:12,color:'#94A0B0',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{u.so.memo||u.so.id}</div>
+                  </div>
+                  <span style={{flexShrink:0,fontSize:10,fontWeight:700,letterSpacing:'.3px',textTransform:'uppercase',color:'#94A0B0',background:'#EEF1F6',borderRadius:999,padding:'6px 12px',whiteSpace:'nowrap'}}>{cpUpcomingArtLabel(u)}</span>
+                </div>)}
+                <div style={{height:12,background:'#FAFBFC'}}/>
+              </>}
             </div>);})()}
           </div>
           {/* ── Rep + Contact ── */}
@@ -2368,7 +2573,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{color:'#94a3b8',fontSize:13,padding:'24px 4px',textAlign:'center',border:'1px dashed #e2e8f0',borderRadius:10}}>No orders, estimates, or invoices yet.<br/>Your rep will post them here as they come in.</div>}
 
         {/* Payment success banner */}
-        {page==='home'&&paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
+        {/* Not gated to a page: the buyer lands here from home, billing, or the emailed
+            invoice link, and every one of those routes leaves `page` on 'billing'. Gating
+            this to 'home' meant the confirmation — and the receipt controls inside it —
+            never rendered after a real payment. */}
+        {paySuccess&&<div style={{padding:16,background:paySuccess.processing?'#fffbeb':'#f0fdf4',border:'2px solid '+(paySuccess.processing?'#f59e0b':'#22c55e'),borderRadius:12,marginBottom:16,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>{paySuccess.processing?'⏳':'✅'}</div>
           <div style={{fontSize:18,fontWeight:800,color:paySuccess.processing?'#92400e':'#166534',marginBottom:4}}>{paySuccess.processing?'Payment Processing':'Payment Successful!'}</div>
           <div style={{fontSize:14,color:paySuccess.processing?'#92400e':'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})}{paySuccess.processing?' is processing':' paid'}{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>

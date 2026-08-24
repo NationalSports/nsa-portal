@@ -2,7 +2,22 @@
  * refresh signs the user out (PR: auth-reliability-fixes). The behavioral guarantee under test:
  * a transient/network refresh failure must NEVER be classified 'fatal', because 'fatal' is the only
  * path that force-logs-out — that misclassification was the "it randomly logged me out" bug. */
-import { _classifyRefresh, _isAuthError, _isPermissionDenied, _handleAuthSaveFailure, _permDenialParked, _clearSaveError, _dbSaveFailedIds } from '../lib/dbEngine';
+import { _classifyRefresh, _isAuthError, _isLiveSession, _isPermissionDenied, _handleAuthSaveFailure, _permDenialParked, _clearSaveError, _dbSaveFailedIds } from '../lib/dbEngine';
+
+describe('_isLiveSession — expired storage objects never bypass re-auth', () => {
+  const now = 2_000_000_000;
+
+  test('accepts only a bearer session whose expiry is in the future', () => {
+    expect(_isLiveSession({ access_token: 'fresh', expires_at: now + 60 }, now)).toBe(true);
+  });
+
+  test('rejects expired, malformed, and missing sessions', () => {
+    expect(_isLiveSession({ access_token: 'expired', expires_at: now - 1 }, now)).toBe(false);
+    expect(_isLiveSession({ access_token: 'missing-expiry' }, now)).toBe(false);
+    expect(_isLiveSession({ expires_at: now + 60 }, now)).toBe(false);
+    expect(_isLiveSession(null, now)).toBe(false);
+  });
+});
 
 describe('_classifyRefresh — transient failures never force logout', () => {
   test('ok: refresh returned a session with no error', () => {

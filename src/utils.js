@@ -39,6 +39,24 @@ export const authFetch=async(url,opts={})=>{
   return res;
 };
 
+// Bound a promise that might never settle. An await that never settles can't be
+// caught by the caller's try/catch — it just stops the whole flow silently — so
+// anything network-bound that a user action depends on should be raced here.
+export const _withTimeout=(promise,ms,msg)=>{
+  let t=null;
+  const timeout=new Promise((_,reject)=>{t=setTimeout(()=>reject(new Error(msg||('Timed out after '+ms+'ms'))),ms)});
+  return Promise.race([promise,timeout]).finally(()=>{if(t)clearTimeout(t)});
+};
+
+// fetch() with an abort deadline. A plain fetch has NO timeout: a host that
+// accepts the connection and then never responds hangs forever.
+export const fetchWithTimeout=async(url,opts={},ms=15000)=>{
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),ms);
+  try{return await fetch(url,{...opts,signal:ctrl.signal})}
+  finally{clearTimeout(timer)}
+};
+
 // ── Brevo Email ──
 // Public availability flag — NOT the API key. The real key lives only in the
 // server-side BREVO_API_KEY env var and is used by netlify/functions/brevo-proxy.
@@ -46,7 +64,37 @@ export const authFetch=async(url,opts={})=>{
 // the bundle. UI gates ("Sends directly" badges, mailto fallbacks) read this flag.
 // Defaults on; set REACT_APP_BREVO_ENABLED=false to force mailto fallback.
 export const _brevoKey = (process.env.REACT_APP_BREVO_ENABLED || 'true') !== 'false';
+// Two paths, one function. /api/mail-send is a rewrite onto brevo-proxy declared in
+// public/_redirects; the vendor path is the function's own URL. Sends go out on the
+// neutral path FIRST because ad blockers, privacy extensions and network filters match
+// "brevo" (an email-marketing vendor) anywhere in a request URL and abort it inside the
+// browser — the rep only ever saw "Email send failed: Failed to fetch" and nothing ever
+// reached the server. The vendor path stays as the fallback: a deploy that predates the
+// rewrite answers /api/mail-send with the SPA shell (the `/* -> /index.html` catch-all),
+// so a 200 that isn't JSON means "alias not deployed here", not "the send failed".
+const _mailProxy = '/api/mail-send';
 const _brevoProxy = '/.netlify/functions/brevo-proxy';
+// Netlify rejects a function request body over ~6 MB at the edge and tears down the
+// upload mid-flight, which the browser also surfaces as a bare "Failed to fetch". Check
+// the payload before firing so an oversized attachment gets an actionable message.
+const _MAIL_MAX_BYTES = 5 * 1024 * 1024;
+
+// fetch() against the mail proxy, neutral path first, vendor path as fallback. Resolves
+// {res} for any genuine response, or {netErr} when fetch itself threw on both paths
+// (blocked by an extension, offline, connection reset). `query` is appended to the path.
+export const mailProxyFetch=async(query,opts)=>{
+  let netErr=null;
+  for(const base of [_mailProxy,_brevoProxy]){
+    try{
+      const res=await authFetch(base+(query||''),opts);
+      const ct=(res.headers&&res.headers.get&&res.headers.get('content-type'))||'';
+      // SPA shell instead of the function — this deploy has no /api rewrite yet.
+      if(base===_mailProxy&&res.ok&&!/json/i.test(ct))continue;
+      return{res};
+    }catch(e){netErr=e}
+  }
+  return{netErr:netErr||new Error('Failed to fetch')};
+};
 
 // Returns an absolute URL for the company logo so it renders inside external
 // email clients (Gmail, Apple Mail, etc.) which won't follow relative paths.
@@ -115,14 +163,20 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
     if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}
     if(attachment&&attachment.length>0)payload.attachment=attachment;
-    const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
-    body:JSON.stringify(payload)});
-    const d=await r.json();
+    const body=JSON.stringify(payload);
+    const bytes=(typeof Blob!=='undefined')?new Blob([body]).size:body.length;
+    if(bytes>_MAIL_MAX_BYTES)return{ok:false,error:'This email is too large to send ('+(bytes/1048576).toFixed(1)+' MB; the limit is 5 MB). The document PDF is attached automatically, so a large photo or PDF you added is usually the cause — remove or shrink it and send again.'};
+    const{res:r,netErr}=await mailProxyFetch('',{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},body});
+    // fetch() itself threw on both paths: the request never left the browser (or died on
+    // the wire). Name the usual cause instead of surfacing a bare "Failed to fetch".
+    if(netErr)return{ok:false,error:'Could not reach the mail server — the request was blocked before it left your browser. This is almost always an ad blocker, privacy extension, or network/DNS filter. Try again with extensions disabled (or in an incognito window), or on a different network. ('+(netErr.message||'network error')+')'};
+    const d=await r.json().catch(()=>({}));// 413s and gateway errors come back with no JSON body
     if(!r.ok){
       // authFetch already retried once with a hard session refresh; a 401 that
       // survives that means the user's session is genuinely gone (signed out
       // elsewhere, revoked, etc.) rather than just a stale-token blip.
       if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
+      if(r.status===413)return{ok:false,error:'This email is too large to send. Remove or shrink the attachments and send again.'};
       return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
     }
     return{ok:true,messageId:d.messageId}}
@@ -250,6 +304,30 @@ export const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormDa
 export const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 export const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 export const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
+
+/**
+ * Collapse re-uploaded copies of the same mockup.
+ *
+ * A re-uploaded proof lands under a fresh URL but keeps its original filename, so a slot ends up
+ * holding the same image two or three times (SO-1605's backpack: `5159512|Black|names` carries two
+ * copies of "Coronado FC · SO-1605 · heat press · Other-01.jpg").
+ *
+ * MUST be applied PER SLOT, never across a garment's whole mockup set. Filenames are auto-generated
+ * from customer + SO + method + POSITION, so two decorations at the same position — the backpack's
+ * patch and its names, both "Other" — produce byte-identical filenames for genuinely different
+ * proofs. Deduping across slots would silently drop one of them.
+ */
+export const dedupeMockDupes = (arr) => {
+  const out = []; const seen = new Set();
+  (Array.isArray(arr)?arr:[]).forEach((f) => {
+    if (!f) return;
+    const nm = String(fileDisplayName(f) || '').trim().toLowerCase();
+    if (nm) { if (seen.has(nm)) return; seen.add(nm); }
+    out.push(f);
+  });
+  return out;
+};
+
 export const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 export const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;if(u&&typeof u==='string'&&/(?:assetly|assets)\.ordermygear\.com\//.test(u))return true;return false};
@@ -356,6 +434,15 @@ export const _brevoSmsSender='NSA';
 export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ── Document/print helpers ──
+// School (customer) PO number for a packing slip's info row. Takes one order or a list —
+// a multi-SO slip shows every distinct PO so the school can match the shipment against its
+// own paperwork. Returns [] when no PO was entered, so it spreads straight into infoBoxes.
+export const schoolPOBoxes=(orders)=>{
+  const list=(Array.isArray(orders)?orders:[orders]).filter(Boolean);
+  const nums=[...new Set(list.map(o=>String(o.po_number||'').trim()).filter(Boolean))];
+  if(!nums.length)return[];
+  return[{label:'School PO #',value:'<span style="font-family:monospace;font-weight:700">'+nums.join(', ')+'</span>'}];
+};
 export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo,appendixHtml,repeatInfoHeader,_runHeaderCss})=>{
   const _NSA={..._NSA_CONST,...(companyInfo||{})};
   let h='';

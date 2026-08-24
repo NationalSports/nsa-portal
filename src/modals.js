@@ -612,10 +612,24 @@ try { if (_stripePkPublic) stripePromise = loadStripe(_stripePkPublic); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 
-function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
+function StripeCheckoutForm({amount,fee,method,defaultName,onSuccess,onCancel}){
   const stripe=useStripe();const elements=useElements();
   const[processing,setProcessing]=useState(false);
   const[error,setError]=useState(null);
+  // Stripe's PaymentElement has no way to FORCE a name field — `fields.billingDetails.name`
+  // only accepts 'auto' | 'never', and 'auto' hides it for US cards. So we collect the name
+  // here, tell the Element never to render its own, and pass it at confirm time via
+  // payment_method_data.billing_details (the pattern Stripe documents for omitted fields).
+  // It reaches the Stripe dashboard and the card receipt, which is what staff reconcile against.
+  const[billingName,setBillingName]=useState(defaultName||'');
+  // Manually-entered bank account: Stripe verifies it with micro-deposits BEFORE any debit
+  // (status 'requires_action' + next_action verify_with_microdeposits). The storefront and
+  // team-shop checkouts already treat this as pending; this modal showed "Payment was not
+  // completed. Please try again." — wrong (retrying just mints another unverified intent),
+  // and exactly what the Tiki Hut payer hit. Hold the verification URL and explain instead.
+  const[microdeposit,setMicrodeposit]=useState(null);// {url} once Stripe asks for verification
+  const isBank=method==='bank';
+  const nameLabel=isBank?'Account holder name':'Name on card';
   // The fee is fixed by the Card-vs-Bank choice made before this form loaded (see StripePaymentModal):
   // bank/ACH gets fee=0, card gets the 2.9%. Nothing is detected here, so Link can't muddy it.
   const _fee=fee||0;
@@ -624,8 +638,12 @@ function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
   const handleSubmit=async(e)=>{
     e.preventDefault();
     if(!stripe||!elements){return}
+    const _name=(billingName||'').trim();
+    // Required: the Element no longer collects it, so an empty name would fail at Stripe with a
+    // far less obvious message than this one.
+    if(!_name){setError('Please enter the '+nameLabel.toLowerCase()+'.');return}
     setProcessing(true);setError(null);
-    const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
+    const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href,payment_method_data:{billing_details:{name:_name}}},redirect:'if_required'});
     if(result.error){
       setError(result.error.message);setProcessing(false);
     }else if(result.paymentIntent&&(result.paymentIntent.status==='succeeded'||result.paymentIntent.status==='processing')){
@@ -633,14 +651,38 @@ function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
       // 'succeeded'. Treat that as a (pending) success; the invoice is marked paid on settlement via
       // the webhook. (Without this, ACH wrongly showed "payment not completed.")
       onSuccess({intentId:result.paymentIntent.id,amount,fee:_fee,last4:null,brand:null,status:result.paymentIntent.status});
+    }else if(result.paymentIntent&&result.paymentIntent.status==='requires_action'
+      &&result.paymentIntent.next_action&&result.paymentIntent.next_action.type==='verify_with_microdeposits'){
+      // No debit has happened yet — the invoice correctly stays open. Once the payer verifies,
+      // Stripe runs the debit and the webhook marks the invoice paid (reconcileInvoiceFromIntent).
+      setMicrodeposit({url:(result.paymentIntent.next_action.verify_with_microdeposits||{}).hosted_verification_url||null});
+      setProcessing(false);
     }else{
       setError('Payment was not completed. Please try again.');setProcessing(false);
     }
   };
 
+  if(microdeposit)return<div style={{textAlign:'center',padding:'8px 0'}}>
+    <div style={{fontSize:34,marginBottom:10}}>🏦</div>
+    <div style={{fontSize:16,fontWeight:800,color:'#92400e',marginBottom:8}}>One more step — verify your bank account</div>
+    <div style={{fontSize:13,color:'#475569',lineHeight:1.6,textAlign:'left',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,padding:'12px 14px',marginBottom:14}}>
+      Your bank couldn't be connected instantly, so Stripe will send a <strong>small test deposit</strong> to your account in 1&ndash;2 business days. Once you confirm it, your payment of <strong>${total.toFixed(2)}</strong> runs automatically &mdash; there's nothing else to submit.
+      <br/><br/>Stripe has emailed you a verification link{microdeposit.url?' (or use the button below)':''}. <strong>Please don't pay again</strong> &mdash; the invoice will show as due until the payment clears. If you'd rather pay another way, contact NSA first so we can cancel this one.
+    </div>
+    {microdeposit.url&&<a href={microdeposit.url} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'#1e3a5f',color:'white',textDecoration:'none',padding:'11px 20px',borderRadius:8,fontSize:14,fontWeight:700,marginBottom:10}}>Open verification page</a>}
+    <div><button type="button" className="btn btn-secondary btn-sm" style={{fontSize:12}} onClick={onCancel}>Close</button></div>
+  </div>;
+
   return<form onSubmit={handleSubmit}>
+    <div style={{marginBottom:14}}>
+      <label htmlFor="nsa-billing-name" style={{display:'block',fontSize:12,fontWeight:600,color:'#334155',marginBottom:6}}>{nameLabel}</label>
+      <input id="nsa-billing-name" type="text" autoComplete={isBank?'name':'cc-name'} value={billingName}
+        onChange={e=>{setBillingName(e.target.value);if(error)setError(null)}}
+        placeholder={isBank?'Name on the bank account':'Name as it appears on the card'}
+        style={{width:'100%',padding:'12px 14px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,fontFamily:'inherit',color:'#0f172a',background:'white'}}/>
+    </div>
     <div style={{marginBottom:16}}>
-      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}}/>
+      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'},fields:{billingDetails:{name:'never'}}}}/>
     </div>
     {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
     <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
@@ -719,13 +761,17 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
   const choiceBtn={width:'100%',textAlign:'left',padding:'14px 16px',borderRadius:10,border:'2px solid #e2e8f0',background:'white',cursor:'pointer',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:14};
 
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
-    <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
-      <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px'}}>
+    {/* maxHeight 100% (not 100vh) caps the card to the fixed overlay's box, so it can never grow past
+        the viewport — on mobile that also dodges the 100vh-vs-collapsing-toolbar gap. The card is a
+        flex column so the header stays put and only the body scrolls. Without this the Stripe
+        PaymentElement pushed the Pay button off-screen with nothing to scroll. */}
+    <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden',maxHeight:'100%',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
+      <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px',flexShrink:0}}>
         <img src="/nsa-logo.svg" alt="NSA" style={{height:28,filter:'brightness(0) invert(1)',marginBottom:4}}/>
         <div style={{fontSize:20,fontWeight:800,marginTop:4}}>Secure Payment</div>
         <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
       </div>
-      <div style={{padding:'20px 24px'}}>
+      <div style={{padding:'20px 24px',overflowY:'auto'}}>
         {paymentNote&&<div style={{padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af',marginBottom:12,lineHeight:1.4}}>{paymentNote}</div>}
         {error&&<div style={{padding:20,textAlign:'center'}}>
           <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
@@ -753,7 +799,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
         </div>}
         {!error&&payChoice&&clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={checkoutSubtotal} fee={chosenFee} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+          <StripeCheckoutForm amount={checkoutSubtotal} fee={chosenFee} method={payChoice} defaultName={payChoice==='bank'?(customerName||''):''} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>

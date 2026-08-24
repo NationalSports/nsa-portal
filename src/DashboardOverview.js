@@ -148,9 +148,9 @@ export default function DashboardOverview({
     if (invoice.id) countedInvoiceIds.add(invoice.id);
     if (scopedToUser) {
       const parent = !isHistorical ? orderById.get(invoice.so_id) : null;
-      const repId = parent
-        ? orderRepId(parent)
-        : customerById.get(invoice.customer_id)?.primary_rep_id;
+      const repId =
+        invoice.rep_id ||
+        (parent ? orderRepId(parent) : customerById.get(invoice.customer_id)?.primary_rep_id);
       if (repId !== user?.id) return;
     }
     const date = parsePortalDate(invoice.date || invoice.created_at);
