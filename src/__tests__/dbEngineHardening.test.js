@@ -750,7 +750,9 @@ describe('_dbSaveSOInner — stale so_jobs save cannot regress art_status (SO-11
     const result = await _dbSaveSO(soWith(job));
     expect(result).toBe(true);
     expect(jobUpsertRows(__mockState.calls)[0].art_status).toBe('art_complete');
-    // The client copy rebases onto its own write (DB version + trigger bump).
+    // The client copy adopts the protected row before rebasing. A version-only rebase would make its stale
+    // waiting_approval look current and the next unrelated save would undo this guard.
+    expect(job.art_status).toBe('art_complete');
     expect(job._version).toBe(6);
   });
 
@@ -869,6 +871,8 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
     const row = jobUpsertRow(__mockState.calls);
     expect(row.fulfilled_units).toBe(6);
     expect(row.item_status).toBe('partially_received');
+    expect(job.fulfilled_units).toBe(6);
+    expect(job.item_status).toBe('partially_received');
   });
 
   test('a current copy (version matches DB) may lower fulfilled_units — deliberate un-receive', async () => {
@@ -897,6 +901,8 @@ describe('_dbSaveSOInner — stale so_jobs save preserves receipts and history (
     expect(row.art_messages.map(m => m.id)).toEqual(['m1', 'm2', 'm3']); // DB order first, new entry appended
     expect(row.sent_history.length).toBe(1);                             // DB record rescued
     expect(row.rejections.length).toBe(1);                               // unchanged list untouched
+    expect(job.art_messages.map(m => m.id)).toEqual(['m1', 'm2', 'm3']); // adopted locally for the next save
+    expect(job.sent_history.length).toBe(1);
   });
 
   test('a current copy keeps full authority over its lists', async () => {
