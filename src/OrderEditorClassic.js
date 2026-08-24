@@ -17,7 +17,7 @@
    ═══════════════════════════════════════════════════════════════ */
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
@@ -1047,6 +1047,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
   const[sizingDraft,setSizingDraft]=useState({});
+  const sizingDraftRef=useRef({});
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   // Art proofs often go to several contacts — keep the greeting naming whoever is checked
   // ("Hi Cam and Hillary,"). Only the greeting line is rewritten, so typed edits survive.
@@ -1735,8 +1736,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const onSaveRef=React.useRef(onSave);React.useEffect(()=>{onSaveRef.current=onSave},[onSave]);
   const onSaveNowRef=React.useRef(onSaveNow);React.useEffect(()=>{onSaveNowRef.current=onSaveNow},[onSaveNow]);
   const onEmergencySaveRef=React.useRef(onEmergencySave);React.useEffect(()=>{onEmergencySaveRef.current=onEmergencySave},[onEmergencySave]);
+  // Size inputs deliberately buffer keystrokes until blur so clearing "8" on the way to "13"
+  // does not trip the committed-quantity guards. Mirror that buffer in a ref: Save follows blur
+  // immediately, before React would normally expose the new order state to the click handler.
+  const _stageSizingDraft=(k,v)=>{const next={...sizingDraftRef.current,[k]:v};sizingDraftRef.current=next;setSizingDraft(next);dirtyRef2.current=true;setDirty(true)};
+  const _dropSizingDraft=k=>{if(!(k in sizingDraftRef.current))return;const next={...sizingDraftRef.current};delete next[k];sizingDraftRef.current=next;setSizingDraft(next)};
+  const _flushActiveSizingDraft=()=>{
+    if(!Object.keys(sizingDraftRef.current).length)return true;
+    const active=typeof document!=='undefined'?document.activeElement:null;
+    if(active?.dataset?.sizingDraft==='true'&&typeof active.blur==='function')active.blur();
+    return Object.keys(sizingDraftRef.current).length===0;
+  };
   React.useEffect(()=>{
     const doAutoSave=(emergency=false)=>{
+      // Never persist the old quantity while a size cell still owns a newer draft. Emergency
+      // unload/version-reload saves first force the focused cell through its synchronous blur
+      // commit; the regular 30s autosave simply waits for the rep to finish the edit.
+      if(Object.keys(sizingDraftRef.current).length){
+        if(!emergency)return;
+        const active=typeof document!=='undefined'?document.activeElement:null;
+        if(active?.dataset?.sizingDraft==='true'&&typeof active.blur==='function')active.blur();
+        if(Object.keys(sizingDraftRef.current).length)return;
+      }
       let cur=oRef.current;if(!cur)return;
       // Fold in text from inputs that commit on blur (memo/PO #) but may not have blurred yet —
       // covers a tab crash / version-reload firing while a field is still focused.
@@ -2857,7 +2878,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
-    const item=o.items[i];if(!item)return;
+    const item=safeItems(oRef.current||o)[i];if(!item)return;
     const cur=item.sizes[sz]||0;
     if(n===cur)return;// no-op: value unchanged, skip render + side effects
     const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
@@ -2866,13 +2887,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Apply the size change (optionally with synced po_lines) in ONE update so the item and its
     // POs can't drift apart between saves.
     const _applySizes=(po_lines,note)=>{
-      setO(e=>({...e,items:safeItems(e).map((it,x)=>{
+      setO(e=>{const next={...e,items:safeItems(e).map((it,x)=>{
         if(x!==i)return it;
         const next={...it,sizes:{...it.sizes,[sz]:n}};
         if(po_lines)next.po_lines=po_lines;
         if(it.est_qty&&Object.values(next.sizes).reduce((a,v2)=>a+safeNum(v2),0)>0)next.est_qty=0;
         return next;
-      }),updated_at:new Date().toLocaleString()}));
+      }),updated_at:new Date().toLocaleString()};oRef.current=next;return next});
       setDirty(true);
       if(note)nf(note);
     };
@@ -4406,12 +4427,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
       <button className="btn btn-sm btn-primary" onClick={()=>{
+        if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
+        const current=oRef.current||o;
         if(!cust){nf('Select a customer first','error');return}
-        if(!o.memo?.trim()){nf('Memo is required','error');return}
-        const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+        if(!current.memo?.trim()){nf('Memo is required','error');return}
+        const validItems=safeItems(current).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
-        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
+        onSave(current);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -5332,7 +5355,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 (an 11-wide row starting at 5 breaks after 10). */}
             <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-              <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
+              <input data-sizing-draft="true" value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;_stageSizingDraft(k,e.target.value)}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraftRef.current))return;const v=sizingDraftRef.current[k];flushSync(()=>{uSz(idx,sz,v);_dropSizingDraft(k)})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];
                 // Show stock FREE TO PULL, not gross on-hand: units claimed by an open IF (here or on
