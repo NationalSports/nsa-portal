@@ -11,6 +11,7 @@ import {
   isDecorationVendorBill,
   manualBillAccountKey,
   migrateQBAccountMapping,
+  parseOmgDepositStatements,
   resolveQBAccount,
 } from '../qbAccountMappings';
 
@@ -55,6 +56,8 @@ describe('QuickBooks account resolution', () => {
       omg_fee_account: '57000', omg_card_fee_account: '71400', operating_bank_account: '10100',
       ar_account: '11000', ap_account: '21100', tax_parent_account: '25201',
     });
+    expect(QB_ACCOUNT_MAPPING_DEFAULTS.decoration_account).toBe('55200');
+    expect(migrateQBAccountMapping({decoration_account:'55100'}).decoration_account).toBe('55200');
     expect(QB_STATE_TAX_ACCOUNT_KEYS).toEqual({
       CA: 'tax_ca_account', AZ: 'tax_az_account', CO: 'tax_co_account',
       NV: 'tax_nv_account', TX: 'tax_tx_account', WA: 'tax_wa_account',
@@ -184,57 +187,103 @@ describe('customer shipping routing', () => {
 });
 
 describe('OMG and internal labor source routing', () => {
-  test('routes only OrderMyGear-hosted store fees to 57000', () => {
-    expect(getOmgFeeSource({source:'omg',id:'store-1',_omg_omg_fees:123.45})).toMatchObject({
-      sourceType:'omg_accounting_report',sourceId:'store-1',amount:123.45,accountKey:'omg_fee_account',
-    });
+  const statementText=`
+                           National Sports Apparel LLC                                                      Deposit Statement
+                           2238 North Glasell Avenue Suite E
+                           Orange, CA 92865                                                                     MRBHQRB6G
+
+                                                     Statement Date                     08/18/26     Total Collected                   $8,963.02
+                                                     Deposit Status                   completed      OMG Fee Withheld                   ($369.90)
+                                                     Bank Account FIRST FOUNDATION BANK - 7609       Processing Fee Withheld            ($288.81)
+                                                     Stores Included                          28     Net Amount                     $8,304.31
+
+  08/17/26        Payment          188425518       Store A          $21.75      ($0.83)      ($0.93)      $19.99
+  08/17/26        Refund           185660853       Store B        ($114.74)       $4.36        $3.43    ($106.95)
+  `;
+
+  test('parses one completed multi-store OMG statement into one reconciled bank-deposit manifest', () => {
+    expect(parseOmgDepositStatements(statementText)).toEqual([{
+      sourceKey:'NSA-OMG-DEPOSIT:MRBHQRB6G',
+      statementId:'MRBHQRB6G',
+      statementDate:'2026-08-18',
+      depositStatus:'completed',
+      bankAccount:'FIRST FOUNDATION BANK - 7609',
+      storesIncluded:28,
+      totalCollected:8963.02,
+      omgFeeWithheld:369.9,
+      processingFeeWithheld:288.81,
+      netAmount:8304.31,
+      refundCount:1,
+      hasRefunds:true,
+    }]);
+  });
+
+  test('rejects a statement whose collected amount, fees, and net do not reconcile', () => {
+    expect(()=>parseOmgDepositStatements(statementText.replace('$8,304.31','$8,304.30')))
+      .toThrow(/does not reconcile/i);
+  });
+
+  test('never routes Deposit Statement OMG Fee Withheld to 57000', () => {
+    expect(getOmgFeeSource({source:'omg',id:'store-1',_omg_deposit_statement_id:'MRBHQRB6G',_omg_omg_fees:123.45}))
+      .toMatchObject({
+        sourceType:'omg_deposit_statement_withheld_fee',sourceId:'MRBHQRB6G',amount:123.45,
+        accountKey:null,blocked:true,
+      });
     expect(getOmgFeeSource({source:'webstore',id:'native-1',_omg_omg_fees:123.45})).toBeNull();
     expect(getOmgFeeSource({source:'omg',id:'store-2',_omg_omg_fees:0})).toBeNull();
   });
 
-  test('builds an OMG deposit from gross payments with separate 57000 and 71400 negative lines', () => {
+  test('builds a reconciled OMG deposit without assuming withheld fees use 57000', () => {
     const result=buildOmgBankDeposit({
       sourceId:'OMG-REPORT-42',
       txnDate:'2026-08-23',
       payments:[{paymentId:'pmt-1',amount:600},{paymentId:'pmt-2',amount:400}],
       omgFee:75,
       cardFee:29.5,
-      bankAccountRef:{value:'bank-10100'},
-      omgFeeAccountRef:{value:'cogs-57000'},
+      bankAccountRef:{value:'bank-configured'},
+      omgWithheldFeeAccountRef:{value:'withheld-fee-account-tbd'},
       cardFeeAccountRef:{value:'expense-71400'},
+      expectedCollected:1000,
+      expectedNet:895.5,
+      depositStatus:'completed',
     });
     expect(result).toMatchObject({
       sourceKey:'NSA-OMG-DEPOSIT:OMG-REPORT-42',gross:1000,totalFees:104.5,net:895.5,
       deposit:{
         TxnDate:'2026-08-23',
-        DepositToAccountRef:{value:'bank-10100'},
+        DepositToAccountRef:{value:'bank-configured'},
         PrivateNote:'NSA-OMG-DEPOSIT:OMG-REPORT-42',
       },
     });
     expect(result.deposit.Line).toEqual([
       {Amount:600,LinkedTxn:[{TxnId:'pmt-1',TxnType:'Payment',TxnLineId:'0'}]},
       {Amount:400,LinkedTxn:[{TxnId:'pmt-2',TxnType:'Payment',TxnLineId:'0'}]},
-      {Amount:-75,Description:'OrderMyGear fee',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'cogs-57000'}}},
-      {Amount:-29.5,Description:'OrderMyGear credit-card processing fee',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'expense-71400'}}},
+      {Amount:-75,Description:'OrderMyGear fee withheld',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'withheld-fee-account-tbd'}}},
+      {Amount:-29.5,Description:'OrderMyGear processing fee withheld',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'expense-71400'}}},
     ]);
     expect(result.deposit.Line.reduce((sum,line)=>sum+line.Amount,0)).toBe(result.net);
   });
 
-  test('blocks unsafe or unreconciled OMG deposits before QBO', () => {
+  test('blocks unsafe, incomplete, refunded, or unreconciled OMG deposits before QBO', () => {
     const base={
       sourceId:'OMG-1',txnDate:'2026-08-23',payments:[{paymentId:'pmt-1',amount:100}],
-      bankAccountRef:{value:'bank'},omgFeeAccountRef:{value:'omg'},cardFeeAccountRef:{value:'card'},
+      omgFee:5,cardFee:3,expectedCollected:100,expectedNet:92,depositStatus:'completed',
+      bankAccountRef:{value:'bank'},omgWithheldFeeAccountRef:{value:'omg-withheld'},cardFeeAccountRef:{value:'card'},
     };
     expect(()=>buildOmgBankDeposit({...base,payments:[]})).toThrow(/at least one linked/i);
     expect(()=>buildOmgBankDeposit({...base,payments:[{paymentId:'',amount:100}]})).toThrow(/Payment ID/i);
     expect(()=>buildOmgBankDeposit({...base,payments:[{paymentId:'pmt-1',amount:60},{paymentId:'pmt-1',amount:40}]})).toThrow(/duplicate/i);
     expect(()=>buildOmgBankDeposit({...base,omgFee:-1})).toThrow(/cannot be negative/i);
-    expect(()=>buildOmgBankDeposit({...base,omgFee:80,cardFee:20})).toThrow(/less than the gross/i);
-    expect(()=>buildOmgBankDeposit({...base,bankAccountRef:null})).toThrow(/10100 bank/i);
+    expect(()=>buildOmgBankDeposit({...base,omgFee:80,cardFee:20,expectedNet:0})).toThrow(/less than the gross/i);
+    expect(()=>buildOmgBankDeposit({...base,bankAccountRef:null})).toThrow(/deposit bank/i);
     expect(()=>buildOmgBankDeposit({...base,txnDate:'08/23/2026'})).toThrow(/YYYY-MM-DD/i);
+    expect(()=>buildOmgBankDeposit({...base,refundCount:1})).toThrow(/refund/i);
+    expect(()=>buildOmgBankDeposit({...base,depositStatus:'pending'})).toThrow(/not completed/i);
+    expect(()=>buildOmgBankDeposit({...base,expectedCollected:99})).toThrow(/Total Collected/i);
+    expect(()=>buildOmgBankDeposit({...base,expectedNet:91})).toThrow(/Net Amount/i);
   });
 
-  test('sources 55100 and 55400 manifests from their separate clocks and current labor rates', () => {
+  test('sources 55200 and 55400 manifests from their separate clocks and current labor rates', () => {
     const manifest=buildInternalLaborCostManifest({
       decorationLogs:[{person:'Dana',minutes:90,idleMinutes:10}],
       artLogs:[{person:'Alex',minutes:120,idleMinutes:15}],
