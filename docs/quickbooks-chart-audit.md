@@ -13,10 +13,11 @@ Source of truth reviewed: `National_Sports Apparel LLC.csv`, exported from the c
 | Freight on a vendor bill | 51000 Freight In | Debit; bill control side is 21100 A/P |
 | Outside-decoration vendor bill | 52000 Outside Decoration | Debit; vendor category is authoritative |
 | Sports Inc fee on a vendor bill | 58000 Sports Inc Fee | Debit; bill control side is 21100 A/P |
-| OrderMyGear hosted-store fee | 57000 OMG Fee | Exact `_omg_omg_fees` amount from the OMG Accounting Report; negative Bank Deposit line |
-| OrderMyGear credit-card fee | 71400 Bank Charges | Exact `_omg_cc_fees` amount; separate negative Bank Deposit line |
-| OrderMyGear payout | 10100 First Foundation Checking | Gross linked QBO Payment(s) less the 57000 and 71400 negative lines; must equal the bank deposit |
-| In-house decoration labor | 55100 Decoration | Production/decoration clock minutes × the employee's labor rate; payroll reclass offset and cadence are gated |
+| OrderMyGear vendor invoice fee | 57000 OMG Fee | Debit on a real OMG vendor bill, such as store-creation or chargeback invoices; bill control side is 21100 A/P |
+| OrderMyGear fee withheld from a deposit | **BLOCKED — account unconfirmed** | Separate negative Bank Deposit line; Andrea confirmed this is not automatically 57000 |
+| OrderMyGear processing fee withheld | 71400 Bank Charges | Separate negative Bank Deposit line |
+| OrderMyGear payout | Configured bank account (currently 10100) | Gross linked QBO Payment(s) less the two withheld-fee lines; must equal the real bank deposit |
+| In-house decoration labor | 55200 Decoration:Decoration Labor | Production/decoration clock minutes × the employee's labor rate; payroll reclass offset and cadence are gated |
 | In-house art labor | 55400 In House Art | Art-clock minutes × the artist's labor rate; payroll reclass offset and cadence are gated |
 | Outbound UPS/FedEx shipping cost | 67000 Freight Expenses | Debit when a future Connect expense source is implemented |
 | Customer payment | 11010 Undeposited Funds | Debit; 11000 A/R is credited |
@@ -46,15 +47,24 @@ The state account numbers are approved, but a taxable QBO invoice still needs th
 
 ## OMG and internal-labor source findings
 
-- Account 57000 applies only to an OrderMyGear-hosted store (`source='omg'`, `omg_store_id`, or the OMG store record). Its amount is `_omg_omg_fees`, imported from the OMG Accounting Report. Native Portal webstore Stripe/card fees are not OMG fees and must not use 57000.
-- Account 55100 has a concrete Portal source: `job_time_logs` minutes multiplied by the current employee rate in `labor_rates`.
+- Account 57000 applies to actual OMG **vendor invoices**, not automatically to the `OMG Fee Withheld` amount on a Deposit Statement. The supplied invoice `584-1L7K7QA` is a paid $8.91 vendor invoice with nine $0.99 OMG-fee lines and is the confirmed 57000 example.
+- The supplied Deposit Statement is one bank deposit: statement `MRBHQRB6G`, dated 08/18/26, containing 28 stores. It reconciles $8,963.02 collected - $369.90 OMG fee withheld - $288.81 processing fee withheld = $8,304.31 net. The processing fee uses 71400. The $369.90 withheld-fee account is still unconfirmed and must not be guessed as 57000.
+- Account 55200 has a concrete Portal source: `job_time_logs` minutes multiplied by the current employee rate in `labor_rates`.
 - Account 55400 has a separate concrete Portal source: `art_time_logs` minutes multiplied by the current artist rate in `labor_rates`.
 - These two labor streams are internal payroll cost, not vendor bills. Posting a new debit without reclassifying an already-booked payroll expense would double-count cost. The Portal therefore exposes them in the mapping/preflight and can produce a dry-run manifest, but does not yet post them.
 - The current clock blobs have no stable per-log IDs, rates are looked up at report time rather than snapshotted at clock-out, and idle minutes are tracked but presently included in the displayed cost. Those issues must be resolved before resumable QBO journals are safe.
 
-Accounting approved the gross-payment/negative-deposit method: record the customer payment in full to 11010 Undeposited Funds, then create the 10100 Bank Deposit by linking the gross QBO Payment(s), subtracting `_omg_omg_fees` to 57000 and `_omg_cc_fees` to 71400. The deposit is blocked unless every Payment ID is unique and the line total exactly equals the net amount received.
+The safe QBO method is: record the customer payment in full to 11010 Undeposited Funds, then create the configured-bank Deposit by linking the gross QBO Payment(s) and subtracting each confirmed withheld fee separately. The deposit is blocked unless every Payment ID is unique and the line total exactly equals the net amount received. The bank mapping is configuration because 10100 will change when NSA changes banks.
 
-An OMG Accounting Report can contain multiple deposits. The current parser is not sufficient for posting: it stores only report-level totals and falls back to the first `Deposit Subtotal` row, without retaining a payout/deposit ID or date. Deposit writes remain blocked until every deposit group can be extracted separately and reconciled to 10100.
+One OMG Deposit Statement corresponds to one bank deposit, but it can contain many stores, payments, and refunds. The supplied statement contains 29 refund rows. Deposit writes remain blocked until refunds/credit memos are linked and the statement's unique ID, date, status, gross, fees, and net all reconcile. The old single-store report upload now rejects Deposit Statements so a company-level payout cannot be silently assigned to one store.
+
+## Sales-tax implementation findings
+
+- The portal currently uses TaxCloud, but existing customer rates are not automatically kept current: scheduled refresh jobs were disabled and the UI normally refreshes only missing rates.
+- TaxCloud capture is wired as a manual action on paid taxable invoices. It is not an automatic completion control, so a paid taxable invoice can remain unfiled.
+- The TaxCloud functions contain placeholder origin-address fallbacks. Production tax calls must fail closed when the real NSA origin configuration is missing.
+- Most lines default to the apparel taxability code. Freight, decoration, art, and other taxable/non-taxable categories need explicit taxability rules before relying on portal-calculated tax.
+- Therefore QBO Automated Sales Tax must not be turned off yet. Taxable QBO invoice writes remain blocked until the portal calculation/capture controls and live QBO tax configuration are proven in a test company.
 
 ## Remaining source gap
 

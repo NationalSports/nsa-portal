@@ -1684,6 +1684,14 @@ const parseOmgDollar=(text)=>({
 // labels with no adjacent value (PDF printouts), so we fall back to the
 // "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.
 const parseOmgAccounting=(text)=>{
+  // A Deposit Statement is a company-level bank deposit that can contain many
+  // stores, payments, and refunds. This screen stores accounting data on one
+  // selected store, so accepting that report here would silently assign the
+  // entire deposit to the wrong store. The dedicated QBO deposit importer must
+  // split/validate the statement before any accounting write.
+  if(/Deposit\s*Statement/i.test(String(text||''))){
+    throw new Error('This is a multi-store OMG Deposit Statement. It cannot be attached to one store. Import it through the QuickBooks OMG Deposits workflow.');
+  }
   let collected=_omgLineVal(text,/Total\s*Collected/i);
   let omg      =_omgLineVal(text,/^\s*\t*OMG\s*Fees?\b/i)||_omgLineVal(text,/\bOMG\s*Fees?\b/i);
   let cc       =_omgLineVal(text,/Credit\s*Card\s*Fees?/i);
