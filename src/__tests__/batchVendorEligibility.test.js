@@ -20,6 +20,7 @@ const DB_VENDORS = [
   { id: 'ns_23', name: 'A4' },
   { id: 'ns_49', name: 'Champro' },
   { id: 'v1', name: 'Adidas' },
+  { id: 'v1777312659133', name: 'Agron' },
   { id: 'v2', name: 'Under Armour' },
   // Near-misses that must NOT be swept into a batch queue.
   { id: 'ns_48', name: 'Champion' },
@@ -40,6 +41,10 @@ const resolveName = (vendorList, showPO) =>
   vendorList.find((v) => v.id === showPO)?.name || D_V.find((v) => v.id === showPO)?.name || showPO;
 
 describe('BATCH_VENDORS registry', () => {
+  test('Agron is batch-eligible without a free-ship threshold', () => {
+    expect(BATCH_VENDORS.agron).toEqual({ name: 'Agron', threshold: 0 });
+  });
+
   test('Champro is batch-eligible at the $200 free-ship threshold', () => {
     expect(BATCH_VENDORS.champro).toEqual({ name: 'Champro', threshold: 200 });
   });
@@ -53,6 +58,7 @@ describe('batch eligibility for DB-only vendors', () => {
   test.each([
     ['Champro', 'ns_49', 'champro'],
     ['A4', 'ns_23', 'a4'],
+    ['Agron', 'v1777312659133', 'agron'],
   ])('%s (%s) resolves to the %s batch queue', (name, id, key) => {
     expect(batchKeyFor(resolveName(DB_VENDORS, id), id)).toBe(key);
   });
