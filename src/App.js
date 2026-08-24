@@ -8027,12 +8027,20 @@ export default function App(){
     logChange('deleted','Invoice',invId,inv.memo||'');
   };
 
+  // Booking orders are normally invisible to the floor until confirmed or near ship — EXCEPT
+  // once a job on them becomes actually workable: art set up with production files and garments
+  // in hand (isJobReady), or production already has it past hold. Hiding those deadlocks the
+  // floor (SO-1383): the Prod Board shows the job as "Waiting on warehouse" while no warehouse
+  // tab can ever see it to release, ship, or deliver it. Untouched future-season bookings
+  // (no ready jobs, nothing released) stay hidden as before.
+  const bookingHasFloorWork=(so)=>safeJobs(so).some(j=>isJobReady(j,so)||(j.prod_status&&j.prod_status!=='hold'&&j.prod_status!=='draft'));
+
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
     sos.filter(so=>{
       const st=calcSOStatus(so);
-      if(st==='booking')return false;
+      if(st==='booking'&&!bookingHasFloorWork(so))return false;
       if(st!=='complete')return true;
       // A closed order can still owe a shipment. A promo order is financially "closed" while its
       // blanks are received but not yet decorated; an order closed by a Final invoice (or by the
@@ -16958,7 +16966,7 @@ export default function App(){
         // as before.
         const completedDecoJobs=[];
         sos.forEach(so=>{
-          const _st=calcSOStatus(so);if(_st==='booking')return;
+          const _st=calcSOStatus(so);if(_st==='booking'&&!bookingHasFloorWork(so))return;
           const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
           const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
           const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -24534,7 +24542,7 @@ export default function App(){
     // legacy rows drop as before so old history doesn't flood in.
     const completedDecoJobs=[];
     sos.forEach(so=>{
-      const _st=calcSOStatus(so);if(_st==='booking')return;
+      const _st=calcSOStatus(so);if(_st==='booking'&&!bookingHasFloorWork(so))return;
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
