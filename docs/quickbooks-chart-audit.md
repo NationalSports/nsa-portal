@@ -54,6 +54,8 @@ The state account numbers are approved, but a taxable QBO invoice still needs th
 
 Accounting approved the gross-payment/negative-deposit method: record the customer payment in full to 11010 Undeposited Funds, then create the 10100 Bank Deposit by linking the gross QBO Payment(s), subtracting `_omg_omg_fees` to 57000 and `_omg_cc_fees` to 71400. The deposit is blocked unless every Payment ID is unique and the line total exactly equals the net amount received.
 
+An OMG Accounting Report can contain multiple deposits. The current parser is not sufficient for posting: it stores only report-level totals and falls back to the first `Deposit Subtotal` row, without retaining a payout/deposit ID or date. Deposit writes remain blocked until every deposit group can be extracted separately and reconciled to 10100.
+
 ## Remaining source gap
 
 The current Connect sync has no UPS/FedEx/outbound-shipping expense feed. Account 67000 is validated and reserved, but no transaction is created from it yet. We need to identify the portal record or carrier integration that supplies those charges before wiring that posting.
