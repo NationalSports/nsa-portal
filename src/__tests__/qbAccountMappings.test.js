@@ -5,6 +5,7 @@ import {
   buildVendorBillLines,
   calculateCustomerShipping,
   buildInternalLaborCostManifest,
+  buildOmgBankDeposit,
   getOmgFeeSource,
   indexQBNonInventoryItems,
   isDecorationVendorBill,
@@ -51,6 +52,7 @@ describe('QuickBooks account resolution', () => {
     })).toMatchObject({
       income_account: '40000', purchases_account: '51300', deco_account: '52000',
       freight_account: '51000', sports_inc_fee_account: '58000',
+      omg_fee_account: '57000', omg_card_fee_account: '71400', operating_bank_account: '10100',
       ar_account: '11000', ap_account: '21100', tax_parent_account: '25201',
     });
     expect(QB_STATE_TAX_ACCOUNT_KEYS).toEqual({
@@ -188,6 +190,48 @@ describe('OMG and internal labor source routing', () => {
     });
     expect(getOmgFeeSource({source:'webstore',id:'native-1',_omg_omg_fees:123.45})).toBeNull();
     expect(getOmgFeeSource({source:'omg',id:'store-2',_omg_omg_fees:0})).toBeNull();
+  });
+
+  test('builds an OMG deposit from gross payments with separate 57000 and 71400 negative lines', () => {
+    const result=buildOmgBankDeposit({
+      sourceId:'OMG-REPORT-42',
+      txnDate:'2026-08-23',
+      payments:[{paymentId:'pmt-1',amount:600},{paymentId:'pmt-2',amount:400}],
+      omgFee:75,
+      cardFee:29.5,
+      bankAccountRef:{value:'bank-10100'},
+      omgFeeAccountRef:{value:'cogs-57000'},
+      cardFeeAccountRef:{value:'expense-71400'},
+    });
+    expect(result).toMatchObject({
+      sourceKey:'NSA-OMG-DEPOSIT:OMG-REPORT-42',gross:1000,totalFees:104.5,net:895.5,
+      deposit:{
+        TxnDate:'2026-08-23',
+        DepositToAccountRef:{value:'bank-10100'},
+        PrivateNote:'NSA-OMG-DEPOSIT:OMG-REPORT-42',
+      },
+    });
+    expect(result.deposit.Line).toEqual([
+      {Amount:600,LinkedTxn:[{TxnId:'pmt-1',TxnType:'Payment',TxnLineId:'0'}]},
+      {Amount:400,LinkedTxn:[{TxnId:'pmt-2',TxnType:'Payment',TxnLineId:'0'}]},
+      {Amount:-75,Description:'OrderMyGear fee',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'cogs-57000'}}},
+      {Amount:-29.5,Description:'OrderMyGear credit-card processing fee',DetailType:'DepositLineDetail',DepositLineDetail:{AccountRef:{value:'expense-71400'}}},
+    ]);
+    expect(result.deposit.Line.reduce((sum,line)=>sum+line.Amount,0)).toBe(result.net);
+  });
+
+  test('blocks unsafe or unreconciled OMG deposits before QBO', () => {
+    const base={
+      sourceId:'OMG-1',txnDate:'2026-08-23',payments:[{paymentId:'pmt-1',amount:100}],
+      bankAccountRef:{value:'bank'},omgFeeAccountRef:{value:'omg'},cardFeeAccountRef:{value:'card'},
+    };
+    expect(()=>buildOmgBankDeposit({...base,payments:[]})).toThrow(/at least one linked/i);
+    expect(()=>buildOmgBankDeposit({...base,payments:[{paymentId:'',amount:100}]})).toThrow(/Payment ID/i);
+    expect(()=>buildOmgBankDeposit({...base,payments:[{paymentId:'pmt-1',amount:60},{paymentId:'pmt-1',amount:40}]})).toThrow(/duplicate/i);
+    expect(()=>buildOmgBankDeposit({...base,omgFee:-1})).toThrow(/cannot be negative/i);
+    expect(()=>buildOmgBankDeposit({...base,omgFee:80,cardFee:20})).toThrow(/less than the gross/i);
+    expect(()=>buildOmgBankDeposit({...base,bankAccountRef:null})).toThrow(/10100 bank/i);
+    expect(()=>buildOmgBankDeposit({...base,txnDate:'08/23/2026'})).toThrow(/YYYY-MM-DD/i);
   });
 
   test('sources 55100 and 55400 manifests from their separate clocks and current labor rates', () => {
