@@ -5088,6 +5088,7 @@ export default function App(){
   },[q,rF,custPage,pg]);// eslint-disable-line
   useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
+  const productBrandOptions=useMemo(()=>[...new Set(prod.map(p=>(p.brand||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b)),[prod]);
   const[aiWizOpen,setAiWizOpen]=useState(false);
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
@@ -37294,7 +37295,7 @@ export default function App(){
         {qPC.mode==='single'&&(()=>{const it=qPC.items[0]||{};const up=(k,v)=>setQPC(x=>({...x,items:[{...x.items[0],[k]:v}]}));
           return<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
             <div><label className="form-label">SKU *</label><input className="form-input" value={it.sku} onChange={e=>up('sku',e.target.value)} placeholder="JJ0605"/></div>
-            <div><label className="form-label">Brand</label><select className="form-select" value={it.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);const bn=v?.name||'';const rp=it.retail_price||0;const cat=it.category||'Tees';if(bn==='Adidas'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],vendor_id:e.target.value,brand:bn,nsa_cost:Math.floor(rp*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],vendor_id:e.target.value,brand:bn,nsa_cost:Math.floor(rp*0.425*100)/100}]}))}else{up('vendor_id',e.target.value);if(v)up('brand',v.name)}}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+            <div><label className="form-label">Brand</label><input className="form-input" type="search" list="quick-product-brand-options" value={it.brand||''} onChange={e=>{const entered=e.target.value;const v=D_V.find(x=>(x.name||'').localeCompare(entered,undefined,{sensitivity:'accent'})===0);const bn=v?.name||entered;const rp=it.retail_price||0;const cat=it.category||'Tees';const upd={...it,brand:bn,vendor_id:v?.id||''};if(bn==='Adidas'&&rp>0)upd.nsa_cost=Math.floor(rp*(cat==='Custom'?0.4125:0.375)*100)/100;else if(bn==='Under Armour'&&rp>0)upd.nsa_cost=Math.floor(rp*0.425*100)/100;setQPC(x=>({...x,items:[upd]}))}} placeholder="Search or enter a brand" autoComplete="off"/></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Product Name *</label><input className="form-input" value={it.name} onChange={e=>up('name',e.target.value)} placeholder="Adidas Practice Jersey 2.0"/></div>
             <div><label className="form-label">Color</label><input className="form-input" value={it.color} onChange={e=>up('color',e.target.value)} placeholder="Power Red/White"/></div>
             <div><label className="form-label">Category</label><select className="form-select" value={it.category} onChange={e=>{const cat=e.target.value;const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const rp=it.retail_price||0;if(bn==='Adidas'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],category:cat,nsa_cost:Math.floor(rp*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else{up('category',cat)}}}>
@@ -37331,8 +37332,7 @@ export default function App(){
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <input className="form-input" value={it.sku} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,sku:e.target.value}:ii)}))} placeholder="SKU" style={{width:90,fontSize:11}}/>
               <input className="form-input" value={it.name} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,name:e.target.value}:ii)}))} placeholder="Product name" style={{flex:1,fontSize:11}}/>
-              <select className="form-select" value={it.vendor_id||''} onChange={e=>{const bn=D_V.find(v=>v.id===e.target.value)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,vendor_id:e.target.value,brand:bn};if(bn==='Adidas'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.375*100)/100;else if(bn==='Under Armour'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.425*100)/100;return upd})}))}} style={{width:100,fontSize:10}}>
-                <option value="">Brand</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
+              <input className="form-input" type="search" list="quick-product-brand-options" value={it.brand||''} onChange={e=>{const entered=e.target.value;const v=D_V.find(x=>(x.name||'').localeCompare(entered,undefined,{sensitivity:'accent'})===0);const bn=v?.name||entered;setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,vendor_id:v?.id||'',brand:bn};if(bn==='Adidas'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.375*100)/100;else if(bn==='Under Armour'&&ii.retail_price>0)upd.nsa_cost=Math.floor(ii.retail_price*0.425*100)/100;return upd})}))}} placeholder="Search brand" autoComplete="off" style={{width:120,fontSize:10}}/>
               <input className="form-input" value={it.color||''} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,color:e.target.value}:ii)}))} placeholder="Color" style={{width:100,fontSize:11}}/>
               <$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,nsa_cost:v};if(bn==='Adidas'&&v>0)upd.retail_price=Math.ceil(v/0.375*100)/100;else if(bn==='Under Armour'&&v>0)upd.retail_price=Math.ceil(v/0.425*100)/100;return upd})}))}} w={50}/>
               <$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,retail_price:v};if(bn==='Adidas')upd.nsa_cost=Math.floor(v*0.375*100)/100;else if(bn==='Under Armour')upd.nsa_cost=Math.floor(v*0.425*100)/100;return upd})}))}} w={50}/>
@@ -37352,6 +37352,8 @@ export default function App(){
             📎 Drop CSV/TSV file or click to browse
           </div>
         </>}
+
+        <datalist id="quick-product-brand-options">{productBrandOptions.map(brand=><option key={brand} value={brand}/>)}</datalist>
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-primary" onClick={()=>{
