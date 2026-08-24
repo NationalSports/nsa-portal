@@ -9,10 +9,10 @@ export const QB_ACCOUNT_SPECS = Object.freeze({
   freight_account: Object.freeze({ number: '51000', name: 'Cost of Goods Sold:Freight In', types: ['Cost of Goods Sold'] }),
   outbound_freight_account: Object.freeze({ number: '67000', name: 'Freight Expenses', types: ['Expense'] }),
   sports_inc_fee_account: Object.freeze({ number: '58000', name: 'Sports Inc Fee', types: ['Cost of Goods Sold'] }),
-  omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }),
+  omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }), // OMG vendor invoices only; never withheld deposit fees
   omg_card_fee_account: Object.freeze({ number: '71400', name: 'Bank Charges', types: ['Expense'] }),
   deco_account: Object.freeze({ number: '52000', name: 'Outside Decoration', types: ['Cost of Goods Sold'] }),
-  decoration_account: Object.freeze({ number: '55100', name: 'Decoration', types: ['Cost of Goods Sold'] }),
+  decoration_account: Object.freeze({ number: '55200', name: 'Decoration:Decoration Labor', types: ['Cost of Goods Sold'] }),
   in_house_art_account: Object.freeze({ number: '55400', name: 'Decoration:In House Art', types: ['Cost of Goods Sold'] }),
   ar_account: Object.freeze({ number: '11000', name: 'Accounts Receivable (A/R)', types: ['Accounts Receivable'] }),
   payment_deposit_account: Object.freeze({ number: '11010', name: 'Undeposited Funds', types: ['Other Current Asset'] }),
@@ -51,7 +51,9 @@ const LEGACY_MAPPING_VALUES = Object.freeze({
   'Bank Charges': '71400',
   'Subcontractor - Decoration': '52000',
   'Outside Decoration': '52000',
-  Decoration: '55100',
+  Decoration: '55200',
+  'Decoration Labor': '55200',
+  'Decoration:Decoration Labor': '55200',
   'In House Art': '55400',
   'Decoration:In House Art': '55400',
   'Accounts Receivable': '11000',
@@ -87,29 +89,105 @@ export function calculateCustomerShipping(order, salesSubtotal) {
   return money(current + prior);
 }
 
-// OMG is a distinct hosted-store source. A native Portal webstore may have a
-// Stripe/card fee, but that is not an OrderMyGear fee and must never hit 57000.
+// OMG deposit statements contain a distinct "OMG Fee Withheld". Accounting
+// confirmed that 57000 is reserved for actual OMG vendor invoices (store setup,
+// chargeback, and per-order fee invoices), not this withheld amount. Keep the
+// withheld source visible but deliberately unassigned until its account is approved.
 export function getOmgFeeSource(storeOrSalesOrder) {
   const row = storeOrSalesOrder || {};
   const isOmg = row.source === 'omg' || !!row.omg_store_id || !!row._omg_source ||
     String(row.id || '').startsWith('OMG-sale_');
   const amount = money(row._omg_omg_fees);
   return isOmg && amount > 0
-    ? { sourceType: 'omg_accounting_report', sourceId: row.omg_store_id || row.id, amount, accountKey: 'omg_fee_account' }
+    ? {
+      sourceType: 'omg_deposit_statement_withheld_fee',
+      sourceId: row._omg_deposit_statement_id || row.omg_store_id || row.id,
+      amount,
+      accountKey: null,
+      blocked: true,
+      blockedReason: 'The QBO account for OMG Fee Withheld is not confirmed; 57000 is vendor invoices only.',
+    }
     : null;
 }
 
-// Produces a read-only labor-cost manifest from the portal's two clocks. It is
-// deliberately not a QBO write builder: internal labor needs an accountant-
-// approved offset/reclassification account, stable source IDs, and a posting
-// cadence before it can be journaled without duplicating payroll expense.
+const statementAmount = (chunk, labelPattern, label) => {
+  const line = String(chunk || '').split(/\r?\n/).find(row => labelPattern.test(row));
+  if (!line) throw new Error('OMG Deposit Statement is missing ' + label + '.');
+  const match = line.match(/\(?\s*\$\s*([\d,]+\.\d{2})\s*\)?/);
+  if (!match) throw new Error('OMG Deposit Statement has an invalid ' + label + '.');
+  return money(match[1].replace(/,/g, ''));
+};
+
+const isoStatementDate = value => {
+  const match = String(value || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!match) throw new Error('OMG Deposit Statement date is invalid.');
+  const year = match[3].length === 2 ? '20' + match[3] : match[3];
+  return year + '-' + match[1].padStart(2, '0') + '-' + match[2].padStart(2, '0');
+};
+
+// One OMG Deposit Statement represents one actual bank deposit, even though it
+// can include many stores and hundreds of payment/refund transactions. Parse
+// each statement separately and enforce its header reconciliation before any
+// QBO manifest can be built.
+export function parseOmgDepositStatements(text) {
+  const raw = String(text || '').replace(/\u00a0/g, ' ');
+  const heading = /Deposit\s+Statement/gi;
+  const matches = [...raw.matchAll(heading)];
+  if (!matches.length) throw new Error('No OMG Deposit Statement ID was found.');
+  return matches.map((match, index) => {
+    const chunk = raw.slice(match.index, matches[index + 1]?.index || raw.length);
+    const rows = chunk.split(/\r?\n/);
+    const headerText = rows.slice(0, 6).join(' ');
+    const statementId = (headerText.match(/\b(?=[A-Z0-9-]{8,16}\b)(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9-]+\b/g) || [])[0];
+    if (!statementId) throw new Error('OMG Deposit Statement is missing its unique statement ID.');
+    const dateLine = rows.find(line => /Statement\s+Date/i.test(line));
+    const dateMatch = dateLine?.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+    if (!dateMatch) throw new Error('OMG Deposit Statement ' + statementId + ' is missing its statement date.');
+    const statusLine = rows.find(line => /Deposit\s+Status/i.test(line)) || '';
+    const statusMatch = statusLine.match(/Deposit\s+Status\s+([A-Za-z]+)/i);
+    const bankLine = rows.find(line => /Bank\s+Account/i.test(line)) || '';
+    const bankMatch = bankLine.match(/Bank\s+Account\s+(.+?)(?:\s{2,}Processing\s+Fee\s+Withheld|$)/i);
+    const storesLine = rows.find(line => /Stores\s+Included/i.test(line)) || '';
+    const storesMatch = storesLine.match(/Stores\s+Included\s+(\d+)/i);
+
+    const totalCollected = statementAmount(chunk, /Total\s+Collected/i, 'Total Collected');
+    const omgFeeWithheld = statementAmount(chunk, /OMG\s+Fee\s+Withheld/i, 'OMG Fee Withheld');
+    const processingFeeWithheld = statementAmount(chunk, /Processing\s+Fee\s+Withheld/i, 'Processing Fee Withheld');
+    const netAmount = statementAmount(chunk, /Net\s+Amount/i, 'Net Amount');
+    const calculatedNet = money(totalCollected - omgFeeWithheld - processingFeeWithheld);
+    if (calculatedNet !== netAmount) {
+      throw new Error(
+        'OMG Deposit Statement ' + statementId + ' does not reconcile: collected $' +
+        totalCollected.toFixed(2) + ' less fees is $' + calculatedNet.toFixed(2) +
+        ', but Net Amount is $' + netAmount.toFixed(2) + '.'
+      );
+    }
+    const refundCount = (chunk.match(/\bRefund\b/gi) || []).length;
+    return {
+      sourceKey: 'NSA-OMG-DEPOSIT:' + statementId,
+      statementId,
+      statementDate: isoStatementDate(dateMatch[1]),
+      depositStatus: String(statusMatch?.[1] || '').toLowerCase(),
+      bankAccount: String(bankMatch?.[1] || '').trim(),
+      storesIncluded: storesMatch ? Number(storesMatch[1]) : null,
+      totalCollected,
+      omgFeeWithheld,
+      processingFeeWithheld,
+      netAmount,
+      refundCount,
+      hasRefunds: refundCount > 0,
+    };
+  });
+}
+
 // Builds the exact QBO Bank Deposit for an OMG payout. Customer payments are
 // first recorded in 11010 at their gross amount. The Deposit then links those
 // Payments and subtracts the OMG and card fees so its line total equals the
 // amount that actually landed in 10100.
 export function buildOmgBankDeposit({
   sourceId, txnDate, payments = [], omgFee = 0, cardFee = 0,
-  bankAccountRef, omgFeeAccountRef, cardFeeAccountRef,
+  bankAccountRef, omgWithheldFeeAccountRef, cardFeeAccountRef,
+  expectedCollected = null, expectedNet = null, depositStatus = 'completed', refundCount = 0,
 } = {}) {
   const sourceKey = String(sourceId || '').trim();
   if (!sourceKey) throw new Error('OMG deposit source ID is required.');
@@ -120,9 +198,15 @@ export function buildOmgBankDeposit({
     if (!ref?.value) throw new Error(label + ' account reference is required.');
     return ref;
   };
-  requireRef(bankAccountRef, '10100 bank');
-  requireRef(omgFeeAccountRef, '57000 OMG fee');
-  requireRef(cardFeeAccountRef, '71400 card fee');
+  requireRef(bankAccountRef, 'deposit bank');
+  requireRef(omgWithheldFeeAccountRef, 'OMG Fee Withheld');
+  requireRef(cardFeeAccountRef, '71400 processing fee');
+  if (String(depositStatus || '').toLowerCase() !== 'completed') {
+    throw new Error('OMG deposit statement is not completed.');
+  }
+  if (Number(refundCount) > 0) {
+    throw new Error('OMG deposit contains refunds; refund/credit-memo posting must be completed before QBO deposit creation.');
+  }
 
   const seen = new Set();
   const linkedPaymentLines = (payments || []).map((payment, index) => {
@@ -144,6 +228,9 @@ export function buildOmgBankDeposit({
   if (!Number.isFinite(rawOmgFee) || rawOmgFee < 0) throw new Error('OMG fee cannot be negative or invalid.');
   if (!Number.isFinite(rawCardFee) || rawCardFee < 0) throw new Error('OMG card fee cannot be negative or invalid.');
   const gross = money(linkedPaymentLines.reduce((sum, line) => sum + line.Amount, 0));
+  if (expectedCollected != null && gross !== money(expectedCollected)) {
+    throw new Error('Linked QBO Payments do not equal the OMG statement Total Collected.');
+  }
   const cleanOmgFee = money(rawOmgFee);
   const cleanCardFee = money(rawCardFee);
   const totalFees = money(cleanOmgFee + cleanCardFee);
@@ -154,21 +241,24 @@ export function buildOmgBankDeposit({
   if (cleanOmgFee > 0) {
     lines.push({
       Amount: -cleanOmgFee,
-      Description: 'OrderMyGear fee',
+      Description: 'OrderMyGear fee withheld',
       DetailType: 'DepositLineDetail',
-      DepositLineDetail: { AccountRef: omgFeeAccountRef },
+      DepositLineDetail: { AccountRef: omgWithheldFeeAccountRef },
     });
   }
   if (cleanCardFee > 0) {
     lines.push({
       Amount: -cleanCardFee,
-      Description: 'OrderMyGear credit-card processing fee',
+      Description: 'OrderMyGear processing fee withheld',
       DetailType: 'DepositLineDetail',
       DepositLineDetail: { AccountRef: cardFeeAccountRef },
     });
   }
   const lineTotal = money(lines.reduce((sum, line) => sum + Number(line.Amount || 0), 0));
   if (lineTotal !== net) throw new Error('OMG deposit lines do not reconcile to the net bank deposit.');
+  if (expectedNet != null && net !== money(expectedNet)) {
+    throw new Error('QBO deposit total does not equal the OMG statement Net Amount.');
+  }
 
   return {
     sourceKey: 'NSA-OMG-DEPOSIT:' + sourceKey,
@@ -210,6 +300,12 @@ export function migrateQBAccountMapping(mapping = {}) {
   for (const [key, value] of Object.entries(mapping || {})) {
     const clean = String(value == null ? '' : value).trim();
     if (!clean) continue;
+    // 55100 was the old generic Decoration parent. Accounting explicitly
+    // approved 55200 Decoration Labor for portal in-house labor.
+    if (key === 'decoration_account' && clean === '55100') {
+      migrated[key] = '55200';
+      continue;
+    }
     migrated[key] = LEGACY_MAPPING_VALUES[clean] || clean;
   }
   if (mapping?.tax_account && !mapping?.tax_parent_account) {
@@ -439,12 +535,13 @@ export const QB_ACCOUNT_POSTING_MATRIX = Object.freeze([
   { itemType: 'Outbound UPS / FedEx expense', accountKey: 'outbound_freight_account', account: '67000 Freight Expenses', posting: 'Debit', control: 'Not currently created by Connect' },
   { itemType: 'Outside decoration vendor bill', accountKey: 'deco_account', account: '52000 Outside Decoration', posting: 'Debit', control: '21100 A/P credit' },
   { itemType: 'Sports Inc fee', accountKey: 'sports_inc_fee_account', account: '58000 Sports Inc Fee', posting: 'Debit', control: '21100 A/P credit' },
-  { itemType: 'OrderMyGear hosted-store fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit via negative deposit line', control: 'Gross payment remains in 11010; payout deposits to 10100' },
-  { itemType: 'OrderMyGear credit-card fee', accountKey: 'omg_card_fee_account', account: '71400 Bank Charges', posting: 'Debit via negative deposit line', control: 'Separate from the 57000 OMG fee' },
-  { itemType: 'In-house decoration labor', accountKey: 'decoration_account', account: '55100 Decoration', posting: 'Debit / payroll reclass', control: 'Source: production time logs × labor rate; offset/cadence pending' },
+  { itemType: 'OrderMyGear vendor invoice fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit on OMG vendor bill', control: '21100 A/P credit; never a deposit-statement fee' },
+  { itemType: 'OrderMyGear fee withheld from deposit', accountKey: 'unconfirmed', account: 'BLOCKED', posting: 'Negative bank-deposit line', control: 'Account assignment still required; must not use 57000 without approval' },
+  { itemType: 'OrderMyGear processing fee withheld', accountKey: 'omg_card_fee_account', account: '71400 Bank Charges', posting: 'Debit via negative deposit line', control: 'Deposit Statement “Processing Fee Withheld”' },
+  { itemType: 'In-house decoration labor', accountKey: 'decoration_account', account: '55200 Decoration Labor', posting: 'Debit / payroll reclass', control: 'Source: production time logs × labor rate; offset/cadence pending' },
   { itemType: 'In-house art labor', accountKey: 'in_house_art_account', account: '55400 In House Art', posting: 'Debit / payroll reclass', control: 'Source: art time logs × labor rate; offset/cadence pending' },
   { itemType: 'Customer payment received', accountKey: 'payment_deposit_account', account: '11010 Undeposited Funds', posting: 'Debit', control: '11000 A/R credit' },
-  { itemType: 'OrderMyGear net bank deposit', accountKey: 'operating_bank_account', account: '10100 First Foundation Checking', posting: 'Debit', control: 'Linked gross payment less 57000 and 71400 negative lines' },
+  { itemType: 'OrderMyGear net bank deposit', accountKey: 'operating_bank_account', account: '10100 First Foundation Checking (configurable)', posting: 'Debit', control: 'One completed statement ID/date; gross less both withheld fees; refunds currently block posting' },
   { itemType: 'Customer discount', accountKey: 'discount_account', account: '40200 Sales:Discounts', posting: 'Debit / negative revenue', control: '11000 A/R' },
   { itemType: 'State sales tax', accountKey: 'state tax mapping', account: '25200–25230 state subaccounts', posting: 'Credit', control: 'Portal amount; QBO TaxCode mapping required' },
   { itemType: 'Quarterly sales-tax payment', accountKey: 'state tax mapping', account: 'Individual state subaccount', posting: 'Debit', control: 'Bank credit — workflow not yet implemented' },
