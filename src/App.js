@@ -1053,7 +1053,6 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
       const v=(m[key]&&m[key].length>0)?m[key]
         :_sub.length>0?_sub
         :_bas.length>0?_bas
-        :(m[sku]&&m[sku].length>0)?m[sku]
         :(Object.entries(m).find(([k,arr])=>(k.startsWith(_mk+'|')||k.startsWith(_legacyMk+'|'))&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
       _dedupMockDupes(v).forEach(push);
       // Reversible decos have a second mockup slot (Side B) keyed |<color_way_id_b> with
@@ -1062,7 +1061,7 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
     });
   }else{
     // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
-    artFiles.forEach(a=>{const m=a?.item_mockups||{};const _v=itemMockFiles(m,_line);_dedupMockDupes(_v.length>0?_v:(m[sku]||[])).forEach(push)});
+    artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes(itemMockFiles(m,_line)).forEach(push)});
   }
   const rank=k=>/\|numbers(_\d+)?(_b)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
@@ -23056,7 +23055,7 @@ export default function App(){
         // lines (all of them SKU 'CUST-SUPPLIED') on their name so they don't collapse either.
         const _mockKey=(g)=>garmentMockKey(g);
         // Read with fallback to the legacy shared / plain-SKU keys so existing data still renders.
-        const _getMocks=(artF,g)=>{const m=artF?.item_mockups||{};const v=itemMockFiles(m,g);return v.length>0?v:(m[g?.sku]||[]);};
+        const _getMocks=(artF,g)=>itemMockFiles(artF?.item_mockups,g);
         const handleMockupUploadForItem=async(files,g,targetArtId,slotKey)=>{
           if(!files||files.length===0)return;
           const sku=g?.sku;const color=g?.color;
@@ -23574,7 +23573,7 @@ export default function App(){
         // lines (all of them SKU 'CUST-SUPPLIED') on their name so they don't collapse either.
         const _mockKey=(g)=>garmentMockKey(g);
         // Read with fallback to the legacy shared / plain-SKU keys so existing data still renders.
-        const _getMocks=(artF,g)=>{const m=artF?.item_mockups||{};const v=itemMockFiles(m,g);return v.length>0?v:(m[g?.sku]||[]);};
+        const _getMocks=(artF,g)=>itemMockFiles(artF?.item_mockups,g);
         // Copy mockup helper
         const _copyMockup=(fromG,toG)=>{
           const fromMocks=_getMocks(af,fromG);
