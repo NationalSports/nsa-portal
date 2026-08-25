@@ -204,6 +204,12 @@ describe('contents ⇄ editor lines (edit scans)', () => {
 });
 
 describe('three-stage flow: checked in → staging → on shelf', () => {
+  test('a shipped box leaves the building picture whatever shelf it sat on', () => {
+    expect(boxStage({ checked_in_at: 'x', bin: 'A3', status: 'shipped' })).toBe('shipped');
+    expect(moveStats([{ status: 'shipped', checked_in_at: 'x', bin: 'A3' }], null))
+      .toEqual({ checkedIn: 0, today: 0, checkedInOnly: 0, staged: 0, shelved: 0, notCheckedIn: 0 });
+    expect(isCountedInventoryBox({ checked_in_at: 'x', assigned_to: 'inventory', status: 'shipped' })).toBe(false);
+  });
   test('boxStage derives the stage, shelf wins over staging', () => {
     expect(boxStage({ checked_in_at: null })).toBe('not_in');
     expect(boxStage({ checked_in_at: 'x' })).toBe('checked_in');

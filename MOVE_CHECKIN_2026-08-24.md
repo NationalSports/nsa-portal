@@ -26,15 +26,15 @@ column 00185 already reserved.
    (and clears its staging area). Scanning here also checks in a box that
    skipped step 1. The header shows per-stage progress and a bar; the Boxes
    tab filters by stage (Unplaced / Staging / On shelf).
-3. **No QR tab** — pre-QR-era boxes: enter the SO# and contents (one line per
-   item, "12 x navy hoodies"), assign to **Job** or **Inventory**, and a 4×6 BX
-   QR label prints (stick it on — the box is scannable from then on).
-4. **Boxes tab** — per-stage progress, stage filter chips, search by
-   box/SO/shelf/staging/item, and per-box actions: send to staging or shelf,
-   **edit contents** (fix quantities, remove wrong lines, add missed SKUs —
-   also how an unmatched-SKU warning from the Submit tab gets fixed), toggle
-   counts-toward-inventory, print label, undo check-in.
-5. **Submit tab** — extras: **⬇ Download CSV** saves the whole review
+3. **No QR code?** On the same Check In screen, tap **📝 No QR — add by hand**:
+   enter the SO# and contents (Job = free text, Inventory = SKU + per-size
+   counts), and a 4×6 BX QR label prints (stick it on — the box is scannable
+   from then on).
+4. **🔍 Find a box** (button on the Check In screen, not a tab) — search by
+   box/SO/shelf/staging/item, filter by stage, and per-box actions: send to
+   staging or shelf, **edit contents**, toggle counts-toward-inventory, print
+   label, undo check-in.
+5. **Submit tab** — **⬇ Download CSV** saves the whole review
    (counted old→new, zero-outs with confirmation status, unmatched SKUs) as
    the stocktake paper trail before writing the numbers.
 
@@ -44,3 +44,12 @@ check-in/placement (an adopted unknown plate is deleted outright).
 Desktop nav: Tools → Move Check-In; also a **📦 Move Check-In** button on the
 Inventory page's tab row (opens in a new tab). Code: `src/movecheckin/` (pure helpers in
 `moveLogic.js`, unit tests in `src/__tests__/moveCheckin.test.js`).
+
+## Known gap: shipped boxes
+
+Nothing marks a box `shipped` automatically — the ship flow does not touch the
+`boxes` table, so status is only set by hand (desktop box modal) or by
+combining. A box that IS marked shipped is now excluded from the move's stage
+counts, the on-hand picture, and the inventory tally (`boxStage` → `shipped`),
+and is findable under the Shipped filter. Auto-marking boxes shipped when their
+order ships is the obvious follow-up.

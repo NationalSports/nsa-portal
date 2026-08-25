@@ -15,7 +15,8 @@ import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, nor
 //   2. PLACE — pick a staging zone OR a final shelf once (locked), then scan
 //      box after box into it (staging_area / bin; also checks in boxes that
 //      skipped step 1). Staging is temporary; the shelf scan later finalizes.
-//   3. NO QR — hand-enter a legacy box (SO# + items), assign it to a job or to
+//      Boxes with NO QR code are hand-entered from this same screen (the
+//      "add a box by hand" panel): SO# + items, assigned to a job or to
 //      inventory, and a 4×6 BX label prints so it's scannable from now on.
 // A Boxes tab shows per-stage progress + filters and per-box actions; a Submit
 // tab turns the counted inventory boxes into the new inventory numbers.
@@ -179,7 +180,7 @@ const boxTitle = (b) => [b.so_id, b.if_id, b.po_id].filter(Boolean).join(' · ')
 
 export default function MoveCheckIn() {
   const { loading, signedIn, email } = useStaffSession();
-  const [mode, setMode] = useState('checkin'); // 'checkin' | 'place' | 'legacy' | 'boxes' | 'submit'
+  const [mode, setMode] = useState('checkin'); // 'checkin' | 'place' | 'boxes' | 'submit'
   const [boxes, setBoxes] = useState([]);
   const [banner, setBanner] = useState(null); // {kind:'ok'|'dupe'|'err', title, sub}
   const [sessionCount, setSessionCount] = useState(0);
@@ -188,6 +189,7 @@ export default function MoveCheckIn() {
   const [shelf, setShelf] = useState('');
   const [placeKind, setPlaceKind] = useState('staging'); // Place tab: 'staging' | 'shelf'
   const [locCodes, setLocCodes] = useState(''); const [locOpen, setLocOpen] = useState(false); // location-label printer
+  const [lgOpen, setLgOpen] = useState(false); // hand-entry panel on the Check In tab
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState(null); // box opened from the Boxes tab
   const [q, setQ] = useState('');
@@ -356,7 +358,7 @@ export default function MoveCheckIn() {
       setBoxes((prev) => [row, ...prev]); setSessionCount((n) => n + 1);
       show('ok', plate + ' checked in ✓', (lgAssign === 'job' ? 'Job ' + soId : 'Inventory') + ' · ' + (boxUnits(items) || items.length) + ' units — label printing');
       printLegacyLabel(row);
-      setLgSo(''); setLgItems(''); setLgShelf(''); setLgLines([]); setSkuQ(''); setSkuResults([]);
+      setLgSo(''); setLgItems(''); setLgShelf(''); setLgLines([]); setSkuQ(''); setSkuResults([]); setLgOpen(false);
     } finally { setBusy(false); }
   };
 
@@ -455,7 +457,7 @@ export default function MoveCheckIn() {
 
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const stats = moveStats(boxes, todayStart.toISOString());
-  const tabs = [['checkin', '✅ Check In'], ['place', '📍 Place'], ['legacy', '📝 No QR'], ['boxes', '📦 Boxes'], ['submit', '📊 Submit']];
+  const tabs = [['checkin', '✅ Check In'], ['place', '📍 Place'], ['submit', '📊 Submit']];
 
   const bannerBox = banner && (
     <div style={{ borderRadius: 10, padding: '12px 14px', margin: '10px 0', background: banner.kind === 'ok' ? '#14532d' : banner.kind === 'dupe' ? '#78350f' : '#7f1d1d', border: '1px solid ' + (banner.kind === 'ok' ? '#22c55e' : banner.kind === 'dupe' ? '#f59e0b' : '#ef4444') }}>
@@ -535,47 +537,15 @@ export default function MoveCheckIn() {
           <button onClick={undoLast} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px', marginTop: banner ? 0 : 10 }}>↩︎ Undo last scan — {lastAction.label}</button>
         )}
         {manualRow}
-        {pick && (
-          <div style={{ ...S.card, marginTop: 10, border: '1px solid #f59e0b' }}>
-            <div style={{ fontWeight: 800, marginBottom: 8 }}>{pick.ref} has {pick.matches.length} boxes — which one is this?</div>
-            {pick.matches.map((b) => (
-              <button key={b.id} onClick={async () => { setPick(null); await checkInBox(b, { place: pick.place }); }} style={{ ...S.btn('#1e293b'), textAlign: 'left', marginBottom: 6, border: '1px solid #334155', fontSize: 14 }}>
-                <b>{b.id}</b> · {boxUnits(b.contents)} units {b.checked_in_at ? '· ✓ ' + fmtWhen(b.checked_in_at) : ''}{whereStr(b) ? ' · ' + whereStr(b) : ''}
-              </button>
-            ))}
-            <button onClick={async () => { const m = pick; setPick(null); for (const b of m.matches) await checkInBox(b, { place: m.place }); }} style={S.btn('#166534')}>Check in ALL {pick.matches.length}</button>
-            <button onClick={() => setPick(null)} style={{ ...S.btn('#334155'), marginTop: 6, fontSize: 14, padding: '10px' }}>Cancel</button>
-          </div>
-        )}
-      </div>
-      {/* Tablet-only second column: the live feed of what's been scanned in.
-          Hidden on phones (.mc-side), where the banner alone is the feedback. */}
-      <div className="mc-side">
-        <div style={{ ...S.card }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-            <b style={{ fontSize: 15 }}>Just checked in</b>
-            <span style={{ fontSize: 12, color: '#94a3b8' }}>{stats.checkedIn} total · {stats.today} today</span>
-          </div>
-          {!recent.length && <div style={{ fontSize: 13, color: '#94a3b8', padding: '18px 0', textAlign: 'center' }}>Scans show up here as boxes come in.</div>}
-          {recent.map((b) => {
-            const sm = STAGE_META[boxStage(b)];
-            return (
-              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', marginBottom: 6, color: '#f1f5f9', cursor: 'pointer' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <b style={{ fontFamily: 'monospace', fontSize: 14 }}>{b.id}</b>
-                  <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
-                </div>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{boxTitle(b)} · {boxUnits(b.contents)} units · {fmtWhen(b.checked_in_at)}</div>
-              </button>
-            );
-          })}
+        {/* No QR code on the box? Hand-entry lives right here rather than in its
+            own tab — one screen covers camera, typing, and manual add. */}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button onClick={() => setLgOpen(!lgOpen)} style={{ ...S.btn(lgOpen ? '#334155' : '#1e293b'), fontSize: 14, padding: '12px', border: '1px solid #334155' }}>
+            {lgOpen ? '▾' : '▸'} 📝 No QR — add by hand
+          </button>
+          <button onClick={() => setMode('boxes')} style={{ ...S.btn('#1e293b'), fontSize: 14, padding: '12px', border: '1px solid #334155' }}>🔍 Find a box</button>
         </div>
-      </div>
-      </div>}
-
-      {mode === 'legacy' && (
-        <div style={S.card}>
-          {bannerBox}
+        {lgOpen && <div style={{ ...S.card, marginTop: 8 }}>
           <div style={S.cap}>Assign this box to</div>
           <div style={{ display: 'flex', gap: 6, margin: '6px 0 12px' }}>
             <button onClick={() => setLgAssign('job')} style={{ ...S.btn(lgAssign === 'job' ? '#2563eb' : '#1e293b'), border: lgAssign === 'job' ? 'none' : '1px solid #334155', fontSize: 15 }}>Job / Order</button>
@@ -615,14 +585,52 @@ export default function MoveCheckIn() {
           <input value={lgShelf} onChange={(e) => setLgShelf(e.target.value)} placeholder="A3" style={{ ...S.input, margin: '6px 0 14px', fontFamily: 'monospace' }} />
           <button onClick={submitLegacy} disabled={busy} style={S.btn('#166534', busy)}>{busy ? 'Saving…' : '✓ Check In + Print QR Label'}</button>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 8 }}>A 4×6 BX label prints — stick it on the box so it scans from now on.</div>
+        </div>}
+        {pick && (
+          <div style={{ ...S.card, marginTop: 10, border: '1px solid #f59e0b' }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>{pick.ref} has {pick.matches.length} boxes — which one is this?</div>
+            {pick.matches.map((b) => (
+              <button key={b.id} onClick={async () => { setPick(null); await checkInBox(b, { place: pick.place }); }} style={{ ...S.btn('#1e293b'), textAlign: 'left', marginBottom: 6, border: '1px solid #334155', fontSize: 14 }}>
+                <b>{b.id}</b> · {boxUnits(b.contents)} units {b.checked_in_at ? '· ✓ ' + fmtWhen(b.checked_in_at) : ''}{whereStr(b) ? ' · ' + whereStr(b) : ''}
+              </button>
+            ))}
+            <button onClick={async () => { const m = pick; setPick(null); for (const b of m.matches) await checkInBox(b, { place: m.place }); }} style={S.btn('#166534')}>Check in ALL {pick.matches.length}</button>
+            <button onClick={() => setPick(null)} style={{ ...S.btn('#334155'), marginTop: 6, fontSize: 14, padding: '10px' }}>Cancel</button>
+          </div>
+        )}
+      </div>
+      {/* Tablet-only second column: the live feed of what's been scanned in.
+          Hidden on phones (.mc-side), where the banner alone is the feedback. */}
+      <div className="mc-side">
+        <div style={{ ...S.card }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+            <b style={{ fontSize: 15 }}>Just checked in</b>
+            <span style={{ fontSize: 12, color: '#94a3b8' }}>{stats.checkedIn} total · {stats.today} today</span>
+          </div>
+          {!recent.length && <div style={{ fontSize: 13, color: '#94a3b8', padding: '18px 0', textAlign: 'center' }}>Scans show up here as boxes come in.</div>}
+          {recent.map((b) => {
+            const sm = STAGE_META[boxStage(b)];
+            return (
+              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', marginBottom: 6, color: '#f1f5f9', cursor: 'pointer' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <b style={{ fontFamily: 'monospace', fontSize: 14 }}>{b.id}</b>
+                  <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{boxTitle(b)} · {boxUnits(b.contents)} units · {fmtWhen(b.checked_in_at)}</div>
+              </button>
+            );
+          })}
         </div>
-      )}
+      </div>
+      </div>}
+
 
       {mode === 'boxes' && (
         <div>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search box, SO#, shelf, staging, item…" style={{ ...S.input, marginBottom: 8 }} />
+          <button onClick={() => setMode('checkin')} style={{ ...S.btn('#1e293b'), fontSize: 14, padding: '10px', marginBottom: 10, border: '1px solid #334155' }}>← Back to Check In</button>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search box, SO#, shelf, staging, item…" style={{ ...S.input, marginBottom: 8 }} autoFocus />
           <div style={{ display: 'flex', gap: 5, marginBottom: 10, flexWrap: 'wrap' }}>
-            {[['all', 'All'], ['checked_in', 'Unplaced'], ['staged', 'Staging'], ['shelved', 'On shelf'], ['not_in', 'Not in']].map(([id, label]) => (
+            {[['all', 'All'], ['checked_in', 'Unplaced'], ['staged', 'Staging'], ['shelved', 'On shelf'], ['not_in', 'Not in'], ['shipped', 'Shipped']].map(([id, label]) => (
               <button key={id} onClick={() => setStageFilter(id)} style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700, border: '1px solid ' + (stageFilter === id ? (STAGE_META[id] ? STAGE_META[id].color : '#2563eb') : '#334155'), borderRadius: 999, cursor: 'pointer', background: stageFilter === id ? '#1e293b' : 'transparent', color: stageFilter === id ? (STAGE_META[id] ? STAGE_META[id].color : '#fff') : '#94a3b8' }}>{label}</button>
             ))}
           </div>

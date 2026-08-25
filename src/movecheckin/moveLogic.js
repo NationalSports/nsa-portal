@@ -93,7 +93,12 @@ export const buildLocationLabels = (text) =>
 // A box's stage is derived, not stored: bin (final shelf) wins over
 // staging_area (temporary drop zone), which wins over bare check-in.
 export const boxStage = (b) => {
-  if (!b || !b.checked_in_at) return 'not_in';
+  if (!b) return 'not_in';
+  // A box marked shipped has physically left the building — it is never part of
+  // the on-hand picture, whatever shelf it last sat on. (Status is set by hand
+  // on the desktop box modal today; the ship flow does not set it yet.)
+  if (b.status === 'shipped') return 'shipped';
+  if (!b.checked_in_at) return 'not_in';
   if (b.bin) return 'shelved';
   if (b.staging_area) return 'staged';
   return 'checked_in';
@@ -101,6 +106,7 @@ export const boxStage = (b) => {
 
 export const STAGE_META = {
   not_in: { label: 'Not in yet', color: '#f59e0b' },
+  shipped: { label: 'Shipped out', color: '#64748b' },
   checked_in: { label: 'Checked in', color: '#38bdf8' },
   staged: { label: 'Staging', color: '#a78bfa' },
   shelved: { label: 'On shelf', color: '#22c55e' },
@@ -115,7 +121,7 @@ export const placePatch = (kind, code) =>
 // Only boxes assigned to INVENTORY count — SO/IF fulfillment boxes are customer
 // goods, not house stock. A box counts once it's checked in and not combined.
 export const isCountedInventoryBox = (b) =>
-  !!(b && b.checked_in_at && b.status !== 'combined' && b.assigned_to === 'inventory');
+  !!(b && b.checked_in_at && b.status !== 'combined' && b.status !== 'shipped' && b.assigned_to === 'inventory');
 
 // Tally SKU×size across all counted inventory boxes.
 //   → { 'SKU123': { sku, product_id (when any entry carried one), sizes:{S:4,M:2} } }
@@ -217,7 +223,7 @@ export const linesToContents = (lines) =>
 
 // Move-progress rollup for the header + Boxes tab, per stage.
 export const moveStats = (boxes, todayStart) => {
-  const live = (boxes || []).filter((b) => b && b.status !== 'combined');
+  const live = (boxes || []).filter((b) => b && b.status !== 'combined' && b.status !== 'shipped');
   const checked = live.filter((b) => b.checked_in_at);
   return {
     checkedIn: checked.length,
