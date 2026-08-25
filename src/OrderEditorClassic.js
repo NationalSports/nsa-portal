@@ -12642,7 +12642,19 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           heldItemCount+=g.items.length-releaseItems.length;
           if(releaseItems.length===0)return;
           releasedItemCount+=releaseItems.length;
-          const artIds=[...new Set(releaseItems.map(it=>it.art_file_id).filter(Boolean))];
+          // A merged (or __combined) job's rows claim SEVERAL decorations (deco_idxs), but each
+          // wizard row carries only its FIRST art deco's file id — rebuilding _art_ids from
+          // it.art_file_id alone dropped every additional design (e.g. the sleeve logo on a merged
+          // front+sleeve job). The released job then no longer DECLARED the dropped design's
+          // method, so the next sync's stale-claim heal released that claim back to the
+          // auto-builder, which regenerated it as its own job — the merge silently un-merged on
+          // submit. Read the live decorations behind every claimed deco_idx instead; a row whose
+          // line is gone falls back to its stored art_file_id (deleted-line snapshot semantics).
+          const _rowArtDecos=it=>{const item=safeItems(o)[it.item_idx];if(!item)return null;
+            const dis=Array.isArray(it.deco_idxs)&&it.deco_idxs.length?it.deco_idxs:(it.deco_idx!=null?[it.deco_idx]:[]);
+            const ds=dis.map(di=>safeDecos(item)[di]).filter(d=>d&&d.kind==='art'&&d.art_file_id);
+            return ds.length?ds:null};
+          const artIds=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>d.art_file_id):[it.art_file_id]}).filter(Boolean))];
           const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
           const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&artProdFilesConfirmed(af2)});
           const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
@@ -12686,7 +12698,8 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved&&!allProdFiles));
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
-          const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
+          // Positions ride the same multi-deco read — a merged front+sleeve job lists both.
+          const positions=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>safeStr(d.position)||it.position):[it.position]}).filter(Boolean))].join(', ');
           const artistObj=hasArtist?wizArtistsAll.find(a=>a.id===g.artist):null;
           // Reuse existing job id when re-releasing a previously-loaded needs_art job
           const baseIdNum=gi+1+preservedJobs.length;
