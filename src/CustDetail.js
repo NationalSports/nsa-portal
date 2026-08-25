@@ -140,7 +140,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
-  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[invEmailSending,setInvEmailSending]=useState(false);const[invEmailStatus,setInvEmailStatus]=useState(null);const[showPortal,setShowPortal]=useState(false);
+  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[invEmailOverdueOnly,setInvEmailOverdueOnly]=useState(false);const[invEmailAttachPdfs,setInvEmailAttachPdfs]=useState(true);const[invEmailSending,setInvEmailSending]=useState(false);const[invEmailStatus,setInvEmailStatus]=useState(null);const[showPortal,setShowPortal]=useState(false);
   // Email Invoices recipients. The modal used to send to getBillingContacts()[0] with no way to
   // change it — on a parent account like a university that is one AP contact for every team's
   // invoices. Same checkbox + add-an-address pattern the estimate/SO send modals use.
@@ -300,21 +300,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
   const sendOpenInvoiceBatch=async(displayInvs)=>{
     if(invEmailSending||displayInvs.length===0||invEmailTargets.length===0)return;
-    setInvEmailSending(true);setInvEmailStatus({type:'sending',text:'Preparing invoice PDFs…'});
+    setInvEmailSending(true);setInvEmailStatus({type:'sending',text:invEmailAttachPdfs?'Preparing invoice PDFs…':'Preparing invoice email…'});
     try{
       const attachments=[];
-      for(let i=0;i<displayInvs.length;i++){
-        const inv=displayInvs[i];
-        setInvEmailStatus({type:'sending',text:'Preparing invoice PDF '+(i+1)+' of '+displayInvs.length+'…'});
-        const invCustomer=allCustomers.find(c=>c.id===inv.customer_id)||customer;
-        const pdfName=(inv.id||'Invoice')+(invCustomer?.name?' - '+invCustomer.name:'')+'.pdf';
-        try{attachments.push(await buildPdfAttachment(_bulkInvoicePdfOptions(inv,invCustomer,companyInfo),pdfName))}
-        catch(error){throw new Error('Could not generate '+(inv.id||'an invoice')+' PDF: '+(error?.message||'Unknown PDF error'))}
+      if(invEmailAttachPdfs){
+        for(let i=0;i<displayInvs.length;i++){
+          const inv=displayInvs[i];
+          setInvEmailStatus({type:'sending',text:'Preparing invoice PDF '+(i+1)+' of '+displayInvs.length+'…'});
+          const invCustomer=allCustomers.find(c=>c.id===inv.customer_id)||customer;
+          const pdfName=(inv.id||'Invoice')+(invCustomer?.name?' - '+invCustomer.name:'')+'.pdf';
+          try{attachments.push(await buildPdfAttachment(_bulkInvoicePdfOptions(inv,invCustomer,companyInfo),pdfName))}
+          catch(error){throw new Error('Could not generate '+(inv.id||'an invoice')+' PDF: '+(error?.message||'Unknown PDF error'))}
+        }
       }
       const totalDue=displayInvs.reduce((sum,inv)=>sum+safeNum(inv.total)-safeNum(inv.paid),0);
       const portalUrl=customer.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+'&page=billing':'';
+      const emailInvs=displayInvs.map(inv=>({...inv,program:inv.customer_id===customer.id?'Main account':(teamName(inv.customer_id)||gn(inv.customer_id)||'—')}));
       const htmlContent=buildBrandedEmailHtml(buildBulkInvoiceEmailHtml({
-        message:invEmailMsg,customerName:customer.name,totalDue,invoices:displayInvs,portalUrl,
+        message:invEmailMsg,customerName:customer.name,totalDue,invoices:emailInvs,portalUrl,showProgram:isP,
       }),companyInfo);
       const senderEmail=cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email)?cu.email:'noreply@nationalsportsapparel.com';
       setInvEmailStatus({type:'sending',text:'Sending '+displayInvs.length+' invoice'+(displayInvs.length===1?'':'s')+'…'});
@@ -326,7 +329,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         senderName:cu?.name||'National Sports Apparel',
         senderEmail,
         replyTo:cu?.email?{email:cu.email,name:cu.name||'National Sports Apparel'}:undefined,
-        attachment:attachments,
+        ...(invEmailAttachPdfs?{attachment:attachments}:{}),
       });
       if(!result.ok)throw new Error(result.error||'The mail provider rejected the request');
       const sentAt=new Date().toISOString();
@@ -436,7 +439,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       {openInvCount>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setInvEmailStatus(null);setInvEmailSending(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{const _seed=getBillingContacts(customer,allCustomers).map(a=>a.email).filter(Boolean);const _fallback=(customer.contacts||[]).map(c=>c.email).filter(Boolean).slice(0,1);const _to=(_seed.length?_seed:_fallback);setInvEmailChecked(Object.fromEntries(_to.map(em=>[em,true])));setInvEmailCustom([]);setInvEmailAdding('');setInvEmailMsg(greetLine(_to,getBillingContacts(customer,allCustomers).concat(customer.contacts||[]))+'\n\nPlease review your open invoice(s) below. Let us know if you have any questions.\n\nThank you,\nNSA Team');setInvEmailOverdueOnly(false);setInvEmailAttachPdfs(true);setInvEmailStatus(null);setInvEmailSending(false);setShowInvEmail(true)}}>📄 Email Invoices ({openInvCount})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
       {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url='https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag);try{navigator.clipboard&&navigator.clipboard.writeText(url)}catch(_){}window.open(url,'_blank','noopener,noreferrer')}}>📋 Open Portal Link</button>}
@@ -1838,6 +1841,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <span style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
             </div>}
           </div>
+          <label style={{display:'flex',alignItems:'flex-start',gap:8,marginTop:10,padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:8,background:invEmailAttachPdfs?'#eff6ff':'#f8fafc',cursor:invEmailSending?'default':'pointer'}}>
+            <input type="checkbox" checked={invEmailAttachPdfs} disabled={invEmailSending} onChange={e=>setInvEmailAttachPdfs(e.target.checked)} style={{width:14,height:14,marginTop:1,accentColor:'#2563eb'}}/>
+            <span><span style={{display:'block',fontSize:12,fontWeight:700,color:'#334155'}}>Attach invoice PDFs</span><span style={{display:'block',fontSize:10.5,color:'#64748b',marginTop:2}}>Optional — each invoice is already available through the portal link in the email.</span></span>
+          </label>
         </div>
         {/* Message */}
         <div>
@@ -1846,7 +1853,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         {/* Preview */}
         <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginTop:14,fontSize:11,color:'#64748b'}}>
-          <strong>Preview:</strong> Email to {invEmailTargets.length>0?invEmailTargets.join(', '):'(no recipients selected)'} with this message + PDF attachment{displayInvs.length>1?'s':''} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
+          <strong>Preview:</strong> Email to {invEmailTargets.length>0?invEmailTargets.join(', '):'(no recipients selected)'} with this message, portal link{invEmailAttachPdfs?' + PDF attachment'+(displayInvs.length>1?'s':''):' (no PDF attachments)'} for {displayInvs.length>0?displayInvs.map(i=>i.id).join(', '):'(none selected)'}
         </div>
         {invEmailStatus&&<div role="status" style={{borderRadius:8,padding:'10px 12px',marginTop:10,fontSize:12,fontWeight:600,background:invEmailStatus.type==='error'?'#fef2f2':invEmailStatus.type==='success'?'#f0fdf4':'#eff6ff',color:invEmailStatus.type==='error'?'#b91c1c':invEmailStatus.type==='success'?'#166534':'#1d4ed8'}}>{invEmailStatus.text}</div>}
       </div>

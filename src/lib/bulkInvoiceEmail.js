@@ -12,12 +12,13 @@ const money=value=>Number(value||0).toLocaleString('en-US',{
 export const bulkInvoiceEmailSubject=({customerName,totalDue})=>
   `Open Invoices — ${customerName||'Customer'} — ${money(totalDue)} due`;
 
-export const buildBulkInvoiceEmailHtml=({message,customerName,totalDue,invoices=[],portalUrl=''})=>{
+export const buildBulkInvoiceEmailHtml=({message,customerName,totalDue,invoices=[],portalUrl='',showProgram=false})=>{
   const rows=invoices.map(inv=>{
     const balance=Number(inv.total||0)-Number(inv.paid||0);
     return '<tr>'
       +'<td style="padding:7px 9px;border-bottom:1px solid #e2e8f0;font-weight:700;color:#1e40af">'+escapeHtml(inv.id||'')+'</td>'
       +'<td style="padding:7px 9px;border-bottom:1px solid #e2e8f0">'+escapeHtml(inv.memo||'Invoice')+'</td>'
+      +(showProgram?'<td style="padding:7px 9px;border-bottom:1px solid #e2e8f0">'+escapeHtml(inv.program||'—')+'</td>':'')
       +'<td style="padding:7px 9px;border-bottom:1px solid #e2e8f0">'+escapeHtml(inv.date||'—')+'</td>'
       +'<td style="padding:7px 9px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;color:#b91c1c">'+money(balance)+'</td>'
       +'</tr>';
@@ -32,6 +33,7 @@ export const buildBulkInvoiceEmailHtml=({message,customerName,totalDue,invoices=
     +'<div style="font-size:13px;color:#b91c1c;font-weight:700">Total due: '+money(totalDue)+'</div></div>'
     +'<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f1f5f9">'
     +'<th style="padding:7px 9px;text-align:left">Invoice</th><th style="padding:7px 9px;text-align:left">Description</th>'
+    +(showProgram?'<th style="padding:7px 9px;text-align:left">Program</th>':'')
     +'<th style="padding:7px 9px;text-align:left">Date</th><th style="padding:7px 9px;text-align:right">Balance</th>'
     +'</tr></thead><tbody>'+rows+'</tbody></table>'+portalButton+'</div>';
 };
@@ -63,4 +65,3 @@ export const buildBulkInvoiceMessages=({invoices=[],recipientEmails=[],message='
     entity_id:inv.so_id,
   }));
 };
-
