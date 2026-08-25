@@ -136,6 +136,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,companyInfo,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
+  const[jFil,setJFil]=useState({search:'',deco:'all',art:'all',prod:'all'});// Jobs tab: search + deco/art/product filters
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
@@ -597,13 +598,33 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const jobProdLabels={hold:'Ready',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
     const jobItemLabels={need_to_order:'Need Order',on_order:'On Order',waiting_receive:'Ordered',partially_received:'Partial',items_received:'Received'};
     const doneCount=custJobs.length-openJobCount;
-    const list=custJobs.filter(j=>jSF==='all'?true:jSF==='done'?_jobDone(j):!_jobDone(j));
+    let list=custJobs.filter(j=>jSF==='all'?true:jSF==='done'?_jobDone(j):!_jobDone(j));
+    // Filters: search across job/art/SO/SKUs, plus deco type, art status, and the coverage-aware
+    // product status (deriveJobItemStatus — same read the chips in the table use).
+    const decoTypes=[...new Set(custJobs.map(j=>j.deco_type).filter(Boolean))].sort();
+    const artStatuses=[...new Set(custJobs.map(j=>j.art_status).filter(Boolean))];
+    if(jFil.search){const s=jFil.search.toLowerCase();list=list.filter(j=>(j.art_name||'').toLowerCase().includes(s)||(j.id||'').toLowerCase().includes(s)||(j.so.id||'').toLowerCase().includes(s)||(j.so.memo||'').toLowerCase().includes(s)||(j.items||[]).some(gi=>(gi.sku||'').toLowerCase().includes(s)||(gi.name||'').toLowerCase().includes(s)))}
+    if(jFil.deco!=='all')list=list.filter(j=>j.deco_type===jFil.deco);
+    if(jFil.art!=='all')list=list.filter(j=>j.art_status===jFil.art);
+    if(jFil.prod!=='all')list=list.filter(j=>deriveJobItemStatus(j,j.so)===jFil.prod);
+    const _filActive=jFil.search||jFil.deco!=='all'||jFil.art!=='all'||jFil.prod!=='all';
     // Soonest due first (no date sinks to the bottom); on "All", done jobs sink below open ones.
     const _dk=j=>j.so.expected_date||'9999';
     const sorted=[...list].sort((a,b)=>((_jobDone(a)?1:0)-(_jobDone(b)?1:0))||(_dk(a)>_dk(b)?1:_dk(a)<_dk(b)?-1:0));
-    return<div className="card"><div className="card-header"><h2>Jobs</h2><div style={{display:'flex',gap:4}}>{[['open','Open ('+openJobCount+')'],['done','Done ('+doneCount+')'],['all','All ('+custJobs.length+')']].map(([v,l])=><button key={v} className={`btn btn-sm ${jSF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setJSF(v)}>{l}</button>)}</div></div>
+    const _selSt={fontSize:11,padding:'4px 6px',border:'1px solid #e2e8f0',borderRadius:6,color:'#475569',background:'white'};
+    return<div className="card"><div className="card-header"><h2>Jobs{_filActive?' — '+sorted.length+' match'+(sorted.length!==1?'es':''):''}</h2><div style={{display:'flex',gap:4}}>{[['open','Open ('+openJobCount+')'],['done','Done ('+doneCount+')'],['all','All ('+custJobs.length+')']].map(([v,l])=><button key={v} className={`btn btn-sm ${jSF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setJSF(v)}>{l}</button>)}</div></div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',padding:'10px 16px',borderBottom:'1px solid #f1f5f9',background:'#fafbfc'}}>
+      <input placeholder="Search jobs, artwork, SO, SKUs…" value={jFil.search} onChange={e=>setJFil(f=>({...f,search:e.target.value}))} style={{flex:1,minWidth:180,maxWidth:280,fontSize:12,padding:'5px 9px',border:'1px solid #e2e8f0',borderRadius:6,outline:'none'}}/>
+      <select value={jFil.deco} onChange={e=>setJFil(f=>({...f,deco:e.target.value}))} style={_selSt}>
+        <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
+      <select value={jFil.art} onChange={e=>setJFil(f=>({...f,art:e.target.value}))} style={_selSt}>
+        <option value="all">All Art Statuses</option>{artStatuses.map(a=><option key={a} value={a}>{jobArtLabels[a]||a.replace(/_/g,' ')}</option>)}</select>
+      <select value={jFil.prod} onChange={e=>setJFil(f=>({...f,prod:e.target.value}))} style={_selSt}>
+        <option value="all">All Product Statuses</option>{Object.entries(jobItemLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>
+      {_filActive&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setJFil({search:'',deco:'all',art:'all',prod:'all'})}>Clear</button>}
+    </div>
     <div className="card-body" style={{padding:0}}>
-      {sorted.length===0?<div className="empty" style={{padding:30}}>No {jSF==='all'?'':jSF+' '}jobs</div>:
+      {sorted.length===0?<div className="empty" style={{padding:30}}>{_filActive?'No jobs match these filters':'No '+(jSF==='all'?'':jSF+' ')+'jobs'}</div>:
       <table style={{fontSize:12}}><thead><tr><th>Job</th><th>Artwork</th><th>SO</th>{isP&&<th>Customer</th>}<th>Items</th><th>Units</th><th>Product</th><th>Art</th><th>Production</th><th style={{textAlign:'center'}}>Due</th></tr></thead><tbody>
       {sorted.map(j=>{const so=j.so;const subC=allCustomers.find(c=>c.id===so.customer_id);const _ist=deriveJobItemStatus(j,so);
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
