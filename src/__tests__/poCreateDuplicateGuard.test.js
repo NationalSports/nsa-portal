@@ -94,7 +94,11 @@ describe('_dbSaveSOInner — identical clean copies of the same po_id collapse t
       ],
     };
 
-    const { _dbSaveSO, _dbSaveFailedIds } = require('../lib/dbEngine');
+    const { _dbSaveSO, _dbSaveFailedIds, _setRestoredLinesSync } = require('../lib/dbEngine');
+    // The drop must also be pushed into live React state (kind 'po_drop'), or the open tab keeps
+    // rendering — and re-saving — the phantom duplicate until a manual reload.
+    const syncCalls = [];
+    _setRestoredLinesSync((soId, restores) => syncCalls.push({ soId, restores }));
     const so = {
       id: 'SO-DUP-1',
       memo: 'dup po pair',
@@ -117,6 +121,12 @@ describe('_dbSaveSOInner — identical clean copies of the same po_id collapse t
     expect(rows.length).toBe(1); // one copy survives, the exact duplicate is dropped
     expect(rows[0].po_id).toBe('PO 58203 FPUA');
     expect(rows[0].sizes['2XL']).toBe(3);
+
+    // The dropped copy is announced to the live-state sync so the open tab stops showing it.
+    const drops = syncCalls.flatMap(c => c.soId === 'SO-DUP-1' ? c.restores.filter(r => r.kind === 'po_drop') : []);
+    expect(drops.length).toBe(1);
+    expect(drops[0].line.po_id).toBe('PO 58203 FPUA');
+    expect(drops[0].idx).toBe(0);
   });
 });
 

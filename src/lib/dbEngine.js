@@ -1987,7 +1987,10 @@ const _dbSaveSOInner = async (so) => {
           }
         });
         if(drop.size){
-          drop.forEach(pi=>_droppedSummary.push((pls[pi]&&pls[pi].po_id)||'?'));
+          // Push each drop into live state too (kind 'po_drop' in _restoredLinesSync): the guard
+          // fixes the DB and this payload, but the tab's React state still holds the duplicate —
+          // it kept rendering (and would re-save) the phantom line until a manual reload.
+          drop.forEach(pi=>{_droppedSummary.push((pls[pi]&&pls[pi].po_id)||'?');_restoredLines.push({idx:ii,sku:it.sku||null,color:it.color||null,kind:'po_drop',line:pls[pi]})});
           items[ii]={...it,po_lines:pls.filter((_,pi)=>!drop.has(pi))};
           _dupesDropped+=drop.size;
         }

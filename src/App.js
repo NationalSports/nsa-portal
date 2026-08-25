@@ -3731,6 +3731,17 @@ export default function App(){
           if(JSON.stringify(cur[li])===JSON.stringify(r.line))continue;// already merged (raced save)
           out[r.idx]={...it,po_lines:cur.map((l,j)=>j===li?r.line:l)};applied++;continue;
         }
+        // kind 'po_drop': the save guard dropped an exact duplicate PO line (same po_id, same clean
+        // size signature) from the payload — remove the extra copy from live state too, or the tab
+        // keeps rendering the phantom line and re-saves it, undoing the dedup on the next save.
+        // Keeps the FIRST matching copy; only identical extras go.
+        if(r.kind==='po_drop'){
+          const cur=Array.isArray(it.po_lines)?it.po_lines:[];
+          const lineJson=JSON.stringify(r.line);
+          let seen=false;const filtered=cur.filter(l=>{if(JSON.stringify(l)!==lineJson)return true;if(seen)return false;seen=true;return true});
+          if(filtered.length===cur.length)continue;// already collapsed (raced save / second sync pass)
+          out[r.idx]={...it,po_lines:filtered};applied++;continue;
+        }
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);

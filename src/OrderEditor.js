@@ -622,11 +622,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (stale/foreign client state). Additions only: a local-only line (a PO just created in this
       // editor) must never be dropped because the incoming snapshot hasn't caught up yet.
       const hasExternalPoChange=safeItems(order).some((ei,idx)=>{const li=safeItems(o)[idx];if(!li)return false;return(Array.isArray(ei.po_lines)?ei.po_lines.length:0)>(Array.isArray(li.po_lines)?li.po_lines.length:0)});
-      if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange)return;
+      // Detect duplicate po_line COLLAPSES from outside — the save guard's dedup (kind 'po_drop')
+      // removed an exact identical copy of a line this editor still holds twice. Additions-only
+      // syncing kept the phantom copy rendering (and re-saving) here forever (SO-2121). Only fires
+      // when the LOCAL item holds 2+ identical copies and the snapshot holds fewer of that exact
+      // line — a local-only line (count 1) can never trip it.
+      const hasExternalPoDedup=safeItems(o).some((li,idx)=>{const ei=safeItems(order)[idx];if(!ei)return false;const lLines=Array.isArray(li.po_lines)?li.po_lines:[];if(lLines.length<2)return false;const cnt={};lLines.forEach(l=>{const k=JSON.stringify(l);cnt[k]=(cnt[k]||0)+1});if(!Object.values(cnt).some(c=>c>1))return false;const eCnt={};(Array.isArray(ei.po_lines)?ei.po_lines:[]).forEach(l=>{const k=JSON.stringify(l);eCnt[k]=(eCnt[k]||0)+1});return Object.entries(cnt).some(([k,c])=>c>1&&c>Math.max(eCnt[k]||0,1))});
+      if(!hasExternalJobChange&&!hasExternalArtChange&&!hasExternalPickChange&&!hasExternalPoChange&&!hasExternalPoDedup)return;
       setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});
         // Merge pick_line changes from external source (warehouse pulls, new IFs from other tabs)
         // and union-add external po_lines (restored stale/foreign lines) onto their item.
-        const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
+        const mergedItems=(hasExternalPickChange||hasExternalPoChange||hasExternalPoDedup)?safeItems(prev).map((it,idx)=>{
           const ext=safeItems(order)[idx];if(!ext)return it;
           let next=it;
           // Index-matched adoption is only safe when neither sku NOR color contradicts — items have no
@@ -639,6 +645,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(hasExternalPoChange&&_sameLine){
             const eLines=Array.isArray(ext.po_lines)?ext.po_lines:[];const lLines=Array.isArray(next.po_lines)?next.po_lines:[];
             if(eLines.length>lLines.length){const have=new Set(lLines.map(l=>JSON.stringify(l)));const add=eLines.filter(l=>!have.has(JSON.stringify(l)));if(add.length)next={...next,po_lines:[...lLines,...add]}}
+          }
+          if(hasExternalPoDedup&&_sameLine){
+            // Collapse exact-duplicate copies down toward the snapshot's count of that identical
+            // line — never below 1, so a PO just created locally (absent from the snapshot) stays.
+            const lLines2=Array.isArray(next.po_lines)?next.po_lines:[];
+            if(lLines2.length>1){
+              const eCnt={};(Array.isArray(ext.po_lines)?ext.po_lines:[]).forEach(l=>{const k=JSON.stringify(l);eCnt[k]=(eCnt[k]||0)+1});
+              const seen={};const filtered=lLines2.filter(l=>{const k=JSON.stringify(l);seen[k]=(seen[k]||0)+1;return seen[k]<=Math.max(eCnt[k]||0,1)});
+              if(filtered.length!==lLines2.length)next={...next,po_lines:filtered};
+            }
           }
           return next;
         }):prev.items;
