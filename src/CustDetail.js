@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
 import { mockSkuOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback, poLineFulfilledQty, scopeSoItemsToInvoice } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
-import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus } from './businessLogic';
+import { pickCwAsset, normalizeWebLogos, deriveJobItemStatus, buildJobs } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { ptDateInput } from './lib/storeClock';
@@ -135,6 +135,8 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,companyInfo,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
+  const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
+  const[jFil,setJFil]=useState({search:'',deco:'all',art:'all',prod:'all'});// Jobs tab: search + deco/art/product filters
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
@@ -253,6 +255,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
   const custSOs=(sos||[]).filter(o=>ids.includes(o.customer_id));
+  // Every production job across this customer's (and sub-accounts') SOs — derived with
+  // buildJobs, the same read the Jobs board uses, so auto jobs not yet saved to so.jobs[]
+  // show too. Same dead-order and draft guards as the Jobs board.
+  const custJobs=[];custSOs.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>custJobs.push({...j,so}))});
+  const _jobDone=j=>j.prod_status==='completed'||j.prod_status==='shipped';
+  const openJobCount=custJobs.filter(j=>!_jobDone(j)).length;
   const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
   const openPortalInvs=orders.filter(o=>o.type==='invoice'&&(o.status==='open'||o.status==='partial'));
@@ -441,7 +449,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','messages','contacts','overview','webstores','promo','artwork','catalog','roster','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','jobs','messages','contacts','overview','webstores','promo','artwork','catalog','roster','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='jobs'?'Jobs'+(openJobCount>0?' ('+openJobCount+')':''):t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -583,6 +591,60 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <td><span className={`badge ${statusBadge(t.status)}`}>{t.status?.replace(/_/g,' ')||'—'}</span></td>
         </tr>)}</tbody></table></div></div>})()}
   </>}
+
+  {/* JOBS TAB — every production job across this customer's SOs, open by default */}
+  {tab==='jobs'&&(()=>{
+    const jobArtLabels={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Wait Approval',production_files_needed:'Approved — Waiting',order_dtf_transfers:'Order DTF',upload_emb_files:'Upload EMB',art_complete:'Art ✓'};
+    const jobProdLabels={hold:'Ready',ready:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
+    const jobItemLabels={need_to_order:'Need Order',on_order:'On Order',waiting_receive:'Ordered',partially_received:'Partial',items_received:'Received'};
+    const doneCount=custJobs.length-openJobCount;
+    let list=custJobs.filter(j=>jSF==='all'?true:jSF==='done'?_jobDone(j):!_jobDone(j));
+    // Filters: search across job/art/SO/SKUs, plus deco type, art status, and the coverage-aware
+    // product status (deriveJobItemStatus — same read the chips in the table use).
+    const decoTypes=[...new Set(custJobs.map(j=>j.deco_type).filter(Boolean))].sort();
+    const artStatuses=[...new Set(custJobs.map(j=>j.art_status).filter(Boolean))];
+    if(jFil.search){const s=jFil.search.toLowerCase();list=list.filter(j=>(j.art_name||'').toLowerCase().includes(s)||(j.id||'').toLowerCase().includes(s)||(j.so.id||'').toLowerCase().includes(s)||(j.so.memo||'').toLowerCase().includes(s)||(j.items||[]).some(gi=>(gi.sku||'').toLowerCase().includes(s)||(gi.name||'').toLowerCase().includes(s)))}
+    if(jFil.deco!=='all')list=list.filter(j=>j.deco_type===jFil.deco);
+    if(jFil.art!=='all')list=list.filter(j=>j.art_status===jFil.art);
+    if(jFil.prod!=='all')list=list.filter(j=>deriveJobItemStatus(j,j.so)===jFil.prod);
+    const _filActive=jFil.search||jFil.deco!=='all'||jFil.art!=='all'||jFil.prod!=='all';
+    // Soonest due first (no date sinks to the bottom); on "All", done jobs sink below open ones.
+    const _dk=j=>j.so.expected_date||'9999';
+    const sorted=[...list].sort((a,b)=>((_jobDone(a)?1:0)-(_jobDone(b)?1:0))||(_dk(a)>_dk(b)?1:_dk(a)<_dk(b)?-1:0));
+    const _selSt={fontSize:11,padding:'4px 6px',border:'1px solid #e2e8f0',borderRadius:6,color:'#475569',background:'white'};
+    return<div className="card"><div className="card-header"><h2>Jobs{_filActive?' — '+sorted.length+' match'+(sorted.length!==1?'es':''):''}</h2><div style={{display:'flex',gap:4}}>{[['open','Open ('+openJobCount+')'],['done','Done ('+doneCount+')'],['all','All ('+custJobs.length+')']].map(([v,l])=><button key={v} className={`btn btn-sm ${jSF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setJSF(v)}>{l}</button>)}</div></div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',padding:'10px 16px',borderBottom:'1px solid #f1f5f9',background:'#fafbfc'}}>
+      <input placeholder="Search jobs, artwork, SO, SKUs…" value={jFil.search} onChange={e=>setJFil(f=>({...f,search:e.target.value}))} style={{flex:1,minWidth:180,maxWidth:280,fontSize:12,padding:'5px 9px',border:'1px solid #e2e8f0',borderRadius:6,outline:'none'}}/>
+      <select value={jFil.deco} onChange={e=>setJFil(f=>({...f,deco:e.target.value}))} style={_selSt}>
+        <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
+      <select value={jFil.art} onChange={e=>setJFil(f=>({...f,art:e.target.value}))} style={_selSt}>
+        <option value="all">All Art Statuses</option>{artStatuses.map(a=><option key={a} value={a}>{jobArtLabels[a]||a.replace(/_/g,' ')}</option>)}</select>
+      <select value={jFil.prod} onChange={e=>setJFil(f=>({...f,prod:e.target.value}))} style={_selSt}>
+        <option value="all">All Product Statuses</option>{Object.entries(jobItemLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>
+      {_filActive&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setJFil({search:'',deco:'all',art:'all',prod:'all'})}>Clear</button>}
+    </div>
+    <div className="card-body" style={{padding:0}}>
+      {sorted.length===0?<div className="empty" style={{padding:30}}>{_filActive?'No jobs match these filters':'No '+(jSF==='all'?'':jSF+' ')+'jobs'}</div>:
+      <table style={{fontSize:12}}><thead><tr><th>Job</th><th>Artwork</th><th>SO</th>{isP&&<th>Customer</th>}<th>Items</th><th>Units</th><th>Product</th><th>Art</th><th>Production</th><th style={{textAlign:'center'}}>Due</th></tr></thead><tbody>
+      {sorted.map(j=>{const so=j.so;const subC=allCustomers.find(c=>c.id===so.customer_id);const _ist=deriveJobItemStatus(j,so);
+        const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+        const done=_jobDone(j);
+        return<tr key={so.id+'|'+j.id} style={{cursor:'pointer',opacity:done?0.65:1}} onClick={()=>onOpenSO&&onOpenSO(so)}>
+          <td style={{fontWeight:700,color:'#1e40af'}}>{j.id}</td>
+          <td>{j.art_name||'—'} <span style={{color:'#94a3b8',fontSize:10}}>({(j.deco_type||'').replace(/_/g,' ')})</span></td>
+          <td><span style={{fontWeight:600,color:'#475569'}}>{so.id}</span>{so.memo&&<span style={{color:'#94a3b8'}}> — {so.memo}</span>}</td>
+          {isP&&<td><span className="badge badge-gray" title={subC?.alpha_tag||''}>{teamName(so.customer_id)||subC?.alpha_tag||''}</span></td>}
+          <td style={{fontSize:11}}>{(j.items||[]).map(gi=>gi.sku).join(', ')||'—'}</td>
+          <td><div style={{display:'flex',alignItems:'center',gap:4}}>
+            <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}><div style={{height:4,borderRadius:3,background:j.fulfilled_units>=j.total_units?'#22c55e':j.fulfilled_units>0?'#f59e0b':'#e2e8f0',width:(j.total_units>0?Math.min(100,j.fulfilled_units/j.total_units*100):0)+'%'}}/></div>
+            <span style={{fontSize:10}}>{j.fulfilled_units}/{j.total_units}</span></div></td>
+          <td>{_ist?<span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[_ist]?.bg,color:SC[_ist]?.c}}>{jobItemLabels[_ist]||_ist}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
+          <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{jobArtLabels[j.art_status]||j.art_status}</span></td>
+          <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
+          <td style={{textAlign:'center',color:!done&&daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:!done&&daysOut!=null&&daysOut<=7?700:400}}>{_fmtMD(so.expected_date)||'—'}{!done&&daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
+        </tr>})}
+      </tbody></table>}
+    </div></div>})()}
 
   {/* MESSAGES TAB — grouped by sales order, unread groups first */}
   {tab==='messages'&&<div className="card"><div className="card-header"><h2>Messages{custUnread>0?' — '+custUnread+' unread':''}</h2>{custUnread>0&&<button className="btn btn-sm btn-secondary" onClick={()=>markGroupRead(msgGroups.flatMap(g=>g.msgs))}>Mark all read</button>}</div><div className="card-body">

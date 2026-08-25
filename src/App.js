@@ -7945,8 +7945,11 @@ export default function App(){
     const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
     const hasOpenIFs=safeItems(so).some(it=>safePicks(it).length>0);
     if(hasOpenPOs||hasOpenIFs){const parts=[];if(hasOpenPOs)parts.push('POs');if(hasOpenIFs)parts.push('IFs');return nf('Cannot delete — SO has open '+parts.join(' and ')+'. Delete or cancel them first.','error')}
-    // Check for linked invoices
-    const linkedInvs=invs.filter(i=>i.so_id===soId);
+    // Check for linked invoices. Voided and soft-deleted invoices are already out of the
+    // books (zero receivable, excluded from every revenue/commission/aging pass), so they
+    // must NOT block deletion — otherwise the guard below tells the user to void and then
+    // refuses to accept the result, which is the dead end this branch fixes.
+    const linkedInvs=invs.filter(i=>i.so_id===soId&&String(i.status||'').toLowerCase()!=='void'&&!i.deleted_at);
     if(linkedInvs.length>0){
       const paidInvs=linkedInvs.filter(i=>i.paid>0);
       if(paidInvs.length>0)return nf('Cannot delete — SO has invoices with payments ('+paidInvs.map(i=>i.id).join(', ')+'). Void invoices first.','error');
@@ -8026,6 +8029,29 @@ export default function App(){
     }else{nf('Invoice '+invId+' deleted')}
     _dbDeleteInvoice(invId);
     logChange('deleted','Invoice',invId,inv.memo||'');
+  };
+
+  // Void an invoice: back it out of the books WITHOUT destroying the payment record.
+  // status==='void' is already honored everywhere that matters — opsRecap.invoiceBalance
+  // (zero balance), isFullyPaidInvoice, the revenue/commission/aging passes, and the SO
+  // status derivation — so the only thing that was ever missing was a way to SET it.
+  // deleteSO has told users to "void invoices first" since it was written, but no void
+  // action existed, leaving paid orders permanently undeletable. This is that action.
+  // Unlike deleteInvoice, the invoice row and its payments survive as the audit trail.
+  const voidInvoice = (invId) => {
+    if(!canDelete)return nf('You do not have permission to void invoices','error');
+    const inv=invs.find(i=>i.id===invId);
+    if(!inv)return nf('Invoice '+invId+' not found','error');
+    if(String(inv.status||'').toLowerCase()==='void')return nf('Invoice '+invId+' is already void');
+    const paid=safeNum(inv.paid);
+    // Say plainly that voiding is a bookkeeping action, not a refund — the money moved for
+    // real (store/Stripe funds), and nothing here gives it back to whoever paid it.
+    if(!window.confirm('Void invoice '+invId+'?\n\nIt stops counting as revenue and as a receivable.'+
+      (paid>0?'\n\nThe $'+paid.toLocaleString()+' in recorded payments STAYS on the invoice as history. Voiding does NOT refund anyone — issue any refund in the store/processor separately.':'')))return;
+    const ts=new Date().toLocaleString();
+    setInvs(prev=>prev.map(i=>i.id===invId?{...i,status:'void',updated_at:ts}:i));
+    logChange('voided','Invoice',invId,inv.memo||'');
+    nf('Invoice '+invId+' voided'+(paid>0?' — $'+paid.toLocaleString()+' payment history kept':''));
   };
 
   // Booking orders are normally invisible to the floor until confirmed or near ship — EXCEPT
@@ -36582,7 +36608,7 @@ export default function App(){
     commMonth,setCommMonth,commOverrides,setCommOverrides,commRep,setCommRep,commTab,setCommTab,
     // invoices page state + handlers
     CC_FEE_PCT,PAY_METHODS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,
-    deleteInvoice,editingInvRep,setEditingInvRep,histInvs,setHistInvs,invBackPg,setInvBackPg,
+    deleteInvoice,voidInvoice,editingInvRep,setEditingInvRep,histInvs,setHistInvs,invBackPg,setInvBackPg,
     invEditModal,setInvEditModal,invF,setInvF,invSendModalDirect,setInvSendModalDirect,
     invSort,setInvSort,omgStores,payModal,setPayModal,pdBulkModal,setPdBulkModal,portalSettings,
     splitModal,setSplitModal,splitInvoice,viewInvoice,setViewInvoice,webstoreSettle,

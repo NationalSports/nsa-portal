@@ -1964,7 +1964,18 @@ const _dbSaveSOInner = async (so) => {
         const drop=new Set();
         Object.values(bySig).forEach(group=>{
           if(group.length<2)return;
-          const clean=group.filter(g=>_isClean(g.pl));
+          let clean=group.filter(g=>_isClean(g.pl));
+          if(clean.length<2)return;
+          // Exact self-duplicates first: multiple clean copies of the SAME po_id with an identical
+          // size signature on one item. The create-time race (the durable per-line write vs the full
+          // save, before _dbPersistNewPoLine was serialized into the per-SO queue) wrote such pairs,
+          // and neither branch below touches them once both copies are db-known — so they survived
+          // every later save (SO-2121 "PO 58203 FPUA", 2026-08-24). No flow legitimately appends a
+          // second identical line for a po_id (re-applying a PO folds into the existing line), so
+          // keep the first copy and drop the rest.
+          const _byPoId={};clean.forEach(g=>{const k=String(g.pl.po_id||'');(_byPoId[k]=_byPoId[k]||[]).push(g)});
+          Object.values(_byPoId).forEach(same=>{same.slice(1).forEach(g=>drop.add(g.pi))});
+          clean=clean.filter(g=>!drop.has(g.pi));
           if(clean.length<2)return;
           const dbKnown=clean.filter(g=>g.pl.po_id&&_dbPoIdSet.has(g.pl.po_id));
           const newOnes=clean.filter(g=>!g.pl.po_id||!_dbPoIdSet.has(g.pl.po_id));
@@ -3416,6 +3427,13 @@ const _dbDeleteSO = async (id) => {
     await supabase.from('so_art_files').delete().eq('so_id',id);
     await supabase.from('so_firm_dates').delete().eq('so_id',id);
     await supabase.from('so_jobs').delete().eq('so_id',id);
+    // webstore_orders.so_id is the ONLY foreign key into sales_orders declared NO ACTION —
+    // every other one is CASCADE or SET NULL — so while a webstore batch's parent orders
+    // still point at this SO, Postgres refuses the delete below. deleteSO has already
+    // dropped the SO from React state by then and the catch here only logs, so the order
+    // silently reappears on the next poll. Unlink first: the parent order rows are the
+    // customer's record of what they bought and must outlive the SO either way.
+    await supabase.from('webstore_orders').update({so_id:null}).eq('so_id',id);
     await supabase.from('sales_orders').delete().eq('id',id);
   }catch(e){console.error('[DB] delete SO:',e)}});
 };
@@ -3495,6 +3513,17 @@ const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
 // Fire-and-forget from the editor, exactly like the po_number_claims breadcrumb write.
 const _dbPersistNewPoLine=async(soId,itemIndex,poLine)=>{
   if(!supabase||!soId||itemIndex==null||!poLine||!poLine.po_id)return;
+  // Serialized through the per-SO save queue (_queuedEntitySave), NOT run free alongside it: this
+  // write used to race the queued full-SO save that the same Create-PO click triggers, and its
+  // check-then-insert interleaved with the save's own PO-line insert — both landed and every line
+  // on the new PO doubled on its item (SO-2121 "PO 58203 FPUA" / SO-2105 / SO-1248, 2026-08-24).
+  // In the queue it runs strictly before or after the full save: before → the save's snapshot and
+  // restore passes see its row and the item swap supersedes it; after → the existence check below
+  // sees the save's row and no-ops. Each call passes a fresh saveFn identity so the queue's
+  // latest-wins coalescing (same-saveFn only) can never collapse two different lines' writes.
+  return _queuedEntitySave(soId,null,()=>_dbPersistNewPoLineInner(soId,itemIndex,poLine)).catch(e=>{console.error('[DB] persist new PO line queue error for',soId,':',e?.message||e)});
+};
+const _dbPersistNewPoLineInner=async(soId,itemIndex,poLine)=>{
   return _dbSavingGuard(async()=>{try{
     const{data:itemRow,error:selErr}=await supabase.from('so_items').select('id').eq('so_id',soId).eq('item_index',itemIndex).maybeSingle();
     if(selErr||!itemRow||!itemRow.id)return;// item not in DB yet — the full SO save will persist it
