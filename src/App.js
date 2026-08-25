@@ -12281,6 +12281,9 @@ export default function App(){
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
       <button data-tour-id="inv-pos-tab" className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
       {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>{setInvTab('b2b');refreshAdidasLastSync()}} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
+      {/* Building-move box check-in station (src/movecheckin) — opens in its own tab so
+          the scanning phone/tablet keeps the station up while the desk uses the portal. */}
+      <a href="/move-checkin" target="_blank" rel="noopener noreferrer" style={{marginLeft:'auto',alignSelf:'center',display:'inline-flex',alignItems:'center',gap:6,background:'#0f172a',color:'#f1f5f9',border:'1px solid #334155',borderRadius:8,padding:'8px 14px',fontSize:12,fontWeight:700,textDecoration:'none',whiteSpace:'nowrap'}} title="Scan boxes into the new building — check in, staging, shelves, and the move stocktake">📦 Move Check-In</a>
     </div>
     {invTab==='stock'&&rInvStock()}
     {invTab==='clearance'&&isA&&rInvClearance()}

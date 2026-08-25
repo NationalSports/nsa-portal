@@ -141,9 +141,33 @@ function ContinuousScanner({ onRead, paused }) {
 }
 
 // ── kiosk skin ────────────────────────────────────────────────────────────────
+// Phone-first, but a landscape tablet parked at the door is the other real
+// station: from 900px the page widens, the type scales up, and the scanning
+// tabs split into scanner-left / live-activity-right. Media queries can't live
+// in inline styles, so the responsive half is this stylesheet (class names) and
+// the rest stays inline, matching the other station chunks.
+const MC_CSS = `
+.mc-page { max-width: 560px; }
+.mc-side { display: none; }
+@media (min-width: 900px) {
+  .mc-page { max-width: 1180px; padding: 20px 24px; }
+  .mc-h1 { font-size: 28px !important; }
+  .mc-stats { font-size: 15px !important; gap: 18px !important; }
+  .mc-tabs button { font-size: 15px !important; padding: 15px 6px !important; }
+  .mc-split { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; align-items: start; }
+  .mc-side { display: block; }
+  .mc-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
+  .mc-list > button { margin-bottom: 0 !important; }
+  .mc-sheet { border-radius: 14px !important; max-height: 86vh !important; }
+  .mc-overlay { align-items: center !important; padding: 24px; }
+}
+@media (min-width: 1280px) {
+  .mc-list { grid-template-columns: 1fr 1fr 1fr; }
+}
+`;
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 const S = {
-  page: { fontFamily: FONT, background: '#0f172a', color: '#f1f5f9', minHeight: '100vh', padding: 12, maxWidth: 560, margin: '0 auto' },
+  page: { fontFamily: FONT, background: '#0f172a', color: '#f1f5f9', minHeight: '100vh', padding: 12, margin: '0 auto' },
   cap: { color: '#94a3b8', fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' },
   input: { width: '100%', boxSizing: 'border-box', background: '#1e293b', border: '1px solid #334155', borderRadius: 8, padding: '12px 12px', color: '#fff', fontSize: 16, fontWeight: 600 },
   btn: (bg, disabled) => ({ width: '100%', padding: '14px 12px', fontSize: 17, fontWeight: 800, background: disabled ? '#334155' : bg, color: '#fff', border: 'none', borderRadius: 10, cursor: disabled ? 'default' : 'pointer' }),
@@ -415,10 +439,10 @@ export default function MoveCheckIn() {
   };
 
   // ── render ──
-  if (loading) return <div style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading…</div>;
+  if (loading) return <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading…</div>;
   if (!signedIn) {
     return (
-      <div style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+      <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
         <div>
           <div style={{ fontSize: 40 }}>📦</div>
           <h1 style={{ fontSize: 22, margin: '10px 0 6px' }}>Move Check-In</h1>
@@ -447,6 +471,10 @@ export default function MoveCheckIn() {
     </div>
   );
 
+  // Newest check-ins first — the tablet's live activity column.
+  const recent = boxes.filter((b) => b.checked_in_at && b.status !== 'combined')
+    .sort((a, b) => String(b.checked_in_at).localeCompare(String(a.checked_in_at))).slice(0, 12);
+
   const filtered = boxes.filter((b) => {
     if (b.status === 'combined') return false;
     if (stageFilter !== 'all' && boxStage(b) !== stageFilter) return false;
@@ -457,13 +485,14 @@ export default function MoveCheckIn() {
   });
 
   return (
-    <div style={S.page}>
+    <div className="mc-page" style={S.page}>
+      <style>{MC_CSS}</style>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-        <h1 style={{ fontSize: 20, margin: '2px 0 2px' }}>📦 Move Check-In</h1>
+        <h1 className="mc-h1" style={{ fontSize: 20, margin: '2px 0 2px' }}>📦 Move Check-In</h1>
         <div style={{ fontSize: 12, color: '#94a3b8' }}>{sessionCount ? sessionCount + ' this session' : email}</div>
       </div>
       {/* per-stage progress: checked in → staging → on shelf */}
-      <div style={{ display: 'flex', gap: 10, margin: '4px 0 10px', fontSize: 12, color: '#94a3b8', flexWrap: 'wrap' }}>
+      <div className="mc-stats" style={{ display: 'flex', gap: 10, margin: '4px 0 10px', fontSize: 12, color: '#94a3b8', flexWrap: 'wrap' }}>
         <span><b style={{ color: STAGE_META.checked_in.color }}>{stats.checkedIn}</b> in ({stats.today} today)</span>
         <span><b style={{ color: STAGE_META.staged.color }}>{stats.staged}</b> staging</span>
         <span><b style={{ color: STAGE_META.shelved.color }}>{stats.shelved}</b> on shelf</span>
@@ -475,7 +504,7 @@ export default function MoveCheckIn() {
           <div style={{ width: (stats.staged / stats.checkedIn * 100) + '%', background: STAGE_META.staged.color }} />
         </div>
       )}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+      <div className="mc-tabs" style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
         {tabs.map(([id, label]) => (
           <button key={id} onClick={() => { setMode(id); setBanner(null); setPick(null); if (id === 'submit' && plan == null) loadPlan(); }} style={{ flex: 1, padding: '10px 2px', fontSize: 12, fontWeight: 800, border: 'none', borderRadius: 8, cursor: 'pointer', background: mode === id ? '#2563eb' : '#1e293b', color: mode === id ? '#fff' : '#94a3b8' }}>{label}</button>
         ))}
@@ -499,7 +528,7 @@ export default function MoveCheckIn() {
         </div>
       )}
 
-      {(mode === 'checkin' || mode === 'place') && <>
+      {(mode === 'checkin' || mode === 'place') && <div className="mc-split"><div>
         <ContinuousScanner onRead={handleScan} paused={!!pick} />
         {bannerBox}
         {lastAction && (
@@ -518,7 +547,31 @@ export default function MoveCheckIn() {
             <button onClick={() => setPick(null)} style={{ ...S.btn('#334155'), marginTop: 6, fontSize: 14, padding: '10px' }}>Cancel</button>
           </div>
         )}
-      </>}
+      </div>
+      {/* Tablet-only second column: the live feed of what's been scanned in.
+          Hidden on phones (.mc-side), where the banner alone is the feedback. */}
+      <div className="mc-side">
+        <div style={{ ...S.card }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+            <b style={{ fontSize: 15 }}>Just checked in</b>
+            <span style={{ fontSize: 12, color: '#94a3b8' }}>{stats.checkedIn} total · {stats.today} today</span>
+          </div>
+          {!recent.length && <div style={{ fontSize: 13, color: '#94a3b8', padding: '18px 0', textAlign: 'center' }}>Scans show up here as boxes come in.</div>}
+          {recent.map((b) => {
+            const sm = STAGE_META[boxStage(b)];
+            return (
+              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', marginBottom: 6, color: '#f1f5f9', cursor: 'pointer' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <b style={{ fontFamily: 'monospace', fontSize: 14 }}>{b.id}</b>
+                  <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{boxTitle(b)} · {boxUnits(b.contents)} units · {fmtWhen(b.checked_in_at)}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      </div>}
 
       {mode === 'legacy' && (
         <div style={S.card}>
@@ -573,6 +626,7 @@ export default function MoveCheckIn() {
               <button key={id} onClick={() => setStageFilter(id)} style={{ padding: '6px 12px', fontSize: 12, fontWeight: 700, border: '1px solid ' + (stageFilter === id ? (STAGE_META[id] ? STAGE_META[id].color : '#2563eb') : '#334155'), borderRadius: 999, cursor: 'pointer', background: stageFilter === id ? '#1e293b' : 'transparent', color: stageFilter === id ? (STAGE_META[id] ? STAGE_META[id].color : '#fff') : '#94a3b8' }}>{label}</button>
             ))}
           </div>
+          <div className="mc-list">
           {filtered.slice(0, 200).map((b) => {
             const st = BOX_STATUS_META[b.status];
             const stage = boxStage(b);
@@ -587,6 +641,7 @@ export default function MoveCheckIn() {
               </button>
             );
           })}
+          </div>
           {!filtered.length && <div style={{ color: '#94a3b8', textAlign: 'center', padding: 20 }}>No boxes match.</div>}
         </div>
       )}
@@ -653,8 +708,8 @@ export default function MoveCheckIn() {
       )}
 
       {detail && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 50 }} onClick={() => { setDetail(null); setEditLines(null); }}>
-          <div style={{ ...S.card, width: '100%', maxWidth: 560, margin: '0 auto', borderRadius: '14px 14px 0 0', maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+        <div className="mc-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }} onClick={() => { setDetail(null); setEditLines(null); }}>
+          <div className="mc-sheet" style={{ ...S.card, width: '100%', maxWidth: 560, margin: '0 auto', borderRadius: '14px 14px 0 0', maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <b style={{ fontFamily: 'monospace', fontSize: 18 }}>{detail.id}</b>
               <button onClick={() => { setDetail(null); setEditLines(null); }} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>✕</button>

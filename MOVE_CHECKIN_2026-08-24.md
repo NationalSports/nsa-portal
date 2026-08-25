@@ -1,6 +1,9 @@
 # Move Check-In station — September building move
 
-Live at **`/move-checkin`** (phone-first, staff sign-in). Everything that enters
+Live at **`/move-checkin`** (staff sign-in). Phone-first, and from 900px wide a
+landscape tablet gets the full-page layout: bigger type and tabs, the scanning
+tabs split into scanner-left / live "just checked in" feed-right, the Boxes tab
+becomes a 2–3 column grid, and the box sheet opens as a centered dialog. Everything that enters
 the new building gets scanned here, so the boxes table becomes the moving
 inventory: what arrived, what it belongs to, and what shelf it's on.
 
@@ -38,5 +41,6 @@ column 00185 already reserved.
 While scanning, an **↩︎ Undo last scan** button reverses the most recent
 check-in/placement (an adopted unknown plate is deleted outright).
 
-Desktop nav: Tools → Move Check-In. Code: `src/movecheckin/` (pure helpers in
+Desktop nav: Tools → Move Check-In; also a **📦 Move Check-In** button on the
+Inventory page's tab row (opens in a new tab). Code: `src/movecheckin/` (pure helpers in
 `moveLogic.js`, unit tests in `src/__tests__/moveCheckin.test.js`).
