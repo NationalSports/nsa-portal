@@ -487,6 +487,7 @@ import {
   _dbSavingGuard,
   _batchPosDirtyUntil,
   _dbUpdatePickLineStatus,
+  _dbSaveReceiptLines,
   _dbSaveInFlight,
   _dbSavePending,
   _queuedEntitySave,
@@ -14363,6 +14364,7 @@ export default function App(){
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
+                    const _rcptUpd=[];// targeted receipt writes — the fast label gate (see _dbSaveReceiptLines)
                     linesBySO[soId].forEach(ml=>{
                       const it=updItems[ml.itemIdx];if(!it)return;
                       const pls=[...(it.po_lines||[])];
@@ -14392,7 +14394,8 @@ export default function App(){
                         const _shipment={date:new Date().toLocaleDateString(),...rcv};
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:newReceived,...(_rcvd>0?{shipments:[...(pls[ml.poLineIdx].shipments||[]),_shipment]}:{}),received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
-                        if(_rcvd>0)_recvLines.push({sku:it.sku,name:safeStr(it.name),color:it.color||'',sizes:rcv,soId});
+                        if(_rcvd>0){_recvLines.push({sku:it.sku,name:safeStr(it.name),color:it.color||'',sizes:rcv,soId});
+                          _rcptUpd.push({itemIdx:ml.itemIdx,poId:pls[ml.poLineIdx].po_id,rcv,shipment:_shipment})}
                       }
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
@@ -14406,9 +14409,18 @@ export default function App(){
                     // fire-and-forget, so on a slow device a reload could clobber the just-received line while
                     // the 4x6 label had already printed — the SO then read "unfulfilled" despite a printed
                     // label. A hard failure now surfaces to the warehouse user instead of failing silently.
+                    // Fast label gate (NSA 4568 follow-up): enqueue the targeted receipt write FIRST so it
+                    // runs ahead of the full save in the per-SO queue, then fire the full save behind it.
+                    // The success UI below waits on the fast write; only when it can't confirm (line not in
+                    // DB yet, error) does the gate fall back to the full save's result — the truth-check
+                    // never weakens, it just stops waiting ~30 round trips per package.
+                    const _fastP=_rcptUpd.length?Promise.resolve(_dbSaveReceiptLines(so.id,_rcptUpd)).catch(()=>false):Promise.resolve(false);
                     const _qsp=Promise.resolve(savSONow({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
-                    _qsp.then(ok=>{if(ok===false)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')});
-                    _qSavePs.push(_qsp.then(ok=>({soId:so.id,ok}),()=>({soId:so.id,ok:false})));
+                    // "Did not save — retry" only when the RECEIPT isn't persisted anywhere: once the fast
+                    // write confirmed, a re-receive would DOUBLE the units (delta-add), so a trailing full-save
+                    // failure must surface through the unsaved-changes banner instead of a retry prompt.
+                    _fastP.then(fast=>{_qsp.then(ok=>{if(ok===false&&fast!==true)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')})});
+                    _qSavePs.push(_fastP.then(fast=>fast===true?true:_qsp).then(ok=>({soId:so.id,ok}),()=>({soId:so.id,ok:false})));
                   });
                   // Success UI only after every SO save confirms (NSA 4568, 2026-08-06: a batch
                   // check-in whose saves were all lost still printed labels and read as done).
@@ -18977,6 +18989,7 @@ export default function App(){
     const so=sos.find(s=>s.id===soId);if(!so)return null;
     const items=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
     let grand=0;const cc=cust.find(c=>c.id===so.customer_id);const acts=[];
+    const _rcptUpd=[];// targeted receipt writes — the fast label gate (see _dbSaveReceiptLines)
     lines.forEach(({itemIdx,poLineIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const po=it.po_lines[poLineIdx];if(!po)return;
       const newReceived={...(po.received||{})};const shipment={date:new Date().toLocaleDateString()};let any=false;
       Object.entries(rcv||{}).forEach(([sz,qty])=>{if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;any=true;grand+=qty}});
@@ -18987,6 +19000,7 @@ export default function App(){
       const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-((po.cancelled||{})[sz]||0)),0);
       const status=open<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
       it.po_lines[poLineIdx]={...po,received:newReceived,shipments:[...(po.shipments||[]),shipment],status};
+      _rcptUpd.push({itemIdx,poId:po.po_id,rcv:{...rcv},shipment});
       const szStr=Object.entries(rcv).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
       acts.push({type:'received',poId:po.po_id||'',soId,customer:cc?.name||'',sku:it.sku,name:it.name,color:it.color,qty:Object.values(rcv).reduce((a,v)=>a+(v||0),0),sizes:szStr,by:cu?.id||'warehouse'});
     });
@@ -18997,8 +19011,17 @@ export default function App(){
     // so a hard save failure surfaces instead of failing silently. Phone/tablet is the slowest link.
     // The promise is also RETURNED (saveP) so callers gate the confirmation/print screen on it —
     // the NSA 4568 batch check-in (2026-08-06) printed labels for receipts that never persisted.
-    const saveP=Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
-    saveP.then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
+    // Fast label gate (NSA 4568 follow-up): saveP is the targeted receipt write (~4 round trips),
+    // enqueued ahead of the full save in the per-SO queue; it falls back to the full save's result
+    // only when it can't confirm, so the truth-check holds but the printer stops waiting on the
+    // ~30-round-trip full save that stretched each package to minutes on the warehouse iPad.
+    const _fastP=_rcptUpd.length?Promise.resolve(_dbSaveReceiptLines(soId,_rcptUpd)).catch(()=>false):Promise.resolve(false);
+    const _fullP=Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
+    // Retry prompt only when the RECEIPT isn't persisted anywhere: after a confirmed fast write a
+    // re-receive would DOUBLE the units (delta-add) — a trailing full-save failure surfaces through
+    // the unsaved-changes banner instead.
+    _fastP.then(fast=>{_fullP.then(ok=>{if(ok===false&&fast!==true)nf('⚠️ '+soId+': receipt did not save — please retry','error')})});
+    const saveP=_fastP.then(fast=>fast===true?true:_fullP);
     acts.forEach(a=>addWhAction(a));
     const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
     // Aggregate what was received per item (across POs) for the confirmation summary.
@@ -20098,6 +20121,7 @@ export default function App(){
                     Object.values(soGroups).forEach(({so:grpSO,lines})=>{
                       if(!grpSO)return;
                       const updItems=[...safeItems(grpSO)];
+                      const _rcptUpd=[];// targeted receipt writes — the fast label gate (see _dbSaveReceiptLines)
                       lines.forEach(pl=>{
                         const po=updItems[pl.itemIdx]?.po_lines?.[pl.poLineIdx];if(!po)return;
                         const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
@@ -20118,6 +20142,7 @@ export default function App(){
                         const pls=[...(updItems[pl.itemIdx].po_lines||[])];
                         pls[pl.poLineIdx]={...po,received:newReceived,shipments:newShipments,status:newStatus};
                         updItems[pl.itemIdx]={...updItems[pl.itemIdx],po_lines:pls};
+                        _rcptUpd.push({itemIdx:pl.itemIdx,poId:po.po_id,rcv:rcvSizes,shipment});
                       });
                       // Recalculate job item_status after receiving items
                       const _newJobs=recalcJobFulfillment(grpSO,updItems);
@@ -20125,8 +20150,12 @@ export default function App(){
                       // Result-checked save (see the Confirm-Received path): synchronous pending-id + direct
                       // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful
                       // result so a hard save failure surfaces instead of failing silently.
+                      // Fast label gate (NSA 4568 follow-up): targeted receipt write enqueued ahead of the
+                      // full save; the confirmation tail waits on it and falls back to the full save's
+                      // result only when the fast write can't confirm (see _dbSaveReceiptLines).
+                      const _fastP=_rcptUpd.length?Promise.resolve(_dbSaveReceiptLines(grpSO.id,_rcptUpd)).catch(()=>false):Promise.resolve(false);
                       const _sp=Promise.resolve(savSONow({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}));
-                      _soSavePs.push(_sp.then(ok=>({soId:grpSO.id,ok}),()=>({soId:grpSO.id,ok:false})));
+                      _soSavePs.push(_fastP.then(fast=>fast===true?true:_sp).then(ok=>({soId:grpSO.id,ok}),()=>({soId:grpSO.id,ok:false})));
                     });
                   }
 
