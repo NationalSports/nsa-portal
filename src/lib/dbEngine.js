@@ -3427,6 +3427,13 @@ const _dbDeleteSO = async (id) => {
     await supabase.from('so_art_files').delete().eq('so_id',id);
     await supabase.from('so_firm_dates').delete().eq('so_id',id);
     await supabase.from('so_jobs').delete().eq('so_id',id);
+    // webstore_orders.so_id is the ONLY foreign key into sales_orders declared NO ACTION —
+    // every other one is CASCADE or SET NULL — so while a webstore batch's parent orders
+    // still point at this SO, Postgres refuses the delete below. deleteSO has already
+    // dropped the SO from React state by then and the catch here only logs, so the order
+    // silently reappears on the next poll. Unlink first: the parent order rows are the
+    // customer's record of what they bought and must outlive the SO either way.
+    await supabase.from('webstore_orders').update({so_id:null}).eq('so_id',id);
     await supabase.from('sales_orders').delete().eq('id',id);
   }catch(e){console.error('[DB] delete SO:',e)}});
 };
