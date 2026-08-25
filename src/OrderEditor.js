@@ -4142,7 +4142,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // artist request. This state is self-perpetuating (the rebuild above inherits art_requests while
     // re-deriving art_status), so without this heal a stuck job never recovers and every re-submit
     // path stays blocked. Runs after _healUnresolvedArt so a genuinely unresolved design still wins.
-    const _kept=[...newJobs,...splitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
+    // Preserved split slices freeze the parent's art snapshot at split time. Split while the
+    // declared art wasn't resolvable (mid-hydration, or the design re-applied under a new file id
+    // right after) and the slice reads "Unknown Art" forever while its rebuilt parent heals on
+    // every sync (SO-2106: JOB-2106-01-B showed Unknown Art beside a parent showing 8in Clark,
+    // same design on both lines). Give slices the same two heals frozen released/merged jobs get:
+    // re-point declared art at what the claimed decorations now carry, then refresh the display
+    // name from the live files (_name_locked still wins).
+    const healedSplitJobs=splitJobs.map(_healArtPointers).map(_healReleasedArtName);
+    const _kept=[...newJobs,...healedSplitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
@@ -12698,7 +12706,19 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           heldItemCount+=g.items.length-releaseItems.length;
           if(releaseItems.length===0)return;
           releasedItemCount+=releaseItems.length;
-          const artIds=[...new Set(releaseItems.map(it=>it.art_file_id).filter(Boolean))];
+          // A merged (or __combined) job's rows claim SEVERAL decorations (deco_idxs), but each
+          // wizard row carries only its FIRST art deco's file id — rebuilding _art_ids from
+          // it.art_file_id alone dropped every additional design (e.g. the sleeve logo on a merged
+          // front+sleeve job). The released job then no longer DECLARED the dropped design's
+          // method, so the next sync's stale-claim heal released that claim back to the
+          // auto-builder, which regenerated it as its own job — the merge silently un-merged on
+          // submit. Read the live decorations behind every claimed deco_idx instead; a row whose
+          // line is gone falls back to its stored art_file_id (deleted-line snapshot semantics).
+          const _rowArtDecos=it=>{const item=safeItems(o)[it.item_idx];if(!item)return null;
+            const dis=Array.isArray(it.deco_idxs)&&it.deco_idxs.length?it.deco_idxs:(it.deco_idx!=null?[it.deco_idx]:[]);
+            const ds=dis.map(di=>safeDecos(item)[di]).filter(d=>d&&d.kind==='art'&&d.art_file_id);
+            return ds.length?ds:null};
+          const artIds=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>d.art_file_id):[it.art_file_id]}).filter(Boolean))];
           const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
           const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&artProdFilesConfirmed(af2)});
           const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
@@ -12742,7 +12762,8 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved&&!allProdFiles));
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
-          const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
+          // Positions ride the same multi-deco read — a merged front+sleeve job lists both.
+          const positions=[...new Set(releaseItems.flatMap(it=>{const ds=_rowArtDecos(it);return ds?ds.map(d=>safeStr(d.position)||it.position):[it.position]}).filter(Boolean))].join(', ');
           const artistObj=hasArtist?wizArtistsAll.find(a=>a.id===g.artist):null;
           // Reuse existing job id when re-releasing a previously-loaded needs_art job
           const baseIdNum=gi+1+preservedJobs.length;
