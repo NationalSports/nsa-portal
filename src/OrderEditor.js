@@ -4142,7 +4142,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // artist request. This state is self-perpetuating (the rebuild above inherits art_requests while
     // re-deriving art_status), so without this heal a stuck job never recovers and every re-submit
     // path stays blocked. Runs after _healUnresolvedArt so a genuinely unresolved design still wins.
-    const _kept=[...newJobs,...splitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
+    // Preserved split slices freeze the parent's art snapshot at split time. Split while the
+    // declared art wasn't resolvable (mid-hydration, or the design re-applied under a new file id
+    // right after) and the slice reads "Unknown Art" forever while its rebuilt parent heals on
+    // every sync (SO-2106: JOB-2106-01-B showed Unknown Art beside a parent showing 8in Clark,
+    // same design on both lines). Give slices the same two heals frozen released/merged jobs get:
+    // re-point declared art at what the claimed decorations now carry, then refresh the display
+    // name from the live files (_name_locked still wins).
+    const healedSplitJobs=splitJobs.map(_healArtPointers).map(_healReleasedArtName);
+    const _kept=[...newJobs,...healedSplitJobs,...autoSplitAdds,...recalcedReleased,...recalcedMerged].map(_healUnresolvedArt).map(j=>healOrphanArtRequest(j,o));
     const _keptIds=new Set(_kept.map(j=>j.id));
     const _keptKeys=new Set(_kept.map(j=>j.key));
     // Recycled-number carry-over guard: when an SO number is reused (e.g. after a purge/re-import),
