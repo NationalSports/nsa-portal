@@ -1095,7 +1095,8 @@ export const artProofFallback = (a) => {
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
-// falling back to the job's primary art), then check item_mockups[sku] on those
+// falling back to the job's primary art only when the item owns an art decoration),
+// then check item_mockups[sku] on those
 // art files. If none of the relevant art files carry an entry for the SKU, we
 // also accept any general mockup_files/files bucket on those art files as a
 // fallback (same logic as the renderer at OrderEditor.js:5480-5482).
@@ -1124,8 +1125,14 @@ export const skusMissingMockups = (job, so) => {
     // gating on a garment that can't be shown or mocked would deadlock approval.
     if (!it) return;
     const dis = jobItemDecoIdxs(gi);
-    const decoArtIds = [...new Set(safeDecos(it)
-      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+    const ownedArtDecos = safeDecos(it)
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art');
+    // A combined job can own only numbers/names on this garment while its primary art belongs
+    // to other garments in the same job. Such an item has no art mock to approve and must never
+    // inherit that primary art's old garment mocks (SO-1777: JZ2525 numbers vs yellow logo).
+    if (ownedArtDecos.length === 0) return;
+    const decoArtIds = [...new Set(ownedArtDecos
+      .filter(d => d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
@@ -1277,8 +1284,14 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
     const it = soItems[gi?.item_idx];
     if (!it) return; // live SO line gone (deleted/reindexed) — nothing to mock
     const dis = jobItemDecoIdxs(gi);
-    const decoArtIds = [...new Set(safeDecos(it)
-      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+    const ownedArtDecos = safeDecos(it)
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art');
+    // Do not fall back to the job's primary design for a numbers/names-only slice. The job may
+    // legitimately combine that slice with art on other garments, but there is no art mock to
+    // confirm on this one (SO-1777).
+    if (ownedArtDecos.length === 0) return;
+    const decoArtIds = [...new Set(ownedArtDecos
+      .filter(d => d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
