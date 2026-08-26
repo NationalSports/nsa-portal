@@ -1,19 +1,36 @@
+import { buildInvoicedQtyMap, safeItems, safeNum, safeSizes, soLineKey } from '../safeHelpers';
+
 const IN_LINE_OR_LATER = new Set(['staging', 'in_process', 'completed', 'shipped']);
 
 export const isInLineOrLater = (status) => IN_LINE_OR_LATER.has(status);
 
-export const hasInvoiceForOrder = (invoices, soId) => (invoices || []).some((inv) => (
+export const invoicesForOrder = (invoices, soId) => (invoices || []).filter((inv) => (
   inv && inv.so_id === soId && inv.status !== 'void' && !inv.deleted_at
 ));
 
-// A completed-job notice is a two-step handoff: ship the finished work, then make sure
-// the SO was invoiced. It clears only after both are true. Promo-funded orders do not
-// require a customer invoice, so shipping is terminal for them.
+// Use the same per-line quantity reconciliation as the order editor and the
+// fully-invoiced auto-closer. The presence of an invoice is not enough: deposits
+// and partial invoices must leave the production notification visible.
+export const isOrderFullyInvoiced = (so, invoices) => {
+  if (!so) return false;
+  const applicable = invoicesForOrder(invoices, so.id);
+  if (!applicable.length) return false;
+  const invoiced = buildInvoicedQtyMap(so, applicable);
+  return safeItems(so).every((item, idx) => {
+    const sizedQty = Object.values(safeSizes(item)).reduce((sum, qty) => sum + safeNum(qty), 0);
+    const orderedQty = sizedQty > 0 ? sizedQty : safeNum(item.est_qty);
+    return orderedQty - (invoiced.get(soLineKey(item, idx)) || 0) <= 0;
+  });
+};
+
+// A completed/shipped job remains actionable only while the order still needs billing.
+// Fully invoiced orders clear immediately, even if a job is still marked completed.
+// Promo-funded orders do not invoice, so their notice remains until shipment.
 export const shouldShowCompletedJobNotice = (job, so, invoices) => {
   if (!job || !so) return false;
-  if (job.prod_status === 'completed') return true;
-  if (job.prod_status !== 'shipped') return false;
-  return !so.promo_applied && !hasInvoiceForOrder(invoices, so.id);
+  if (job.prod_status !== 'completed' && job.prod_status !== 'shipped') return false;
+  if (so.promo_applied) return job.prod_status === 'completed';
+  return !isOrderFullyInvoiced(so, invoices);
 };
 
 // IF notifications are grouped across line items. Keep the grouped notice until every
@@ -26,9 +43,15 @@ export const pulledItemsHaveMovedInLine = (jobs, itemIndexes) => {
   return related.length > 0 && related.every((job) => isInLineOrLater(job.prod_status));
 };
 
-export const pickSkuChanged = (item, picks) => (picks || []).some((pick) => (
-  pick && pick._sku && item?.sku && pick._sku !== item.sku
+// A line can have several historical IFs. Once its SKU changes, ignore the old
+// SKU's picks; if a new IF is later pulled for the replacement SKU, that new pull
+// must still be eligible to raise its own shortage.
+export const picksForCurrentSku = (item, picks) => (picks || []).filter((pick) => (
+  pick && (!pick._sku || !item?.sku || pick._sku === item.sku)
 ));
+
+export const pickSkuChanged = (item, picks) => (picks || []).length > 0
+  && picksForCurrentSku(item, picks).length === 0;
 
 const localDay = (date) => {
   const parsed = date instanceof Date ? date : new Date(date);

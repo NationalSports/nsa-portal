@@ -105,7 +105,9 @@ function isCheckedIn(so, ff) {
 function shortOnPull(so) {
   let units = 0; const parts = [];
   itemsOf(so).forEach((it) => {
-    const picks = picksOf(it);
+    // Ignore IFs belonging to a previous SKU, but keep evaluating any newer IF
+    // created for the replacement SKU so a second real shortage is not hidden.
+    const picks = picksOf(it).filter((pk) => pk && (!pk._sku || !it.sku || pk._sku === it.sku));
     if (picks.length === 0 || picks.some((pk) => pk.status !== 'pulled')) return;
     const pullDays = picks.map((pk) => parseDate(pk.pulled_at)).filter(Boolean)
       .map((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime());
@@ -116,7 +118,6 @@ function shortOnPull(so) {
       return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() >= shortDay;
     });
     if (hasResponsePo) return;
-    if (picks.some((pk) => pk && pk._sku && it.sku && pk._sku !== it.sku)) return;
     const pulledKeys = new Set(); picks.forEach((pk) => sizeKeys(pk).forEach((k) => pulledKeys.add(k)));
     const szKeys = sizeKeys(it.sizes).filter((k) => num((it.sizes || {})[k]) > 0);
     if (szKeys.some((sz) => !pulledKeys.has(sz))) return; // line edited after its pull → not a short

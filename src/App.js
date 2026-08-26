@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -37,7 +37,7 @@ import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/r
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { closeOpenArtRequests } from './lib/artRequests';
-import { hasResponsePoForPull, isFreshNotificationDate, pickSkuChanged, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice } from './lib/dashboardNotificationRules';
+import { hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
@@ -8444,11 +8444,10 @@ export default function App(){
       // Derived from current state, so it self-clears once a PO is raised or the units get pulled.
       const _shortItems=[];
       safeItems(so).forEach(it=>{
-        const picks=safePicks(it);
+        const picks=picksForCurrentSku(it,safePicks(it));
         if(picks.length===0)return;                     // never set up for a stock pull
         if(picks.some(pk=>pk.status!=='pulled'))return; // an IF is still open → warehouse not done
         if(hasResponsePoForPull(picks,safePOs(it)))return; // a new PO was created for this short item
-        if(pickSkuChanged(it,picks))return;              // replacement SKU resolved the old short pull
         const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
         // Only sizes the warehouse actually pulled against can come up "short on pull". Every size that was
         // on the IF leaves a key on the pulled pick line (even when 0 were found, e.g. {L:0}); a size the
@@ -11049,7 +11048,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -19137,6 +19136,19 @@ export default function App(){
   const[clearShipModal,setClearShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
+  const manualShipStateForSO=(so,c2,base={})=>{
+    const _sel=resolveOrderShipTo(so,c2);
+    const _destAddr=_sel&&_sel.street
+      ?{company:c2?.name||'',street1:_sel.street,street2:'',city:_sel.city||'',state:_sel.state||'',zip:_sel.zip||'',phone:c2?.contacts?.[0]?.phone||''}
+      :{company:c2?.name||'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};
+    return{...base,custSearch:'',custFilter:c2||null,so,cust:c2||null,carrier:base.carrier||'ups',tracking:'',cost:'',notes:'',weight:base.weight||5,dimensions:base.dimensions||{length:'',width:'',height:''},availItems:unshippedOrderItems(so),shipItems:[],markShipped:{},shipToMode:'customer',decoId:'',attn:'',destTouched:false,destAddr:_destAddr,labelUrl:null,shipstationShipmentId:null};
+  };
+  const openManualShipForSO=(so)=>{
+    const c2=cust.find(cc=>cc.id===so?.customer_id);
+    if(!so||!c2){nf('Sales order or customer could not be loaded','error');return}
+    setESO(null);setESOTab(null);setPg('warehouse');setWhTab('ship');
+    setManualShipModal(manualShipStateForSO(so,c2));
+  };
   const[emailLabelModal,setEmailLabelModal]=useState(null);// {soId,labelUrl,tracking,trackingUrl,carrier,custName,suggestions:[{email,label}],checked:{},custom,sending} — pick who to email a label to
   const[pickupEdit,setPickupEdit]=useState(null);// {shp, tracking_number, carrier, weight, dimensions, busy} — edit/relabel an awaiting-pickup package
   const[deliverModal,setDeliverModal]=useState(null);// deliver task whose item list / mark-delivered popup is open
@@ -19385,10 +19397,25 @@ export default function App(){
         const grandNeed=pickItems.reduce((a,pi)=>a+pi.needsPull,0);
         const grandOrdered=pickItems.reduce((a,pi)=>a+pi.totalOrdered,0);
         const grandPulled=pickItems.reduce((a,pi)=>a+(pi.totalPulled||0),0);
-        const addrs2=c?getAddrs(c,cust):[];
         const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
         const shipDest=activePick?.ship_dest||t.shipDest||'in_house';
         const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
+        // New IFs persist the exact DPO/decorator. Legacy IFs often carried the DPO in memo, so
+        // recover that association as a compatibility fallback (including IF-1150 on SO-2021).
+        const selectedDpo=(so.deco_pos||[]).find(dp=>dp&&dp.po_id===activePick?.deco_po_id)
+          ||(so.deco_pos||[]).find(dp=>dp&&dp.po_id&&String(activePick?.memo||'').includes(dp.po_id))||null;
+        const decoId=activePick?.deco_vendor_id||selectedDpo?.deco_vendor_id
+          ||decoVendors.find(dv=>String(dv.name||'').toLowerCase()===String(activePick?.deco_vendor||'').toLowerCase())?.id||null;
+        const decoShipTo=shipDest==='ship_deco'&&decoId?resolveDecoShipToClient({decoId,decoPoId:activePick?.deco_po_id||selectedDpo?.po_id||null,so,decoVendors,vendors:vend,itemIdxs:pickItems.map(pi=>pi.itemIdx)}):null;
+        const attention=activePick?.attention||decoShipTo?.attention||selectedDpo?.po_id||'';
+        const shipToOverride=decoShipTo?{
+          name:attention?('ATTN: '+attention):(decoShipTo.name||activePick?.deco_vendor||'Decorator'),
+          company:decoShipTo.name||activePick?.deco_vendor||'Decorator',street1:decoShipTo.line1||'',street2:decoShipTo.line2||'',
+          city:decoShipTo.city||'',state:decoShipTo.state||'',postalCode:decoShipTo.zip||'',country:'US',phone:decoShipTo.phone||'',residential:false
+        }:null;
+        const addrs2=shipDest==='ship_deco'&&decoShipTo
+          ?[{label:[decoShipTo.name,attention&&('Attn: '+attention)].filter(Boolean).join(' · '),addr:[decoShipTo.line1,decoShipTo.line2,decoShipTo.city,decoShipTo.state,decoShipTo.zip].filter(Boolean).join(', ')}]
+          :(c?getAddrs(c,cust):[]);
         const defaultPullQtys=()=>Object.fromEntries(pickItems.map(pi=>[pi.itemIdx,Object.fromEntries(pi.szKeys.map(sz=>[sz,pi.activePick?(pi.activePick[sz]||0):0]))]));
         const pullQtys=t._pullQtys||defaultPullQtys();
         const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||defaultPullQtys();return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
@@ -19519,10 +19546,12 @@ export default function App(){
                       const prodPatches={};const housePulls=[];
                       pickItems.forEach(pi=>{if(!pi.p)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const newInv={...(prodPatches[pi.p.id]||pi.p._inv||{})};pi.szKeys.forEach(sz=>{const v=qtysForItem[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v);housePulls.push({product_id:pi.p.id,size:sz,qty:v,so_id:so.id})}});prodPatches[pi.p.id]=newInv});
                       pullHouseInv(prodPatches,housePulls);
-                      if(showShipping&&boxes.some(bx=>bx.tracking_number)){
+                      if(showShipping&&boxes.some(bx=>bx.tracking_number||bx.label_url)){
                         const shipments=[...(updatedSO._shipments||[])];
-                        boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
+                        let addedCost=0;
+                        boxes.filter(bx=>bx.tracking_number||bx.label_url).forEach(bx=>{addedCost+=safeNum(bx.shipping_cost);shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number||'',carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),tracking_url:bx.tracking_number?(/^1Z/i.test(bx.tracking_number)?'https://www.ups.com/track?tracknum='+bx.tracking_number:''):'',label_url:bx.label_url||null,shipstation_shipment_id:bx.shipstation_shipment_id||null,shipping_cost:safeNum(bx.shipping_cost),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,ship_to:shipDest==='ship_deco'?{mode:'deco',attention,company:decoShipTo?.name||activePick?.deco_vendor||'',street1:decoShipTo?.line1||'',street2:decoShipTo?.line2||'',city:decoShipTo?.city||'',state:decoShipTo?.state||'',zip:decoShipTo?.zip||''}:null,shipment_scope:shipDest==='ship_deco'?'deco_transfer':'customer_fulfillment',fulfillment:shipDest!=='ship_deco',created_by:cu?.id,created_at:new Date().toLocaleString()})});
                         updatedSO._shipments=shipments;
+                        if(addedCost>0){const total=nextShippingCost(updatedSO,addedCost);updatedSO._shipping_cost=total;updatedSO._shipstation_cost=total}
                       }
                       _markRecentlyPulled(t.soId);
                       savSO(updatedSO,{skipMerge:true});
@@ -19589,6 +19618,9 @@ export default function App(){
                 {shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco'}</div>
               {shipDest==='ship_customer'&&addrs2.length>0&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addrs2[0]?.label}</div>}
               {shipDest==='ship_deco'&&activePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {activePick.deco_vendor}</div>}
+              {shipDest==='ship_deco'&&attention&&<div style={{fontSize:12,color:'#7c3aed',marginTop:4,fontWeight:800}}>Attention: {attention}</div>}
+              {shipDest==='ship_deco'&&decoShipTo&&<div style={{fontSize:11,color:'#64748b',marginTop:3}}>{[decoShipTo.line1,decoShipTo.line2,decoShipTo.city,decoShipTo.state,decoShipTo.zip].filter(Boolean).join(', ')}</div>}
+              {shipDest==='ship_deco'&&!decoShipTo&&<div style={{fontSize:11,color:'#dc2626',marginTop:4,fontWeight:700}}>Decorator address is missing — add it in Settings before creating the label.</div>}
               {activePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {activePick.memo}</div>}
             </div>
           </div>
@@ -19725,7 +19757,7 @@ export default function App(){
                     <input className="form-input" placeholder="Tracking number (enter manually or create label)" value={box.tracking_number||''}
                       style={{flex:1,fontSize:12,fontFamily:'monospace',padding:'5px 8px'}}
                       onChange={e=>{const b=[...boxes];b[bi]={...b[bi],tracking_number:e.target.value};setBoxes(b)}}/>
-                    {ssConnected&&<button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'5px 12px',whiteSpace:'nowrap'}}
+                    {ssConnected&&<button className="btn btn-sm" disabled={shipDest==='ship_deco'&&!shipToOverride} style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'5px 12px',whiteSpace:'nowrap',opacity:shipDest==='ship_deco'&&!shipToOverride?0.5:1}}
                       onClick={async()=>{
                         try{
                           if(!c){nf('No customer found','error');return}
@@ -19733,14 +19765,14 @@ export default function App(){
                           if(!box.dimensions?.length||!box.dimensions?.width||!box.dimensions?.height){nf('Please enter box dimensions (L × W × H) before creating a label','error');return}
                           if(!box.items||box.items.length===0||!box.items.some(it=>Object.values(it.sizes||{}).some(v=>v>0))){nf('Please add at least 1 item to the box before creating a label','error');return}
                           nf('Creating ShipStation label...');
-                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,shipServiceCode(box.carrier,box.service),box.dimensions);
+                          if(shipDest==='ship_deco'&&!shipToOverride){nf('Decorator address is missing — add it in Settings before creating the label','error');return}
+                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,shipServiceCode(box.carrier,box.service),box.dimensions,shipToOverride);
                           const b=[...boxes];
                           const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                           const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                           const labelDl2=label.labelDownload||labelUrl2||null;
                           b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:labelDl2,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost};
                           setBoxes(b);
-                          if(cost){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,_shipping_cost:(safeNum(s._shipping_cost)||0)+cost}:s))}
                           nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                           // Auto-open label for printing
                           if(labelDl2){
@@ -19823,7 +19855,7 @@ export default function App(){
         <button className="btn btn-sm" style={{fontSize:10,background:whTab==='receive'?'#1e40af':'#2563eb',color:'white',border:whTab==='receive'?'2px solid #1e40af':'none',padding:whTab==='receive'?'3px 11px':'4px 12px',fontWeight:700,borderRadius:4,boxShadow:whTab==='receive'?'0 2px 6px rgba(37,99,235,0.4)':'none'}}
           onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
-          onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'ups',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
+          onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'ups',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Ship / Override</button>
         {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
         {!ssConnected&&<div style={{display:'flex',alignItems:'center',gap:8,marginLeft:'auto',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:6,padding:'4px 10px'}}>
@@ -21259,12 +21291,12 @@ export default function App(){
       {/* ── MANUAL SHIP MODAL (renders on any warehouse tab) ── */}
       {manualShipModal&&<div className="modal-overlay" onClick={()=>setManualShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header" style={{background:'linear-gradient(135deg,#92400e,#f59e0b)',color:'white'}}>
-          <h2 style={{margin:0,color:'white'}}>⚡ Manual Ship</h2>
+          <h2 style={{margin:0,color:'white'}}>⚡ Ship Items / Override</h2>
           <button className="modal-close" onClick={()=>setManualShipModal(null)} style={{color:'white'}}>×</button>
         </div>
         <div className="modal-body" style={{padding:16}}>
           <div style={{padding:'6px 10px',background:'#fef3c7',borderRadius:6,marginBottom:12,fontSize:11,color:'#92400e',fontWeight:600,border:'1px solid #fcd34d'}}>
-            ⚠️ Manual override — use when items need to ship outside the normal workflow. Cost and tracking are entered manually.
+            ⚠️ Use this when items are physically ready but the normal workflow did not place them in Ready to Ship. Select the exact items; the shipment, job status, tracking, and freight cost are saved together.
           </div>
 
           {manualShipModal.noSo?(()=>{
@@ -21442,23 +21474,28 @@ export default function App(){
             {!manualShipModal.custFilter?<>
               {/* Step 1: Club / Customer Search */}
               <label style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:4,display:'block'}}>Search Customer / Club</label>
-              <input className="form-input" placeholder="Type club or customer name..." value={manualShipModal.custSearch||''} autoFocus
+              <input className="form-input" placeholder="Type sales order #, club, or customer..." value={manualShipModal.custSearch||''} autoFocus
                 style={{fontSize:12,marginBottom:8}}
                 onChange={e=>setManualShipModal({...manualShipModal,custSearch:e.target.value})}/>
               {(()=>{
                 const q=(manualShipModal.custSearch||'').toLowerCase();
                 if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
+                const _canOverride=so=>!so.deleted_at&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so));
                 const openSosByCust={};
                 sos.forEach(so=>{
-                  if(so.deleted_at)return;
-                  const st=calcSOStatus(so);
-                  if(st==='complete')return;
+                  if(!_canOverride(so))return;
                   if(!openSosByCust[so.customer_id])openSosByCust[so.customer_id]=[];
                   openSosByCust[so.customer_id].push(so);
                 });
+                const soResults=sos.filter(so=>{if(!_canOverride(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+(cc?.name||'')).toLowerCase().includes(q)}).slice(0,8);
                 const results=cust.filter(cc=>(cc.name||'').toLowerCase().includes(q)).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).slice(0,12);
-                if(results.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customers</div>;
+                if(results.length===0&&soResults.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customer or sales order</div>;
                 return<div style={{display:'grid',gap:4}}>
+                  {soResults.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:2}}>Sales orders</div>}
+                  {soResults.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #93c5fd',cursor:'pointer'}} onClick={()=>setManualShipModal(manualShipStateForSO(so,cc,manualShipModal))}>
+                    <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{so.id}</span><span style={{fontSize:11,fontWeight:700}}>{cc?.name||'Unknown'}</span><span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{calcSOStatus(so)} · {unshippedOrderItems(so).reduce((a,it)=>a+it.qty,0)} unshipped</span></div>
+                  </div>})}
+                  {results.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:soResults.length?6:2}}>Customers</div>}
                   {results.map(cc=>{
                     const openCount=(openSosByCust[cc.id]||[]).length;
                     return<div key={cc.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
@@ -21483,12 +21520,7 @@ export default function App(){
                 <span style={{fontSize:10,color:'#64748b'}}>— select an order to ship</span>
               </div>
               {(()=>{
-                const custSos=sos.filter(so=>{
-                  if(so.deleted_at)return false;
-                  const st=calcSOStatus(so);
-                  if(st==='complete')return false;
-                  return so.customer_id===manualShipModal.custFilter.id;
-                });
+                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so)));
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
                   onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'ups'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
@@ -21502,22 +21534,7 @@ export default function App(){
                     return<div key={so.id} style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',cursor:'pointer'}}
                       onClick={()=>{
                         const c2=manualShipModal.custFilter;
-                        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-                          const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
-                          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
-                        })});
-                        const availItems=[];
-                        safeItems(so).forEach((item,ii)=>{
-                          const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
-                          const remainSz={};Object.entries(safeSizes(item)).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
-                          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
-                          if(qty>0)availItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,itemIdx:ii,qty});
-                        });
-                        const _sel=resolveOrderShipTo(so,c2);
-                        const _destAddr=_sel&&_sel.street
-                          ?{company:c2?.name||'',street1:_sel.street,street2:'',city:_sel.city||'',state:_sel.state||'',zip:_sel.zip||'',phone:c2?.contacts?.[0]?.phone||''}
-                          :{company:c2?.name||'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};
-                        setManualShipModal({...manualShipModal,so,cust:c2,availItems,shipItems:[],markShipped:{},shipToMode:'customer',decoId:'',attn:'',destTouched:false,destAddr:_destAddr});
+                        setManualShipModal(manualShipStateForSO(so,c2,manualShipModal));
                       }}
                       onMouseEnter={e=>{e.currentTarget.style.background='#eff6ff'}}
                       onMouseLeave={e=>{e.currentTarget.style.background='#f8fafc'}}>
@@ -21614,7 +21631,7 @@ export default function App(){
             </div>
 
             {/* Jobs to mark as shipped */}
-            {(()=>{
+            {(manualShipModal.shipToMode||'customer')==='customer'&&(()=>{
               const jobs=safeJobs(manualShipModal.so).filter(j=>j.prod_status!=='draft'&&j.prod_status!=='shipped');
               if(jobs.length===0)return null;
               return<div style={{marginBottom:12}}>
@@ -21650,8 +21667,8 @@ export default function App(){
                           :{company:m.cust?.name||'',street1:m.cust?.shipping_address_line1||'',street2:m.cust?.shipping_address_line2||'',city:m.cust?.shipping_city||'',state:m.cust?.shipping_state||'',zip:m.cust?.shipping_zip||'',phone:m.cust?.contacts?.[0]?.phone||''};
                         return{...m,shipToMode:'customer',destTouched:false,attn:'',decoId:'',destAddr:a};
                       }
-                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',destTouched:true,attn:m.cust?.name||'',decoId:'',destAddr:{company:NSA.name,street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
-                      return{...m,shipToMode:'deco',destTouched:true,attn:m.cust?.name||'',decoId:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}};
+                      if(mode==='warehouse')return{...m,shipToMode:'warehouse',markShipped:{},destTouched:true,attn:m.cust?.name||'',decoId:'',destAddr:{company:NSA.name,street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
+                      return{...m,shipToMode:'deco',markShipped:{},destTouched:true,attn:m.cust?.name||'',decoId:'',destAddr:{company:'',street1:'',street2:'',city:'',state:'',zip:'',phone:''}};
                     })}>{lbl}</button>;
                 })}
               </div>
@@ -21840,6 +21857,8 @@ export default function App(){
             {(()=>{
               const _doConfirmManualShip=async(openEmail)=>{
                   const so=manualShipModal.so;
+                  const hasSelectedItems=(manualShipModal.shipItems||[]).some(it=>Object.values(it.sizes||{}).some(v=>safeNum(v)>0));
+                  if(!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()){nf('Select at least one item and quantity to ship','error');return}
                   const cost=parseFloat(manualShipModal.cost)||0;
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
                   const shipItems=(manualShipModal.shipItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
@@ -21865,6 +21884,8 @@ export default function App(){
                     shipping_cost:cost,
                     weight:parseFloat(manualShipModal.weight)||5,
                     manual:true,
+                    shipment_scope:_mode==='customer'?'customer_fulfillment':_mode==='deco'?'deco_transfer':'warehouse_transfer',
+                    fulfillment:_mode==='customer',
                     ship_to_label:_destLabel,
                     ship_to:_shipTo,
                     items:shipItems,
@@ -21873,15 +21894,13 @@ export default function App(){
                     created_at:new Date().toLocaleString()
                   };
                   const allShipments=[...(so._shipments||[]),shipment];
-                  const updatedJobs=safeJobs(so).map(jj=>{
-                    if(manualShipModal.markShipped[jj.id])return{...jj,prod_status:'shipped'};
-                    return jj;
-                  });
+                  const updatedJobs=jobsAfterShipment(so,allShipments,Object.entries(manualShipModal.markShipped||{}).filter(([,checked])=>checked).map(([id])=>id),_mode==='customer');
                   const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
-                  const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
-                  const totalShipCost=existingShipCost+cost;
+                  const allItemsShipped=unshippedOrderItems({...so,_shipments:allShipments}).length===0;
+                  const fullyShipped=allJobsShipped&&allItemsShipped;
+                  const totalShipCost=nextShippingCost(so,cost);
                   const updated={...so,jobs:updatedJobs,_shipments:allShipments,
-                    _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
+                    _shipped:fullyShipped,_shipping_status:fullyShipped?'shipped':'partial',
                     _tracking_number:shipment.tracking_number||so._tracking_number||'',
                     _carrier:shipment.carrier||so._carrier||'',
                     _ship_date:shipment.ship_date,
@@ -21907,7 +21926,7 @@ export default function App(){
               };
               return <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
                 <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
-                  onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Manual Ship</button>
+                  onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Shipment</button>
                 {manualShipModal.labelUrl&&<button className="btn btn-primary" style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
                   onClick={()=>_doConfirmManualShip(true)}>📧 Confirm &amp; Email Label…</button>}
                 <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>

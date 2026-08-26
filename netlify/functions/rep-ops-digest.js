@@ -194,12 +194,12 @@ exports.handler = async (event) => {
     const itemIds = items.map((it) => it.id);
     const [picks, pos] = await Promise.all([
       loadIn(admin, 'so_item_pick_lines', 'so_item_id,pick_id,sizes,status', 'so_item_id', itemIds),
-      loadIn(admin, 'so_item_po_lines', 'so_item_id,sizes,received,cancelled', 'so_item_id', itemIds),
+      loadIn(admin, 'so_item_po_lines', 'so_item_id,po_id,status,created_at,sizes,received,cancelled', 'so_item_id', itemIds),
     ]);
     // Index children into the shared-module shape (flattened size maps + meta keys,
     // matching the client's pick_lines/po_lines).
     const picksByItem = {}; picks.forEach((p) => (picksByItem[p.so_item_id] || (picksByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), status: p.status, pick_id: p.pick_id }));
-    const posByItem = {}; pos.forEach((p) => (posByItem[p.so_item_id] || (posByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), received: p.received || {}, cancelled: p.cancelled || {} }));
+    const posByItem = {}; pos.forEach((p) => (posByItem[p.so_item_id] || (posByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), po_id: p.po_id, status: p.status, created_at: p.created_at, received: p.received || {}, cancelled: p.cancelled || {} }));
     const itemsBySo = {}; items.forEach((it) => (itemsBySo[it.so_id] || (itemsBySo[it.so_id] = [])).push({ sku: it.sku, name: it.name, sizes: it.sizes || {}, est_qty: it.est_qty, unit_sell: it.unit_sell, is_free_promo: it.is_free_promo, picks: picksByItem[it.id] || [], pos: posByItem[it.id] || [] }));
     const jobsBySo = {}; jobs.forEach((j) => (jobsBySo[j.so_id] || (jobsBySo[j.so_id] = [])).push({ id: j.id, prod_status: j.prod_status }));
     orders.forEach((o) => { o.items = itemsBySo[o.id] || []; o.jobs = jobsBySo[o.id] || []; });

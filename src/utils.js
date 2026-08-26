@@ -451,7 +451,7 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
   // page via position:fixed, sitting in the reserved top page margin. The NSA
   // logo/address block stays a one-time, page-1-only header below it.
   if(_runHeaderCss){
-    const _ihBoxes=(infoBoxes||[]).filter(b=>b.label!=='Bill To');
+    const _ihBoxes=(infoBoxes||[]).filter(b=>b.label!=='Bill To'&&b.label!=='Ship To');
     h+='<div class="run-header"><span class="rh-id">'+docType+' · #'+docNum+'</span>'
       +_ihBoxes.map(b=>'<span class="rh-cell"><span class="rh-lbl">'+b.label+'</span>'+b.value+'</span>').join('')
       +'</div>';
@@ -459,18 +459,25 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
   // Header: logo/address left, doc type/number right
   h+='<div class="header"><div class="logo"><img src="'+_NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+(_NSA.legal||_NSA.name)+'</strong>'+_NSA.addr+'<br/>'+_NSA.city+', '+_NSA.state+' '+_NSA.zip+'<br/>United States</div></div>';
   h+='<div class="doc-id"><div class="doc-type">'+docType+'</div><div class="doc-num">#'+docNum+'</div><div class="doc-date">'+(date||new Date().toLocaleDateString())+'</div></div></div>';
-  // Bill-to & total box
+  // Address header & total box. Bill To and Ship To are the document's two addresses, so
+  // they share this band at the top — Ship To sits to the right of Bill To in the same
+  // `.bill-to` block (identical label chip and 12px address type; reusing the class keeps
+  // the two of them formatted alike without a second rule to sync across both PRINT_CSSes).
+  // Neither is repeated as an info-row cell below.
   if(infoBoxes||headerRight){
+    const _addrBox=b=>'<div class="bill-to"><div class="label">'+b.label+'</div><div class="value"><strong>'+b.value+'</strong>'+(b.sub?'<br/>'+b.sub:'')+'</div></div>';
     const billBox=(infoBoxes||[]).find(b=>b.label==='Bill To');
+    const shipBox=(infoBoxes||[]).find(b=>b.label==='Ship To');
     h+='<div class="bill-total">';
-    if(billBox){h+='<div class="bill-to"><div class="label">'+billBox.label+'</div><div class="value"><strong>'+billBox.value+'</strong>'+(billBox.sub?'<br/>'+billBox.sub:'')+'</div></div>'}
+    if(billBox)h+=_addrBox(billBox);
+    if(shipBox)h+=_addrBox(shipBox);
     if(headerRight){h+='<div class="total-box">'+headerRight+'</div>'}
     h+='</div>';
   }
   // Info row — skipped when repeatInfoHeader is on, since those cells live in the
   // repeating running header (page-1 band / Puppeteer header) on every page instead.
   if(infoBoxes&&infoBoxes.length>0&&!repeatInfoHeader){
-    const boxes=infoBoxes.filter(b=>b.label!=='Bill To');
+    const boxes=infoBoxes.filter(b=>b.label!=='Bill To'&&b.label!=='Ship To');
     if(boxes.length>0){
       h+='<div class="info-row">';
       boxes.forEach(b=>{h+='<div class="info-cell"'+(b.flex?' style="flex:'+b.flex+'"':'')+'><div class="label">'+b.label+'</div><div class="value">'+b.value+(b.sub?'<br/><span style="font-size:10px;color:#666">'+b.sub+'</span>':'')+'</div></div>'});

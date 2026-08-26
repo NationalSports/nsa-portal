@@ -184,7 +184,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -795,7 +795,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const ns=await _drawPoNumbers(1);
       return ns[0]||0;
     },[_drawPoNumbers]);
-    const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
+    const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickDecoPoId,setPickDecoPoId]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
     const[rosterUploadDragOver,setRosterUploadDragOver]=useState(false);
@@ -2506,8 +2506,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return clone;
   };
   const _copySzStr=newSz=>Object.entries(newSz||{}).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0])).map(([sz,v])=>safeNum(v)+'/'+sz).join(' ');
-  const copyI=(i,newSz)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);const szStr=_copySzStr(newSz);sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
-  const copyIWithSku=(i,p,newSz)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  const _insertCopiedItem=(items,i,clone)=>{const next=[...safeItems({items})];next.splice(i+1,0,clone);return next};
+  const _applyCopyPrice=(clone,source,copyPrice)=>{if(!copyPrice)return clone;if(copyPrice.mode==='product'){if(clone.sku===source.sku){const p=products.find(x=>(source.product_id&&x.id===source.product_id)||(x.sku===source.sku&&(!source.color||x.color===source.color)))||products.find(x=>x.sku===source.sku);if(p){const au=isAU(p.brand||clone.brand);const fw=(p.category||'').toLowerCase()==='footwear'||!!clone.is_footwear;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.unit_sell=au?rQ(safeNum(p.retail_price)*(1-auDisc(fw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}}}}else{clone.unit_sell=safeNum(source.unit_sell);if(source._sizeSells)clone._sizeSells=JSON.parse(JSON.stringify(source._sizeSells));else delete clone._sizeSells}return clone};
+  const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
+  const copyIWithSku=(i,p,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -2521,8 +2523,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // source line may stay). Link the new garment to the source's mock instead — same-color
     // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
     const _linked=linkSwappedGarmentMock(safeArt(o),it,p.sku,p.color)!==safeArt(o);
-    _applyCopySizes(clone,newSz);const _szStr=_copySzStr(newSz);
-    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
+    _applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(newSz);
+    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:_insertCopiedItem(e.items,i,clone),...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku+(_szStr?' — '+_szStr:'')+(_linked?' — mockup linked to '+it.sku:''))};
   // Momentec API order SKUs (_mt_style/_mt_color/_mt_sku/_mt_skus) must always describe the
   // item's CURRENT garment. Every flow that swaps the style or color has to re-stamp (or clear)
@@ -2539,7 +2541,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
-  const copyIWithVendorResult=(i,style,color,source,newSz)=>{
+  const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice)=>{
     const it=o.items[i];if(!it)return;
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
@@ -2582,10 +2584,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
-    _applyCopySizes(clone,newSz);const _szStr=_copySzStr(newSz);
+    _applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(newSz);
     // Same-color style swap: link the new garment to the source's mock so it follows the
     // swap (see copyIWithSku — shared linkSwappedGarmentMock, color-exact only).
-    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
+    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:_insertCopiedItem(e.items,i,clone),...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     if(Object.keys(vInv).length>0){
       vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
       setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
@@ -4711,11 +4713,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // district office); with none selected this is the customer default it always was.
               const ddBillSel=resolveOrderBillTo(o,cust,allCustomers);
               const ddBillAddr=orderBillToSub(o,cust,allCustomers)||(cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':''));
-              // Ship To on the SO PDF: honor the order's selected ship-to (SO-1134 shipped to a
-              // coach's house but the PDF only ever showed Bill To), falling back to the customer
-              // default shipping address. Estimates keep the Bill To-only layout.
-              const ddShipSel=isE?null:resolveOrderShipTo(o,cust);
-              const ddShipAddr=isE?'':(orderShipToSub(o,cust)||custShipAddrSub(cust));
+              // Ship To on the estimate / SO PDF: honor the doc's selected ship-to (SO-1134
+              // shipped to a coach's house but the PDF only ever showed Bill To), falling back to
+              // the customer default shipping address. Estimates print it too — they carry the
+              // same Ship To picker as SOs, and a coach approving a quote that ships to a school
+              // site rather than the billing office has to see that before approving, not after.
+              const ddShipSel=resolveOrderShipTo(o,cust);
+              const ddShipAddr=orderShipToSub(o,cust)||custShipAddrSub(cust);
               return{
                 title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
                 headerRight:'<div class="ta">'+_$(total)+'</div>',
@@ -4785,6 +4789,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               openDocPDF(packOpts,'Packing-List-'+o.id).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
               nf('📦 Packing list opened for '+(cust?.name||o.id));
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📦 Pack Slip</button>}
+            {isSO&&onManualShip&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onManualShip(o)}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>⚡ Ship Items / Override</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               try{await downloadDoc(_makeDocOpts(),o.id+(cust?.name?'-'+cust.name:''));nf('📥 Downloaded '+o.id+'.pdf');}
               catch(err){console.warn('PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown error'),'error');}
@@ -7785,9 +7790,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // bill to the default address when the order points somewhere else.
       const billSel=resolveOrderBillTo(o,cust,allCustomers);
       const billAddr=orderBillToSub(o,cust,allCustomers)||(cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':''));
-      // Same Ship To box as the print/download builder — the emailed SO PDF only showed Bill To.
-      const shipSel=isE?null:resolveOrderShipTo(o,cust);
-      const shipAddrSub2=isE?'':(orderShipToSub(o,cust)||custShipAddrSub(cust));
+      // Same Ship To box as the print/download builder — the emailed estimate / SO PDF only
+      // ever showed Bill To.
+      const shipSel=resolveOrderShipTo(o,cust);
+      const shipAddrSub2=orderShipToSub(o,cust)||custShipAddrSub(cust);
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',css:PRINT_CSS,
         headerRight:'<div class="ta">'+_$(total)+'</div>',
         infoBoxes:[{label:'Bill To',value:(billSel&&billSel.name)||cust?.name||'—',sub:billAddr||''},...(shipAddrSub2?[{label:'Ship To',value:(shipSel&&shipSel.name)||cust?.name||'—',sub:shipAddrSub2}]:[]),...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),{label:'Sales Rep',value:REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})}],
@@ -10479,9 +10485,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </select>
           </div>}
           {pickShipDest==='ship_deco'&&<div style={{marginTop:6}}>
+            {(()=>{const dps=(o.deco_pos||[]).filter(dp=>dp&&dp.po_id&&dp.po_mode!=='dtf_purchase'&&!dp.topstar_service);return dps.length>0?<div style={{marginBottom:8}}>
+              <label style={{fontSize:10,fontWeight:700,color:'#7c3aed',display:'block',marginBottom:4}}>DPO for this shipment <span style={{fontWeight:400,color:'#94a3b8'}}>(becomes the attention line)</span></label>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{dps.map(dp=><button key={dp.id||dp.po_id} type="button" className={`btn btn-sm ${pickDecoPoId===dp.po_id?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>{setPickDecoPoId(dp.po_id);setPickDecoVendor(dp.vendor||decoVendors.find(dv=>dv.id===dp.deco_vendor_id)?.name||'')}}><strong>{dp.po_id}</strong>{dp.vendor?' · '+dp.vendor:''}</button>)}</div>
+              {pickDecoPoId&&<div style={{fontSize:10,color:'#7c3aed',marginTop:4,fontWeight:700}}>Attention: {pickDecoPoId}</div>}
+            </div>:<div style={{fontSize:10,color:'#b45309',marginBottom:6}}>No DPO is associated with this sales order. Choose the decorator manually.</div>})()}
             <label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Decoration Vendor</label>
             <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-              {DECO_VENDORS.map(dv=><button key={dv} className={`btn btn-sm ${pickDecoVendor===dv?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setPickDecoVendor(dv)}>{dv}</button>)}
+              {DECO_VENDORS.map(dv=><button key={dv} className={`btn btn-sm ${pickDecoVendor===dv?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>{setPickDecoPoId('');setPickDecoVendor(dv)}}>{dv}</button>)}
             </div>
             {pickDecoVendor==='Other'&&<input className="form-input" style={{marginTop:6,fontSize:12}} placeholder="Enter vendor name..." onChange={e=>setPickDecoVendor(e.target.value||'Other')}/>}
           </div>}
@@ -10511,7 +10522,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             showPick.forEach((pk,vi)=>{
               const idx=pk._idx;if(idx==null)return;
               // Read actual qty values from DOM inputs (user may have edited them)
-              const pickLine={status:'pick',pick_id:pickId,_sku:pk.sku,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
+              const selectedDpo=(o.deco_pos||[]).find(dp=>dp&&dp.po_id===pickDecoPoId);
+              const pickLine={status:'pick',pick_id:pickId,_sku:pk.sku,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?(selectedDpo?.vendor||pickDecoVendor):'',deco_po_id:pickShipDest==='ship_deco'?(selectedDpo?.po_id||''):'',deco_vendor_id:pickShipDest==='ship_deco'?(selectedDpo?.deco_vendor_id||''):'',attention:pickShipDest==='ship_deco'?(selectedDpo?.po_id||''):''};
               Object.entries(pk._pick).forEach(([sz,v])=>{
                 if(typeof v!=='number'||v<=0)return;
                 const el=document.getElementById('pick-qty-'+vi+'-'+sz);
@@ -10528,7 +10540,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // NOTE: Inventory is NOT decremented on pick creation (status:'pick')
             // It only decrements when status is changed to 'pulled' via the edit handler
             // This prevents double-decrement: create → edit to pulled
-            setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickShipAddr('default');
+            setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickDecoPoId('');setPickShipAddr('default');
             const destLabel=pickShipDest==='ship_customer'?'→ Ship to Customer':pickShipDest==='ship_deco'?'→ '+pickDecoVendor:'→ In-House Deco';
             nf(pickId+' sent to warehouse ('+destLabel+')');
           }} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button>
@@ -15686,8 +15698,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const szOn=canNewSz&&!!copySkuModal.szOn;
         const newSz=szOn?(copySkuModal.sz||{}):null;
         const newSzTot=Object.values(newSz||{}).reduce((a,v)=>a+safeNum(v),0);
-        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz);
-        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz);
+        const priceMode=copySkuModal.priceMode||'keep';
+        const copyPrice={mode:priceMode};
+        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz,copyPrice);
+        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz,copyPrice);
         const sqTokens=sq.split(/\s+/).filter(Boolean);
         const matches=sq.length>=2?products.filter(p=>{if(p.is_archived)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return sqTokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))}).slice(0,12):[];
         const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
@@ -15726,6 +15740,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'clone'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:isClone?'#2563eb':'transparent',color:isClone?'white':'#475569'}}>📋 Copy as-is (same SKU)</button>
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isClone?'#2563eb':'transparent',color:!isClone?'white':'#475569'}}>🆕 Copy to new line with new SKU</button>
             </div>}
+            {isCopy&&<div style={{marginBottom:10,padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff'}}>
+              <div style={{fontSize:11,fontWeight:800,color:'#334155',marginBottom:7}}>Customer price</div>
+              <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price-classic" checked={priceMode==='keep'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'keep'}))}/> Keep at ${safeNum(srcIt.unit_sell).toFixed(2)}</label>
+                <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price-classic" checked={priceMode==='product'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'product'}))}/> Change to updated product price</label>
+              </div>
+            </div>}
             {/* New sizes — works with either copy mode: type only the sizes the copy needs. */}
             {canNewSz&&(()=>{const isFw=!!srcIt.is_footwear;const pool=isFw?COPY_FOOTWEAR_SIZES:COPY_APPAREL_SIZES;
               return<div style={{marginBottom:10,border:'1px solid '+(szOn?'#bfdbfe':'#e2e8f0'),borderRadius:8,overflow:'hidden'}}>
@@ -15747,7 +15768,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               </div>})()}
             {isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
               <div style={{fontSize:12,color:'#64748b'}}>{newSzTot>0?'Adds a duplicate of this line (same SKU and decorations) below it, sized '+_copySzStr(newSz)+'.':'Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.'}</div>
-              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
+              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz,copyPrice);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
             </div>:<>
             {isReplace&&!canReplace&&<div style={{padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:10,fontSize:11,color:'#dc2626',fontWeight:600}}>⚠️ This line has a PO or IF — remove them first to change its SKU in place. (Use Copy item → new SKU to add it as a separate line instead.)</div>}
             <label className="form-label">Search for {isReplace?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>

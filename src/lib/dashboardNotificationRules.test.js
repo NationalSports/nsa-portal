@@ -1,23 +1,37 @@
 import {
-  hasInvoiceForOrder,
   hasResponsePoForPull,
+  isOrderFullyInvoiced,
   isFreshNotificationDate,
   pickSkuChanged,
+  picksForCurrentSku,
   pulledItemsHaveMovedInLine,
   shouldShowCompletedJobNotice,
 } from './dashboardNotificationRules';
 
 describe('dashboard notification lifecycle rules', () => {
-  test('completed job remains until it is both shipped and invoiced', () => {
-    const so = { id: 'SO-1' };
+  const so = { id: 'SO-1', items: [{ sku: 'SKU-1', color: 'Blue', sizes: { M: 10 } }] };
+  const fullInvoice = { so_id: 'SO-1', status: 'open', line_items: [{ qty: 10, _sku: 'SKU-1', _color: 'Blue' }] };
+  const partialInvoice = { so_id: 'SO-1', status: 'open', line_items: [{ qty: 5, _sku: 'SKU-1', _color: 'Blue' }] };
+
+  test('fully invoiced orders clear completed and shipped job notices', () => {
     expect(shouldShowCompletedJobNotice({ prod_status: 'completed' }, so, [])).toBe(true);
     expect(shouldShowCompletedJobNotice({ prod_status: 'shipped' }, so, [])).toBe(true);
-    expect(shouldShowCompletedJobNotice({ prod_status: 'shipped' }, so, [{ so_id: 'SO-1', status: 'open' }])).toBe(false);
+    expect(shouldShowCompletedJobNotice({ prod_status: 'completed' }, so, [fullInvoice])).toBe(false);
+    expect(shouldShowCompletedJobNotice({ prod_status: 'shipped' }, so, [fullInvoice])).toBe(false);
   });
 
-  test('void and deleted invoices do not clear a completed job notice', () => {
-    expect(hasInvoiceForOrder([{ so_id: 'SO-1', status: 'void' }], 'SO-1')).toBe(false);
-    expect(hasInvoiceForOrder([{ so_id: 'SO-1', status: 'open', deleted_at: '2026-08-25' }], 'SO-1')).toBe(false);
+  test('partial, deposit, void, and deleted invoices do not clear the notice', () => {
+    expect(isOrderFullyInvoiced(so, [partialInvoice])).toBe(false);
+    expect(isOrderFullyInvoiced(so, [{ ...fullInvoice, inv_type: 'deposit' }])).toBe(false);
+    expect(isOrderFullyInvoiced(so, [{ ...fullInvoice, status: 'void' }])).toBe(false);
+    expect(isOrderFullyInvoiced(so, [{ ...fullInvoice, deleted_at: '2026-08-25' }])).toBe(false);
+    expect(shouldShowCompletedJobNotice({ prod_status: 'completed' }, so, [partialInvoice])).toBe(true);
+  });
+
+  test('promo jobs remain until shipped without requiring an invoice', () => {
+    const promo = { ...so, promo_applied: true };
+    expect(shouldShowCompletedJobNotice({ prod_status: 'completed' }, promo, [])).toBe(true);
+    expect(shouldShowCompletedJobNotice({ prod_status: 'shipped' }, promo, [])).toBe(false);
   });
 
   test('pulled IF clears only when all related jobs have moved in line', () => {
@@ -34,6 +48,15 @@ describe('dashboard notification lifecycle rules', () => {
   test('short-pull SKU snapshot detects a replacement SKU', () => {
     expect(pickSkuChanged({ sku: 'NEW-SKU' }, [{ _sku: 'OLD-SKU', status: 'pulled' }])).toBe(true);
     expect(pickSkuChanged({ sku: 'SAME-SKU' }, [{ _sku: 'SAME-SKU', status: 'pulled' }])).toBe(false);
+  });
+
+  test('a later IF for a replacement SKU can raise its own shortage', () => {
+    const picks = [
+      { _sku: 'OLD-SKU', status: 'pulled', pulled_at: '8/20/2026', M: 1 },
+      { _sku: 'NEW-SKU', status: 'pulled', pulled_at: '8/25/2026', M: 1 },
+    ];
+    expect(picksForCurrentSku({ sku: 'NEW-SKU' }, picks)).toEqual([picks[1]]);
+    expect(pickSkuChanged({ sku: 'NEW-SKU' }, picks)).toBe(false);
   });
 
   test('only a PO created in response to the pull clears the short alert', () => {
