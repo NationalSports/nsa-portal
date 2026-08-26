@@ -6,7 +6,7 @@
 
 const {
   soFulfillment, isShippedNotInvoiced, isReadyToInvoice, soGoodsValue,
-  quoteAgeDays, quoteColdBucket, numericSizeKeys, NON_SIZE,
+  quoteAgeDays, quoteColdBucket, numericSizeKeys, shortOnPull, NON_SIZE,
 } = require('../lib/opsRecap');
 
 // Minimal SO: one line fully covered, jobs optional.
@@ -101,6 +101,32 @@ describe('numericSizeKeys (mobile/desktop PO size discovery)', () => {
     };
     expect(numericSizeKeys(po).sort()).toEqual(['L', 'M', 'S']);
     expect(NON_SIZE.has('email_history')).toBe(true);
+  });
+});
+
+describe('shortOnPull', () => {
+  test('a response PO clears the digest alert using its loaded metadata', () => {
+    const so = mkSo({
+      items: [{
+        sku: 'TEE', sizes: { M: 10 },
+        picks: [{ _sku: 'TEE', status: 'pulled', pulled_at: '8/25/2026', M: 5 }],
+        pos: [{ po_id: 'PO-NEW', status: 'waiting', created_at: '8/25/2026', M: 1, received: {}, cancelled: {} }],
+      }],
+    });
+    expect(shortOnPull(so)).toBeNull();
+  });
+
+  test('an old SKU IF does not hide a later shortage for the replacement SKU', () => {
+    const so = mkSo({
+      items: [{
+        sku: 'NEW-SKU', sizes: { M: 10 }, pos: [],
+        picks: [
+          { _sku: 'OLD-SKU', status: 'pulled', pulled_at: '8/20/2026', M: 10 },
+          { _sku: 'NEW-SKU', status: 'pulled', pulled_at: '8/25/2026', M: 4 },
+        ],
+      }],
+    });
+    expect(shortOnPull(so)).toEqual({ units: 6, detail: 'NEW-SKU (M:6)' });
   });
 });
 

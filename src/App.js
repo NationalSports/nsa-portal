@@ -37,6 +37,7 @@ import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/r
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
 import { closeOpenArtRequests } from './lib/artRequests';
+import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
@@ -8355,7 +8356,7 @@ export default function App(){
             else{todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
           }
           else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
         if(PROD_FILES_STATUSES.includes(j.art_status)){
           const _pdAf=safeArt(so).find(f=>f.id===j.art_file_id);const _pdDeco=_pdAf?.deco_type||j.deco_type;
@@ -8386,7 +8387,7 @@ export default function App(){
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'🎽 Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
         // Notify rep when a job is completed (decoration done)
-        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
+        if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'📦 Job shipped — invoice needed: ':'🏭 Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — '+(_jobShipped?'awaiting invoice':'ready to ship')+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
@@ -8418,19 +8419,21 @@ export default function App(){
       // Notify sales rep when an IF is pulled by the warehouse — ONE notification per IF (pick
       // group), even when the IF spans several line items (items pulled together share a pick_id).
       const _ifPulls={};
-      safeItems(so).forEach(it=>{
+      safeItems(so).forEach((it,itemIdx)=>{
         safePicks(it).filter(pk=>pk.status==='pulled'&&pk.pulled_at).forEach(pk=>{
           const pa=parseDate(pk.pulled_at);if(!pa)return;
           const qty=Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0).reduce((a,s)=>a+(pk[s]||0),0);if(qty<=0)return;
           // Group by the IF id; legacy pulled lines without a pick_id stay per-line.
           const ifKey=pk.pick_id||('line:'+(it.sku||it.name||'')+':'+(pk.pulled_at||''));
-          const g=_ifPulls[ifKey]||(_ifPulls[ifKey]={pickId:pk.pick_id||'',units:0,skus:[],latest:pa,latestRaw:pk.pulled_at});
+          const g=_ifPulls[ifKey]||(_ifPulls[ifKey]={pickId:pk.pick_id||'',units:0,skus:[],itemIndexes:new Set(),latest:pa,latestRaw:pk.pulled_at});
+          g.itemIndexes.add(itemIdx);
           g.units+=qty;const _lbl=it.sku||it.name||'Item';if(!g.skus.includes(_lbl))g.skus.push(_lbl);
           if(pa>g.latest){g.latest=pa;g.latestRaw=pk.pulled_at}
         });
       });
       Object.entries(_ifPulls).forEach(([ifKey,g])=>{
         const daysAgo=Math.floor((new Date()-g.latest)/(1000*60*60*24));if(daysAgo>7)return;
+        if(pulledItemsHaveMovedInLine(buildJobs(so),g.itemIndexes))return;
         const when=daysAgo===0?' · Today':' · '+daysAgo+'d ago';
         const skuLbl=g.skus.length===1?g.skus[0]:g.skus.length+' items';
         todos.push({type:'if_pulled',priority:3,msg:'📦 IF pulled: '+(g.pickId||skuLbl),detail:tag+' · '+so.id+(g.pickId?' · '+g.pickId:'')+' · '+g.units+' unit'+(g.units!==1?'s':'')+' · '+g.skus.join(', ')+when,so,action:'View',role:'sales',isNotification:true,date:g.latestRaw,dismissKey:'if_pulled:'+so.id+':'+ifKey+':'+(g.latestRaw||'')});
@@ -8441,9 +8444,10 @@ export default function App(){
       // Derived from current state, so it self-clears once a PO is raised or the units get pulled.
       const _shortItems=[];
       safeItems(so).forEach(it=>{
-        const picks=safePicks(it);
+        const picks=picksForCurrentSku(it,safePicks(it));
         if(picks.length===0)return;                     // never set up for a stock pull
         if(picks.some(pk=>pk.status!=='pulled'))return; // an IF is still open → warehouse not done
+        if(hasResponsePoForPull(picks,safePOs(it)))return; // a new PO was created for this short item
         const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
         // Only sizes the warehouse actually pulled against can come up "short on pull". Every size that was
         // on the IF leaves a key on the pulled pick line (even when 0 were found, e.g. {L:0}); a size the
@@ -8523,7 +8527,7 @@ export default function App(){
       const payDate=lastPay?.date?parseDate(lastPay.date):(inv2.updated_at?parseDate(inv2.updated_at):parseDate(inv2.date));
       if(!payDate)return;
       const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
-      if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
+      if(isFreshNotificationDate(payDate)){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
         todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+(lastPay?.method||'payment')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true,date:lastPay?.date||inv2.updated_at,dismissKey:'inv_paid:'+inv2.id})}
     });
     // Open issues → show on to-do list for top admin (Steve) only
@@ -12848,7 +12852,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
-        if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // M6 (same rule as the desktop dashboard generator): rejection visible until re-sent.
         if(j.coach_rejected&&!j.sent_to_coach_at&&j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         // Same rule as the desktop dashboard generator: the receiving notice is stale once the job
@@ -12864,7 +12868,7 @@ export default function App(){
             // Warehouse hand-off — items are in and art is complete, so the job can move straight to decoration. Clears once production moves it off hold.
             if(j.prod_status==='hold'||!j.prod_status)todos.push({type:'ready_for_deco',priority:2,msg:'Ready for decoration: '+j.art_name,detail:tag+' · '+so.id+' · items in & art complete',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Move to deco',role:'production',isNotification:true,date:_rcvdAt})}
         }
-        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
+        if(shouldShowCompletedJobNotice(j,so,[...invs,...(histInvs||[])])){const _jobShipped=j.prod_status==='shipped';const _invoiceExplanation=completedJobInvoiceExplanation(so,[...invs,...(histInvs||[])]);todos.push({type:'job_completed',priority:3,msg:(_jobShipped?'Job shipped — invoice needed: ':'Job completed: ')+j.art_name,detail:tag+' · '+so.id+' · '+_invoiceExplanation,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
@@ -12929,6 +12933,13 @@ export default function App(){
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});
     });
+    invs.filter(i=>i.status==='paid').forEach(inv2=>{
+      const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
+      const payDate=lastPay?.date?parseDate(lastPay.date):(inv2.updated_at?parseDate(inv2.updated_at):parseDate(inv2.date));
+      if(!payDate||!isFreshNotificationDate(payDate))return;
+      const daysAgo=Math.floor((new Date()-payDate)/86400000);const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
+      todos.push({type:'inv_paid',priority:3,msg:'Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true,date:lastPay?.date||inv2.updated_at,dismissKey:'inv_paid:'+inv2.id});
+    });
     // Attach repId, dismissKey, and fallback date
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
@@ -12952,7 +12963,7 @@ export default function App(){
       return t.role==='production'||t.role==='all';// warehouse/production keep company-wide deadlines
     });
     return filtered;
-  },[cu,sos,ests,invs,cust,portalSettings,repCsrAssignments]);
+  },[cu,sos,ests,invs,histInvs,cust,portalSettings,repCsrAssignments]);
 
   const[companyInfo,setCompanyInfo]=useState(()=>{const saved=loadState('company_info',null);if(saved){Object.assign(NSA,{...NSA_DEFAULTS,...saved,fullAddr:(saved.addr||NSA_DEFAULTS.addr)+', '+(saved.city||NSA_DEFAULTS.city)+', '+(saved.state||NSA_DEFAULTS.state)+' '+(saved.zip||NSA_DEFAULTS.zip)})}return{...NSA}});
   React.useEffect(()=>{Object.assign(NSA,{...companyInfo,fullAddr:companyInfo.addr+', '+companyInfo.city+', '+companyInfo.state+' '+companyInfo.zip});_saveAppState('company_info',companyInfo)},[companyInfo]);
@@ -19524,7 +19535,7 @@ export default function App(){
                               pi.szKeys.forEach(sz=>{updated[sz]=qtysForItem[sz]||0});return updated;}return pk});
                           return{...it2,pick_lines:newPicks};
                         }
-                        const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
+                        const newPick={pick_id:pickIdToUse,status:'pulled',_sku:it2.sku,pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
                         pi.szKeys.forEach(sz=>{newPick[sz]=qtysForItem[sz]||0});
                         return{...it2,pick_lines:[...existingPicks,newPick]};
                       });
