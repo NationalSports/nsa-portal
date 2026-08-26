@@ -2333,7 +2333,10 @@ const _dbSaveSOInner = async (so) => {
             // retire a protected job only when the DB itself proves every remaining claim vendor-routed.
             // A stale/short-loaded client payload can't fake that. Any read error keeps the protection.
             if(_blocked.length&&(_itRows||[]).length){
-              const{data:_poRows,error:_pe}=await supabase.from('so_item_po_lines').select('so_item_id,po_type,deco_type').in('so_item_id',(_itRows||[]).map(r=>r.id));
+              // po_type/deco_type were migrated into the sizes JSONB payload; the
+              // physical columns no longer exist. Selecting the retired columns made
+              // this safety check fail closed on every save (seen on SO-1995).
+              const{data:_poRows,error:_pe}=await supabase.from('so_item_po_lines').select('so_item_id,sizes').in('so_item_id',(_itRows||[]).map(r=>r.id));
               if(_pe)throw _pe;
               const{data:_dpRow,error:_dpe}=await supabase.from('sales_orders').select('deco_pos').eq('id',so.id).maybeSingle();
               if(_dpe)throw _dpe;
@@ -2341,7 +2344,7 @@ const _dbSaveSOInner = async (so) => {
               const _dbO={id:so.id,deco_pos:_dpRow?.deco_pos||null,art_files:_artRows||[],items:[]};
               (_itRows||[]).forEach(r=>{if(r.item_index!=null)_dbO.items[r.item_index]={decorations:[],po_lines:[]}});
               _decoRows.forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];if(it&&d.deco_index!=null)it.decorations[d.deco_index]=d});
-              (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];if(it)it.po_lines.push(p)});
+              (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];const meta=p?.sizes&&typeof p.sizes==='object'?p.sizes:{};if(it)it.po_lines.push({...p,po_type:meta.po_type,deco_type:meta.deco_type})});
               const _routed=_blocked.filter(r=>jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
               if(_routed.length){
                 const _routedIds=new Set(_routed.map(r=>r.id));

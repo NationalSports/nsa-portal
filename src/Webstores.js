@@ -22,6 +22,8 @@ import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializ
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
+const orderNetCollected = (o) => Math.max(0, originalOrderTotal(o) - (Number(o && o.refunded_amt) || 0));
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
@@ -726,7 +728,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
       imageUrl: imageByPid[i.product_id] || undefined,
       options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
     })),
-    amountPaid: order.payment_mode === 'paid' ? (Number(order.total) || 0) : 0,
+    amountPaid: order.payment_mode === 'paid' ? orderNetCollected(order) : 0,
     carrierCode: null, serviceCode: null, packageCode: null, confirmation: 'none',
     advancedOptions: {
       source: 'NSA Webstore', customField1: store.name, customField2: order.so_id || '',
@@ -1505,12 +1507,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // processed (every order batched onto a Sales Order) from one still waiting —
       // and so a processed store can link straight to the SO(s) it was batched onto
       // instead of showing a storefront URL nobody needs once the store is worked.
-      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt, so_id');
+      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, original_total, status, refunded_amt, so_id');
       const stats = {};
       const soSets = {};
       (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
         if (!stats[o.store_id]) { stats[o.store_id] = { revenue: 0, orders: 0, batched: 0, soIds: [] }; soSets[o.store_id] = new Set(); }
-        stats[o.store_id].revenue += Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+        stats[o.store_id].revenue += orderNetCollected(o);
         stats[o.store_id].orders += 1;
         if (o.so_id) { stats[o.store_id].batched += 1; soSets[o.store_id].add(o.so_id); }
       });
@@ -3160,61 +3162,36 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { flash('Email failed: ' + e.message); return { error: true }; }
   }, [sel, flash, loadDetail]);
 
-  // Edit an order's line items (size/qty/remove), then recompute its totals.
+  // Edit an order's line items (size/qty/remove) transactionally. The RPC keeps
+  // removed rows as qty=0/cancelled, records the before/after audit, and returns
+  // any cancelled units still waiting to be tied to a refund.
   const saveOrderEdits = useCallback(async (order, edited) => {
-    for (const it of edited) {
-      if (it._removed) await supabase.from('webstore_order_items').delete().eq('id', it.id);
-      else await supabase.from('webstore_order_items').update({ size: it.size || null, qty: Number(it.qty) || 1 }).eq('id', it.id);
+    const edits = (edited || []).map((it) => ({
+      id: it.id,
+      size: it.size || null,
+      qty: Math.max(1, Number(it.qty) || 1),
+      removed: !!it._removed,
+    }));
+    const { data, error } = await supabase.rpc('apply_webstore_order_item_edits', {
+      p_order_id: order.id,
+      p_edits: edits,
+    });
+    if (error || !data || data.ok === false) {
+      const msg = (error && error.message) || (data && data.error) || 'unknown error';
+      flash('Save failed: ' + msg);
+      return { error: msg };
     }
-    // Recompute over ALL of the order's items, not just the edited (component) rows.
-    // A bundle's price lives on its parent row (components are $0) and the parent is
-    // never in the editable set — summing only `edited` would drop every package's
-    // value and zero out the order's revenue and the club's fundraising payout.
-    const editById = {}; edited.forEach((e) => { editById[e.id] = e; });
-    const effective = (detail?.orderItems || []).filter((i) => i.order_id === order.id).map((i) => {
-      const e = editById[i.id];
-      if (!e) return i;                 // parents / untouched rows keep their stored price
-      if (e._removed) return null;
-      return { ...i, size: e.size, qty: Number(e.qty) || 1 };
-    }).filter(Boolean);
-    const round2 = (n) => Math.round(n * 100) / 100;
-    const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
-    const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
-    // Processing fee and sales tax are both levied on the product subtotal, so they scale
-    // with it. Re-derive each from THIS order's own stored ratio (fee/subtotal, tax/subtotal)
-    // and re-apply to the new subtotal: a size-only edit (subtotal unchanged) leaves the total
-    // exactly as charged, while a qty/removal edit scales the fee + tax to match. Dropping
-    // them — the old behavior — pushed the DB total below what the card actually paid and
-    // broke the refund cap (which reads `total`). Mirrors webstore-checkout's preTax + tax.
-    const oldSub = Number(order.subtotal) || 0;
-    const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * subtotal : (Number(order.processing_fee) || 0));
-    const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * subtotal : (Number(order.tax) || 0));
-    // The coupon discount is a percentage of the merchandise pot (subtotal + fundraise,
-    // per webstore-checkout couponDiscount), so it must scale with that pot when items are
-    // edited. Subtracting the ORIGINAL absolute dollars over-discounted a shrunken order —
-    // a 50%-off order edited from 2 items to 1 collapsed the goods total toward $0 while
-    // the card charge was unchanged, corrupting `total` and the refund cap that reads it.
-    // Re-derive from THIS order's own stored ratio, same approach as processing/tax above,
-    // and persist the scaled discount so the accounting ledger (sum of discount_amt)
-    // reconciles. (A coupon that also covered shipping carries a small shipping-discount
-    // component that doesn't scale with items; we don't reload the coupon here, so that
-    // residual is approximated — immaterial next to the original full-dollar bug.)
-    // NOTE: OrderManageModal's New-total preview + refund auto-suggest use the same scale.
-    const oldPot = oldSub + (Number(order.fundraise_amt) || 0);
-    const discount = round2(oldPot > 0 ? (Number(order.discount_amt) || 0) / oldPot * (subtotal + fundraise) : (Number(order.discount_amt) || 0));
-    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - discount));
-    const total = round2(preTax + tax);
-    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total, discount_amt: discount }).eq('id', order.id);
-    if (error) { flash('Save failed: ' + error.message); return { error }; }
-    flash('Order updated'); loadDetail(sel); return { ok: true };
-  }, [sel, detail, flash, loadDetail]);
+    flash('Order updated');
+    await loadDetail(sel);
+    return { ok: true, ...data };
+  }, [sel, flash, loadDetail]);
 
   // Refund: Stripe for card orders, recorded credit for team-tab orders.
   // Guarded against double-processing: an in-flight latch blocks double-clicks, and the
   // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
   // state) with an over-refund cap before any money moves.
   const refundingRef = useRef(false);
-  const refundOrder = useCallback(async (order, amount, customerMessage) => {
+  const refundOrder = useCallback(async (order, amount, customerMessage, itemAllocations = []) => {
     if (refundingRef.current) return { error: 'A refund is already in progress' };
     refundingRef.current = true;
     try {
@@ -3230,7 +3207,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       try {
         const res = await authFetch('/.netlify/functions/stripe-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null }),
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
         });
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
@@ -3799,7 +3776,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // collected via Stripe; only the team-tab total should be invoiced to the club.
     const cardOrders = bOrders.filter((o) => o.payment_mode === 'paid');
     const tabOrders = bOrders.filter((o) => o.payment_mode !== 'paid');
-    const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+    const netOf = (o) => orderNetCollected(o);
     const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
     const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
     // Team-tab extras = the tab orders' tax/shipping/processing beyond their
@@ -6288,7 +6265,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // and sales match reality (and the per-order tabs, which already filter them).
   const validOrders = orders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
   const validOrderIds = new Set(validOrders.map((o) => o.id));
-  const totalSales = validOrders.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const totalSales = validOrders.reduce((a, o) => a + orderNetCollected(o), 0);
   const fundraiseTotal = validOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const totalItems = orderItems.filter((i) => !i.is_bundle_parent && validOrderIds.has(i.order_id)).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
@@ -12518,7 +12495,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
   const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
-  const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const revenue = orders.reduce((a, o) => a + orderNetCollected(o), 0);
   const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
   // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
   // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
@@ -12561,14 +12538,14 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
     shipCharged: sumF('shipping_fee'),
     processing: sumF('processing_fee'),
     taxColl: sumF('tax'),
-    grossColl: sumF('total'),          // what every live order was billed
+    grossColl: orders.reduce((a, o) => a + originalOrderTotal(o), 0), // immutable amount billed
     refunds: sumF('refunded_amt'),
     ccFees: sumF('cc_fee'),
     labelCost: sumF('label_cost'),
   };
   acct.netColl = acct.grossColl - acct.refunds;
   acct.netAfterFees = acct.netColl - acct.ccFees - acct.labelCost;
-  const cardColl = paid.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const cardColl = paid.reduce((a, o) => a + originalOrderTotal(o), 0);
   const tabColl = acct.grossColl - cardColl;
 
   // Scope line items to LIVE orders only — orderItems carries items for every order
@@ -13566,7 +13543,11 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     const lineStatus = (real.length ? real : items).reduce((acc, i) => ((SRANK[i.line_status] ?? 0) < (SRANK[acc] ?? 0) ? i.line_status : acc), (real[0] || items[0] || {}).line_status || 'pending');
     return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus };
   };
-  const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
+  // Match the actual batch/report eligibility rule exactly. Refunded/cancelled
+  // orders used to inflate this badge (live: SJM Volleyball showed 6 when only
+  // 2 paid orders could be batched), even though gatherBatch/onBatch correctly
+  // refused those rows after the button was clicked.
+  const unbatchedCount = orders.filter((o) => !o.so_id && !o.backorder_of && isLiveWebstoreOrder(o)).length;
   // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
   // cancelled orders aren't real orders; keep them out of the list so they don't show
   // as a stray "Paid" duplicate of the shopper's actual order.
@@ -13747,9 +13728,19 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
 }
 
 // Edit an order's line items (size/qty/remove) and issue refunds.
-function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
+export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
-  const initRows = editable.map((i) => ({ id: i.id, sku: i.sku, name: nameByPid[i.product_id] || i.name, color: i.color, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false }));
+  const initRows = editable.map((i) => {
+    const removed = /^(cancelled|canceled)$/i.test(String(i.line_status || '')) || Number(i.qty) <= 0;
+    return { id: i.id, sku: i.sku, name: nameByPid[i.product_id] || i.name, color: i.color, size: i.size || '', qty: Math.max(0, Number(i.qty) || 0), unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, cancelled_qty: Math.max(0, Number(i.cancelled_qty) || 0), refunded_qty: Math.max(0, Number(i.refunded_qty) || 0), line_status: i.line_status, _removed: removed, _initialRemoved: removed };
+  });
+  const pendingFrom = (list) => (list || []).map((i) => ({
+    item_id: i.item_id || i.id,
+    qty: Math.max(0, Number(i.qty != null && i.item_id ? i.qty : (Number(i.cancelled_qty) || 0) - (Number(i.refunded_qty) || 0)) || 0),
+    sku: i.sku || '', name: i.name || '', color: i.color || '', size: i.size || '',
+    player_name: i.player_name || '', player_number: i.player_number || '',
+    unit_price: Number(i.unit_price) || 0, unit_fundraise: Number(i.unit_fundraise) || 0,
+  })).filter((i) => i.item_id && i.qty > 0);
   const [rows, setRows] = useState(initRows);
   const [refundAmt, setRefundAmt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -13757,10 +13748,14 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
   // Amount a completed save left owed back to the buyer. Held separately from the
   // live suggestion so the post-save resync can't wipe it before it's refunded.
   const [savedOwed, setSavedOwed] = useState(0);
+  const [pendingRefundItems, setPendingRefundItems] = useState(() => pendingFrom(initRows));
+  const [selectedRefundItems, setSelectedRefundItems] = useState(() => Object.fromEntries(pendingFrom(initRows).map((i) => [i.item_id, i.qty])));
+  const [refundHistory, setRefundHistory] = useState({ refunds: [], items: [] });
   const [composeOpen, setComposeOpen] = useState(false);
   const [refundMsg, setRefundMsg] = useState(null); // null = still the generated default
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
-  const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
+  const billedTotal = Number(order.original_total != null ? order.original_total : order.total) || 0;
+  const remaining = Math.max(0, billedTotal - (Number(order.refunded_amt) || 0));
 
   // The coupon discount scales with the merchandise pot it was a percentage of, so a
   // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
@@ -13772,7 +13767,7 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
   // Only recompute total when the user has actually made a change — bundle
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
-  const hasChanges = rows.some((r, i) => r._removed || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
+  const hasChanges = rows.some((r, i) => r._removed !== initRows[i]?._initialRemoved || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
   // Bundle parents hold the package price (components are $0) and aren't editable, so
   // seed the recompute with their value — otherwise the New total drops every package.
   const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
@@ -13808,24 +13803,52 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
 
   // Re-sync the editable rows whenever the saved order comes back from the reload, so
   // the panel can stay open after a save (below) instead of closing to resync.
-  const itemsSig = editable.map((i) => `${i.id}:${i.size || ''}:${i.qty || 1}`).join('|');
-  useEffect(() => { setRows(initRows); }, [itemsSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const itemsSig = editable.map((i) => `${i.id}:${i.size || ''}:${Number(i.qty) || 0}:${i.line_status || ''}:${Number(i.cancelled_qty) || 0}:${Number(i.refunded_qty) || 0}`).join('|');
+  useEffect(() => {
+    setRows(initRows);
+    const pending = pendingFrom(initRows);
+    setPendingRefundItems(pending);
+    setSelectedRefundItems(Object.fromEntries(pending.map((i) => [i.item_id, i.qty])));
+  }, [itemsSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show the durable linkage, not just the aggregate dollars on the order row.
+  // Older refunds legitimately appear as "order-level" because their item rows
+  // were deleted before this ledger existed and cannot be reconstructed safely.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const [rr, ri] = await Promise.all([
+        supabase.from('webstore_order_refunds').select('id,amount,kind,reason,created_at').eq('order_id', order.id).order('created_at', { ascending: false }),
+        supabase.from('webstore_order_refund_items').select('refund_id,order_item_id,qty,amount,sku_snapshot,name_snapshot,color_snapshot,size_snapshot,player_name_snapshot,player_number_snapshot').eq('order_id', order.id),
+      ]);
+      if (live) setRefundHistory({ refunds: rr.data || [], items: ri.data || [] });
+    })();
+    return () => { live = false; };
+  }, [order.id]);
 
   // Saving used to close the panel, which discarded the refund the rep was mid-way
   // through issuing — the items came off the order, the total dropped, and the money
   // owed was never sent (and afterwards nothing on screen recorded that it was owed).
-  // Adjusting and refunding stay two separate, deliberate buttons; saving now just
-  // keeps the panel open and carries the amount owed into the refund box.
+  // Saving the item adjustment and moving money stay separate, deliberate actions.
+  // When a save leaves money owed, go straight to the review step so the rep cannot
+  // miss the refund or waste a click reopening it. The final Send & refund button is
+  // still the only action that actually moves money.
   const save = async () => {
     setBusy(true);
-    const _owed = owed;
     const r = await onSave(order, rows);
     setBusy(false);
     if (!r || !r.ok) return;
+    const _owed = Number(r.owed != null ? r.owed : owed) || 0;
+    const pending = pendingFrom(r.pending_items || []);
+    setPendingRefundItems(pending);
+    setSelectedRefundItems(Object.fromEntries(pending.map((i) => [i.item_id, i.qty])));
     // Accumulate across successive saves. A rep who trims the order, saves, then trims
     // again before refunding is owed the sum — overwriting here would drop the first
     // round's money on the floor, which is the exact bug this whole change is about.
-    if (_owed > 0.005) setSavedOwed((prev) => { const t = _round2(prev + _owed); setRefundAmt(t.toFixed(2)); return t; });
+    if (_owed > 0.005) {
+      setSavedOwed((prev) => { const t = _round2(prev + _owed); setRefundAmt(t.toFixed(2)); return t; });
+      setComposeOpen(true);
+    }
     setJustSaved(true); setTimeout(() => setJustSaved(false), 2500);
   };
   // Refunding goes through the compose step below — same shape as sending an invoice.
@@ -13836,7 +13859,10 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
   const refundMsgValue = refundMsg == null ? defaultRefundMsg : refundMsg; // null = untouched, so it tracks the amount
   const refund = async () => {
     setBusy(true);
-    const r = await onRefund(order, Number(refundAmt), (refundMsgValue || '').trim());
+    const allocations = pendingRefundItems
+      .map((i) => ({ item_id: i.item_id, qty: Math.min(i.qty, Math.max(0, Number(selectedRefundItems[i.item_id]) || 0)) }))
+      .filter((i) => i.qty > 0);
+    const r = await onRefund(order, Number(refundAmt), (refundMsgValue || '').trim(), allocations);
     setBusy(false);
     if (r && r.ok) { setRefundAmt(''); setSavedOwed(0); setRefundMsg(null); setComposeOpen(false); onClose(); }
   };
@@ -13853,7 +13879,8 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
             <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
             {order.order_number && <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>Order #{order.order_number}</div>}
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-              {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
+              {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(billedTotal)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(billedTotal)}</span>}
+              {Math.abs(billedTotal - (Number(order.total) || 0)) > 0.005 && <span style={{ color: '#64748b' }}> · current items {money(order.total)}</span>}
               {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
               {Number(order.refunded_amt) > 0 && <span style={{ color: '#b45309' }}> · {money(order.refunded_amt)} refunded</span>}
             </div>
@@ -13887,7 +13914,7 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
                     ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
                     : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
                   <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
-                  <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{r._removed ? 'undo' : 'remove'}</button>
+                  <button onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{r._removed ? 'undo' : 'remove'}</button>
                 </div>
               );
             })}
@@ -13900,10 +13927,11 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : 'Save item changes'}</button>
+          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
+          {hasChanges && owed > 0.005 && <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 7 }}>Saves the order, then opens the refund review. Nothing is refunded until you confirm.</div>}
 
-          {/* Refund — a deliberate second step. Saving the items above no longer closes
-              this panel, so the amount owed stays on screen until it's actually sent. */}
+          {/* Refund controls remain available for stand-alone/manual refunds. Item
+              reductions open the same review automatically after a successful save. */}
           <div style={{ borderTop: '1px solid #eef1f5', marginTop: 20, paddingTop: 18 }}>
             <div style={sectionLabel}>Refund</div>
             {savedOwed > 0.005 && (
@@ -13915,6 +13943,20 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
               {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
               {Number(order.refunded_amt) > 0 && <> Already refunded <b>{money(order.refunded_amt)}</b>; <b>{money(remaining)}</b> remaining.</>}
             </div>
+            {pendingRefundItems.length > 0 && (
+              <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 8, padding: '9px 12px', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: '#1e40af', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Tie this refund to</div>
+                {pendingRefundItems.map((i) => {
+                  const checked = (Number(selectedRefundItems[i.item_id]) || 0) > 0;
+                  const label = [i.name || i.sku || 'Item', i.sku && i.name ? i.sku : null, i.color, i.size && `size ${i.size}`, i.player_name].filter(Boolean).join(' · ');
+                  return <label key={i.item_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#334155', padding: '3px 0', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={checked} onChange={(e) => setSelectedRefundItems((m) => ({ ...m, [i.item_id]: e.target.checked ? i.qty : 0 }))} />
+                    <span style={{ flex: 1 }}>{label}</span><b>×{i.qty}</b>
+                  </label>;
+                })}
+                {!Object.values(selectedRefundItems).some((q) => Number(q) > 0) && <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 5 }}>No item selected — this will be recorded as an order-level refund.</div>}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
                 <span style={{ padding: '0 10px', color: '#94a3b8', fontSize: 15, borderRight: '1px solid #e2e8f0', height: '100%', display: 'grid', placeItems: 'center' }}>$</span>
@@ -13926,6 +13968,20 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
             {order.buyer_email
               ? <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 8 }}>You'll review the email to {order.buyer_email} before anything is charged back.</div>
               : <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 8 }}>No email on file for this buyer — the refund will process without one.</div>}
+            {refundHistory.refunds.length > 0 && (
+              <div style={{ marginTop: 14, borderTop: '1px solid #eef1f5', paddingTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5 }}>Refund history</div>
+                {refundHistory.refunds.map((h) => {
+                  const linked = refundHistory.items.filter((i) => i.refund_id === h.id);
+                  return <div key={h.id} style={{ fontSize: 11.5, color: '#475569', padding: '4px 0' }}>
+                    <b>{money(h.amount)}</b> · {h.created_at ? new Date(h.created_at).toLocaleDateString() : h.kind}
+                    <div style={{ color: linked.length ? '#1d4ed8' : '#94a3b8', marginTop: 1 }}>
+                      {linked.length ? linked.map((i) => `${i.name_snapshot || i.sku_snapshot || 'Item'}${i.size_snapshot ? ` (${i.size_snapshot})` : ''} ×${i.qty}`).join(', ') : 'Order-level / legacy refund — no item link'}
+                    </div>
+                  </div>;
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -13961,6 +14017,7 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
               )}
               <div style={{ background: '#fff5f5', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 16 }}>
                 Sending {order.stripe_pi_id ? `returns ${money(Number(refundAmt) || 0)} to the buyer's card` : `records a ${money(Number(refundAmt) || 0)} credit`}. This can't be undone.
+                {pendingRefundItems.some((i) => Number(selectedRefundItems[i.item_id]) > 0) && <div style={{ marginTop: 5, fontWeight: 700 }}>The refund ledger will retain the selected SKU, size, player, and quantity.</div>}
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn btn-secondary" disabled={busy} onClick={() => setComposeOpen(false)}>Cancel</button>
