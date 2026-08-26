@@ -238,11 +238,19 @@ export default function MoveCheckIn() {
     const { data, error } = await supabase.from('boxes').select('*').order('updated_at', { ascending: false }).limit(1500);
     if (!error && data) setBoxes(data);
   }, []);
+  const [probeTick, setProbeTick] = useState(0);
+  useEffect(() => {
+    const onBack = () => { if (document.visibilityState === 'visible') setProbeTick((n) => n + 1); };
+    document.addEventListener('visibilitychange', onBack);
+    window.addEventListener('focus', onBack);
+    return () => { document.removeEventListener('visibilitychange', onBack); window.removeEventListener('focus', onBack); };
+  }, []);
   useEffect(() => {
     if (loading) return undefined; // wait for the session check to settle first
     let alive = true;
     (async () => {
       if (!supabase) { if (alive) { setAccess('no_access'); setProbeErr('No database connection configured.'); } return; }
+      if (probeTick && access === 'ok') return; // already in — a focus event shouldn't re-gate
       const { error } = await supabase.from('boxes').select('id').limit(1);
       if (!alive) return;
       if (!error) { setAccess('ok'); reload(); return; }
@@ -250,7 +258,7 @@ export default function MoveCheckIn() {
       setAccess(signedIn || portalUser ? 'no_access' : 'no_session');
     })();
     return () => { alive = false; };
-  }, [loading, signedIn]);// eslint-disable-line
+  }, [loading, signedIn, probeTick]);// eslint-disable-line
   // Several people scan at once during the move — keep counts/lists fresh
   // with a light poll while the page is visible.
   useEffect(() => {

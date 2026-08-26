@@ -10134,7 +10134,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
 // future AI-brief and customer self-serve flows can drive the same engine.
 // Who may edit the shared/curated "TEAM" favorites that show first for everyone. Personal
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
-const FAV_CURATORS = ['smpeterson327@gmail.com'];
+const FAV_CURATORS = ['steve@nationalsportsapparel.com'];
 
 // ── Live vendor-catalog search (shared by the popup modal AND the picker's main search bar).
 // Searches SanMar/District, S&S, Richardson and Momentec APIs for any style (even ones not in
