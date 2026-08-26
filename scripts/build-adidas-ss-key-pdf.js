@@ -29,13 +29,22 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 // Garment label: the S&S name minus the "(AT101)" suffix it already carries.
 const garment = (r) => String(r.sn || '').replace(/\s*\(AT\d+\)\s*$/, '').replace(/^Adidas\s+/i, '');
 const sizes = (r) => (Array.isArray(r.sz) ? r.sz.join(' · ') : '');
-// Current first — the article the vendor is still shipping is what a new order
-// arrives tagged with. In-house quantity is only a tie-break: we still hold old
-// season goods (21 black hoods under the retired HR8470) and ranking on that put
-// discontinued numbers at the top of this key.
-const arts = (r) => (r.ar || []).slice().sort((a, b) =>
-  (b.cur ? 1 : 0) - (a.cur ? 1 : 0) || (b.vs || 0) - (a.vs || 0)
-  || (b.q || 0) - (a.q || 0) || String(a.a).localeCompare(String(b.a)));
+// ACTIVE articles only. An article is superseded when a DIFFERENT article for the
+// same style+colour is still being shipped by the vendor — that is what makes the
+// old one dead, not its age. So: keep every article the vendor still stocks, and
+// where a colour has none, keep its best-known number rather than leaving the
+// packer holding a real garment with no entry (JW6626 youth crew and KG1515 puffer
+// are current-generation numbers that merely happen to be out of stock today).
+const rank = (a, b) => (b.cur ? 1 : 0) - (a.cur ? 1 : 0) || (b.vs || 0) - (a.vs || 0)
+  || (b.q || 0) - (a.q || 0) || String(a.a).localeCompare(String(b.a));
+const arts = (r) => {
+  const all = (r.ar || []).slice().sort(rank);
+  const live = all.filter((a) => a.cur);
+  return live.length ? live : all.slice(0, 1);
+};
+// True when a colour has no article in stock anywhere — the number we give is the
+// right one, but nothing is sitting on a shelf, so it is worth saying so.
+const outOfStock = (r) => (r.ar || []).length > 0 && !(r.ar || []).some((a) => a.cur);
 
 const matched = rows.filter((r) => (r.ar || []).length);
 const unmatched = rows.filter((r) => !(r.ar || []).length);
@@ -76,23 +85,25 @@ const fwdRows = families.map((f) => {
   const rs = matched.filter((r) => garment(r) === f).sort((a, b) => a.ss.localeCompare(b.ss));
   if (!rs.length) return '';
   const style = rs[0].ss.replace(/-[^-]*$/, '');
+  // The size run belongs to the style, not the colour — identical across a style's
+  // colours everywhere but AT302 — so it sits on the header instead of repeating.
   const runs = [...new Set(rs.map(sizes))];
   const common = runs.length === 1 ? runs[0] : '';
-  return `<tr class="grp"><td colspan="3"><span class="gstyle">${esc(style)}</span>${esc(f)}${
-    common ? `<span class="sz hdrsz">${esc(common)}</span>` : ''}</td></tr>` + rs.map((r) => `
-    <tr>
-      <td class="mono nowrap">${esc(r.ss)}</td>
-      <td>${esc(r.sc)}${common ? '' : `<span class="sz hdrsz">${esc(sizes(r))}</span>`}</td>
-      <td>${arts(r).map((a) => `<span class="art${a.cur ? '' : ' artold'}">${esc(a.a)}</span>`).join(' ')}${
-        arts(r).every((a) => !a.cur) ? ' <span class="flag">older stock only</span>' : ''}</td>
-    </tr>`).join('');
+  return `<div class="blk">
+    <div class="blkh"><span class="gstyle">${esc(style)}</span>${esc(f)}${
+      common ? `<span class="hdrsz">${esc(common)}</span>` : ''}</div>` + rs.map((r) => `
+    <div class="krow">
+      <span class="ksku mono">${esc(r.ss)}</span>
+      <span class="kcol">${esc(r.sc)}${common ? '' : `<span class="hdrsz">${esc(sizes(r))}</span>`}</span>
+      <span class="kart">${arts(r).map((a) => `<span class="art">${esc(a.a)}</span>`).join(' ')}${
+        outOfStock(r) ? ' <span class="oos">none in stock</span>' : ''}</span>
+    </div>`).join('') + '</div>';
 }).join('');
 
-// A plain index, not a table: the tag lookup only has to answer "which SKU is this
-// number?", and the colour and garment it used to repeat on all 165 lines are already
-// on the row it points at. As four columns of article→SKU it fits on one page instead
-// of six, which matters for something taped up at a packing station.
-const revIndex = rev.map((e) => `<div class="ix${e.cur ? '' : ' ixold'}"><span class="mono">${esc(e.article)}</span>`
+// The tag index answers one question — which SKU is this number? — so it is a list,
+// not a table: the colour and garment it would otherwise repeat on every line are
+// already on the row it points at.
+const revIndex = rev.map((e) => `<div class="ix"><span class="mono">${esc(e.article)}</span>`
   + `<span class="ixto">${esc(e.ss)}</span>${conflicting.has(e.article) ? '<span class="flag">check</span>' : ''}</div>`).join('');
 
 const openRows = unmatched.sort((a, b) => a.ss.localeCompare(b.ss)).map((r) => `
@@ -104,65 +115,81 @@ const dupRows = dupColour.map((r) => `
 
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S&amp;S SKU Conversion Key</title>
 <style>
+  /* Sized for a packing station: this gets printed and read at arm's length under
+     warehouse light, so body text is 11pt and the numbers themselves are larger
+     and bolder than the words around them. */
   @page { size: letter; margin: 14mm 12mm 16mm; }
   * { box-sizing: border-box; }
-  body { font-family: "Liberation Sans", Arial, Helvetica, sans-serif; color: #16202b; margin: 0; font-size: 9pt; line-height: 1.4; }
-  .mono, .art { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; }
+  body { font-family: "Liberation Sans", Arial, Helvetica, sans-serif; color: #10171f; margin: 0;
+         font-size: 11pt; line-height: 1.45; }
+  .mono, .art, .ixto, .gstyle { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; }
 
-  .cover { border-top: 5px solid #1b3a5c; padding-top: 14px; }
-  h1 { font-size: 21pt; margin: 0 0 2px; letter-spacing: -.3px; }
-  .sub { font-size: 10.5pt; color: #4a5b6e; margin-bottom: 2px; }
-  .meta { font-size: 8pt; color: #7b8794; margin-bottom: 16px; }
+  .cover { border-top: 6px solid #1b3a5c; padding-top: 16px; }
+  h1 { font-size: 26pt; margin: 0 0 3px; letter-spacing: -.4px; }
+  .sub { font-size: 13pt; color: #40536b; }
+  .meta { font-size: 9.5pt; color: #78848f; margin-bottom: 18px; }
 
-  .lead { background: #f4f7fa; border-left: 3px solid #1b3a5c; padding: 10px 13px; margin: 0 0 12px; }
-  .lead h2 { font-size: 10pt; margin: 0 0 5px; text-transform: uppercase; letter-spacing: .6px; color: #1b3a5c; }
-  .lead p { margin: 0 0 6px; }
+  .lead { background: #f2f6fa; border-left: 5px solid #1b3a5c; padding: 13px 16px; margin: 0 0 16px; }
+  .lead h2 { font-size: 12pt; margin: 0 0 7px; text-transform: uppercase; letter-spacing: .7px; color: #1b3a5c; }
+  .lead p { margin: 0 0 8px; }
   .lead p:last-child { margin-bottom: 0; }
-  .eg { background: #fff; border: 1px solid #dde4ec; padding: 7px 10px; margin-top: 8px; font-size: 8.5pt; }
+  .eg { background: #fff; border: 1px solid #d3dde7; padding: 10px 13px; margin-top: 11px; }
   .eg b { color: #1b3a5c; }
 
-  /* Four-column article index. break-inside avoid keeps an entry from splitting
-     across the column gap, which would strand a number away from its SKU. */
-  .index { column-count: 4; column-gap: 10px; column-rule: .5px solid #e3e9ef; }
-  .ix { break-inside: avoid; font-size: 8pt; padding: 1.2px 0; border-bottom: .5px solid #f0f3f6;
-        display: flex; justify-content: space-between; gap: 4px; }
-  .ix .mono { font-weight: bold; }
-  .ixto { color: #4a5b6e; font-family: "DejaVu Sans Mono", monospace; }
-  .ixold, .ixold .ixto, .ixgrey { color: #98a2ad; font-weight: normal; }
-  .hdrsz { margin-left: 8px; font-weight: normal; }
-  h2.sec { font-size: 12pt; margin: 0 0 3px; padding-bottom: 4px; border-bottom: 2px solid #1b3a5c; }
-  .hint { font-size: 8pt; color: #5c6b7d; margin: 0 0 7px; }
+  h2.sec { font-size: 15pt; margin: 0 0 4px; padding-bottom: 6px; border-bottom: 3px solid #1b3a5c; }
+  .hint { font-size: 10pt; color: #4e5c6b; margin: 0 0 10px; }
+
+  /* Three columns, not four: fewer, larger entries read faster than more, smaller ones. */
+  .index { column-count: 3; column-gap: 16px; column-rule: 1px solid #dde4ec; }
+  .ix { break-inside: avoid; padding: 3.5px 2px; border-bottom: .5px solid #eef1f5;
+        display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .ix .mono { font-weight: bold; font-size: 12pt; letter-spacing: .3px; }
+  .ixto { color: #40536b; font-size: 10.5pt; }
+
+  /* Section 2 flows in two columns: every row carries one article number now, so
+     the width went unused and the section ran twice as long as it needed to. A block
+     is a whole garment, kept intact so a header never strands from its colours. */
+  .keycols { column-count: 2; column-gap: 18px; }
+  .blk { break-inside: avoid; margin-bottom: 9px; }
+  .blkh { background: #e7edf4; border-top: 2px solid #1b3a5c; border-bottom: 1px solid #b9cbdd;
+          font-weight: bold; font-size: 10.5pt; padding: 5px 7px; }
+  .krow { display: flex; align-items: baseline; gap: 6px; padding: 4px 7px;
+          border-bottom: 1px solid #eef1f5; }
+  .krow:nth-child(even) { background: #fafbfc; }
+  .ksku { font-size: 10.5pt; font-weight: bold; white-space: nowrap; }
+  .kcol { flex: 1; font-size: 9.5pt; color: #40536b; }
+  .kart { white-space: nowrap; }
 
   table { width: 100%; border-collapse: collapse; }
-  th { background: #1b3a5c; color: #fff; font-size: 7.5pt; text-transform: uppercase; letter-spacing: .5px;
-       text-align: left; padding: 5px 6px; }
-  td { padding: 4px 6px; border-bottom: .5px solid #e3e9ef; vertical-align: top; }
-  tr.grp td { background: #eef2f7; font-weight: bold; font-size: 8.5pt; padding: 5px 6px; border-bottom: 1px solid #c9d5e2; }
-  .gstyle { font-family: "DejaVu Sans Mono", monospace; color: #1b3a5c; margin-right: 8px; }
-  .art { background: #eaf0f7; border: .5px solid #b9cbdd; padding: .5px 4px; font-size: 8.5pt; font-weight: bold; white-space: nowrap; }
-  /* Superseded articles stay listed — old stock still turns up — but must not read
-     as the answer to "what should I be seeing on a new order". */
-  .artold { background: #f4f5f7; border-color: #d6dbe2; color: #79838f; font-weight: normal; }
-  .cur { background: #e6f4ec; color: #1d6b42; border: .5px solid #a9d4bd; padding: .5px 4px; font-size: 7pt;
-         text-transform: uppercase; letter-spacing: .3px; font-weight: bold; white-space: nowrap; }
-  .old { background: #f4f5f7; color: #79838f; border: .5px solid #d6dbe2; padding: .5px 4px; font-size: 7pt;
-         text-transform: uppercase; letter-spacing: .3px; white-space: nowrap; }
-  .sz { font-size: 7pt; color: #74818f; }
-  .num { text-align: right; color: #1d6b42; font-weight: bold; }
+  th { background: #1b3a5c; color: #fff; font-size: 9pt; text-transform: uppercase; letter-spacing: .6px;
+       text-align: left; padding: 7px 8px; }
+  td { padding: 6.5px 8px; border-bottom: 1px solid #e6ebf0; vertical-align: baseline; }
+  tbody tr:nth-child(even of :not(.grp)) td { background: #fafbfc; }
+  tr.grp td { background: #e7edf4; font-weight: bold; font-size: 11.5pt; padding: 8px;
+              border-top: 2px solid #1b3a5c; border-bottom: 1px solid #b9cbdd; }
+  .gstyle { color: #1b3a5c; margin-right: 10px; }
+  .hdrsz { margin-left: 10px; font-weight: normal; font-size: 9pt; color: #78848f; letter-spacing: .2px; }
+  .art { background: #eaf1f8; border: 1px solid #a8c2da; padding: 2px 7px; font-size: 12pt;
+         font-weight: bold; white-space: nowrap; letter-spacing: .3px; }
+  .oos { font-size: 8.5pt; color: #8a6d3b; background: #fdf6e3; border: 1px solid #e8d9a8;
+         padding: 1px 5px; white-space: nowrap; }
   .nowrap { white-space: nowrap; }
+  td.mono { font-size: 11.5pt; font-weight: bold; }
   tr.warn td { background: #fff8e8; }
-  .flag { background: #b45309; color: #fff; font-size: 6.5pt; padding: .5px 3px; text-transform: uppercase; letter-spacing: .4px; }
+  .flag { background: #b45309; color: #fff; font-size: 8pt; padding: 1px 5px;
+          text-transform: uppercase; letter-spacing: .4px; }
 
   thead { display: table-header-group; }
   tr { break-inside: avoid; }
   .page { break-before: page; }
-  .note { font-size: 8pt; color: #5c6b7d; background: #fbfcfd; border: 1px solid #e3e9ef; padding: 8px 11px; margin-top: 10px; }
+  .note { font-size: 9.5pt; color: #4e5c6b; background: #fbfcfd; border: 1px solid #e6ebf0;
+          padding: 11px 14px; margin-top: 14px; }
 </style></head><body>
 
 <div class="cover">
   <h1>adidas &harr; S&amp;S SKU Conversion Key</h1>
   <div class="sub">National Sports Apparel &rarr; Silverscreen Decoration &amp; Fulfillment</div>
-  <div class="meta">Generated ${esc(stamp)} &nbsp;·&nbsp; ${matched.length} matched style/colours &nbsp;·&nbsp; ${rev.length} adidas article numbers</div>
+  <div class="meta">Generated ${esc(stamp)} &nbsp;·&nbsp; ${matched.length} style/colours &nbsp;·&nbsp; ${rev.length} adidas article numbers</div>
 </div>
 
 <div class="lead">
@@ -179,37 +206,31 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
 </div>
 
 <h2 class="sec">1 &nbsp;Tag index &mdash; look up the number on the garment</h2>
-<p class="hint">Every adidas article number we know, and the S&amp;S SKU it fills. Find your number here,
-   then find that SKU in section 2 for the colour and full detail. <span class="mono">Black</span> numbers are
-   what adidas ships today; <span class="mono ixgrey">grey</span> are earlier seasons, still a correct fill if
-   that is what arrived.${conflicting.size ? ' <span class="flag">check</span> = matches more than one style, confirm with us.' : ''}</p>
+<p class="hint">Find the article number printed on the garment tag, and it gives you the S&amp;S SKU it fills.
+   For the colour and full detail, look that SKU up in section 2.${
+     conflicting.size ? ' <span class="flag">check</span> means the number matches more than one style &mdash; confirm with us before packing.' : ''}</p>
 <div class="index">${revIndex}</div>
 
 <div class="page"></div>
 <h2 class="sec">2 &nbsp;The key &mdash; look up the number on the paperwork</h2>
-<p class="hint">Every adidas article number that is a valid fill for each ordered style and colour. More than
-   one is normal &mdash; adidas issues a new article each season for the same garment and colour, so <b>any</b>
-   of the numbers listed is correct. The <b>first</b> is what adidas ships today;
-   <span class="art artold">greyed</span> are earlier seasons. Sizes are shown once per garment.</p>
-<table>
-  <thead><tr><th style="width:15%">S&amp;S SKU</th><th style="width:30%">Colour</th>
-    <th style="width:55%">Valid adidas article numbers</th></tr></thead>
-  <tbody>${fwdRows}</tbody>
-</table>
+<p class="hint">The adidas article number that fills each ordered style and colour. Where two are listed,
+   both are in current production for that colour and either one is correct. Sizes are shown once per
+   garment. <span class="oos">none in stock</span> means the number is right but nothing is on the shelf
+   at present &mdash; check with us if that is what you were expecting.</p>
+<div class="keycols">${fwdRows}</div>
 
 ${dupRows ? `<div class="page"></div>
-<h2 class="sec">3 &nbsp;Confirm by eye before packing</h2>
-<p class="hint">For these colours our catalog lists several article numbers under one colour name
-   (adidas splits shades we record identically &mdash; e.g. kelly, team green and dark green all read
-   "Dark Green"). Any of the numbers below is the right <i>garment</i>, but please confirm the
-   <i>shade</i> against the approved sample before packing.</p>
+<h2 class="sec">3 &nbsp;Confirm the shade by eye</h2>
+<p class="hint">For these colours adidas splits shades that our system records under one name &mdash; kelly,
+   team green and dark green all read "Dark Green". Any of the numbers below is the right
+   <b>garment</b>; please confirm the <b>shade</b> against the approved sample before packing.</p>
 <table>
-  <thead><tr><th style="width:15%">S&amp;S SKU</th><th style="width:30%">Garment</th>
-    <th style="width:20%">Colour ordered</th><th style="width:35%">Articles sharing this colour</th></tr></thead>
+  <thead><tr><th style="width:16%">S&amp;S SKU</th><th style="width:30%">Garment</th>
+    <th style="width:22%">Colour ordered</th><th style="width:32%">Articles sharing this colour</th></tr></thead>
   <tbody>${dupRows}</tbody>
 </table>` : ''}
 
-${openRows ? `<h2 class="sec" style="margin-top:16px">${dupRows ? '4' : '3'} &nbsp;Not yet cross-referenced</h2>
+${openRows ? `<h2 class="sec" style="margin-top:20px">${dupRows ? '4' : '3'} &nbsp;Not yet cross-referenced</h2>
 <p class="hint">We have not yet matched an adidas article to these S&amp;S colours &mdash; we have not bought
    them recently, so no tagged stock has come through. If one of these arrives and the tag doesn't match,
    flag it to us and we will add it to the next revision.</p>
@@ -220,8 +241,9 @@ ${openRows ? `<h2 class="sec" style="margin-top:16px">${dupRows ? '4' : '3'} &nb
 
 <div class="note"><b>How this was built.</b> Cross-referenced from National Sports Apparel's product
   catalog: the adidas Team range synced from the S&amp;S Activewear API against the adidas article numbers
-  on our own in-house stock, matched by garment and colour. Questions or a number that isn't listed &mdash;
-  contact National Sports Apparel and we will confirm and reissue.</div>
+  on our own stock, matched by garment and colour. Superseded numbers from earlier seasons are
+  deliberately left out. Questions, or a number that isn't listed &mdash; contact National Sports Apparel
+  and we will confirm and reissue.</div>
 
 </body></html>`;
 
