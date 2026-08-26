@@ -184,7 +184,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -795,7 +795,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const ns=await _drawPoNumbers(1);
       return ns[0]||0;
     },[_drawPoNumbers]);
-    const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
+    const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickDecoPoId,setPickDecoPoId]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
     const[rosterUploadDragOver,setRosterUploadDragOver]=useState(false);
@@ -4787,6 +4787,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               openDocPDF(packOpts,'Packing-List-'+o.id).catch(err=>{console.warn('PDF open failed, falling back to print:',err);printDoc(packOpts)});
               nf('📦 Packing list opened for '+(cust?.name||o.id));
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📦 Pack Slip</button>}
+            {isSO&&onManualShip&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onManualShip(o)}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>⚡ Ship Items / Override</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               try{await downloadDoc(_makeDocOpts(),o.id+(cust?.name?'-'+cust.name:''));nf('📥 Downloaded '+o.id+'.pdf');}
               catch(err){console.warn('PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown error'),'error');}
@@ -10482,9 +10483,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </select>
           </div>}
           {pickShipDest==='ship_deco'&&<div style={{marginTop:6}}>
+            {(()=>{const dps=(o.deco_pos||[]).filter(dp=>dp&&dp.po_id&&dp.po_mode!=='dtf_purchase'&&!dp.topstar_service);return dps.length>0?<div style={{marginBottom:8}}>
+              <label style={{fontSize:10,fontWeight:700,color:'#7c3aed',display:'block',marginBottom:4}}>DPO for this shipment <span style={{fontWeight:400,color:'#94a3b8'}}>(becomes the attention line)</span></label>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{dps.map(dp=><button key={dp.id||dp.po_id} type="button" className={`btn btn-sm ${pickDecoPoId===dp.po_id?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>{setPickDecoPoId(dp.po_id);setPickDecoVendor(dp.vendor||decoVendors.find(dv=>dv.id===dp.deco_vendor_id)?.name||'')}}><strong>{dp.po_id}</strong>{dp.vendor?' · '+dp.vendor:''}</button>)}</div>
+              {pickDecoPoId&&<div style={{fontSize:10,color:'#7c3aed',marginTop:4,fontWeight:700}}>Attention: {pickDecoPoId}</div>}
+            </div>:<div style={{fontSize:10,color:'#b45309',marginBottom:6}}>No DPO is associated with this sales order. Choose the decorator manually.</div>})()}
             <label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Decoration Vendor</label>
             <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-              {DECO_VENDORS.map(dv=><button key={dv} className={`btn btn-sm ${pickDecoVendor===dv?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setPickDecoVendor(dv)}>{dv}</button>)}
+              {DECO_VENDORS.map(dv=><button key={dv} className={`btn btn-sm ${pickDecoVendor===dv?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>{setPickDecoPoId('');setPickDecoVendor(dv)}}>{dv}</button>)}
             </div>
             {pickDecoVendor==='Other'&&<input className="form-input" style={{marginTop:6,fontSize:12}} placeholder="Enter vendor name..." onChange={e=>setPickDecoVendor(e.target.value||'Other')}/>}
           </div>}
@@ -10514,7 +10520,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             showPick.forEach((pk,vi)=>{
               const idx=pk._idx;if(idx==null)return;
               // Read actual qty values from DOM inputs (user may have edited them)
-              const pickLine={status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
+              const selectedDpo=(o.deco_pos||[]).find(dp=>dp&&dp.po_id===pickDecoPoId);
+              const pickLine={status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?(selectedDpo?.vendor||pickDecoVendor):'',deco_po_id:pickShipDest==='ship_deco'?(selectedDpo?.po_id||''):'',deco_vendor_id:pickShipDest==='ship_deco'?(selectedDpo?.deco_vendor_id||''):'',attention:pickShipDest==='ship_deco'?(selectedDpo?.po_id||''):''};
               Object.entries(pk._pick).forEach(([sz,v])=>{
                 if(typeof v!=='number'||v<=0)return;
                 const el=document.getElementById('pick-qty-'+vi+'-'+sz);
@@ -10531,7 +10538,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // NOTE: Inventory is NOT decremented on pick creation (status:'pick')
             // It only decrements when status is changed to 'pulled' via the edit handler
             // This prevents double-decrement: create → edit to pulled
-            setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickShipAddr('default');
+            setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickDecoPoId('');setPickShipAddr('default');
             const destLabel=pickShipDest==='ship_customer'?'→ Ship to Customer':pickShipDest==='ship_deco'?'→ '+pickDecoVendor:'→ In-House Deco';
             nf(pickId+' sent to warehouse ('+destLabel+')');
           }} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button>

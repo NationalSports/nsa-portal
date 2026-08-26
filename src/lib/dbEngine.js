@@ -2417,7 +2417,11 @@ const _dbSaveSOInner = async (so) => {
         const itemId=insertedItems[idx]?.id;if(!itemId)return;
         const{decorations,pick_lines,po_lines}=item;
         if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
-        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes})});
+        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,pulled_at,...sizes}=pk;
+          // pulled_at predates the dedicated IF destination columns and lives inside sizes JSONB;
+          // preserve that convention while keeping routing metadata in real columns.
+          if(pulled_at)sizes.pulled_at=pulled_at;
+          allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,sizes})});
         if(po_lines?.length)po_lines.forEach(po=>{allPoRows.push(_poLineToRow(itemId,po))});
       });
       // Batch insert decorations

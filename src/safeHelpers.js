@@ -178,13 +178,45 @@ export const jobsShareGarments = (a, b) => {
 // because art-split slices own only a size subset of their line.
 export const shippedSizesByLine = (shipments) => {
   const m = {};
-  safeArr(shipments).forEach(shp => safeArr(shp?.items).forEach(it => {
+  safeArr(shipments).forEach(shp => {
+    // Warehouse -> decorator transfers are real outbound packages (and real freight cost),
+    // but they are not customer fulfillment. Counting them here would make the later decorated
+    // job look shipped before the decorator has even started it.
+    if (shp?.fulfillment === false || shp?.shipment_scope === 'deco_transfer') return;
+    safeArr(shp?.items).forEach(it => {
     if (!it) return;
     const key = (it.sku || '') + '|' + (it.color || '');
     const tgt = m[key] || (m[key] = {});
     Object.entries(it.sizes || {}).forEach(([sz, v]) => { tgt[sz] = (tgt[sz] || 0) + safeNum(v); });
-  }));
+    });
+  });
   return m;
+};
+
+// Remaining customer-fulfillment quantities on an SO, one row per order line. Uses a running
+// per-size claim so duplicate sku/color lines cannot both consume the same shipment. This is the
+// source for the warehouse's manual/override shipment picker, including closed orders that never
+// entered Ready to Ship because their workflow state drifted.
+export const unshippedOrderItems = (so) => {
+  const shipped = shippedSizesByLine(so?._shipments);
+  const claimed = {};
+  const rows = [];
+  safeItems(so).forEach((it, itemIdx) => {
+    const key = safeStr(it?.sku) + '|' + safeStr(it?.color);
+    const used = claimed[key] || (claimed[key] = {});
+    const sizes = {};
+    Object.entries(safeSizes(it)).forEach(([sz, v]) => {
+      const ordered = safeNum(v);
+      if (ordered <= 0) return;
+      const credit = Math.min(ordered, Math.max(0, safeNum(shipped[key]?.[sz]) - safeNum(used[sz])));
+      used[sz] = safeNum(used[sz]) + credit;
+      const remaining = ordered - credit;
+      if (remaining > 0) sizes[sz] = remaining;
+    });
+    const qty = Object.values(sizes).reduce((a, v) => a + safeNum(v), 0);
+    if (qty > 0) rows.push({ sku: it?.sku || '', name: it?.name || '', color: it?.color || '', sizes, itemIdx, qty });
+  });
+  return rows;
 };
 
 // ── Units pulled from the warehouse but not yet shipped ──
@@ -261,6 +293,30 @@ export const jobShippedSizes = (job, allJobs, shippedSizes) => {
 export const jobShippedUnits = (job, allJobs, shippedSizes) =>
   Object.values(jobShippedSizes(job, allJobs, shippedSizes))
     .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
+
+// Advance production jobs after an override shipment without letting an internal/decorator
+// transfer masquerade as delivery to the customer. Explicit job selections are the warehouse's
+// override; otherwise a completed job advances only when this order's customer-fulfillment
+// shipments cover every one of its units.
+export const jobsAfterShipment = (so, shipments, explicitlyShippedJobIds = [], customerFulfillment = true) => {
+  const jobs = safeJobs(so);
+  if (!customerFulfillment) return jobs;
+  const explicit = new Set(safeArr(explicitlyShippedJobIds).filter(Boolean));
+  const coverage = shippedSizesByLine(shipments);
+  return jobs.map(job => {
+    if (explicit.has(job?.id)) return { ...job, prod_status: 'shipped' };
+    if (job?.prod_status !== 'completed') return job;
+    return jobShippedUnits(job, jobs, coverage) >= safeNum(job?.total_units)
+      ? { ...job, prod_status: 'shipped' }
+      : job;
+  });
+};
+
+// Freight is stored under both names for compatibility with older warehouse/reporting code.
+// Use the larger existing value when a legacy order's mirrors drifted so recording a new label
+// can never reduce an already-accounted shipping cost.
+export const nextShippingCost = (so, addedCost) =>
+  Math.max(safeNum(so?._shipping_cost), safeNum(so?._shipstation_cost)) + safeNum(addedCost);
 
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
