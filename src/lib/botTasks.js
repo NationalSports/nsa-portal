@@ -132,12 +132,12 @@ export function decoShipToPresets({ decoVendors, vendors }) {
 // is found on the SO's deco_pos for that decorator (preferring one that covers
 // the batch's item rows). Returns {name, attention, line1, city, state, zip}
 // or null when no usable address exists.
-export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, itemIdxs = null }) {
+export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, itemIdxs = null, decoPoId = null }) {
   const found = decoAddressSource({ decoId, decoVendors, vendors });
   if (!found) return null;
   const { dv, lv, src } = found;
   const dps = ((so && so.deco_pos) || []).filter((dp) => dp.deco_vendor_id === decoId);
-  const dp = (itemIdxs && itemIdxs.length
+  const dp = (decoPoId ? dps.find((d) => d.po_id === decoPoId) : null) || (itemIdxs && itemIdxs.length
     ? dps.find((d) => (d.item_idxs || []).some((ix) => itemIdxs.includes(ix)))
     : null) || dps[0] || null;
   const dpoNum = dp ? String(dp.po_id || '').replace(/^DPO\s*/i, '').trim() : '';
@@ -145,9 +145,11 @@ export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, item
     name: dv.name || lv?.name || '',
     attention: dpoNum ? 'DPO ' + dpoNum : null,
     line1: src.address_line1 || '',
+    line2: src.address_line2 || '',
     city: src.city || '',
     state: src.state || '',
     zip: src.zip || '',
+    phone: src.phone || src.contact_phone || dv.phone || lv?.contact_phone || '',
   };
 }
 
