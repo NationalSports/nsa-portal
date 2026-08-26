@@ -10563,7 +10563,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             showPick.forEach((pk,vi)=>{
               const idx=pk._idx;if(idx==null)return;
               // Read actual qty values from DOM inputs (user may have edited them)
-              const pickLine={status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
+              const pickLine={status:'pick',pick_id:pickId,_sku:pk.sku,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
               Object.entries(pk._pick).forEach(([sz,v])=>{
                 if(typeof v!=='number'||v<=0)return;
                 const el=document.getElementById('pick-qty-'+vi+'-'+sz);
