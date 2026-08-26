@@ -69,33 +69,31 @@ for (const r of matched) {
 const families = [...new Set(rows.map(garment))].sort();
 const stamp = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
+// Sizes ride on the garment header, not on every colour: the size run is a property
+// of the style, identical across its colours (AT302 is the lone exception, which
+// keeps its own note). Repeating it per row cost a whole column for no information.
 const fwdRows = families.map((f) => {
   const rs = matched.filter((r) => garment(r) === f).sort((a, b) => a.ss.localeCompare(b.ss));
   if (!rs.length) return '';
   const style = rs[0].ss.replace(/-[^-]*$/, '');
-  return `<tr class="grp"><td colspan="4"><span class="gstyle">${esc(style)}</span>${esc(f)}</td></tr>` + rs.map((r) => `
+  const runs = [...new Set(rs.map(sizes))];
+  const common = runs.length === 1 ? runs[0] : '';
+  return `<tr class="grp"><td colspan="3"><span class="gstyle">${esc(style)}</span>${esc(f)}${
+    common ? `<span class="sz hdrsz">${esc(common)}</span>` : ''}</td></tr>` + rs.map((r) => `
     <tr>
       <td class="mono nowrap">${esc(r.ss)}</td>
-      <td>${esc(r.sc)}</td>
+      <td>${esc(r.sc)}${common ? '' : `<span class="sz hdrsz">${esc(sizes(r))}</span>`}</td>
       <td>${arts(r).map((a) => `<span class="art${a.cur ? '' : ' artold'}">${esc(a.a)}</span>`).join(' ')}${
         arts(r).every((a) => !a.cur) ? ' <span class="flag">older stock only</span>' : ''}</td>
-      <td class="sz">${esc(sizes(r))}</td>
     </tr>`).join('');
 }).join('');
 
-// Two alphabetical lists rather than one: sorted together, the retired H-prefix
-// articles sort first and fill the opening pages, so the whole key reads as though
-// it were built on dead numbers. Split by status and the reader meets the numbers
-// they will actually see; each list stays alphabetical, so a lookup is still a scan.
-const revRow = (e) => `
-  <tr${conflicting.has(e.article) ? ' class="warn"' : ''}>
-    <td class="mono nowrap"><b>${esc(e.article)}</b>${conflicting.has(e.article) ? ' <span class="flag">check</span>' : ''}</td>
-    <td>${esc(e.adColour)}</td>
-    <td class="mono nowrap">${esc(e.ss)}</td>
-    <td>${esc(e.garment)}</td>
-  </tr>`;
-const revCurRows = rev.filter((e) => e.cur).map(revRow).join('');
-const revOldRows = rev.filter((e) => !e.cur).map(revRow).join('');
+// A plain index, not a table: the tag lookup only has to answer "which SKU is this
+// number?", and the colour and garment it used to repeat on all 165 lines are already
+// on the row it points at. As four columns of article→SKU it fits on one page instead
+// of six, which matters for something taped up at a packing station.
+const revIndex = rev.map((e) => `<div class="ix${e.cur ? '' : ' ixold'}"><span class="mono">${esc(e.article)}</span>`
+  + `<span class="ixto">${esc(e.ss)}</span>${conflicting.has(e.article) ? '<span class="flag">check</span>' : ''}</div>`).join('');
 
 const openRows = unmatched.sort((a, b) => a.ss.localeCompare(b.ss)).map((r) => `
   <tr><td class="mono nowrap">${esc(r.ss)}</td><td>${esc(garment(r))}</td><td>${esc(r.sc)}</td></tr>`).join('');
@@ -123,7 +121,15 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
   .eg { background: #fff; border: 1px solid #dde4ec; padding: 7px 10px; margin-top: 8px; font-size: 8.5pt; }
   .eg b { color: #1b3a5c; }
 
-  h3.sub2 { font-size: 9.5pt; margin: 8px 0 5px; font-weight: bold; color: #1b3a5c; }
+  /* Four-column article index. break-inside avoid keeps an entry from splitting
+     across the column gap, which would strand a number away from its SKU. */
+  .index { column-count: 4; column-gap: 10px; column-rule: .5px solid #e3e9ef; }
+  .ix { break-inside: avoid; font-size: 8pt; padding: 1.2px 0; border-bottom: .5px solid #f0f3f6;
+        display: flex; justify-content: space-between; gap: 4px; }
+  .ix .mono { font-weight: bold; }
+  .ixto { color: #4a5b6e; font-family: "DejaVu Sans Mono", monospace; }
+  .ixold, .ixold .ixto, .ixgrey { color: #98a2ad; font-weight: normal; }
+  .hdrsz { margin-left: 8px; font-weight: normal; }
   h2.sec { font-size: 12pt; margin: 0 0 3px; padding-bottom: 4px; border-bottom: 2px solid #1b3a5c; }
   .hint { font-size: 8pt; color: #5c6b7d; margin: 0 0 7px; }
 
@@ -172,36 +178,22 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
      Same shirt. The long sleeve in black is <span class="mono">AT104-50</span> = <span class="mono">JX4476</span>.</div>
 </div>
 
-<h2 class="sec">1 &nbsp;Tag lookup &mdash; you have the garment</h2>
-<p class="hint">Find the article number printed on the garment tag to see which ordered style it fills.
-   Check list 1A first &mdash; those are the articles adidas ships today. If the number isn't there,
-   check 1B: older numbers for the same garment, still a correct fill when that is what arrived.${
-     conflicting.size ? ' Rows marked <span class="flag">check</span> match more than one style &mdash; confirm with us before packing.' : ''}</p>
-
-<h3 class="sub2"><span class="cur">1A &nbsp;current</span> &nbsp;What you should see on a new order</h3>
-<table>
-  <thead><tr><th style="width:16%">adidas article (on tag)</th><th style="width:26%">Colour</th>
-    <th style="width:16%">= S&amp;S SKU (on slip)</th><th style="width:42%">Garment</th></tr></thead>
-  <tbody>${revCurRows}</tbody>
-</table>
-
-${revOldRows ? `<h3 class="sub2" style="margin-top:14px"><span class="old">1B &nbsp;older stock</span> &nbsp;Superseded numbers &mdash; still correct if that is what arrived</h3>
-<table>
-  <thead><tr><th style="width:16%">adidas article (on tag)</th><th style="width:26%">Colour</th>
-    <th style="width:16%">= S&amp;S SKU (on slip)</th><th style="width:42%">Garment</th></tr></thead>
-  <tbody>${revOldRows}</tbody>
-</table>` : ''}
+<h2 class="sec">1 &nbsp;Tag index &mdash; look up the number on the garment</h2>
+<p class="hint">Every adidas article number we know, and the S&amp;S SKU it fills. Find your number here,
+   then find that SKU in section 2 for the colour and full detail. <span class="mono">Black</span> numbers are
+   what adidas ships today; <span class="mono ixgrey">grey</span> are earlier seasons, still a correct fill if
+   that is what arrived.${conflicting.size ? ' <span class="flag">check</span> = matches more than one style, confirm with us.' : ''}</p>
+<div class="index">${revIndex}</div>
 
 <div class="page"></div>
-<h2 class="sec">2 &nbsp;Order lookup &mdash; you have the paperwork</h2>
-<p class="hint">Find the S&amp;S style from the order or packing slip to see every adidas article number that
-   is a valid fill. More than one is normal &mdash; adidas issues a new article each season for the same
-   garment and colour, so <b>any</b> of the numbers listed is correct. The <b>first</b> number is the one
-   adidas ships today and is what you should expect on a new order; <span class="art artold">greyed</span>
-   numbers are earlier seasons, still correct if that is what arrived.</p>
+<h2 class="sec">2 &nbsp;The key &mdash; look up the number on the paperwork</h2>
+<p class="hint">Every adidas article number that is a valid fill for each ordered style and colour. More than
+   one is normal &mdash; adidas issues a new article each season for the same garment and colour, so <b>any</b>
+   of the numbers listed is correct. The <b>first</b> is what adidas ships today;
+   <span class="art artold">greyed</span> are earlier seasons. Sizes are shown once per garment.</p>
 <table>
-  <thead><tr><th style="width:15%">S&amp;S SKU</th><th style="width:24%">Colour</th>
-    <th style="width:39%">Valid adidas article numbers</th><th style="width:22%">Sizes</th></tr></thead>
+  <thead><tr><th style="width:15%">S&amp;S SKU</th><th style="width:30%">Colour</th>
+    <th style="width:55%">Valid adidas article numbers</th></tr></thead>
   <tbody>${fwdRows}</tbody>
 </table>
 
