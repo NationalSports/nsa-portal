@@ -504,29 +504,21 @@ export default function MoveCheckIn() {
   };
 
   // ── render ──
-  if (loading || access === 'checking') return <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading…</div>;
-  if (access !== 'ok') {
-    // 'no_access' means the portal knows who you are but this browser has no
-    // database session — the admin-password override login is the usual cause,
-    // since it picks a name without signing in to Supabase.
-    const overridden = access === 'no_access';
+  // Deliberately NOT a hard gate. A warehouse station that locks itself on one
+  // failed probe (transient wifi, a request racing session restore) is worse
+  // than one that opens and says what's wrong: the full-screen prompt is only
+  // for a browser with nothing signed in at all. Everyone else gets the station
+  // plus a banner naming the problem, so the failure is visible AND reportable.
+  if (loading || access === 'checking') return <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading\u2026</div>;
+  if (access === 'no_session' && !portalUser) {
     return (
       <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
         <div style={{ maxWidth: 460 }}>
           <div style={{ fontSize: 40 }}>📦</div>
           <h1 style={{ fontSize: 22, margin: '10px 0 6px' }}>Move Check-In</h1>
-          {overridden ? <>
-            <p style={{ color: '#e2e8f0', fontSize: 15, marginBottom: 6 }}>
-              {portalUser && portalUser.name ? portalUser.name + ', you\u2019re' : 'You\u2019re'} signed into the portal, but this device has no database sign-in — so the station can’t read or save boxes.
-            </p>
-            <p style={{ color: '#94a3b8', fontSize: 14, marginBottom: 14 }}>
-              That happens when you got in with the <b>admin password + pick-your-name</b> screen. Sign in with your own <b>email and password</b> instead, then reopen this page.
-            </p>
-          </> : (
-            <p style={{ color: '#94a3b8', fontSize: 15, marginBottom: 14 }}>Sign in to the portal on this device first, then come back to /move-checkin.</p>
-          )}
+          <p style={{ color: '#94a3b8', fontSize: 15, marginBottom: 14 }}>Nothing is signed in on this device. Sign into the portal, then come back to /move-checkin.</p>
           <a href="/" style={{ display: 'inline-block', background: '#2563eb', color: '#fff', borderRadius: 8, padding: '12px 22px', fontWeight: 800, textDecoration: 'none' }}>Go to portal sign-in</a>
-          <button onClick={() => { setAccess('checking'); setProbeErr(''); setTimeout(() => window.location.reload(), 50); }} style={{ display: 'block', margin: '10px auto 0', background: 'none', border: '1px solid #334155', color: '#94a3b8', borderRadius: 8, padding: '9px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>↻ I’ve signed in — try again</button>
+          <button onClick={() => setProbeTick((n) => n + 1)} style={{ display: 'block', margin: '10px auto 0', background: 'none', border: '1px solid #334155', color: '#94a3b8', borderRadius: 8, padding: '9px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>\u21bb I\u2019ve signed in \u2014 try again</button>
           {probeErr ? <div style={{ color: '#64748b', fontSize: 11, marginTop: 14, fontFamily: 'monospace' }}>{probeErr}</div> : null}
         </div>
       </div>
@@ -583,6 +575,21 @@ export default function MoveCheckIn() {
         <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: '#1e293b', marginBottom: 10 }}>
           <div style={{ width: (stats.shelved / stats.checkedIn * 100) + '%', background: STAGE_META.shelved.color }} />
           <div style={{ width: (stats.staged / stats.checkedIn * 100) + '%', background: STAGE_META.staged.color }} />
+        </div>
+      )}
+      {access !== 'ok' && (
+        <div style={{ background: '#7f1d1d', border: '1px solid #ef4444', borderRadius: 10, padding: '10px 12px', marginBottom: 10 }}>
+          <div style={{ fontWeight: 800, fontSize: 14 }}>⚠️ Can’t reach the box data</div>
+          <div style={{ fontSize: 12, color: '#fecaca', marginTop: 3 }}>
+            Scans won’t save until this clears. Usually it means this browser has no database sign-in — sign into the portal with your <b>email and password</b> (not the admin-password name picker).
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => setProbeTick((n) => n + 1)} style={{ background: 'rgba(255,255,255,0.14)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>↻ Retry</button>
+            <a href="/" style={{ background: 'rgba(255,255,255,0.14)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, textDecoration: 'none' }}>Portal sign-in</a>
+          </div>
+          <div style={{ color: '#fca5a5', fontSize: 11, marginTop: 8, fontFamily: 'monospace', wordBreak: 'break-word' }}>
+            {probeErr || 'unknown error'} · session: {signedIn ? (email || 'yes') : 'none'} · portal user: {(portalUser && (portalUser.email || portalUser.name)) || 'none'}
+          </div>
         </div>
       )}
       <div className="mc-tabs" style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
