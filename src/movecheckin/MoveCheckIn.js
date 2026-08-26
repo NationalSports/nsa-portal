@@ -211,7 +211,22 @@ export default function MoveCheckIn() {
   const [zeroChecked, setZeroChecked] = useState({}); // product_id → true (confirmed zero-out)
   const [submitProg, setSubmitProg] = useState(null); // {done,total,fails:[]} while writing
   const [submitDone, setSubmitDone] = useState(null); // final summary
-  useWakeLock(signedIn && (mode === 'checkin' || mode === 'place'));
+  // ── who's allowed in ──
+  // Gating on the Supabase auth session ALONE locked out anyone who signed into
+  // the portal with the admin-password override (LoginGate's pick-your-name
+  // path sets _adminOverride and never creates an auth session). What actually
+  // matters is whether this browser can read the boxes table, so probe that and
+  // let real access — however it was obtained — decide.
+  //   'checking' | 'ok' | 'no_session' (nothing signed in) | 'no_access' (signed in, RLS says no)
+  const [access, setAccess] = useState('checking');
+  // Who to stamp on checked_in_by/created_by: the auth email when there is one,
+  // otherwise the portal user the browser is carrying.
+  const whoRef = useRef(null);
+  const [probeErr, setProbeErr] = useState('');
+  const portalUser = (() => { try { return JSON.parse(localStorage.getItem('nsa_user') || 'null'); } catch (e) { return null; } })();
+  const who = email || (portalUser && (portalUser.email || portalUser.name)) || null;
+  whoRef.current = who;
+  useWakeLock(access === 'ok' && (mode === 'checkin' || mode === 'place'));
 
   const boxesRef = useRef(boxes); boxesRef.current = boxes;
   const shelfRef = useRef(''); shelfRef.current = normShelf(shelf);
@@ -223,14 +238,26 @@ export default function MoveCheckIn() {
     const { data, error } = await supabase.from('boxes').select('*').order('updated_at', { ascending: false }).limit(1500);
     if (!error && data) setBoxes(data);
   }, []);
-  useEffect(() => { if (signedIn) reload(); }, [signedIn, reload]);
+  useEffect(() => {
+    if (loading) return undefined; // wait for the session check to settle first
+    let alive = true;
+    (async () => {
+      if (!supabase) { if (alive) { setAccess('no_access'); setProbeErr('No database connection configured.'); } return; }
+      const { error } = await supabase.from('boxes').select('id').limit(1);
+      if (!alive) return;
+      if (!error) { setAccess('ok'); reload(); return; }
+      setProbeErr(error.message || String(error));
+      setAccess(signedIn || portalUser ? 'no_access' : 'no_session');
+    })();
+    return () => { alive = false; };
+  }, [loading, signedIn]);// eslint-disable-line
   // Several people scan at once during the move — keep counts/lists fresh
   // with a light poll while the page is visible.
   useEffect(() => {
-    if (!signedIn) return undefined;
+    if (access !== 'ok') return undefined;
     const t = setInterval(() => { if (document.visibilityState === 'visible') reload(); }, 20000);
     return () => clearInterval(t);
-  }, [signedIn, reload]);
+  }, [access, reload]);
 
   const show = (kind, title, sub, boxId) => { setBanner({ kind, title, sub, boxId: boxId || null, at: Date.now() }); (kind === 'ok' ? fxOk : kind === 'dupe' ? fxDupe : fxErr)(); };
 
@@ -250,7 +277,7 @@ export default function MoveCheckIn() {
   const checkInBox = async (box, { place } = {}) => {
     const already = !!box.checked_in_at;
     const upd = {};
-    if (!already) { upd.checked_in_at = new Date().toISOString(); upd.checked_in_by = email || null; }
+    if (!already) { upd.checked_in_at = new Date().toISOString(); upd.checked_in_by = whoRef.current; }
     const samePlace = place && (place.kind === 'shelf' ? box.bin === place.code : box.staging_area === place.code && !box.bin);
     if (place && !samePlace) Object.assign(upd, placePatch(place.kind, place.code));
     if (Object.keys(upd).length) {
@@ -269,7 +296,7 @@ export default function MoveCheckIn() {
   // or a plate hand-written on a box): create the row so the plate is real.
   const adoptPlate = async (plate, place) => {
     const now = new Date().toISOString();
-    const row = { id: plate, kind: 'legacy', contents: [], source_refs: [], status: 'staged', bin: null, staging_area: null, ...(place ? placePatch(place.kind, place.code) : {}), created_by: email || null, created_at: now, updated_at: now, checked_in_at: now, checked_in_by: email || null };
+    const row = { id: plate, kind: 'legacy', contents: [], source_refs: [], status: 'staged', bin: null, staging_area: null, ...(place ? placePatch(place.kind, place.code) : {}), created_by: whoRef.current, created_at: now, updated_at: now, checked_in_at: now, checked_in_by: whoRef.current };
     const { error } = await supabase.from('boxes').insert(row);
     if (error) { show('err', plate + ' — save failed', error.message); return; }
     setBoxes((prev) => [row, ...prev]); setSessionCount((n) => n + 1);
@@ -380,7 +407,7 @@ export default function MoveCheckIn() {
     setBusy(true);
     try {
       const plate = await mintPlate();
-      const row = makeLegacyMoveBox({ plate, assign: lgAssign, soId, items, bin: normShelf(lgShelf) || null, createdBy: email || null });
+      const row = makeLegacyMoveBox({ plate, assign: lgAssign, soId, items, bin: normShelf(lgShelf) || null, createdBy: whoRef.current });
       const { error } = await supabase.from('boxes').insert(row);
       if (error) { show('err', 'Save failed', error.message); return; }
       setBoxes((prev) => [row, ...prev]); setSessionCount((n) => n + 1);
@@ -469,15 +496,30 @@ export default function MoveCheckIn() {
   };
 
   // ── render ──
-  if (loading) return <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading…</div>;
-  if (!signedIn) {
+  if (loading || access === 'checking') return <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading…</div>;
+  if (access !== 'ok') {
+    // 'no_access' means the portal knows who you are but this browser has no
+    // database session — the admin-password override login is the usual cause,
+    // since it picks a name without signing in to Supabase.
+    const overridden = access === 'no_access';
     return (
       <div className="mc-page" style={{ ...S.page, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-        <div>
+        <div style={{ maxWidth: 460 }}>
           <div style={{ fontSize: 40 }}>📦</div>
           <h1 style={{ fontSize: 22, margin: '10px 0 6px' }}>Move Check-In</h1>
-          <p style={{ color: '#94a3b8', fontSize: 15, marginBottom: 14 }}>Sign in to the portal on this device first, then come back to /move-checkin.</p>
+          {overridden ? <>
+            <p style={{ color: '#e2e8f0', fontSize: 15, marginBottom: 6 }}>
+              {portalUser && portalUser.name ? portalUser.name + ', you\u2019re' : 'You\u2019re'} signed into the portal, but this device has no database sign-in — so the station can’t read or save boxes.
+            </p>
+            <p style={{ color: '#94a3b8', fontSize: 14, marginBottom: 14 }}>
+              That happens when you got in with the <b>admin password + pick-your-name</b> screen. Sign in with your own <b>email and password</b> instead, then reopen this page.
+            </p>
+          </> : (
+            <p style={{ color: '#94a3b8', fontSize: 15, marginBottom: 14 }}>Sign in to the portal on this device first, then come back to /move-checkin.</p>
+          )}
           <a href="/" style={{ display: 'inline-block', background: '#2563eb', color: '#fff', borderRadius: 8, padding: '12px 22px', fontWeight: 800, textDecoration: 'none' }}>Go to portal sign-in</a>
+          <button onClick={() => { setAccess('checking'); setProbeErr(''); setTimeout(() => window.location.reload(), 50); }} style={{ display: 'block', margin: '10px auto 0', background: 'none', border: '1px solid #334155', color: '#94a3b8', borderRadius: 8, padding: '9px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>↻ I’ve signed in — try again</button>
+          {probeErr ? <div style={{ color: '#64748b', fontSize: 11, marginTop: 14, fontFamily: 'monospace' }}>{probeErr}</div> : null}
         </div>
       </div>
     );
@@ -520,7 +562,7 @@ export default function MoveCheckIn() {
       <style>{MC_CSS}</style>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
         <h1 className="mc-h1" style={{ fontSize: 20, margin: '2px 0 2px' }}>📦 Move Check-In</h1>
-        <div style={{ fontSize: 12, color: '#94a3b8' }}>{sessionCount ? sessionCount + ' this session' : email}</div>
+        <div style={{ fontSize: 12, color: '#94a3b8' }}>{sessionCount ? sessionCount + ' this session' : who}</div>
       </div>
       {/* per-stage progress: checked in → staging → on shelf */}
       <div className="mc-stats" style={{ display: 'flex', gap: 10, margin: '4px 0 10px', fontSize: 12, color: '#94a3b8', flexWrap: 'wrap' }}>
