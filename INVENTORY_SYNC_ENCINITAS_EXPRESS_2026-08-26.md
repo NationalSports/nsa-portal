@@ -49,19 +49,43 @@ Adult All Weather Jacket.
   carried *identical* stock — S 33 / M 28 / L 13 — which is why their swing is the
   largest here. The sheet distinguishes the two colors; they now differ.
 
-## Not applied — sheet rows with no Express product to write to
+## Follow-up — products created for rows that had nowhere to land
 
-These rows are in the `Express` tab but have no `p-exp-*` product row, so their counts
-are not in the portal. Each needs a decision before it can be loaded.
+Applied by `scripts/add-encinitas-express-gk-ss-and-socks-2026-08-26.sql`.
+
+Four sheet rows had no `p-exp-*` product, so the first pass left their counts out of the
+portal. Those products now exist and carry their counts:
+
+| Product | Sizes loaded | On hand | Cost / retail |
+|---|---|---|---|
+| `p-exp-JF2875-EXP` — Adult GK Jersey SS | S 3, XL 2 | 5 | 30.93 / $75 |
+| `p-exp-JD7358-EXP` — Youth GK Jersey SS | YS 4, YM 2, YL 4, YXL 5 | 15 | 28.87 / $70 |
+| `p-exp-JF2880-EXP` — Womens GK Jersey SS | S 2, M 2 | 4 | 30.93 / $75 |
+| `p-exp-HT6546-EXP` — Team Sleeve Sock (Navy) | OSFA 158 | 158 | 6.60 / $16 |
+
+**Pricing.** Every Encinitas kit product prices at `retail = nsa_cost × 2.425` off a round
+retail ladder, and the sheet carries no cost for any Express row. The sleeve sock takes
+the figures already on the general-catalog `HT6546` row ($16 / 6.60) — same garment, same
+price, no assumption. The three GK jerseys copy their long-sleeve siblings, which
+**assumes the short-sleeve cuts price the same as the long-sleeve ones**; re-price in the
+SQL if the club's list says otherwise.
+
+**Size scale** follows the convention already used for this club's GK items
+(`JF2887-EXP`, `JF2872-EXP`): the scale is the set of sizes actually counted, not the
+garment's full size run.
+
+**Kit catalog untouched.** The roster kit's `keeper_jersey` slot still points at the
+long-sleeve products, and its `socks` slot at the general `KB7233` Adisock 26 3S — so the
+new rows carry stock but are not yet orderable through the roster flow. Repointing a kit
+slot is a business decision, not a data fix.
+
+## Still open
 
 | Sheet row | Counted | Blocker |
 |---|---|---|
-| `JF2875-EXP` Red SS Adult GK Jersey | S 3, XL 2 (8/20) | No product row. Kit catalog's keeper-jersey slot points only at the **LS** versions. Needs a row + cost. |
-| `JD7358-EXP` Red SS Youth GK Jersey | YS 4, YM 2, YL 4, YXL 5 (8/18) | Same. |
-| `JF2880-EXP` Red SS Womens GK Jersey | S 2, M 2 (8/18) | Same. |
-| `AE152` Astra Tee (Navy / Columbia Blue / Red), `AE153Y` (Columbia Blue) | see sheet (8/10) | No product rows at all. Also `AE153Y`'s Total (31) disagrees with its own size cells (sum 35) — needs a recount before loading. |
-| Socks `JW6705` Navy (155) / Red (17), sleeveless sock `HT6546` Navy (158) | 7/27 | DB rows exist but as generic `CUSTOM` catalog items with no size scale, and the Express kit catalog points at a *different* sock (`KB7233` Adisock 26 3S). Which product these counts belong to is a call for staff. |
-| `JW1322` soccer balls, size 4 (115) / size 5 (216) | 8/6 | DB row is the generic Adidas MLS Club with `inventory_source='click'` (vendor stock). Writing house counts there would mix club stock into general catalog stock. |
+| Socks `JW6705` Navy (155) / Red (17) | 7/27 | The counts don't line up with the sheet's size header. Navy's 12 / 53 / 90 sit in the `S` `M` `L` columns while the row above labels them `KXXL` / `KXL`; red's 6 / 11 sit in `XS` / `S`. Which sizes these are needs a human call before the stock is loaded. |
+| `AE152` Astra Tee (Navy / Columbia Blue / Red), `AE153Y` (Columbia Blue) | 8/10 | No product rows. `AE153Y`'s Total (31) also disagrees with its own size cells (sum 35) — worth a recount before loading. |
+| `JW1322` soccer balls | 8/6 | Out of scope by request. |
 
 Also worth a look in the sheet itself: the three LS GK rows are still flagged
 "needs recount" from 5/5, and row 19 (`JF2871-EXP`) has its Updated date typo'd
