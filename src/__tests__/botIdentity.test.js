@@ -66,6 +66,8 @@ describe('ordering bot identity and safety contract', () => {
     const app = fs.readFileSync(path.join(__dirname, '..', 'App.js'), 'utf8');
     const mobile = fs.readFileSync(path.join(__dirname, '..', 'MobilePortal.js'), 'utf8');
     expect(app).toContain('onAssignBot={isBotOwner(cu)?assignBotTask:null}');
+    expect(app).toContain("if(!_bp.task_type){_bp.task_type='add_to_cart';_bp.target='adidas_click';_bp.vendor_name='Adidas'}");
+    expect(app).toContain("_tbp.task_type==='add_to_cart'&&canBotAddToCart(_tbp.vendor_name||_tbp.target)");
     expect(mobile).toContain("bot_payload:{task_type:'add_to_cart',target:'adidas_click',vendor_name:'Adidas'}");
     expect(mobile).toContain('Assign Adidas cart');
   });

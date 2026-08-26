@@ -37023,8 +37023,14 @@ export default function App(){
               {(()=>{
                 const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
                 const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
-                // The ordering bot is just another assignee (role 'bot'); offer it everywhere except warehouse-only contexts.
-                const bots=isBotOwner(cu)?REPS.filter(r=>r.is_active!==false&&r.role==='bot'):[];
+                // The ordering bot can take explicit Adidas cart tasks, generic tasks
+                // (which become Adidas cart tasks on save), and Cowork order-status tasks.
+                // Never offer it for a structured unsupported-vendor cart payload.
+                const _tbp=todoModal.bot_payload;
+                const _botEligible=!_tbp||_tbp.task_type==='track_po_status'
+                  ||(_tbp.task_type==='add_to_cart'&&canBotAddToCart(_tbp.vendor_name||_tbp.target));
+                const _orderingBot=findOrderingBot(REPS);
+                const bots=isBotOwner(cu)&&_botEligible&&_orderingBot?[_orderingBot]:[];
                 const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{botTeamMemberName(r)}</option>)}</optgroup>;
                 // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
                 if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
@@ -37054,6 +37060,7 @@ export default function App(){
               <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
             </select></div>
         </div>
+        {todoModal.assigned_to===BOT_MEMBER_ID&&!todoModal.bot_payload&&<div style={{margin:'-4px 0 12px',padding:'8px 10px',borderRadius:7,background:'#f0fdfa',border:'1px solid #99f6e4',fontSize:11,color:'#0f766e',fontWeight:600}}>Chief of Staff currently supports Adidas CLICK cart fill only and always stops for human review before submit.</div>}
         <div style={{marginBottom:12}}><label className="form-label">Due Date (optional)</label>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             <input type="date" className="form-input" value={todoModal.due_date||''} onChange={e=>setTodoModal(m=>({...m,due_date:e.target.value}))} style={{flex:1}}/>
@@ -37083,11 +37090,13 @@ export default function App(){
           // A PO-assigned task carries the PO number in doc_label (it differs from the SO id and isn't an IF/EST/SO ref).
           const _poId=todoModal.po_id||((todoModal.doc_label&&todoModal.doc_label!==todoModal.so_id&&!_ifId&&!/^(IF-|EST-|SO-)/i.test(todoModal.doc_label))?todoModal.doc_label:null);
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,po_id:_poId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
-          // Bot task: queue it for the worker. Attach structured payload when present
-          // (batch button); otherwise queue from the title/description alone.
-          if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
+          // Bot task: queue it for the worker. A generic task selected for Chief
+          // of Staff is explicitly an Adidas CLICK add_to_cart task; structured
+          // payloads retain their already-validated task type and target.
+          if(todoModal.assigned_to===BOT_MEMBER_ID&&findOrderingBot(REPS)){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
+            if(!_bp.task_type){_bp.task_type='add_to_cart';_bp.target='adidas_click';_bp.vendor_name='Adidas'}
             if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
             _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
             // Ship the portal's availability snapshot (needed sizes only) + the rep's
@@ -37112,7 +37121,7 @@ export default function App(){
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
           setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{}});
-          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+          nf('Task assigned to '+(botTeamMemberName(REPS.find(r=>r.id===todoModal.assigned_to))||''))
         }}>Assign Task</button>
       </div>
     </div></div>}
