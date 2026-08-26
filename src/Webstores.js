@@ -19,6 +19,7 @@ import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import QuickMockBuilder from './QuickMockBuilder';
 import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
+import { attachAdidasTagSkus } from './lib/adidasSsReport';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -340,7 +341,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
-    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
+    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', adidasTagSku: i._adidasTagSku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
     // Who placed it + where it goes — the "more info" for each player block.
     if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
@@ -352,7 +353,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const block = (p) => {
-    const rows = p.items.map((it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    const rows = p.items.map((it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${it.adidasTagSku ? `<b>S&amp;S:</b> ${esc(it.sku)} · <b>Adidas tag:</b> ${esc(it.adidasTagSku)}` : esc(it.sku)}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
     const contacts = Object.values(p.orders).map((c) => {
       const sh = shipLine(c.ship);
       return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
@@ -660,7 +661,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
     const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '');
     const m = (i.product_id && metaByPid[i.product_id]) || {};
     const st = (i.product_id && stockByPid[i.product_id]) || {};
-    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
+    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = i.size || 'OS';
     const qty = i.qty || 1;
     g.sizes[size] = (g.sizes[size] || 0) + qty;
@@ -678,7 +679,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
       .map((sz) => `<span class="sz"><b>${esc(sz)}</b> × ${g.sizes[sz]}</span>`).join('');
     return `<tr>
       <td class="img">${g.image ? `<img src="${esc(g.image)}" alt="">` : '<div class="noimg">—</div>'}</td>
-      <td><div class="nm">${esc(g.name)}</div>${g.sku ? `<div class="sub">${esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}${g.wasSkus.size ? `<div class="was">↺ was SKU ${[...g.wasSkus].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.wasSizes.size ? `<div class="was">↺ includes size change from ${[...g.wasSizes].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td>
+      <td><div class="nm">${esc(g.name)}</div>${g.sku ? `<div class="sub">${g.adidasTagSku ? `<b>S&amp;S:</b> ${esc(g.sku)} · <b>Adidas tag:</b> ${esc(g.adidasTagSku)}` : esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}${g.wasSkus.size ? `<div class="was">↺ was SKU ${[...g.wasSkus].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.wasSizes.size ? `<div class="was">↺ includes size change from ${[...g.wasSizes].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td>
       <td class="szs">${sizes}</td>
       <td class="c b">${g.total}</td>
     </tr>`;
@@ -3336,6 +3337,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (data || []).forEach((p) => { if (p.sku && !productBySku[p.sku]) productBySku[p.sku] = p; });
     }
     lines = lines.map((l) => { const p = productBySku[l._effSku]; return p ? { ...l, product_id: l.product_id || p.id, name: l.name || p.name, color: l.color || p.color, _reportImage: p.image_front_url || '' } : l; });
+    lines = await attachAdidasTagSkus(supabase, lines);
     const stockBySku = await fetchSkuStock(lines.filter((l) => l._effSku && (l._wasSku || !l.product_id || !stockByPid[l.product_id])).map((l) => l._effSku));
     return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
@@ -3381,7 +3383,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
-      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
+      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Adidas Tag SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
       // Sort by order number (every line of an order contiguous, oldest order first) —
       // same rule the Orders CSV got in #1991; without it the fetch order is arbitrary.
       const sorted = [...lines].sort((a, b) => {
@@ -3392,7 +3394,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           || String(a.player_name || '').localeCompare(String(b.player_name || ''))
           || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid));
       });
-      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
+      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i._adidasTagSku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];

@@ -29,11 +29,11 @@ const ORDERS = [
 ];
 const LINES = [
   { order_id: 'o-club', sku: '1203.080', name: 'Girls Racerback Tank', size: 'S', qty: 1, player_name: 'Abbie Garcia', player_number: 7 },
-  { order_id: 'o-home', sku: 'KA4117', name: 'Adidas MATCH SKIRT', size: '2XS', qty: 2, player_name: 'Alexandra "Alex" Spitzer', player_number: null },
+  { order_id: 'o-home', sku: 'AT310-50', name: 'Adidas Techfit VB Shorts W', size: '2XS', qty: 2, player_name: 'Alexandra "Alex" Spitzer', player_number: null },
 ];
-// soItems: what the SO currently carries. KA4117 is unchanged; the tank was swapped.
+// soItems: what the SO currently carries. AT310-50 is unchanged; the tank was swapped.
 const SO_ITEMS = [
-  { sku: 'KA4117', name: 'Adidas MATCH SKIRT', color: 'Black', sizes: { '2XS': 2 } },
+  { sku: 'AT310-50', name: 'Adidas Techfit VB Shorts W', color: 'Black', sizes: { '2XS': 2 } },
   { sku: '1203.005', name: 'Girls Racerback Tank', color: 'White', sizes: { S: 1 } },
 ];
 
@@ -42,6 +42,7 @@ function supabaseStub() {
     webstores: [{ id: 'ws-1', name: 'St. Francis Tennis', omg_sale_code: 'V7ESK' }],
     webstore_orders: ORDERS.map((o) => ({ ...o, store_id: 'ws-1', so_id: 'SO-2035', status: 'paid' })),
     webstore_order_items: LINES,
+    adidas_ss_sku_xref: [{ ss_sku: 'AT310-50', adidas_article: 'JL5410', rank: 1 }],
   };
   return {
     from: (t) => {
@@ -58,9 +59,9 @@ function supabaseStub() {
   };
 }
 
-const run = () => downloadSoPlayerReport({
+const run = (format = 'csv') => downloadSoPlayerReport({
   so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '' },
-  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format: 'csv',
+  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format,
 });
 
 describe('player report CSV', () => {
@@ -105,5 +106,24 @@ describe('player report CSV', () => {
     expect(rows[2]).toContain('1203.005');
     expect(rows[2]).toContain('1203.080');
     expect(rows[2]).toMatch(/substituted/);
+  });
+
+  test('keeps the S&S ordering SKU and adds the adidas garment-tag SKU', async () => {
+    await run();
+    const rows = captured.replace(/^﻿/, '').split('\r\n');
+    expect(rows[0]).toContain('SKU,Adidas Tag SKU,Color');
+    expect(rows[1]).toContain('AT310-50,JL5410');
+  });
+
+  test.each(['product', 'pdf'])('%s report prints both numbers for the S&S item', async (format) => {
+    let html = '';
+    const popup = {
+      document: { write: (value) => { html += value; }, close: () => {} },
+      focus: () => {}, print: () => {},
+    };
+    jest.spyOn(window, 'open').mockReturnValue(popup);
+    jest.spyOn(global, 'setTimeout').mockImplementation(() => 0);
+    expect(await run(format)).toBe(true);
+    expect(html).toContain('<b>S&amp;S:</b> AT310-50 · <b>Adidas tag:</b> JL5410');
   });
 });

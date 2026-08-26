@@ -10,6 +10,8 @@
 // Supabase). Orders are scoped to this SO when any carry so_id; otherwise the whole
 // store is one SO (the OMG flow) and every order counts.
 
+import { attachAdidasTagSkus } from './adidasSsReport';
+
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
 // Same popup-print pattern as the Webstores reports — the rep prints or saves as PDF.
@@ -46,6 +48,7 @@ function lineFields(l) {
   return {
     name: l._unmatched ? (l.name || l.sku || 'Item') : (l._name || 'Item'),
     sku: l._unmatched ? (l.sku || '') : (l._sku || ''),
+    adidasTagSku: l._adidasTagSku || '',
     color: l._color || '',
     size: l._size || l.size || '',
     qty: l.qty || 1,
@@ -94,7 +97,7 @@ export function activeWebstoreLines(lines, orderById = null) {
 function renderCsv({ so, storeName, lines, orderById }) {
   const header = [
     'Order #', 'Order Date', 'Player', 'Player #', 'Buyer', 'Buyer Email', 'Buyer Phone',
-    'Item', 'SKU', 'Color', 'Size', 'Qty', 'Was SKU', 'Was Size', 'Flag',
+    'Item', 'SKU', 'Adidas Tag SKU', 'Color', 'Size', 'Qty', 'Was SKU', 'Was Size', 'Flag',
     'Ship Method', 'Ship Name', 'Address 1', 'Address 2', 'City', 'State', 'Zip', 'Country',
   ];
   const rows = lines.map((l) => {
@@ -113,7 +116,7 @@ function renderCsv({ so, storeName, lines, orderById }) {
         (l.player_name || '').trim(),
         l.player_number != null ? String(l.player_number) : '',
         o.buyer_name || '', o.buyer_email || '', o.buyer_phone || '',
-        f.name, f.sku, f.color, f.size, f.qty,
+        f.name, f.sku, f.adidasTagSku, f.color, f.size, f.qty,
         f.wasSku, f.wasSize,
         f.unmatched ? 'NOT ON SO — verify' : (f.wasSku || f.wasSize) ? (f.verify ? 'substituted — verify' : 'substituted') : '',
         o.ship_method || '',
@@ -415,7 +418,7 @@ export function buildSoProductRows(lines) {
     const l = materializeMappedLine(raw);
     const sku = l._effSku || l.sku || '';
     const key = [sku || l.product_id || l.name || 'item', l.color || ''].join('|').toLowerCase();
-    const g = groups[key] || (groups[key] = { name: l.name || sku || 'Item', sku, color: l.color || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
+    const g = groups[key] || (groups[key] = { name: l.name || sku || 'Item', sku, adidasTagSku: l._adidasTagSku || '', color: l.color || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = l.size || 'OS'; const qty = Number(l.qty) || 0;
     g.sizes[size] = (g.sizes[size] || 0) + qty; g.total += qty;
     if (l._wasSku) g.wasSkus.add(l._wasSku);
@@ -481,7 +484,9 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     const rawLines = await fetchLines(supabase, scoped.map((o) => o.id));
     const orderById = {}; scoped.forEach((o) => { orderById[o.id] = o; });
     const activeLines = activeWebstoreLines(rawLines, orderById);
-    const { lines, substitutions, unmatched } = mapLinesToSoItems(activeLines, soItems);
+    const mapped = mapLinesToSoItems(activeLines, soItems);
+    const lines = await attachAdidasTagSkus(supabase, mapped.lines);
+    const { substitutions, unmatched } = mapped;
     if (format === 'csv') renderCsv({ so, storeName: ws.name || '', lines, orderById });
     else if (format === 'product') renderProductReport({ so, storeName: ws.name || '', lines, substitutions, unmatched });
     else renderReport({ so, storeName: ws.name || '', lines, orderById, substitutions, unmatched });
@@ -503,7 +508,7 @@ function renderProductReport({ so, storeName, lines, substitutions, unmatched })
     g.unmatched ? '⚠ not on the SO — verify' : '',
   ].filter(Boolean).map((s) => `<div class="was">${s}</div>`).join('');
   const rows = list.map((g) => `<tr${g.unmatched ? ' class="warnrow"' : ''}>
-    <td><b>${esc(g.name)}</b>${g.sku ? `<div class="sub">${esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}${change(g)}</td>
+    <td><b>${esc(g.name)}</b>${g.sku ? `<div class="sub">${g.adidasTagSku ? `<b>S&amp;S:</b> ${esc(g.sku)} · <b>Adidas tag:</b> ${esc(g.adidasTagSku)}` : esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}${change(g)}</td>
     <td>${Object.entries(g.sizes).sort(([a], [b]) => reportSizeRank(a) - reportSizeRank(b) || a.localeCompare(b)).map(([s, q]) => `<span class="sz"><b>${esc(s)}</b> × ${q}</span>`).join('')}</td>
     <td class="c b">${g.total}</td></tr>`).join('');
   const subBanner = substitutions.length || sizeChanges.length || unmatched.length ? `<div class="warn"><b>Reconciliation for ${esc(so.id)}:</b><br>${
@@ -536,7 +541,7 @@ function renderReport({ so, storeName, lines, orderById, substitutions, unmatche
   const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const row = (it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}${it.color ? ' · ' + esc(it.color) : ''}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not on the SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`;
+  const row = (it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${it.adidasTagSku ? `<b>S&amp;S:</b> ${esc(it.sku)} · <b>Adidas tag:</b> ${esc(it.adidasTagSku)}` : esc(it.sku)}${it.color ? ' · ' + esc(it.color) : ''}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not on the SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`;
   const block = (p) => `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
     <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${p.items.map(row).join('')}</tbody></table></div>`;
   const sizeChanges = []; const seenSizeChanges = new Set();
