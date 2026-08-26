@@ -11,6 +11,8 @@
 export const BOT_MEMBER_ID = 'bot-claude';
 export const BOT_DISPLAY_NAME = 'Chief of Staff';
 export const BOT_TEAM_MEMBER_NAME = 'Chief of Staff (Grok Bot)';
+export const botTeamMemberName = (member) =>
+  member?.id === BOT_MEMBER_ID ? BOT_TEAM_MEMBER_NAME : member?.name;
 
 // Only this portal user sees/uses the ordering bot (status pill, assign button,
 // and the bot option in the Assign Task dropdown). Tasks themselves are
@@ -41,6 +43,12 @@ export function botTargetForVendor(vendorName) {
   if (v.includes('sanmar')) return 'sanmar';
   return v.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown';
 }
+
+// The Mac mini only has credentials and a tested cart flow for Adidas CLICK.
+// Other target slugs are reserved for future runners and must not be presented
+// as working ordering-bot actions.
+export const canBotAddToCart = (vendorName) =>
+  botTargetForVendor(vendorName) === 'adidas_click';
 
 // Flatten queued batch POs into a flat, worker-friendly line-item list.
 // Each batch (bp) has { id, po_id, so_id, customer, items:[{sku,name,color,qty,unit_cost,sizes}] }.

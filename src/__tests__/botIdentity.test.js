@@ -4,8 +4,10 @@ import {
   BOT_OWNER_EMAIL,
   BOT_OWNER_ID,
   BOT_TEAM_MEMBER_NAME,
+  botTeamMemberName,
   botCompleteNeedsConfirm,
   buildBotCartPayload,
+  canBotAddToCart,
   isBotOwner,
 } from '../lib/botTasks';
 
@@ -14,6 +16,7 @@ describe('ordering bot identity and safety contract', () => {
     expect(BOT_MEMBER_ID).toBe('bot-claude');
     expect(BOT_DISPLAY_NAME).toBe('Chief of Staff');
     expect(BOT_TEAM_MEMBER_NAME).toBe('Chief of Staff (Grok Bot)');
+    expect(botTeamMemberName({ id: BOT_MEMBER_ID, name: 'Claude (Bot)' })).toBe(BOT_TEAM_MEMBER_NAME);
   });
 
   test('keeps the Steve-only owner gate', () => {
@@ -41,5 +44,14 @@ describe('ordering bot identity and safety contract', () => {
     expect(task.description).toContain('needs_review');
     expect(botCompleteNeedsConfirm({ bot_status: 'queued' })).toBeTruthy();
     expect(botCompleteNeedsConfirm({ bot_status: 'needs_review' })).toBeNull();
+  });
+
+  test('only advertises the credentialed Adidas CLICK cart flow', () => {
+    expect(canBotAddToCart('Adidas')).toBe(true);
+    expect(canBotAddToCart('SanMar')).toBe(false);
+    expect(canBotAddToCart('Silver Screen')).toBe(false);
+    expect(canBotAddToCart('Agron')).toBe(false);
+    expect(canBotAddToCart('Momentec')).toBe(false);
+    expect(canBotAddToCart('S&S Activewear')).toBe(false);
   });
 });

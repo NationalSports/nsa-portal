@@ -8,7 +8,7 @@ import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
-import { BOT_DISPLAY_NAME, BOT_MEMBER_ID, isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
+import { BOT_DISPLAY_NAME, BOT_MEMBER_ID, botTeamMemberName, canBotAddToCart, isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -9577,7 +9577,7 @@ export default function App(){
             <span className="dash-action-row__marker"><Icon name={(t.priority??2)<=1?'alert':'check'} size={14}/></span>
             <span className="dash-action-row__copy">
               <strong>{t.title}{_bot&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_bot.pillBg,color:_bot.pillFg,whiteSpace:'nowrap'}}>{_bot.label}</span>}</strong>
-              <small>{isAssignedToMe?'From '+(creator?.name||'Team'):(assignee?.name||'Unassigned')}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.comments?.length>0?' · '+t.comments.length+' comment'+(t.comments.length!==1?'s':''):''}</small>
+              <small>{isAssignedToMe?'From '+(creator?.name||'Team'):(botTeamMemberName(assignee)||'Unassigned')}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.comments?.length>0?' · '+t.comments.length+' comment'+(t.comments.length!==1?'s':''):''}</small>
             </span>
             <span className={`dash-action-row__priority ${(t.priority??2)<=1?'is-high':''}`}>{(t.priority??2)<=1?'High':'Normal'}</span>
             <span className="dash-action-row__actions">
@@ -9711,7 +9711,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:botTeamMemberName(assignee)}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -9782,7 +9782,7 @@ export default function App(){
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(botTeamMemberName(assignee)||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
             <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
@@ -10215,7 +10215,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:botTeamMemberName(assignee)}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -10328,7 +10328,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:botTeamMemberName(assignee)}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -10399,7 +10399,7 @@ export default function App(){
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(botTeamMemberName(assignee)||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
             <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
@@ -10750,7 +10750,7 @@ export default function App(){
         <div className="modal-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12,fontSize:12}}>
             <div><span style={{color:'#64748b'}}>Created by:</span> <strong>{creator?.name}</strong></div>
-            <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{assignee?.name}</strong></div>
+            <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{botTeamMemberName(assignee)}</strong></div>
             {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> {custRef.alpha_tag||custRef.name}</div>}
             {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
             {ifId&&<div><span style={{color:'#64748b'}}>IF:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{const ifSo=soRef||sos.find(s=>safeItems(s).some(it=>safePicks(it).some(pk=>pk.pick_id===ifId)));if(ifSo){setTodoDetailId(null);setESO(ifSo);setESOC(cust.find(c=>c.id===ifSo.customer_id));setESOTab('items');setPg('orders')}else{nf('Item Fulfillment '+ifId+' not found','warn')}}}>{ifId}</span></div>}
@@ -10813,7 +10813,7 @@ export default function App(){
             });
             return(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===(c.author_id||c.user_id));
               return<div key={c.id} style={{padding:'8px 10px',marginBottom:4,background:c.author_id===cu.id?'#dbeafe':'#f1f5f9',borderRadius:6,fontSize:12}}>
-                <div style={{fontWeight:600,marginBottom:2}}>{auth?.name||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
+                <div style={{fontWeight:600,marginBottom:2}}>{botTeamMemberName(auth)||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
                 <div style={{lineHeight:1.5}}>{_richText(c.text)}</div>
               </div>});
             })()}
@@ -14524,7 +14524,7 @@ export default function App(){
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
-                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to Chief of Staff — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
+                {isBotOwner(cu)&&canBotAddToCart(vg.name||vk)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to Chief of Staff — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
                   // Decorator-bound group (vendor:decoId): deliver to the decorator with the
@@ -17537,7 +17537,7 @@ export default function App(){
               const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);
               return<tr key={t.id} style={{cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
                 <td style={{fontWeight:600}}>{t.title}</td>
-                <td>{assignee?.name||'?'}</td>
+                <td>{botTeamMemberName(assignee)||'?'}</td>
                 <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
                 <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
                 <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority===0?'Urgent':t.priority===1?'High':'Normal'}</span></td>
@@ -17555,7 +17555,7 @@ export default function App(){
               const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);
               return<tr key={t.id}>
                 <td>{t.title}</td>
-                <td>{assignee?.name||'?'}</td>
+                <td>{botTeamMemberName(assignee)||'?'}</td>
                 <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
                 <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
                 <td style={{fontSize:10,color:'#94a3b8'}}>{t.updated_at?new Date(t.updated_at).toLocaleDateString():''}</td>
@@ -22333,7 +22333,7 @@ export default function App(){
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:14,fontWeight:600}}>{t.title}</div>
               {t.description&&<div style={{fontSize:12,color:'#475569',marginTop:2}}>{t.description}</div>}
-              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(botTeamMemberName(assignee)||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>{const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_whDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_whFmtDue(t.due_date)}</span>}
@@ -37024,7 +37024,7 @@ export default function App(){
                 const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
                 // The ordering bot is just another assignee (role 'bot'); offer it everywhere except warehouse-only contexts.
                 const bots=isBotOwner(cu)?REPS.filter(r=>r.is_active!==false&&r.role==='bot'):[];
-                const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>;
+                const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{botTeamMemberName(r)}</option>)}</optgroup>;
                 // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
                 if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
                 if(isAdminGm){
