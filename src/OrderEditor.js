@@ -4672,11 +4672,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // district office); with none selected this is the customer default it always was.
               const ddBillSel=resolveOrderBillTo(o,cust,allCustomers);
               const ddBillAddr=orderBillToSub(o,cust,allCustomers)||(cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':''));
-              // Ship To on the SO PDF: honor the order's selected ship-to (SO-1134 shipped to a
-              // coach's house but the PDF only ever showed Bill To), falling back to the customer
-              // default shipping address. Estimates keep the Bill To-only layout.
-              const ddShipSel=isE?null:resolveOrderShipTo(o,cust);
-              const ddShipAddr=isE?'':(orderShipToSub(o,cust)||custShipAddrSub(cust));
+              // Ship To on the estimate / SO PDF: honor the doc's selected ship-to (SO-1134
+              // shipped to a coach's house but the PDF only ever showed Bill To), falling back to
+              // the customer default shipping address. Estimates print it too — they carry the
+              // same Ship To picker as SOs, and a coach approving a quote that ships to a school
+              // site rather than the billing office has to see that before approving, not after.
+              const ddShipSel=resolveOrderShipTo(o,cust);
+              const ddShipAddr=orderShipToSub(o,cust)||custShipAddrSub(cust);
               return{
                 title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
                 headerRight:'<div class="ta">'+_$(total)+'</div>',
@@ -7834,9 +7836,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // bill to the default address when the order points somewhere else.
       const billSel=resolveOrderBillTo(o,cust,allCustomers);
       const billAddr=orderBillToSub(o,cust,allCustomers)||(cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':''));
-      // Same Ship To box as the print/download builder — the emailed SO PDF only showed Bill To.
-      const shipSel=isE?null:resolveOrderShipTo(o,cust);
-      const shipAddrSub2=isE?'':(orderShipToSub(o,cust)||custShipAddrSub(cust));
+      // Same Ship To box as the print/download builder — the emailed estimate / SO PDF only
+      // ever showed Bill To.
+      const shipSel=resolveOrderShipTo(o,cust);
+      const shipAddrSub2=orderShipToSub(o,cust)||custShipAddrSub(cust);
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',css:PRINT_CSS,
         headerRight:'<div class="ta">'+_$(total)+'</div>',
         infoBoxes:[{label:'Bill To',value:(billSel&&billSel.name)||cust?.name||'—',sub:billAddr||''},...(shipAddrSub2?[{label:'Ship To',value:(shipSel&&shipSel.name)||cust?.name||'—',sub:shipAddrSub2}]:[]),...(isE?[]:[{label:'Expected',value:o.expected_date||'TBD'}]),{label:'Sales Rep',value:REPS.find(r=>r.id===(cust?.primary_rep_id||o.created_by))?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—',...(isE?{flex:2}:{})}],
