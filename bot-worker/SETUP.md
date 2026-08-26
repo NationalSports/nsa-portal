@@ -1,12 +1,13 @@
 # NSA Bot Worker — Mac mini setup
 
 This is the "always-on CSR." It runs on your Mac mini, watches Supabase for
-tasks assigned to **Claude (Bot)** in the portal, and uses Claude Code + a
-browser (Playwright) to add a PO's items to a vendor cart and enter the PO#.
+tasks assigned to **Chief of Staff (Grok Bot)** in the portal, and uses the
+existing Claude Code + Playwright runner to add a PO's items to a vendor cart
+and enter the PO#. The portal identity does not imply or require a Grok CLI.
 It **stops before submitting** — you approve and submit in the portal.
 
 ```
-Portal: "🤖 Assign to Claude"  ──▶  assigned_todos (bot_status='queued')
+Portal: "🤖 Assign to Chief of Staff" ──▶ assigned_todos (bot_status='queued')
                                           │  (same Supabase project)
 Mac mini: worker.js polls ────────────────┘
    claims it → runs Claude Code w/ Playwright → fills the vendor cart
@@ -38,7 +39,8 @@ Fill in `.env`:
 - `SUPABASE_SERVICE_ROLE_KEY` — the **service-role** key (Supabase dashboard →
   Project Settings → API). This is what lets the worker read/update
   `assigned_todos` and bypass RLS. Treat it like a password.
-- `BOT_MEMBER_ID` — leave as `bot-claude` (created by migration 00099).
+- `BOT_MEMBER_ID` — leave as `bot-claude`. This stable queue key preserves
+  existing todos and heartbeats; the portal-facing name is Chief of Staff.
 - `ADIDAS_CLICK_URL` / `_USER` / `_PASS` — the vendor login the agent uses.
 
 ### Claude CLI login (the bot's own account)
@@ -53,7 +55,8 @@ it automatically and it never needs interactive re-login.
 > **This is the "connection."** The worker and the portal aren't linked
 > directly — they share one Supabase project. Point this `.env` at the same
 > project your portal uses and the worker will see exactly the tasks you
-> assign to Claude (and nothing else — it filters on `assigned_to = bot-claude`).
+> assign to Chief of Staff (and nothing else — it filters on the stable
+> `assigned_to = bot-claude` queue key).
 
 ### Credentials & security
 
@@ -70,7 +73,8 @@ it automatically and it never needs interactive re-login.
 ## 3. Test it
 
 1. In the portal, open a Sales Order, trigger a batch, and click
-   **🤖 Assign to Claude** (or assign any task to "Claude (Bot)").
+   **🤖 Assign to Chief of Staff** (or assign any task to
+   "Chief of Staff (Grok Bot)").
 2. Run one pass and watch:
 
    ```bash

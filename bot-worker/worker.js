@@ -1,6 +1,6 @@
 // NSA bot worker — the "always-on CSR".
 //
-// Polls Supabase for tasks assigned to the Claude bot team member, claims one
+// Polls Supabase for tasks assigned to the Chief of Staff team member, claims one
 // at a time, and runs Claude Code (with the Playwright MCP browser tools) to
 // carry out the task on a vendor portal. It reports back exactly like a CSR
 // would: by updating bot_status and posting a comment on the todo.
@@ -353,7 +353,7 @@ async function processOne() {
   log('claimed task', task.id, '—', task.title);
   await heartbeat('working', task.id);
 
-  // Load the comment thread so Claude sees any human answers (e.g. how to
+  // Load the comment thread so the ordering agent sees any human answers (e.g. how to
   // handle a backorder it asked about on a previous pass).
   let conversation = [];
   try {
@@ -487,7 +487,7 @@ async function processOne() {
   if (Array.isArray(result.issues) && result.issues.length) sections.push('**Issues**\n'
     + result.issues.map((i) => `- ${i}`).join('\n'));
   const nextStep = status === 'needs_review' ? 'Review the cart and submit it if it looks right, then close this task.'
-    : status === 'needs_input' ? 'Reply on this task to tell Claude how to proceed — it will resume automatically.'
+    : status === 'needs_input' ? 'Reply on this task to tell Chief of Staff how to proceed — it will resume automatically.'
     : status === 'blocked' ? 'Fix the blocker described above, then hit Retry on the task.'
     : 'The run did not complete — hit Retry on the task to run it again.';
   sections.push('**Next step:** ' + nextStep);

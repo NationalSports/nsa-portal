@@ -10355,7 +10355,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
-          {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&batchReadyPopup.vendorKey==='adidas'&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
+          {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&batchReadyPopup.vendorKey==='adidas'&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to Chief of Staff — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
             // Decorator-bound batch: blanks deliver to the decorator with the DPO on the
@@ -10367,7 +10367,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const{title,description,bot_payload}=buildBotCartPayload({poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id,shipTo:_shipTo});
             onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:1,bot_payload});
             setBatchReadyPopup(null);
-          }}>🤖 Assign to Claude</button>}
+          }}>🤖 Assign to Chief of Staff</button>}
           {batchReadyPopup.vendorKey==='sanmar'&&<button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
             // Route through apiOrder/isBatch so a submitted order is RECORDED (queue promoted,
             // ack stamped) — the old preview-only modal placed real orders with no bookkeeping.
@@ -14619,7 +14619,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             const updated={...o,items:updatedItems,_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),_editPoId,..._rmPoIds])].filter(Boolean),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={10}/> Delete PO</button>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or the Claude bot) to order this PO" onClick={()=>{
+            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or Chief of Staff) to order this PO" onClick={()=>{
               // Build the full order payload — EVERY line on this PO (not just the clicked item),
               // plus the drop-ship destination and attention line — so the Assign Task card and
               // the bot both see the complete picture.
