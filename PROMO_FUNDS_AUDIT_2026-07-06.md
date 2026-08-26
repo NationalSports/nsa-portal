@@ -168,6 +168,8 @@ Answers received after the initial audit; these define the fix scope:
   order actually being paid.
 - **Q2 (apparel): exclude footwear.** Promo application must skip
   `is_footwear` line items; everything else is eligible.
+  **SUPERSEDED 2026-08-26 — footwear is now promo-eligible. See "Rule change
+  (2026-08-26)" at the end of this document.**
 - **Q3 (deco/ship markup): OUT OF SCOPE — leave as-is.** Initially "just do the
   gear" (promo covers gear at retail only; deco/shipping handled manually), then
   revised: **ignore the gear-only change, keep current consumption math**
@@ -274,3 +276,37 @@ program shows ALLOCATED $0 until the customer is reopened.
   intended? If yes it should be surfaced in the UI; if no it should be removed.
 - **Q5 (early draw):** Applying promo can draw from *future* semesters'
   allocations once the current one is exhausted (`OrderEditor.js:3326`). Keep?
+
+## Rule change (2026-08-26) — footwear is promo-eligible
+
+Q2 above is reversed by ownership. Footwear no longer gets special treatment:
+promo applies to every line item with quantity, footwear included.
+
+Trigger: EST-2255 (Concordia Track & Field, "2026 Shoes 8/26") is an
+all-footwear order against a $576 balance. Apply Promo Funds skipped both shoe
+lines, hit `fullCount===0 && !partialItem`, and bailed with "remaining funds
+($576.00) can't cover any eligible item" — a funds-shortfall message for what
+was actually a zero-eligible-items condition. With no line eligible,
+`promo_applied` was never set, so the per-line Promo checkbox (also hidden for
+footwear) never appeared either: there was no path to spend promo on shoes at
+all.
+
+Changed in `src/OrderEditor.js` and `src/OrderEditorClassic.js` (identical
+edits, promo block is verbatim-shared between the two):
+
+- Dropped the `if(it.is_footwear){footwearSkipped++;…;return}` skip in the
+  Apply Promo Funds loop.
+- Dropped the `footwearSkipped` counter and the "(N footwear item(s) not
+  promo-eligible)" notification suffix.
+- `totalItems` no longer filters out `is_footwear`, so the "X of Y eligible
+  items" count includes shoes.
+- The per-line Promo checkbox renders on footwear lines.
+
+Unchanged: the retail-pricing rule and the ×1.25 deco/shipping consumption
+(Q3) apply to footwear exactly as they do to apparel. Worth knowing at the
+counter — promo draws at **retail**, not at the customer's tier sell, and the
+spread is wider on footwear than on apparel. On EST-2255 that means 4 pairs
+covered draws $552.50 from the balance (4 × $130 retail + $32.50 shipping
+share) while reducing what the customer pays by $338 (4 × $84.50 Tier A sell).
+
+Still open from the original audit: F5, F6, F8, and the F7 consolidation.
