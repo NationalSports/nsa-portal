@@ -251,10 +251,23 @@ export default function MoveCheckIn() {
     (async () => {
       if (!supabase) { if (alive) { setAccess('no_access'); setProbeErr('No database connection configured.'); } return; }
       if (probeTick && access === 'ok') return; // already in — a focus event shouldn't re-gate
-      const { error } = await supabase.from('boxes').select('id').limit(1);
-      if (!alive) return;
-      if (!error) { setAccess('ok'); reload(); return; }
-      setProbeErr(error.message || String(error));
+      // A stored access token that expired while the tab was closed makes the
+      // FIRST request go out stale — PostgREST answers 401 while the background
+      // refresh is still in flight (the edge logs show exactly this: 401s and
+      // 200s from the same browser, same minute). So never conclude "no access"
+      // from one failure: force the session current, then retry with backoff.
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { await supabase.auth.getSession(); } catch (e) { /* keep going */ }
+        if (attempt > 0) { try { await supabase.auth.refreshSession(); } catch (e) { /* not signed in — the probe will say so */ } }
+        const { error } = await supabase.from('boxes').select('id').limit(1);
+        if (!alive) return;
+        if (!error) { setAccess('ok'); setProbeErr(''); reload(); return; }
+        lastErr = error;
+        await new Promise((r) => setTimeout(r, 400 + attempt * 800));
+        if (!alive) return;
+      }
+      setProbeErr((lastErr && lastErr.message) || String(lastErr));
       setAccess(signedIn || portalUser ? 'no_access' : 'no_session');
     })();
     return () => { alive = false; };
@@ -262,8 +275,11 @@ export default function MoveCheckIn() {
   // Several people scan at once during the move — keep counts/lists fresh
   // with a light poll while the page is visible.
   useEffect(() => {
-    if (access !== 'ok') return undefined;
-    const t = setInterval(() => { if (document.visibilityState === 'visible') reload(); }, 20000);
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (access === 'ok') reload();
+      else setProbeTick((n) => n + 1); // still locked out — keep trying to recover on its own
+    }, 20000);
     return () => clearInterval(t);
   }, [access, reload]);
 
@@ -581,7 +597,7 @@ export default function MoveCheckIn() {
         <div style={{ background: '#7f1d1d', border: '1px solid #ef4444', borderRadius: 10, padding: '10px 12px', marginBottom: 10 }}>
           <div style={{ fontWeight: 800, fontSize: 14 }}>⚠️ Can’t reach the box data</div>
           <div style={{ fontSize: 12, color: '#fecaca', marginTop: 3 }}>
-            Scans won’t save until this clears. Usually it means this browser has no database sign-in — sign into the portal with your <b>email and password</b> (not the admin-password name picker).
+            Scans won’t save until this clears. It retries by itself every 20 seconds — if it sticks, your sign-in may have expired: reload, or sign into the portal again on <b>this same address</b> (a session from a different portal URL doesn’t carry over).
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <button onClick={() => setProbeTick((n) => n + 1)} style={{ background: 'rgba(255,255,255,0.14)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>↻ Retry</button>
