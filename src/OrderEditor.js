@@ -2484,8 +2484,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return clone;
   };
   const _copySzStr=newSz=>Object.entries(newSz||{}).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0])).map(([sz,v])=>safeNum(v)+'/'+sz).join(' ');
-  const copyI=(i,newSz)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);const szStr=_copySzStr(newSz);sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
-  const copyIWithSku=(i,p,newSz)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  const _insertCopiedItem=(items,i,clone)=>{const next=[...safeItems({items})];next.splice(i+1,0,clone);return next};
+  const _applyCopyPrice=(clone,source,copyPrice)=>{if(!copyPrice)return clone;if(copyPrice.mode==='product'){if(clone.sku===source.sku){const p=products.find(x=>(source.product_id&&x.id===source.product_id)||(x.sku===source.sku&&(!source.color||x.color===source.color)))||products.find(x=>x.sku===source.sku);if(p){const au=isAU(p.brand||clone.brand);const fw=(p.category||'').toLowerCase()==='footwear'||!!clone.is_footwear;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.unit_sell=au?rQ(safeNum(p.retail_price)*(1-auDisc(fw,p.pricing_group))):rQ(catalogRepCost(p)*(o.default_markup||1.65));if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}}}}else{clone.unit_sell=safeNum(source.unit_sell);if(source._sizeSells)clone._sizeSells=JSON.parse(JSON.stringify(source._sizeSells));else delete clone._sizeSells}return clone};
+  const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
+  const copyIWithSku=(i,p,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -2499,8 +2501,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // source line may stay). Link the new garment to the source's mock instead — same-color
     // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
     const _linked=linkSwappedGarmentMock(safeArt(o),it,p.sku,p.color)!==safeArt(o);
-    _applyCopySizes(clone,newSz);const _szStr=_copySzStr(newSz);
-    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
+    _applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(newSz);
+    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:_insertCopiedItem(e.items,i,clone),...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku+(_szStr?' — '+_szStr:'')+(_linked?' — mockup linked to '+it.sku:''))};
   // Momentec API order SKUs (_mt_style/_mt_color/_mt_sku/_mt_skus) must always describe the
   // item's CURRENT garment. Every flow that swaps the style or color has to re-stamp (or clear)
@@ -2517,7 +2519,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
-  const copyIWithVendorResult=(i,style,color,source,newSz)=>{
+  const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice)=>{
     const it=o.items[i];if(!it)return;
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
@@ -2560,10 +2562,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
-    _applyCopySizes(clone,newSz);const _szStr=_copySzStr(newSz);
+    _applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const _szStr=_copySzStr(newSz);
     // Same-color style swap: link the new garment to the source's mock so it follows the
     // swap (see copyIWithSku — shared linkSwappedGarmentMock, color-exact only).
-    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
+    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:_insertCopiedItem(e.items,i,clone),...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     if(Object.keys(vInv).length>0){
       vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
       setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
@@ -15752,8 +15754,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const szOn=canNewSz&&!!copySkuModal.szOn;
         const newSz=szOn?(copySkuModal.sz||{}):null;
         const newSzTot=Object.values(newSz||{}).reduce((a,v)=>a+safeNum(v),0);
-        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz);
-        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz);
+        const priceMode=copySkuModal.priceMode||'keep';
+        const copyPrice={mode:priceMode};
+        const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz,copyPrice);
+        const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz,copyPrice);
         const sqTokens=sq.split(/\s+/).filter(Boolean);
         const matches=sq.length>=2?products.filter(p=>{if(p.is_archived)return false;const sku=p.sku.toLowerCase(),name=p.name.toLowerCase(),brand=(p.brand||'').toLowerCase(),color=(p.color||'').toLowerCase();return sqTokens.every(t=>sku.includes(t)||name.includes(t)||brand.includes(t)||color.includes(t))}).slice(0,12):[];
         const anyVendor=ssResults.length>0||smResults.length>0||mtResults.length>0||rsResults.length>0;
@@ -15792,6 +15796,13 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'clone'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:isClone?'#2563eb':'transparent',color:isClone?'white':'#475569'}}>📋 Copy as-is (same SKU)</button>
               <button onClick={()=>setCopySkuModal(m=>({...m,mode:'copy'}))} style={{flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:!isClone?'#2563eb':'transparent',color:!isClone?'white':'#475569'}}>🆕 Copy to new line with new SKU</button>
             </div>}
+            {isCopy&&<div style={{marginBottom:10,padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#fff'}}>
+              <div style={{fontSize:11,fontWeight:800,color:'#334155',marginBottom:7}}>Customer price</div>
+              <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price" checked={priceMode==='keep'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'keep'}))}/> Keep at ${safeNum(srcIt.unit_sell).toFixed(2)}</label>
+                <label style={{display:'flex',alignItems:'center',gap:5,fontSize:11,cursor:'pointer'}}><input type="radio" name="copy-item-price" checked={priceMode==='product'} onChange={()=>setCopySkuModal(m=>({...m,priceMode:'product'}))}/> Change to updated product price</label>
+              </div>
+            </div>}
             {/* New sizes — works with either copy mode: type only the sizes the copy needs. */}
             {canNewSz&&(()=>{const isFw=!!srcIt.is_footwear;const pool=isFw?COPY_FOOTWEAR_SIZES:COPY_APPAREL_SIZES;
               return<div style={{marginBottom:10,border:'1px solid '+(szOn?'#bfdbfe':'#e2e8f0'),borderRadius:8,overflow:'hidden'}}>
@@ -15813,7 +15824,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               </div>})()}
             {isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
               <div style={{fontSize:12,color:'#64748b'}}>{newSzTot>0?'Adds a duplicate of this line (same SKU and decorations) below it, sized '+_copySzStr(newSz)+'.':'Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.'}</div>
-              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
+              <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz,copyPrice);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
             </div>:<>
             {isReplace&&!canReplace&&<div style={{padding:'8px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:10,fontSize:11,color:'#dc2626',fontWeight:600}}>⚠️ This line has a PO or IF — remove them first to change its SKU in place. (Use Copy item → new SKU to add it as a separate line instead.)</div>}
             <label className="form-label">Search for {isReplace?'replacement':'new'} product/SKU (catalog + S&S, SanMar, Momentec, Richardson live)</label>
