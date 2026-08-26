@@ -13756,6 +13756,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const billedTotal = Number(order.original_total != null ? order.original_total : order.total) || 0;
   const remaining = Math.max(0, billedTotal - (Number(order.refunded_amt) || 0));
+  const fullyRefunded = Number(order.refunded_amt) > 0 && remaining <= 0.005;
 
   // The coupon discount scales with the merchandise pot it was a percentage of, so a
   // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
@@ -13890,6 +13891,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
 
         <div style={{ padding: '18px 20px' }}>
           {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>⚠️ Batched into SO <b>{order.so_id}</b> — adjust that SO too if needed.</div>}
+          {fullyRefunded && <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>Fully refunded — item history is locked.</div>}
 
           {/* Items */}
           <div style={sectionLabel}>Items</div>
@@ -13903,6 +13905,15 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
               // Product name up top, color + SKU beneath — same convention as the
               // expanded order row. The SKU alone wasn't enough to tell items apart.
               const sub = [r.color, r.name && r.name !== r.sku ? r.sku : null].filter(Boolean).join(' · ');
+              // A refunded cancellation is final: restoring it would put the garment
+              // back on reports without charging the buyer again. The database trigger
+              // below this UI is the authoritative backstop; this keeps the safe path
+              // obvious and removes an action that can never legitimately succeed.
+              const refundLocked = r._removed && Number(r.refunded_qty) > 0;
+              const editLocked = fullyRefunded || r._removed;
+              const maxActiveQty = Number(r.refunded_qty) > 0
+                ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty))
+                : undefined;
               return (
                 <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -13911,10 +13922,10 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                     {(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}
                   </div>
                   {sizes.length > 0
-                    ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
-                    : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                  <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
-                  <button onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{r._removed ? 'undo' : 'remove'}</button>
+                    ? <select value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                    : <input value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
+                  <input type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <button disabled={fullyRefunded || refundLocked} onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: fullyRefunded || refundLocked ? '#94a3b8' : r._removed ? '#2563eb' : '#b91c1c', cursor: fullyRefunded || refundLocked ? 'default' : 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{fullyRefunded || refundLocked ? 'refunded' : r._removed ? 'undo' : 'remove'}</button>
                 </div>
               );
             })}
@@ -13927,7 +13938,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
+          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
           {hasChanges && owed > 0.005 && <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 7 }}>Saves the order, then opens the refund review. Nothing is refunded until you confirm.</div>}
 
           {/* Refund controls remain available for stand-alone/manual refunds. Item
@@ -13962,7 +13973,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                 <span style={{ padding: '0 10px', color: '#94a3b8', fontSize: 15, borderRight: '1px solid #e2e8f0', height: '100%', display: 'grid', placeItems: 'center' }}>$</span>
                 <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 110, padding: '9px 10px', border: 'none', fontSize: 14, outline: 'none' }} />
               </div>
-              <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
+              <button className="btn btn-sm btn-secondary" disabled={remaining <= 0.005} onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
               <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={() => setComposeOpen(true)} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{order.stripe_pi_id ? 'Refund to card…' : 'Record credit…'}</button>
             </div>
             {order.buyer_email

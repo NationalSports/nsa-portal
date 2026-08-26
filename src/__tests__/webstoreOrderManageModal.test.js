@@ -77,3 +77,14 @@ test('a size-only change remains a one-step save and does not open refund review
   await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
   expect(screen.queryByRole('button', { name: /Send & refund/ })).toBeNull();
 });
+
+test('a fully refunded order is read-only and cannot restore its items', async () => {
+  const onSave = jest.fn();
+  await renderModal({ order: { refunded_amt: 30, status: 'refunded' }, onSave });
+
+  expect(screen.getByText('Fully refunded — item history is locked.')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'refunded' }).disabled).toBe(true);
+  expect(screen.getByRole('button', { name: 'Save item changes' }).disabled).toBe(true);
+  expect(screen.getByRole('button', { name: 'Full ($0.00)' }).disabled).toBe(true);
+  expect(onSave).not.toHaveBeenCalled();
+});
