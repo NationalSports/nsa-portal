@@ -23,6 +23,31 @@ export const isOrderFullyInvoiced = (so, invoices) => {
   });
 };
 
+export const getOrderInvoiceCoverage = (so, invoices) => {
+  const items = safeItems(so);
+  const applicable = invoicesForOrder(invoices, so?.id);
+  const invoiced = buildInvoicedQtyMap(so, applicable);
+  return items.reduce((coverage, item, idx) => {
+    const sizedQty = Object.values(safeSizes(item)).reduce((sum, qty) => sum + safeNum(qty), 0);
+    const orderedQty = sizedQty > 0 ? sizedQty : safeNum(item.est_qty);
+    const invoicedQty = Math.max(0, safeNum(invoiced.get(soLineKey(item, idx))));
+    coverage.ordered += orderedQty;
+    coverage.invoiced += Math.min(orderedQty, invoicedQty);
+    coverage.remaining += Math.max(0, orderedQty - invoicedQty);
+    return coverage;
+  }, { ordered: 0, invoiced: 0, remaining: 0 });
+};
+
+const formatUnits = (qty) => Number.isInteger(qty) ? String(qty) : qty.toFixed(2).replace(/\.?0+$/, '');
+
+export const completedJobInvoiceExplanation = (so, invoices) => {
+  if (so?.promo_applied) return 'Promo order — remains until shipped';
+  const { ordered, invoiced, remaining } = getOrderInvoiceCoverage(so, invoices);
+  if (remaining <= 0 && ordered > 0) return 'Fully invoiced — notification will be removed';
+  if (invoiced <= 0) return `Not invoiced: ${formatUnits(ordered)} units`;
+  return `Partially invoiced: ${formatUnits(invoiced)} of ${formatUnits(ordered)} units`;
+};
+
 // A completed/shipped job remains actionable only while the order still needs billing.
 // Fully invoiced orders clear immediately, even if a job is still marked completed.
 // Promo-funded orders do not invoice, so their notice remains until shipment.

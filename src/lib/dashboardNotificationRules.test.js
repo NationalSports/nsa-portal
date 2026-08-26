@@ -1,4 +1,6 @@
 import {
+  completedJobInvoiceExplanation,
+  getOrderInvoiceCoverage,
   hasResponsePoForPull,
   isOrderFullyInvoiced,
   isFreshNotificationDate,
@@ -28,10 +30,19 @@ describe('dashboard notification lifecycle rules', () => {
     expect(shouldShowCompletedJobNotice({ prod_status: 'completed' }, so, [partialInvoice])).toBe(true);
   });
 
+  test('explains why a completed job notification is still visible', () => {
+    expect(getOrderInvoiceCoverage(so, [partialInvoice])).toEqual({ ordered: 10, invoiced: 5, remaining: 5 });
+    expect(completedJobInvoiceExplanation(so, [])).toBe('Not invoiced: 10 units');
+    expect(completedJobInvoiceExplanation(so, [partialInvoice])).toBe('Partially invoiced: 5 of 10 units');
+    expect(completedJobInvoiceExplanation(so, [fullInvoice])).toBe('Fully invoiced — notification will be removed');
+    expect(completedJobInvoiceExplanation(so, [{ ...fullInvoice, inv_type: 'deposit' }])).toBe('Not invoiced: 10 units');
+  });
+
   test('promo jobs remain until shipped without requiring an invoice', () => {
     const promo = { ...so, promo_applied: true };
     expect(shouldShowCompletedJobNotice({ prod_status: 'completed' }, promo, [])).toBe(true);
     expect(shouldShowCompletedJobNotice({ prod_status: 'shipped' }, promo, [])).toBe(false);
+    expect(completedJobInvoiceExplanation(promo, [])).toBe('Promo order — remains until shipped');
   });
 
   test('pulled IF clears only when all related jobs have moved in line', () => {
