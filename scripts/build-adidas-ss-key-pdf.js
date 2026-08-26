@@ -29,15 +29,20 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': 
 // Garment label: the S&S name minus the "(AT101)" suffix it already carries.
 const garment = (r) => String(r.sn || '').replace(/\s*\(AT\d+\)\s*$/, '').replace(/^Adidas\s+/i, '');
 const sizes = (r) => (Array.isArray(r.sz) ? r.sz.join(' · ') : '');
-// Highest stock first — the article we actually hold is the one most likely on the tag.
-const arts = (r) => (r.ar || []).slice().sort((a, b) => (b.q || 0) - (a.q || 0) || String(a.a).localeCompare(String(b.a)));
+// Current first — the article the vendor is still shipping is what a new order
+// arrives tagged with. In-house quantity is only a tie-break: we still hold old
+// season goods (21 black hoods under the retired HR8470) and ranking on that put
+// discontinued numbers at the top of this key.
+const arts = (r) => (r.ar || []).slice().sort((a, b) =>
+  (b.cur ? 1 : 0) - (a.cur ? 1 : 0) || (b.vs || 0) - (a.vs || 0)
+  || (b.q || 0) - (a.q || 0) || String(a.a).localeCompare(String(b.a)));
 
 const matched = rows.filter((r) => (r.ar || []).length);
 const unmatched = rows.filter((r) => !(r.ar || []).length);
 
 // Reverse index — the lookup a packer actually performs: tag in hand, is this right?
 const rev = [];
-for (const r of rows) for (const a of arts(r)) rev.push({ article: a.a, adColour: a.c, adName: a.n, qty: a.q || 0, ss: r.ss, ssColour: r.sc, garment: garment(r) });
+for (const r of rows) for (const a of arts(r)) rev.push({ article: a.a, adColour: a.c, adName: a.n, qty: a.q || 0, cur: !!a.cur, ss: r.ss, ssColour: r.sc, garment: garment(r) });
 rev.sort((a, b) => a.article.localeCompare(b.article));
 
 // An article that resolves to two different S&S styles cannot be answered from the
@@ -64,8 +69,6 @@ for (const r of matched) {
 const families = [...new Set(rows.map(garment))].sort();
 const stamp = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-const chip = (q) => (q > 0 ? `<span class="stk">${q}</span>` : '');
-
 const fwdRows = families.map((f) => {
   const rs = matched.filter((r) => garment(r) === f).sort((a, b) => a.ss.localeCompare(b.ss));
   if (!rs.length) return '';
@@ -74,19 +77,25 @@ const fwdRows = families.map((f) => {
     <tr>
       <td class="mono nowrap">${esc(r.ss)}</td>
       <td>${esc(r.sc)}</td>
-      <td>${arts(r).map((a) => `<span class="art">${esc(a.a)}</span>${chip(a.q)}`).join(' ')}</td>
+      <td>${arts(r).map((a) => `<span class="art${a.cur ? '' : ' artold'}">${esc(a.a)}</span>`).join(' ')}${
+        arts(r).every((a) => !a.cur) ? ' <span class="flag">older stock only</span>' : ''}</td>
       <td class="sz">${esc(sizes(r))}</td>
     </tr>`).join('');
 }).join('');
 
-const revRows = rev.map((e) => `
+// Two alphabetical lists rather than one: sorted together, the retired H-prefix
+// articles sort first and fill the opening pages, so the whole key reads as though
+// it were built on dead numbers. Split by status and the reader meets the numbers
+// they will actually see; each list stays alphabetical, so a lookup is still a scan.
+const revRow = (e) => `
   <tr${conflicting.has(e.article) ? ' class="warn"' : ''}>
     <td class="mono nowrap"><b>${esc(e.article)}</b>${conflicting.has(e.article) ? ' <span class="flag">check</span>' : ''}</td>
     <td>${esc(e.adColour)}</td>
     <td class="mono nowrap">${esc(e.ss)}</td>
     <td>${esc(e.garment)}</td>
-    <td class="num">${e.qty > 0 ? e.qty : ''}</td>
-  </tr>`).join('');
+  </tr>`;
+const revCurRows = rev.filter((e) => e.cur).map(revRow).join('');
+const revOldRows = rev.filter((e) => !e.cur).map(revRow).join('');
 
 const openRows = unmatched.sort((a, b) => a.ss.localeCompare(b.ss)).map((r) => `
   <tr><td class="mono nowrap">${esc(r.ss)}</td><td>${esc(garment(r))}</td><td>${esc(r.sc)}</td></tr>`).join('');
@@ -100,7 +109,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
   @page { size: letter; margin: 14mm 12mm 16mm; }
   * { box-sizing: border-box; }
   body { font-family: "Liberation Sans", Arial, Helvetica, sans-serif; color: #16202b; margin: 0; font-size: 9pt; line-height: 1.4; }
-  .mono, .art, .stk { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; }
+  .mono, .art { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; }
 
   .cover { border-top: 5px solid #1b3a5c; padding-top: 14px; }
   h1 { font-size: 21pt; margin: 0 0 2px; letter-spacing: -.3px; }
@@ -114,6 +123,7 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
   .eg { background: #fff; border: 1px solid #dde4ec; padding: 7px 10px; margin-top: 8px; font-size: 8.5pt; }
   .eg b { color: #1b3a5c; }
 
+  h3.sub2 { font-size: 9.5pt; margin: 8px 0 5px; font-weight: bold; color: #1b3a5c; }
   h2.sec { font-size: 12pt; margin: 0 0 3px; padding-bottom: 4px; border-bottom: 2px solid #1b3a5c; }
   .hint { font-size: 8pt; color: #5c6b7d; margin: 0 0 7px; }
 
@@ -124,7 +134,13 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
   tr.grp td { background: #eef2f7; font-weight: bold; font-size: 8.5pt; padding: 5px 6px; border-bottom: 1px solid #c9d5e2; }
   .gstyle { font-family: "DejaVu Sans Mono", monospace; color: #1b3a5c; margin-right: 8px; }
   .art { background: #eaf0f7; border: .5px solid #b9cbdd; padding: .5px 4px; font-size: 8.5pt; font-weight: bold; white-space: nowrap; }
-  .stk { font-size: 6.5pt; color: #1d6b42; margin-left: 2px; vertical-align: super; }
+  /* Superseded articles stay listed — old stock still turns up — but must not read
+     as the answer to "what should I be seeing on a new order". */
+  .artold { background: #f4f5f7; border-color: #d6dbe2; color: #79838f; font-weight: normal; }
+  .cur { background: #e6f4ec; color: #1d6b42; border: .5px solid #a9d4bd; padding: .5px 4px; font-size: 7pt;
+         text-transform: uppercase; letter-spacing: .3px; font-weight: bold; white-space: nowrap; }
+  .old { background: #f4f5f7; color: #79838f; border: .5px solid #d6dbe2; padding: .5px 4px; font-size: 7pt;
+         text-transform: uppercase; letter-spacing: .3px; white-space: nowrap; }
   .sz { font-size: 7pt; color: #74818f; }
   .num { text-align: right; color: #1d6b42; font-weight: bold; }
   .nowrap { white-space: nowrap; }
@@ -158,19 +174,31 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>adidas / S
 
 <h2 class="sec">1 &nbsp;Tag lookup &mdash; you have the garment</h2>
 <p class="hint">Find the article number printed on the garment tag to see which ordered style it fills.
-   The right-hand column is the quantity we hold in our warehouse, which is a good sign the piece is current.${
+   Check list 1A first &mdash; those are the articles adidas ships today. If the number isn't there,
+   check 1B: older numbers for the same garment, still a correct fill when that is what arrived.${
      conflicting.size ? ' Rows marked <span class="flag">check</span> match more than one style &mdash; confirm with us before packing.' : ''}</p>
+
+<h3 class="sub2"><span class="cur">1A &nbsp;current</span> &nbsp;What you should see on a new order</h3>
 <table>
-  <thead><tr><th style="width:16%">adidas article (on tag)</th><th style="width:22%">Colour</th>
-    <th style="width:16%">= S&amp;S SKU (on slip)</th><th style="width:36%">Garment</th><th style="width:10%">In house</th></tr></thead>
-  <tbody>${revRows}</tbody>
+  <thead><tr><th style="width:16%">adidas article (on tag)</th><th style="width:26%">Colour</th>
+    <th style="width:16%">= S&amp;S SKU (on slip)</th><th style="width:42%">Garment</th></tr></thead>
+  <tbody>${revCurRows}</tbody>
 </table>
+
+${revOldRows ? `<h3 class="sub2" style="margin-top:14px"><span class="old">1B &nbsp;older stock</span> &nbsp;Superseded numbers &mdash; still correct if that is what arrived</h3>
+<table>
+  <thead><tr><th style="width:16%">adidas article (on tag)</th><th style="width:26%">Colour</th>
+    <th style="width:16%">= S&amp;S SKU (on slip)</th><th style="width:42%">Garment</th></tr></thead>
+  <tbody>${revOldRows}</tbody>
+</table>` : ''}
 
 <div class="page"></div>
 <h2 class="sec">2 &nbsp;Order lookup &mdash; you have the paperwork</h2>
 <p class="hint">Find the S&amp;S style from the order or packing slip to see every adidas article number that
    is a valid fill. More than one is normal &mdash; adidas issues a new article each season for the same
-   garment and colour, so <b>any</b> of the numbers listed is correct.</p>
+   garment and colour, so <b>any</b> of the numbers listed is correct. The <b>first</b> number is the one
+   adidas ships today and is what you should expect on a new order; <span class="art artold">greyed</span>
+   numbers are earlier seasons, still correct if that is what arrived.</p>
 <table>
   <thead><tr><th style="width:15%">S&amp;S SKU</th><th style="width:24%">Colour</th>
     <th style="width:39%">Valid adidas article numbers</th><th style="width:22%">Sizes</th></tr></thead>

@@ -21,7 +21,8 @@ from (
   select style, ss_sku, ss_name, ss_colour, ss_sizes,
          coalesce(
            json_agg(json_build_object('a', adidas_article, 'n', adidas_name,
-                                      'c', adidas_colour, 'q', in_house_qty)
+                                      'c', adidas_colour, 'q', in_house_qty,
+                                      'cur', is_current, 'vs', vendor_stock)
                     order by rank)
              filter (where adidas_article is not null),
            '[]'::json) as articles
