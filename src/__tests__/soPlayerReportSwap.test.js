@@ -1,4 +1,4 @@
-import { mapLinesToSoItems } from '../lib/soPlayerReport';
+import { mapLinesToSoItems, materializeMappedLine } from '../lib/soPlayerReport';
 
 // Store lines as they sit in webstore_order_items — one per player, qty 1.
 const storeLines = (n, over) => Array.from({ length: n }, (_, i) => ({ order_id: 'o' + i, player_name: 'P' + i, qty: 1, ...over }));
@@ -71,6 +71,62 @@ describe('mapLinesToSoItems — matches that must not move', () => {
     const { lines, unmatched } = mapLinesToSoItems(black(3, 'S'), [visorOnly]);
     lines.forEach((l) => { expect(l._unmatched).toBe(true); });
     expect(unmatched).toEqual(['1203.080']);
+  });
+});
+
+describe('mapLinesToSoItems — the SO is the source of truth for sizes and new lines', () => {
+  test('same-SKU size change follows the SO (SO-2021: HI0704 XS → S)', () => {
+    const source = [{ id: 'hi-1', order_id: 'o1', sku: 'HI0704', name: 'Adidas W. Team Issue Pants', color: 'Black', size: 'XS', qty: 1 }];
+    const soItems = [{ sku: 'HI0704', name: 'Adidas W. Team Issue Pants', color: 'Black', sizes: { XS: 0, S: 1 } }];
+    const { lines, substitutions, unmatched } = mapLinesToSoItems(source, soItems);
+    const current = materializeMappedLine(lines[0]);
+    expect(current.sku).toBe('HI0704');
+    expect(current.size).toBe('S');
+    expect(current._wasSize).toBe('XS');
+    expect(current._verify).toBe(false);
+    expect(substitutions).toEqual([]);
+    expect(unmatched).toEqual([]);
+  });
+
+  test('deleted old SKU plus a newly-added replacement line follows the new SKU', () => {
+    const source = [{ id: 'hi-1', order_id: 'o1', sku: 'HI0704', name: 'Old Pant', color: 'Black', size: 'XS', qty: 1 }];
+    const soItems = [{ sku: 'HI0706', name: 'Replacement Pant', color: 'Black', sizes: { XS: 1 } }];
+    const { lines, substitutions, unmatched } = mapLinesToSoItems(source, soItems);
+    const current = materializeMappedLine(lines[0]);
+    expect(current.sku).toBe('HI0706');
+    expect(current.name).toBe('Replacement Pant');
+    expect(current.size).toBe('XS');
+    expect(current._wasSku).toBe('HI0704');
+    expect(current._verify).toBe(false);
+    expect(substitutions).toEqual([{ from: 'HI0704', to: 'HI0706 Black', verify: false }]);
+    expect(unmatched).toEqual([]);
+  });
+
+  test('a unique new line that also changes size is caught and flagged for review', () => {
+    const source = [{ id: 'hi-1', order_id: 'o1', sku: 'HI0704', name: 'Old Pant', color: 'Black', size: 'XS', qty: 1 }];
+    const soItems = [{ sku: 'HI0706', name: 'Replacement Pant', color: 'Black', sizes: { S: 1 } }];
+    const { lines } = mapLinesToSoItems(source, soItems);
+    const current = materializeMappedLine(lines[0]);
+    expect(current.sku).toBe('HI0706');
+    expect(current.size).toBe('S');
+    expect(current._wasSku).toBe('HI0704');
+    expect(current._wasSize).toBe('XS');
+    expect(current._verify).toBe(true);
+  });
+
+  test('equally plausible replacement lines are never presented as certain', () => {
+    const source = [
+      { id: 'a1', order_id: 'o1', sku: 'OLD-A', name: 'Old A', size: 'XS', qty: 1 },
+      { id: 'b1', order_id: 'o2', sku: 'OLD-B', name: 'Old B', size: 'XS', qty: 1 },
+    ];
+    const soItems = [
+      { sku: 'NEW-A', name: 'New A', sizes: { XS: 1 } },
+      { sku: 'NEW-B', name: 'New B', sizes: { XS: 1 } },
+    ];
+    const { lines, unmatched } = mapLinesToSoItems(source, soItems);
+    expect(unmatched).toEqual([]);
+    expect(lines).toHaveLength(2);
+    lines.forEach((l) => { expect(l._wasSku).toMatch(/^OLD-/); expect(l._verify).toBe(true); });
   });
 });
 

@@ -720,7 +720,7 @@ export function computeOrderTracking({ orders = [], so = null, products = [], in
         : 'awaiting';
       // sku/soName carry the matched SO line down so the order grid can show
       // the same (possibly re-mapped) SKU that's on the SO.
-      out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status, sku: (b && b.sku) || i.sku || '', soName: (b && b.names[0]) || '' };
+      out[i.id] = { ordered: qty, billed, received, onIf, onHand, need: Math.max(0, qty - covered), status, sku: (b && b.sku) || i.sku || '', soName: (b && b.names[0]) || i.name || '', size: i.size || '' };
     });
   });
   return out;

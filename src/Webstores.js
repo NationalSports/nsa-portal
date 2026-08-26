@@ -18,6 +18,7 @@ import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCl
 import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import QuickMockBuilder from './QuickMockBuilder';
+import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 
@@ -309,18 +310,28 @@ const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.pro
 // exist in this file (loadStores stats, gatherAll, OrdersTab's `listable`, …) with
 // slightly different exclusion sets — use this helper in new code and fold the old
 // copies in as they're touched.
-const isLiveWebstoreOrder = (o) => o && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded';
-
 // Render the calendar day a batch cutoff instant refers to. The cutoff is stored as
 // the creating rep's LOCAL end-of-day; rendering that instant directly shows the
 // NEXT day for viewers east of the creator. Nudging back 12h lands mid-day of the
 // intended date for any viewer within ±11h of the creator's timezone.
 const batchCutoffDay = (c) => new Date(new Date(c).getTime() - 12 * 3600 * 1000).toLocaleDateString();
 
+function reportSyncBanner(audit) {
+  if (!audit) return '';
+  const rows = [];
+  (audit.substitutions || []).forEach((s) => rows.push(`↺ ${esc(s.soId)} · ${esc(s.from)} → <b>${esc(s.to)}</b>${s.verify ? ' <i>(best match — verify)</i>' : ''}`));
+  (audit.sizeChanges || []).forEach((s) => rows.push(`↺ ${esc(s.soId)} · ${esc(s.sku)} size ${esc(s.from)} → <b>${esc(s.to)}</b>${s.verify ? ' <i>(verify player assignment)</i>' : ''}`));
+  (audit.unmatched || []).forEach((u) => rows.push(`⚠ ${esc(u.soId)} · ${esc(u.item)} is active in the store but not matched to the SO`));
+  (audit.missingSos || []).forEach((soId) => rows.push(`⚠ ${esc(soId)} could not be loaded`));
+  (audit.wrongStoreLinks || []).forEach((x) => rows.push(`⚠ ${esc(x.soId)} belongs to another store — fix the batch link before fulfillment`));
+  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} SO units vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  return rows.length ? `<div class="syncwarn"><b>Sales-order reconciliation:</b><br>${rows.join('<br>')}</div>` : '';
+}
+
 // ─── Per-player roll-up ──────────────────────────────────────────────
 // One section per player: exactly what they're getting across the whole store,
 // plus the roster members who haven't ordered yet.
-function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
+function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
   const players = {};
   lines.forEach((i) => {
     const o = orderById[i.order_id] || {};
@@ -329,7 +340,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
-    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
     // Who placed it + where it goes — the "more info" for each player block.
     if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
@@ -341,7 +352,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const block = (p) => {
-    const rows = p.items.map((it) => `<tr><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    const rows = p.items.map((it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
     const contacts = Object.values(p.orders).map((c) => {
       const sh = shipLine(c.ship);
       return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
@@ -360,15 +371,16 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     table.grid{width:100%;border-collapse:collapse;font-size:13px}
     .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9}.grid td.c{text-align:center}.grid td.b{font-weight:800}
-    .sub{font-size:11px;color:#94a3b8}
+    .sub{font-size:11px;color:#94a3b8}.was{font-size:11px;color:#b45309;font-weight:700}.warnrow td{background:#fffbeb}
     .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
     .contact{font-size:12px;color:#475569;margin:0 0 8px;line-height:1.5}.contact a{color:#2563eb;text-decoration:none}.contact .ship{color:#64748b;margin-top:2px}
-    .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}
+    .warn,.syncwarn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}.syncwarn{margin:12px 0}
   </style></head><body>
     <h1>Player Report</h1>
     <div class="meta">${esc(store.name)} · ${new Date().toLocaleString()}</div>
     <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
+    ${reportSyncBanner(audit)}
     ${list.map(block).join('') || '<div class="meta">No orders yet.</div>'}
     ${notOrdered.length ? `<h3>Roster — not ordered yet</h3><div class="warn">${notOrdered.map((r) => esc(r.player_name || '') + (r.player_number ? ' #' + esc(String(r.player_number)) : '')).join(' · ')}</div>` : ''}
   </body></html>`);
@@ -641,18 +653,22 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
 // One row per product (effective SKU): image, name, SKU, color, and how many
 // of each size were ordered. The concise "what do we actually need to make"
 // view — no buyers, no stock math.
-function buildProductReport(store, label, lines, metaByPid, stockByPid) {
+function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
   const groups = {};
   lines.forEach((i) => {
     const sku = i._effSku || i.sku || '';
-    const key = (i.product_id || '') + '|' + sku;
+    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '');
     const m = (i.product_id && metaByPid[i.product_id]) || {};
     const st = (i.product_id && stockByPid[i.product_id]) || {};
-    const g = groups[key] || (groups[key] = { name: m.name || _itemName(i, stockByPid), sku, color: m.color || st.color || '', image: m.image || st.image_front_url || '', sizes: {}, total: 0 });
+    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = i.size || 'OS';
     const qty = i.qty || 1;
     g.sizes[size] = (g.sizes[size] || 0) + qty;
     g.total += qty;
+    if (i._wasSku) g.wasSkus.add(i._wasSku);
+    if (i._wasSize) g.wasSizes.add(i._wasSize);
+    g.verify = g.verify || !!i._verify;
+    g.unmatched = g.unmatched || !!i._unmatched;
   });
   const list = Object.values(groups).sort((a, b) => a.name.localeCompare(b.name) || a.sku.localeCompare(b.sku));
   const totalUnits = list.reduce((a, g) => a + g.total, 0);
@@ -662,7 +678,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid) {
       .map((sz) => `<span class="sz"><b>${esc(sz)}</b> × ${g.sizes[sz]}</span>`).join('');
     return `<tr>
       <td class="img">${g.image ? `<img src="${esc(g.image)}" alt="">` : '<div class="noimg">—</div>'}</td>
-      <td><div class="nm">${esc(g.name)}</div>${g.sku ? `<div class="sub">${esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}</td>
+      <td><div class="nm">${esc(g.name)}</div>${g.sku ? `<div class="sub">${esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}${g.wasSkus.size ? `<div class="was">↺ was SKU ${[...g.wasSkus].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.wasSizes.size ? `<div class="was">↺ includes size change from ${[...g.wasSizes].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td>
       <td class="szs">${sizes}</td>
       <td class="c b">${g.total}</td>
     </tr>`;
@@ -679,7 +695,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid) {
     .grid td.c{text-align:center}.grid td.b{font-weight:800;font-size:15px}
     td.img{width:56px}td.img img{width:48px;height:48px;object-fit:contain;border:1px solid #e2e8f0;border-radius:8px;background:#fff}
     .noimg{width:48px;height:48px;border:1px dashed #e2e8f0;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#cbd5e1}
-    .nm{font-weight:700}.sub{font-size:11px;color:#94a3b8}
+    .nm{font-weight:700}.sub{font-size:11px;color:#94a3b8}.was{font-size:11px;color:#b45309;font-weight:700}.syncwarn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7;margin:12px 0}
     td.szs{line-height:2}
     .sz{display:inline-block;background:#f1f5f9;border-radius:6px;padding:2px 8px;margin-right:6px;font-size:12px;white-space:nowrap}
     .sz b{font-weight:800}
@@ -688,6 +704,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid) {
     <h1>Product Report</h1>
     <div class="meta">${esc(store.name)} · ${esc(label)} · ${new Date().toLocaleString()}</div>
     <div class="chips">${chip(list.length, 'Products')}${chip(totalUnits, 'Units ordered')}</div>
+    ${reportSyncBanner(audit)}
     ${list.length ? `<table class="grid"><thead><tr><th></th><th>Item</th><th>Sizes ordered</th><th class="c">Total</th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>` : '<div class="meta">No orders yet.</div>'}
   </body></html>`);
 }
@@ -3265,14 +3282,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const gatherBatch = useCallback(async () => {
     // !backorder_of: bagging's child orders re-produce nothing — their goods
     // arrive via receiving; batching one would produce the shorted qty twice.
-    const open = (detail?.orders || []).filter((o) => !o.so_id && !o.backorder_of && o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const open = (detail?.orders || []).filter((o) => !o.so_id && !o.backorder_of && isLiveWebstoreOrder(o));
     const openIds = new Set(open.map((o) => o.id));
+    const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
     const skuMap = sizeSkuMapOf(detail?.catalog);
-    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), skuMap);
+    const lines = annotateEffSkus(activeWebstoreLines((detail?.orderItems || []).filter((i) => openIds.has(i.order_id)), orderById), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     const stockBySku = await fetchOverrideSkuStock(lines);
-    const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
     return { open, openIds, lines, stockByPid, stockBySku, orderById };
   }, [detail]);
 
@@ -3287,23 +3304,48 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // All valid (non-cancelled, non-pending) orders — the whole-store picture for
   // the player + stock reports (not just the unbatched ones the FAFO report uses).
   const gatherAll = useCallback(async () => {
-    const valid = (detail?.orders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const valid = (detail?.orders || []).filter(isLiveWebstoreOrder);
     const ids = new Set(valid.map((o) => o.id));
+    const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
     const skuMap = sizeSkuMapOf(detail?.catalog);
-    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent), skuMap);
+    const sourceLines = annotateEffSkus(activeWebstoreLines((detail?.orderItems || []).filter((i) => ids.has(i.order_id)), orderById), skuMap);
+    const soIds = [...new Set(valid.map((o) => o.so_id).filter(Boolean))];
+    const soItemsBySo = {};
+    const soMetaBySo = {};
+    soIds.forEach((id) => { soItemsBySo[id] = []; });
+    for (let i = 0; i < soIds.length; i += 100) {
+      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes').in('so_id', soIds.slice(i, i + 100));
+      if (error) throw new Error('Could not reconcile Sales Order items: ' + error.message);
+      (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
+    }
+    for (let i = 0; i < soIds.length; i += 100) {
+      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id').in('id', soIds.slice(i, i + 100));
+      if (error) throw new Error('Could not validate Sales Order links: ' + error.message);
+      (data || []).forEach((so) => { soMetaBySo[so.id] = so; });
+    }
+    let { lines, audit } = resolveWebstoreReportLines({ orders: valid, lines: sourceLines, soItemsBySo, soMetaBySo });
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
-    const stockBySku = await fetchOverrideSkuStock(lines);
-    const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
-    return { valid, lines, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
+    // Replacement lines may not exist in this store's original catalog. Hydrate
+    // their current master-product image/name by the SO SKU, never by the stale
+    // checkout product id.
+    const reportSkus = [...new Set(lines.filter((l) => l._wasSku && l._effSku).map((l) => l._effSku))];
+    const productBySku = {};
+    for (let i = 0; i < reportSkus.length; i += 100) {
+      const { data } = await supabase.from('products').select('id,sku,name,color,image_front_url').in('sku', reportSkus.slice(i, i + 100));
+      (data || []).forEach((p) => { if (p.sku && !productBySku[p.sku]) productBySku[p.sku] = p; });
+    }
+    lines = lines.map((l) => { const p = productBySku[l._effSku]; return p ? { ...l, product_id: l.product_id || p.id, name: l.name || p.name, color: l.color || p.color, _reportImage: p.image_front_url || '' } : l; });
+    const stockBySku = await fetchSkuStock(lines.filter((l) => l._effSku && (l._wasSku || !l.product_id || !stockByPid[l.product_id])).map((l) => l._effSku));
+    return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
   // Per-player roll-up (printable): every player and exactly what they ordered.
   const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, orderById, roster, stockByPid } = await gatherAll();
+    const { valid, lines, audit, orderById, roster, stockByPid } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildPlayerReport(sel, lines, orderById, roster, stockByPid);
+    buildPlayerReport(sel, lines, orderById, roster, stockByPid, audit);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
@@ -3320,7 +3362,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // first, then the master product photo / storefront snapshot).
   const productReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, stockByPid } = await gatherAll();
+    const { valid, lines, audit, stockByPid } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     const metaByPid = {};
     (detail.catalog || []).forEach((c) => {
@@ -3328,7 +3370,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const s = detail.stockByWp?.[c.id] || {};
       metaByPid[c.product_id] = { image: c.image_url || c.image_front_url || s.image_front_url || '', color: s.color || '', name: c.display_name || s.name || '' };
     });
-    buildProductReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, metaByPid, stockByPid);
+    buildProductReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, metaByPid, stockByPid, audit);
   }, [sel, detail, gatherAll, flash]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
@@ -3390,7 +3432,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const openIds = new Set(open.map((o) => o.id));
     const { rows: openItems, error: fiErr } = await fetchOrderItemRows(supabase, [...openIds]);
     if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
-    const lines = annotateEffSkus(openItems.filter((i) => !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
+    const openById = {}; open.forEach((o) => { openById[o.id] = o; });
+    const lines = annotateEffSkus(activeWebstoreLines(openItems, openById), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
@@ -12889,7 +12932,12 @@ function mergeStoreTracking(sos, orders, itemsByOrder, products) {
   (orders || []).forEach((w) => { if (w.so_id && isLiveWebstoreOrder(w)) (bySo[w.so_id] = bySo[w.so_id] || []).push(w); });
   const merged = {};
   (sos || []).forEach((so) => {
-    const bOrders = (bySo[so.id] || []).map((w) => ({ ...w, items: itemsByOrder[w.id] || [] }));
+    const linked = bySo[so.id] || [];
+    const orderById = {}; linked.forEach((w) => { orderById[w.id] = w; });
+    const active = activeWebstoreLines(linked.flatMap((w) => itemsByOrder[w.id] || []), orderById);
+    const mapped = mapLinesToSoItems(active, so.items || []).lines.map(materializeMappedLine);
+    const mappedByOrder = {}; mapped.forEach((i) => { (mappedByOrder[i.order_id] = mappedByOrder[i.order_id] || []).push(i); });
+    const bOrders = linked.map((w) => ({ ...w, items: mappedByOrder[w.id] || [] }));
     if (bOrders.length) Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: so.items }, products: products || [], includeIF: true }));
   });
   return merged;
@@ -12955,9 +13003,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
               return (
                 <tr key={i.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={td}>{idx === 0 ? <span style={{ fontWeight: 600 }}>{w.buyer_name || w.buyer_email || '—'}</span> : ''}</td>
-                  <td style={td}>{i.name || i.sku || '—'}</td>
+                  <td style={td}>{t.soName || i.name || i.sku || '—'}</td>
                   <td style={td}>{t.sku ? <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px', whiteSpace: 'nowrap' }} title="SKU from the linked Sales Order">{t.sku}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
-                  <td style={td}>{i.size || '—'}</td>
+                  <td style={td}>{t.size || i.size || '—'}</td>
                   <td style={ctd}>{num(t.onHand)}</td>
                   <td style={ctd}>{num(t.ordered, true)}{t.onIf > 0 && <span style={{ color: '#0369a1', fontWeight: 700, fontSize: 11 }}> · {t.onIf} IF</span>}</td>
                   <td style={ctd}>{num(t.billed)}</td>
@@ -12977,8 +13025,15 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   // show the item number production actually sourced.
   const batchGroups = (soId) => {
     const skuMap = sizeSkuMapOf(catalog);
-    const linked = orders.filter((o) => o.so_id === soId);
-    return linked.map((o) => ({ order: o, items: annotateEffSkus(orderItems.filter((i) => i.order_id === o.id), skuMap) }));
+    const linked = orders.filter((o) => o.so_id === soId && isLiveWebstoreOrder(o));
+    const orderById = {}; linked.forEach((o) => { orderById[o.id] = o; });
+    const active = annotateEffSkus(activeWebstoreLines(orderItems.filter((i) => orderById[i.order_id]), orderById), skuMap);
+    const so = (sos || []).find((o) => o.id === soId);
+    const current = so ? mapLinesToSoItems(active, so.items || []).lines.map(materializeMappedLine) : active;
+    const partsById = {}; current.forEach((i) => { (partsById[i.id] = partsById[i.id] || []).push(i); });
+    Object.values(partsById).forEach((parts) => { let shipped = Number(parts[0]?.shipped_qty) || 0; const sourceShipped = shipped; parts.forEach((p) => { p._sourceShippedQty = sourceShipped; p.shipped_qty = Math.min(Number(p.qty) || 0, shipped); shipped = Math.max(0, shipped - p.shipped_qty); }); });
+    const byOrder = {}; current.forEach((i) => { (byOrder[i.order_id] = byOrder[i.order_id] || []).push(i); });
+    return linked.map((o) => ({ order: o, items: byOrder[o.id] || [] }));
   };
   const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
   const homeGroups = (soId) => batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
@@ -13031,7 +13086,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       const who = o.buyer_name || o.buyer_email || o.id;
       const lines = g.items.filter((i) => !i.is_bundle_parent);
       // Units still to ship per line = ordered − already shipped − short-now.
-      const plan = lines.map((i) => { const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0); return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) }; }).filter((x) => x.qty > 0);
+      const plan = lines.map((i) => {
+        const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0);
+        const alreadyMoved = /^(backordered|refunded)$/i.test(i.short_status || '');
+        return { item: i, qty: Math.max(0, remaining - (alreadyMoved ? 0 : (Number(i.missing_qty) || 0))) };
+      }).filter((x) => x.qty > 0);
       if (!plan.length) { held++; continue; }
       const addrErr = validateShipAddress(o.ship_address);
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
@@ -13039,8 +13098,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       try {
         const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
         if (labelData) labels.push(labelData);
-        for (const x of plan) { const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id); } catch {} i.shipped_qty = sq; if (done) i.line_status = 'shipped'; }
-        const allShipped = lines.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
+        const shippedById = {}; const targetById = {}; const lineById = {};
+        lines.forEach((i) => { targetById[i.id] = (targetById[i.id] || 0) + (Number(i.qty) || 0); lineById[i.id] = i; });
+        plan.forEach((x) => { shippedById[x.item.id] = (shippedById[x.item.id] || 0) + x.qty; });
+        for (const [id, add] of Object.entries(shippedById)) { const i = lineById[id]; const sq = (Number(i._sourceShippedQty) || 0) + add; const done = sq >= (targetById[id] || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', id); } catch {} lines.filter((l) => l.id === id).forEach((l) => { l.shipped_qty = sq; l._sourceShippedQty = sq; if (done) l.line_status = 'shipped'; }); }
+        const allShipped = Object.keys(targetById).every((id) => (Number(lineById[id].shipped_qty) || 0) >= targetById[id]);
         try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
       } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
