@@ -13,6 +13,9 @@ export const BOT_DISPLAY_NAME = 'Chief of Staff';
 export const BOT_TEAM_MEMBER_NAME = 'Chief of Staff (Grok Bot)';
 export const botTeamMemberName = (member) =>
   member?.id === BOT_MEMBER_ID ? BOT_TEAM_MEMBER_NAME : member?.name;
+export const findOrderingBot = (members) =>
+  (members || []).find((member) =>
+    member?.id === BOT_MEMBER_ID && member.is_active !== false && member.role === 'bot');
 
 // Only this portal user sees/uses the ordering bot (status pill, assign button,
 // and the bot option in the Assign Task dropdown). Tasks themselves are
