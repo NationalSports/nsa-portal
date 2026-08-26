@@ -4,7 +4,7 @@ import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdF
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
-import { calcSOStatus } from './components';
+import { calcSOStatus, resolveOrderShipTo, orderShipToSub, custShipAddrSub, resolveOrderBillTo, orderBillToSub } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
@@ -1301,12 +1301,19 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           rows.push({cells:[{value:eq2,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+label+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
         });
       });
-      const eBillAddr=customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':'');
+      // Bill To / Ship To resolve through the same helpers the rep-side estimate PDF uses, so the
+      // copy a coach downloads here matches the copy their rep printed or emailed — an estimate
+      // billed to the district office and shipped to a school site says so on both.
+      const eBillSel=resolveOrderBillTo(est,customer,allCustomers);
+      const eBillAddr=orderBillToSub(est,customer,allCustomers)||(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':''));
+      const eShipSel=resolveOrderShipTo(est,customer);
+      const eShipAddr=orderShipToSub(est,customer)||custShipAddrSub(customer);
       printDoc({
         title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
         headerRight:'<div class="ta">'+_$(estTotal)+'</div>',
         infoBoxes:[
-          {label:'Bill To',value:customer?.name||'—',sub:eBillAddr||''},
+          {label:'Bill To',value:(eBillSel&&eBillSel.name)||customer?.name||'—',sub:eBillAddr||''},
+          ...(eShipAddr?[{label:'Ship To',value:(eShipSel&&eShipSel.name)||customer?.name||'—',sub:eShipAddr}]:[]),
           {label:'Sales Rep',value:rep?.name||'—'},
           {label:'Estimate',value:est.id},
           {label:'Memo',value:est.memo||'—',flex:2},
