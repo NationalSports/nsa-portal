@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { plateFromCounter, boxUnits, buildBoxLabel, BOX_STATUS_META } from '../boxTracking';
 import { printQrLabel, printQrLabels } from '../utils';
-import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch, buildLocationLabels, submitPlanCsv, contentsToLines, linesToContents } from './moveLogic';
+import { classifyMoveScan, boxesForRef, parseLegacyItems, makeLegacyMoveBox, normShelf, moveStats, inventoryTally, buildSubmitPlan, isCountedInventoryBox, boxStage, STAGE_META, placePatch, buildLocationLabels, submitPlanCsv, contentsToLines, linesToContents, splitGroups, assignBySo, assignEachLine, makeSplitBoxRow } from './moveLogic';
 
 // Move Check-In station — September building move. Routed at /move-checkin by
 // src/index.js (same wiring as /floor-station). Staff mode only: sign in to the
@@ -190,6 +190,8 @@ export default function MoveCheckIn() {
   const [placeKind, setPlaceKind] = useState('staging'); // Place tab: 'staging' | 'shelf'
   const [locCodes, setLocCodes] = useState(''); const [locOpen, setLocOpen] = useState(false); // location-label printer
   const [lgOpen, setLgOpen] = useState(false); // hand-entry panel on the Check In tab
+  const [splitAssign, setSplitAssign] = useState(null); // null = not splitting; array parallel to detail.contents
+  const [splitBusy, setSplitBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState(null); // box opened from the Boxes tab
   const [q, setQ] = useState('');
@@ -230,7 +232,7 @@ export default function MoveCheckIn() {
     return () => clearInterval(t);
   }, [signedIn, reload]);
 
-  const show = (kind, title, sub) => { setBanner({ kind, title, sub, at: Date.now() }); (kind === 'ok' ? fxOk : kind === 'dupe' ? fxDupe : fxErr)(); };
+  const show = (kind, title, sub, boxId) => { setBanner({ kind, title, sub, boxId: boxId || null, at: Date.now() }); (kind === 'ok' ? fxOk : kind === 'dupe' ? fxDupe : fxErr)(); };
 
   const patchBox = async (id, upd) => {
     const patch = { ...upd, updated_at: new Date().toISOString() };
@@ -258,9 +260,9 @@ export default function MoveCheckIn() {
     }
     if (!already) setSessionCount((n) => n + 1);
     const units = boxUnits(box.contents);
-    if (place) show(already && samePlace ? 'dupe' : 'ok', box.id + ' → ' + (place.kind === 'shelf' ? 'shelf ' : 'staging ') + place.code, boxTitle(box) + (units ? ' · ' + units + ' units' : ''));
-    else if (already) show('dupe', box.id + ' — already checked in', (box.checked_in_at ? fmtWhen(box.checked_in_at) : '') + (whereStr(box) ? ' · ' + whereStr(box) : ''));
-    else show('ok', box.id + ' checked in ✓', boxTitle(box) + (units ? ' · ' + units + ' units' : '') + (whereStr(box) ? ' · ' + whereStr(box) : ''));
+    if (place) show(already && samePlace ? 'dupe' : 'ok', box.id + ' → ' + (place.kind === 'shelf' ? 'shelf ' : 'staging ') + place.code, boxTitle(box) + (units ? ' · ' + units + ' units' : ''), box.id);
+    else if (already) show('dupe', box.id + ' — already checked in', (box.checked_in_at ? fmtWhen(box.checked_in_at) : '') + (whereStr(box) ? ' · ' + whereStr(box) : ''), box.id);
+    else show('ok', box.id + ' checked in ✓', boxTitle(box) + (units ? ' · ' + units + ' units' : '') + (whereStr(box) ? ' · ' + whereStr(box) : ''), box.id);
   };
 
   // A BX plate that isn't in the table (label printed while the table lagged,
@@ -287,6 +289,32 @@ export default function MoveCheckIn() {
     } else if (!(await patchBox(a.boxId, a.prev))) return;
     if (a.wasCheckIn) setSessionCount((n) => Math.max(0, n - 1));
     show('dupe', '↩︎ Undid ' + a.label, a.kind === 'insert' ? 'The new plate was removed.' : 'Box restored to how it was before that scan.');
+  };
+
+  // Execute a carton split: mint a plate per new group, insert the new boxes
+  // (inheriting the source's check-in stamp/location/assignment), shrink the
+  // original to what stayed, and print one label per new box.
+  const runSplit = async (srcId, assignment) => {
+    if (splitBusy) return;
+    const src = boxes.find((b) => b.id === srcId);
+    if (!src) return;
+    const { keep, newBoxes } = splitGroups(src.contents, assignment);
+    if (!newBoxes.length) { show('err', 'Nothing to split', 'Tap lines to send them to New box 1, 2, …'); return; }
+    setSplitBusy(true);
+    try {
+      const rows = [];
+      for (const contents of newBoxes) {
+        const plate = await mintPlate();
+        rows.push(makeSplitBoxRow(src, plate, contents));
+      }
+      const { error } = await supabase.from('boxes').insert(rows);
+      if (error) { show('err', 'Split failed', error.message); return; }
+      if (!(await patchBox(src.id, { contents: keep }))) return;
+      setBoxes((prev) => [...rows, ...prev]);
+      setDetail(null); setSplitAssign(null);
+      show('ok', src.id + ' split into ' + (rows.length + 1) + ' boxes ✓', rows.map((r) => r.id).join(' · ') + ' — labels printing');
+      try { printQrLabels(rows.map((r) => buildBoxLabel(r, { program: r.assigned_to === 'inventory' ? 'INVENTORY' : '', scanBase: window.location.origin + '/' }))); } catch (e) { console.warn('[MoveCheckIn] split labels:', e); }
+    } finally { setSplitBusy(false); }
   };
 
   // Plain function on purpose (not useCallback): ContinuousScanner reads the
@@ -463,6 +491,7 @@ export default function MoveCheckIn() {
     <div style={{ borderRadius: 10, padding: '12px 14px', margin: '10px 0', background: banner.kind === 'ok' ? '#14532d' : banner.kind === 'dupe' ? '#78350f' : '#7f1d1d', border: '1px solid ' + (banner.kind === 'ok' ? '#22c55e' : banner.kind === 'dupe' ? '#f59e0b' : '#ef4444') }}>
       <div style={{ fontSize: 18, fontWeight: 800 }}>{banner.title}</div>
       {banner.sub ? <div style={{ fontSize: 13, color: '#e2e8f0', marginTop: 2 }}>{banner.sub}</div> : null}
+      {banner.boxId ? <button onClick={() => { const b = boxes.find((x) => x.id === banner.boxId); if (b) { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); setSplitAssign(null); } }} style={{ marginTop: 8, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff', borderRadius: 8, padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Open {banner.boxId} — split / edit ▸</button> : null}
     </div>
   );
 
@@ -611,7 +640,7 @@ export default function MoveCheckIn() {
           {recent.map((b) => {
             const sm = STAGE_META[boxStage(b)];
             return (
-              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', marginBottom: 6, color: '#f1f5f9', cursor: 'pointer' }}>
+              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); setSplitAssign(null); }} style={{ display: 'block', width: '100%', textAlign: 'left', background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '8px 10px', marginBottom: 6, color: '#f1f5f9', cursor: 'pointer' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <b style={{ fontFamily: 'monospace', fontSize: 14 }}>{b.id}</b>
                   <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
@@ -640,7 +669,7 @@ export default function MoveCheckIn() {
             const stage = boxStage(b);
             const sm = STAGE_META[stage];
             return (
-              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); }} style={{ ...S.card, width: '100%', textAlign: 'left', color: '#f1f5f9', cursor: 'pointer', marginBottom: 6, display: 'block' }}>
+              <button key={b.id} onClick={() => { setDetail({ ...b, _shelf: b.bin || b.staging_area || '' }); setEditLines(null); setSplitAssign(null); }} style={{ ...S.card, width: '100%', textAlign: 'left', color: '#f1f5f9', cursor: 'pointer', marginBottom: 6, display: 'block' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <b style={{ fontFamily: 'monospace', fontSize: 15 }}>{b.id}</b>
                   <span style={{ fontSize: 12, color: sm.color, fontWeight: 700 }}>{stage === 'not_in' && st && b.status !== 'staged' ? st.label : sm.label}{b.bin ? ' · ' + b.bin : b.staging_area ? ' · ' + b.staging_area : ''}</span>
@@ -716,18 +745,47 @@ export default function MoveCheckIn() {
       )}
 
       {detail && (
-        <div className="mc-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }} onClick={() => { setDetail(null); setEditLines(null); }}>
+        <div className="mc-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }} onClick={() => { setDetail(null); setEditLines(null); setSplitAssign(null); }}>
           <div className="mc-sheet" style={{ ...S.card, width: '100%', maxWidth: 560, margin: '0 auto', borderRadius: '14px 14px 0 0', maxHeight: '80vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <b style={{ fontFamily: 'monospace', fontSize: 18 }}>{detail.id}</b>
-              <button onClick={() => { setDetail(null); setEditLines(null); }} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>✕</button>
+              <button onClick={() => { setDetail(null); setEditLines(null); setSplitAssign(null); }} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>✕</button>
             </div>
             <div style={{ fontSize: 13, color: '#94a3b8', margin: '2px 0 10px' }}>{boxTitle(detail)} · {boxUnits(detail.contents)} units{detail.checked_in_at ? ' · checked in ' + fmtWhen(detail.checked_in_at) + (detail.checked_in_by ? ' by ' + detail.checked_in_by : '') : ' · NOT checked in'}</div>
-            {editLines == null ? <>
+            {editLines == null && splitAssign != null ? (() => {
+              const contents = detail.contents || [];
+              const targets = splitAssign;
+              const maxT = targets.reduce((a, t) => Math.max(a, t), 0);
+              const groups = splitGroups(contents, targets);
+              const cycle = (i) => setSplitAssign(targets.map((t, j) => j === i ? (t >= Math.min(maxT + 1, contents.length - 1) ? 0 : t + 1) : t));
+              const tColor = (t) => ['#334155', '#166534', '#7c3aed', '#b45309', '#0e7490', '#9d174d'][t % 6];
+              return <>
+                <div style={{ ...S.cap, marginTop: 4 }}>Split — tap a line to move it to the next box</div>
+                <div style={{ display: 'flex', gap: 6, margin: '8px 0' }}>
+                  <button onClick={() => setSplitAssign(assignBySo(contents))} style={{ ...S.btn('#1e293b'), fontSize: 13, padding: '9px', border: '1px solid #334155' }}>By job / SO</button>
+                  <button onClick={() => setSplitAssign(assignEachLine(contents))} style={{ ...S.btn('#1e293b'), fontSize: 13, padding: '9px', border: '1px solid #334155' }}>Each line</button>
+                  <button onClick={() => setSplitAssign(contents.map(() => 0))} style={{ ...S.btn('#1e293b'), fontSize: 13, padding: '9px', border: '1px solid #334155' }}>Reset</button>
+                </div>
+                {contents.map((e, i) => (
+                  <button key={i} onClick={() => cycle(i)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', background: '#0f172a', border: '1px solid ' + tColor(targets[i]), borderRadius: 8, padding: '9px 10px', marginBottom: 5, color: '#f1f5f9', cursor: 'pointer', fontSize: 13 }}>
+                    <span>{[(e.sku || '').trim(), e.name].filter(Boolean).join(' ')}{e.so_id ? ' · ' + e.so_id : ''} — {Object.entries(e.sizes || {}).map(([sz, v]) => sz + ':' + v).join(' ')}</span>
+                    <b style={{ color: '#fff', background: tColor(targets[i]), borderRadius: 999, padding: '3px 10px', fontSize: 12, whiteSpace: 'nowrap' }}>{targets[i] === 0 ? 'Keeps' : 'New ' + targets[i]}</b>
+                  </button>
+                ))}
+                <div style={{ fontSize: 12, color: '#94a3b8', margin: '4px 0 8px' }}>{groups.keep.length} line{groups.keep.length === 1 ? '' : 's'} stay in {detail.id} · {groups.newBoxes.length} new box{groups.newBoxes.length === 1 ? '' : 'es'} (labels print automatically)</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                  <button onClick={() => runSplit(detail.id, targets)} disabled={splitBusy || !groups.newBoxes.length} style={{ ...S.btn('#166534', splitBusy || !groups.newBoxes.length), fontSize: 14, padding: '10px' }}>{splitBusy ? 'Splitting…' : '✂️ Split + print labels'}</button>
+                  <button onClick={() => setSplitAssign(null)} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px' }}>Cancel</button>
+                </div>
+              </>;
+            })() : editLines == null ? <>
               {(detail.contents || []).map((e, i) => (
                 <div key={i} style={{ fontSize: 13, padding: '4px 0', borderTop: '1px solid #334155' }}>{[(e.sku || '').trim(), e.name].filter(Boolean).join(' ')} — {Object.entries(e.sizes || {}).map(([s, v]) => s + ':' + v).join(' ')}</div>
               ))}
-              <button onClick={() => { setEditLines(contentsToLines(detail.contents)); setEdQ(''); setEdResults([]); }} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px', margin: '8px 0 4px' }}>✏️ Edit contents</button>
+              <div style={{ display: 'flex', gap: 8, margin: '8px 0 4px' }}>
+                <button onClick={() => { setEditLines(contentsToLines(detail.contents)); setEdQ(''); setEdResults([]); }} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px' }}>✏️ Edit contents</button>
+                {(detail.contents || []).length > 1 && <button onClick={() => setSplitAssign(assignBySo(detail.contents))} style={{ ...S.btn('#334155'), fontSize: 14, padding: '10px' }}>✂️ Split box</button>}
+              </div>
             </> : <>
               <div style={{ ...S.cap, marginTop: 4 }}>Edit contents — fix quantities, remove wrong lines, add missed SKUs</div>
               {editLines.map((l, li) => (

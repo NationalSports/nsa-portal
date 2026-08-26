@@ -223,6 +223,59 @@ describe('three-stage flow: checked in → staging → on shelf', () => {
   });
 });
 
+
+describe('splitting a mixed carton at check-in', () => {
+  const { splitGroups, assignBySo, assignEachLine, makeSplitBoxRow } = require('../movecheckin/moveLogic');
+  const contents = [
+    { sku: 'EMB1', name: 'Polo (embroidery)', so_id: 'SO-100', sizes: { M: 5 } },
+    { sku: 'DTF1', name: 'Tee (DTF)', so_id: 'SO-200', sizes: { L: 3 } },
+    { sku: 'EMB2', name: 'Cap (embroidery)', so_id: 'SO-100', sizes: { OS: 12 } },
+    { sku: 'SP1', name: 'Hoodie (screen print)', so_id: 'SO-300', sizes: { XL: 2 } },
+  ];
+
+  test('assignBySo: first SO stays, each other SO gets its own new box', () => {
+    expect(assignBySo(contents)).toEqual([0, 1, 0, 2]);
+  });
+
+  test('assignEachLine: line 0 stays, every other line splits off', () => {
+    expect(assignEachLine(contents)).toEqual([0, 1, 2, 3]);
+  });
+
+  test('splitGroups partitions by target, 0 keeps', () => {
+    const { keep, newBoxes } = splitGroups(contents, [0, 1, 0, 2]);
+    expect(keep.map((e) => e.sku)).toEqual(['EMB1', 'EMB2']);
+    expect(newBoxes.map((g) => g.map((e) => e.sku))).toEqual([['DTF1'], ['SP1']]);
+  });
+
+  test('splitGroups: no assignment → nothing splits', () => {
+    const { keep, newBoxes } = splitGroups(contents, null);
+    expect(keep.length).toBe(4);
+    expect(newBoxes).toEqual([]);
+  });
+
+  test('makeSplitBoxRow inherits check-in/location/assignment, recomputes SO refs', () => {
+    const src = { id: 'BX-2001', kind: 'receiving', so_id: 'SO-100', if_id: null, po_id: 'NSA-9', status: 'staged',
+      source_refs: [{ type: 'PO', id: 'NSA-9' }, { type: 'SO', id: 'SO-100' }],
+      bin: null, staging_area: 'STAGE 1', assigned_to: 'job',
+      checked_in_at: '2026-09-02T10:00:00Z', checked_in_by: 'a@nsa.com' };
+    const row = makeSplitBoxRow(src, 'BX-2077', [{ sku: 'DTF1', so_id: 'SO-200', sizes: { L: 3 } }], '2026-09-02T10:05:00Z');
+    expect(row.id).toBe('BX-2077');
+    expect(row.so_id).toBe('SO-200'); // single-SO group takes that SO
+    expect(row.source_refs).toEqual([{ type: 'SO', id: 'SO-200' }, { type: 'PO', id: 'NSA-9' }]);
+    expect(row.staging_area).toBe('STAGE 1'); // physically where the carton is
+    expect(row.checked_in_at).toBe('2026-09-02T10:00:00Z'); // goods arrived when the carton did
+    expect(row.checked_in_by).toBe('a@nsa.com');
+    expect(row.assigned_to).toBe('job');
+    expect(row.status).toBe('staged');
+  });
+
+  test('makeSplitBoxRow: multi-SO group keeps the source SO as fallback', () => {
+    const row = makeSplitBoxRow({ id: 'BX-1', so_id: 'SO-100' }, 'BX-2', [{ so_id: 'SO-100', sizes: { S: 1 } }, { so_id: 'SO-200', sizes: { S: 1 } }]);
+    expect(row.so_id).toBe('SO-100');
+    expect(row.source_refs).toEqual([{ type: 'SO', id: 'SO-100' }, { type: 'SO', id: 'SO-200' }]);
+  });
+});
+
 describe('moveStats', () => {
   const boxes = [
     { id: 'BX-1', status: 'staged', checked_in_at: '2026-08-24T09:00:00Z', bin: 'A1' },

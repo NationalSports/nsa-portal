@@ -45,11 +45,31 @@ Desktop nav: Tools → Move Check-In; also a **📦 Move Check-In** button on th
 Inventory page's tab row (opens in a new tab). Code: `src/movecheckin/` (pure helpers in
 `moveLogic.js`, unit tests in `src/__tests__/moveCheckin.test.js`).
 
-## Known gap: shipped boxes
+## Shipped boxes — automatic
 
-Nothing marks a box `shipped` automatically — the ship flow does not touch the
-`boxes` table, so status is only set by hand (desktop box modal) or by
-combining. A box that IS marked shipped is now excluded from the move's stage
-counts, the on-hand picture, and the inventory tally (`boxStage` → `shipped`),
-and is findable under the Shipped filter. Auto-marking boxes shipped when their
-order ships is the obvious follow-up.
+A box whose whole order has left is marked `shipped` automatically: when an SO
+is shipped (`_shipped` / `_shipping_status`) or every non-draft job on it is
+completed/shipped, App.js's reconciliation effect flips every box referencing
+that SO (a multi-SO box waits until ALL its orders are done — "when everything
+goes"). Shipped boxes drop out of the stage counts, on-hand picture, and
+inventory tally, and are findable under the Shipped filter. Caveat: the
+reconciliation runs client-side, so it applies while someone has the desktop
+or mobile portal open — the station alone doesn't run it.
+
+## Splitting a mixed carton
+
+Batch shipments often land embroidery, DTF, and screen-print goods for several
+jobs in one carton. After scanning it in, tap **Open BX-… — split / edit** on
+the green banner (or find the box), then **✂️ Split box**:
+
+- **By job / SO** (the default) — one tap groups the lines by their SO: the
+  first SO's lines stay in the scanned carton, every other SO gets its own new
+  BX box.
+- **Each line** — every content line becomes its own box.
+- Or tap any line to cycle it between Keeps / New 1 / New 2 / … by hand (the
+  operator's eyes are the deco-type detector — data can't always tell
+  embroidery from DTF, people can).
+
+**Split + print labels** mints the new plates, inherits the carton's check-in
+stamp, location, and inventory assignment onto each new box, shrinks the
+original to what stayed, and prints one 4×6 label per new box.

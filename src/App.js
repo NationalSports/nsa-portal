@@ -6402,6 +6402,34 @@ export default function App(){
     setBoxModal({box:survivor,combineWith:''});
     nf(srcBox.id+' combined into '+tgt.id+' — one label reprinted');
   };
+  // ─── AUTO-SHIP BOXES ─── A box whose whole ORDER has left (SO shipped, or every
+  // non-draft job completed/shipped — "when everything goes") is marked shipped, so
+  // the move check-in station and Where-is-it views stop counting it as on-hand.
+  // Client-side reconciliation on purpose: it catches every ship path (ship modal,
+  // manual ship, ShipStation webhook poll) without wiring each one, at the cost of
+  // only running while someone has the portal open. Ref guards one attempt per box
+  // per session so a failed write can't loop.
+  const _autoShippedRef=useRef(new Set());
+  useEffect(()=>{
+    if(!supabase||!boxRows.length||!sos.length)return;
+    const soDone=(so)=>{
+      if(!so||so.deleted_at)return false;
+      if(so._shipped===true||so._shipping_status==='shipped')return true;
+      const js=safeJobs(so).filter(j=>j.prod_status!=='draft');
+      return js.length>0&&js.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+    };
+    const doneIds=new Set(sos.filter(soDone).map(so=>so.id));
+    if(!doneIds.size)return;
+    boxRows.forEach(b=>{
+      if(!b||b.status==='shipped'||b.status==='combined')return;
+      if(_autoShippedRef.current.has(b.id))return;
+      const refSos=[b.so_id,...(b.source_refs||[]).filter(r=>r&&r.type==='SO').map(r=>r.id)].filter(Boolean);
+      // every order this box belongs to must be done — a multi-SO box with one open order stays
+      if(!refSos.length||!refSos.every(id=>doneIds.has(id)))return;
+      _autoShippedRef.current.add(b.id);
+      _boxUpdate(b.id,{status:'shipped'});
+    });
+  },[sos,boxRows]);// eslint-disable-line react-hooks/exhaustive-deps
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';

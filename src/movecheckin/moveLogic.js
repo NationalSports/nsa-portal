@@ -117,6 +117,66 @@ export const STAGE_META = {
 export const placePatch = (kind, code) =>
   kind === 'shelf' ? { bin: code, staging_area: null } : { staging_area: code, bin: null };
 
+
+// ── splitting a mixed carton at check-in ─────────────────────────────────────
+// Batch orders arrive with embroidery, DTF, and screen-print goods (often for
+// several jobs) in ONE carton. Splitting re-boxes those lines into new BX
+// plates right at check-in. assignment[i] says where contents line i goes:
+// 0 = stays in this box, 1..N = the Nth new box.
+export const splitGroups = (contents, assignment) => {
+  const keep = []; const map = {};
+  (contents || []).forEach((e, i) => {
+    if (!e) return;
+    const t = Math.max(0, Math.floor(+((assignment || [])[i]) || 0));
+    if (t === 0) { keep.push(e); return; }
+    (map[t] = map[t] || []).push(e);
+  });
+  return { keep, newBoxes: Object.keys(map).map(Number).sort((a, b) => a - b).map((t) => map[t]) };
+};
+
+// One tap "split by job": group lines by their SO — the first SO's lines stay
+// in the scanned carton, every other SO gets its own new box.
+export const assignBySo = (contents) => {
+  const idx = {}; let next = 0;
+  return (contents || []).map((e) => {
+    const k = String((e && e.so_id) || '').toUpperCase();
+    if (!(k in idx)) idx[k] = next++;
+    return idx[k];
+  });
+};
+
+// "Each line its own box": line 0 stays, every other line becomes a new box.
+export const assignEachLine = (contents) => (contents || []).map((_, i) => i);
+
+// Row for a split-off box: inherits the source box's check-in stamp, location,
+// and inventory assignment (the goods never moved — only the carton changed);
+// so_id/SO refs are recomputed from what actually landed in this box.
+export const makeSplitBoxRow = (src, plate, contents, now = new Date().toISOString()) => {
+  const soIds = [...new Set((contents || []).map((e) => e && e.so_id).filter(Boolean))];
+  return {
+    id: plate,
+    kind: (src && src.kind) || 'fulfillment',
+    contents: contents || [],
+    source_refs: [
+      ...soIds.map((id) => ({ type: 'SO', id })),
+      ...(((src && src.source_refs) || []).filter((r) => r && r.type !== 'SO')),
+    ],
+    so_id: soIds.length === 1 ? soIds[0] : ((src && src.so_id) || null),
+    if_id: (src && src.if_id) || null,
+    po_id: (src && src.po_id) || null,
+    status: 'staged',
+    merged_into: null,
+    bin: (src && src.bin) || null,
+    staging_area: (src && src.staging_area) || null,
+    assigned_to: (src && src.assigned_to) || null,
+    created_by: (src && (src.checked_in_by || src.created_by)) || null,
+    created_at: now,
+    updated_at: now,
+    checked_in_at: (src && src.checked_in_at) || now,
+    checked_in_by: (src && src.checked_in_by) || null,
+  };
+};
+
 // ── inventory count → submit (the move IS the new stocktake) ─────────────────
 // Only boxes assigned to INVENTORY count — SO/IF fulfillment boxes are customer
 // goods, not house stock. A box counts once it's checked in and not combined.
