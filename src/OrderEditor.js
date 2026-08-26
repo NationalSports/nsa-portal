@@ -12369,10 +12369,14 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           // so the new art must earn a fresh rep approval. The new request supersedes any still-open
           // one — leaving an old request 'in_progress' makes every activeReq lookup show the wrong
           // artist/status ("at most one active request per job").
+          // A new request also un-parks the job. art_hidden survived every other field reset here, so a card
+          // someone hid from the workboard stayed invisible while carrying an OPEN request assigned to an
+          // artist: the rep re-sends art, nothing appears on the board, and the work is silently lost
+          // (SO-1571 JOB-02/-06). Asking for art means the job is active work — it belongs on the board.
           const _wasInProd2=_activeProd(j2job?.prod_status);
           const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
           if(_wasInProd2&&onStopJobClock&&j2job)onStopJobClock(o.id,j2job.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
@@ -13490,10 +13494,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // so the new art must earn a fresh rep approval. The new request supersedes any still-open
           // one — leaving an old request 'in_progress' makes every activeReq lookup show the wrong
           // artist/status ("at most one active request per job").
+          // A new request also un-parks the job. art_hidden survived every other field reset here, so a card
+          // someone hid from the workboard stayed invisible while carrying an OPEN request assigned to an
+          // artist: the rep re-sends art, nothing appears on the board, and the work is silently lost
+          // (SO-1571 JOB-02/-06). Asking for art means the job is active work — it belongs on the board.
           const _wasInProd3=_activeProd(j?.prod_status);
           const sibs3=_artSiblingsInProd(artIds3,j?.id);
           if(_wasInProd3&&onStopJobClock&&j)onStopJobClock(o.id,j.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,

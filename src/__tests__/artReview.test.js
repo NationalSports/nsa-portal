@@ -98,6 +98,17 @@ describe('sendArtBackOnSO', () => {
     expect(out.jobs[0]._coach_cleared).toBe(true);
   });
 
+  // A job someone parked with the art board's "Hide from board" toggle keeps art_hidden through
+  // every other field this write resets. Leaving it set meant a revision request landed on a job
+  // the artist's board never renders — the rep sees "sent", the artist sees nothing (SO-1571).
+  test('un-parks a job hidden from the art workboard', () => {
+    const out = sendArtBackOnSO(
+      so({ jobs: [{ id: 'JOB-1-01', art_hidden: true }, { id: 'JOB-1-02', art_hidden: true }, { id: 'JOB-1-09', art_hidden: true }] }),
+      { match: family, artIds: [], reason: 'redo', by: 'Sam' },
+    );
+    expect(out.jobs.map((j) => j.art_hidden)).toEqual([false, false, true]); // unmatched job keeps its parked state
+  });
+
   test('art goes back to waiting_for_art with prod files unconfirmed and DSTs staled', () => {
     const out = sendArtBackOnSO(
       so({ art_files: [{ id: 'a1', status: 'approved', prod_files_attached: true, files: [{ name: 'logo.dst' }], prod_files: [{ name: 'seps.dst' }, { name: 'proof.pdf' }] }] }),
