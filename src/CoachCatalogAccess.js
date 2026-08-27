@@ -31,22 +31,21 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
   const ab = Array.isArray(customer && customer.allowed_brands) ? customer.allowed_brands : [];
   const tier = (customer && customer.adidas_ua_tier) || 'B';
 
-  // Parent account (athletic dept). A sub-team with no logo / colors / brands of
+  // Parent account (athletic dept). A sub-team with no logo or school colors of
   // its own inherits the parent's in the coach portal and catalog, so show the
-  // inherited values here instead of a misleading blank.
+  // inherited values here instead of a misleading blank. Brands are NOT inherited
+  // (they restrict what coaches can see), so that section stays per-account.
   const [parent, setParent] = useState(null);
   useEffect(() => {
     setParent(null);
     const pid = customer && customer.parent_id;
     if (!supabase || !pid) return;
-    supabase.from('customers').select('id,name,logo_url,school_colors,allowed_brands').eq('id', pid).limit(1)
+    supabase.from('customers').select('id,name,logo_url,school_colors').eq('id', pid).limit(1)
       .then((r) => { if (!r.error && r.data && r.data[0]) setParent(r.data[0]); });
   }, [customer && customer.parent_id]);
   const pSc = Array.isArray(parent && parent.school_colors) ? parent.school_colors : [];
-  const pAb = Array.isArray(parent && parent.allowed_brands) ? parent.allowed_brands : [];
   const logoInherited = !(customer && customer.logo_url) && !!(parent && parent.logo_url);
   const scInherited = !sc.length && pSc.length > 0;
-  const abInherited = !ab.length && pAb.length > 0;
 
   const invite = async (email, name) => {
     try {
@@ -232,24 +231,20 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
         {/* Brand access */}
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
-            Brands {ab.length ? '(' + ab.length + ' of ' + CATALOG_BRANDS.length + ')' : abInherited ? '— inherited from parent' : '— all brands'}
+            Brands {ab.length ? '(' + ab.length + ' of ' + CATALOG_BRANDS.length + ')' : '— all brands'}
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {CATALOG_BRANDS.map((b) => {
               const on = ab.includes(b);
-              const inh = !on && abInherited && pAb.includes(b);
               return (
                 <button key={b} onClick={() => toggleBrand(b)}
-                  style={{ border: '1px ' + (inh ? 'dashed #64748b' : 'solid ' + (on ? '#191919' : '#e2e8f0')), background: on ? '#191919' : inh ? '#f1f5f9' : '#fff', color: on ? '#fff' : inh ? '#334155' : '#475569', borderRadius: 999, padding: '3px 11px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{ border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569', borderRadius: 999, padding: '3px 11px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
                   {b}
                 </button>
               );
             })}
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>
-            {abInherited ? <>Inherited from <strong>{parent.name}</strong> — pick brands to set this team's own. </> : null}
-            Limits which brands this account's coaches see in the catalog. None selected = all brands.
-          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Limits which brands this account's coaches see in the catalog. None selected = all brands.</div>
         </div>
 
         {/* School colors */}

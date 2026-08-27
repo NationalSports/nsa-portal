@@ -1500,16 +1500,18 @@ export default function AdidasInventory() {
         if (!acct || acct.status !== 'active') { if (alive) setCoach(null); return; }
         const { data: custs } = await supabase.from('customers').select('id,name,adidas_ua_tier,school_colors,allowed_brands,parent_id').eq('id', acct.customer_id).limit(1);
         const c = (custs || [])[0];
-        // A sub-team (e.g. FPU Baseball under Fresno Pacific University) inherits
-        // school colors / brand limits from its parent account when it has none
-        // of its own — same parent fallback the coach-portal hero uses.
+        // A sub-team (e.g. FPU Baseball under Fresno Pacific University) inherits its
+        // parent account's school colors when it has none of its own — the same parent
+        // fallback the coach-portal hero uses for the logo.
+        // allowed_brands is deliberately NOT inherited: it RESTRICTS what a coach can
+        // see, so inheriting it would silently narrow the catalog for sub-teams that
+        // can shop every brand today. A brand lock stays opt-in per account.
         let schoolColors = Array.isArray(c && c.school_colors) ? c.school_colors : [];
-        let allowedBrands = Array.isArray(c && c.allowed_brands) ? c.allowed_brands : [];
-        if (c && c.parent_id && (!schoolColors.length || !allowedBrands.length)) {
-          const { data: parents } = await supabase.from('customers').select('school_colors,allowed_brands').eq('id', c.parent_id).limit(1);
+        const allowedBrands = Array.isArray(c && c.allowed_brands) ? c.allowed_brands : [];
+        if (c && c.parent_id && !schoolColors.length) {
+          const { data: parents } = await supabase.from('customers').select('school_colors').eq('id', c.parent_id).limit(1);
           const p = (parents || [])[0];
-          if (!schoolColors.length && Array.isArray(p && p.school_colors)) schoolColors = p.school_colors;
-          if (!allowedBrands.length && Array.isArray(p && p.allowed_brands)) allowedBrands = p.allowed_brands;
+          if (Array.isArray(p && p.school_colors)) schoolColors = p.school_colors;
         }
         if (!alive) return;
         setCoach({
