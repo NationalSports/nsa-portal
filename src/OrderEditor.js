@@ -21,7 +21,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs } from './lib/syncJobsMatch';
@@ -350,16 +350,66 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // dead "Convert to SO" button that would spawn a second SO (and double-spend promo/credit funds).
   const linkedSO=isE?(allOrders||[]).find(s=>s.estimate_id===o.id):null;
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[editingRep,setEditingRep]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
-  // Portal Assistant → "add a line to the open estimate". The assistant runs at App scope and
-  // cannot reach this editor's local `o` (the sync effect below intentionally ignores external
+  // Portal Assistant → "add a line to the open estimate/order". The assistant runs at App scope
+  // and cannot reach this editor's local `o` (the sync effect below intentionally ignores external
   // item additions), so it hands us a fully-formed, already-priced line via a window event and
-  // we append it here, marking dirty. Estimate editor only; the user reviews before saving.
+  // we append it here, marking dirty; the user reviews before saving. detail.orderId (when
+  // present) must match the open record, and detail.respond (when present) gets a sync ack so
+  // the assistant's ConfirmCard can report honestly.
   React.useEffect(()=>{
-    if(!isE)return;
-    const h=(ev)=>{const line=ev&&ev.detail&&ev.detail.line;if(!line)return;setO(prev=>({...prev,items:[...(prev.items||[]),line],updated_at:new Date().toISOString()}));setDirty(true);};
+    if(!isE&&!isSO)return;
+    const h=(ev)=>{const d=ev&&ev.detail;const line=d&&d.line;if(!line)return;
+      if(d.orderId&&String(d.orderId)!==String(o.id||''))return;
+      setO(prev=>({...prev,items:[...(prev.items||[]),line],updated_at:new Date().toISOString()}));setDirty(true);
+      try{if(typeof d.respond==='function')d.respond({ok:true})}catch(e2){}};
     window.addEventListener('nsa:assistant-add-line',h);
     return ()=>window.removeEventListener('nsa:assistant-add-line',h);
-  },[isE]);
+  },[isE,isSO,o.id]);
+  // Portal Assistant → confirmed write channel. App.js resolves a requested mutation and shows a
+  // ConfirmCard built with the SAME shared businessLogic helpers used here; on user confirm it
+  // dispatches one of these events with a respond() callback, and we apply the change to the LIVE
+  // local `o` and answer synchronously. Estimates stay drafts (dirty — the user reviews and Saves,
+  // like every other estimate edit); sales-order changes persist immediately via onSave, the same
+  // call the editor's own Delete PO button makes. This block must stay byte-identical in
+  // OrderEditor.js and OrderEditorClassic.js (CLAUDE.md).
+  React.useEffect(()=>{
+    if(!isE&&!isSO)return;
+    const mine=(ev)=>!!(ev&&ev.detail)&&String(ev.detail.orderId||'')===String(o.id||'');
+    const answer=(ev,r)=>{try{if(typeof ev.detail.respond==='function')ev.detail.respond(r)}catch(e2){}};
+    const commit=(next,ev,okMsg)=>{
+      setO(next);oRef.current=next;
+      if(isSO){onSave(next);answer(ev,{ok:true,saved:true,message:okMsg+' — saved.'});}
+      else{setDirty(true);answer(ev,{ok:true,saved:false,message:okMsg+' — review the estimate and Save when it looks right.'});}
+    };
+    const findErr=(f)=>f.error==='ambiguous'?'More than one line matches that now — be more specific.':"That line isn't on the order any more.";
+    const hGet=(ev)=>{if(!mine(ev))return;answer(ev,{ok:true,order:oRef.current||o});};
+    const hEdit=(ev)=>{if(!mine(ev))return;const d=ev.detail;const cur=oRef.current||o;
+      const f=assistantFindLine(cur,d.line);
+      if(f.error){answer(ev,{ok:false,error:findErr(f)});return}
+      const r=assistantLineEdit(cur,f.idx,d.edit,{by:cu?.name||''});
+      if(r.error){answer(ev,{ok:false,error:r.error});return}
+      commit(r.next,ev,'Updated '+(f.item.sku||'the line')+(r.notes.length?' ('+r.notes.join('; ')+')':''));
+    };
+    const hRemove=(ev)=>{if(!mine(ev))return;const d=ev.detail;const cur=oRef.current||o;
+      const f=assistantFindLine(cur,d.line);
+      if(f.error){answer(ev,{ok:false,error:findErr(f)});return}
+      const g=assistantRemoveLineGuard(cur,f.idx,isSO);
+      if(g.error){answer(ev,{ok:false,error:g.error});return}
+      commit(assistantRemoveLineApply(cur,f.idx,soItemKey(f.item)),ev,'Removed '+(f.item.sku||'the line'));
+    };
+    const hPoRemove=(ev)=>{if(!mine(ev))return;const d=ev.detail;const cur=oRef.current||o;
+      const matches=assistantFindPoLine(cur,d.target||{});
+      if(matches.length!==1){answer(ev,{ok:false,error:matches.length?'More than one PO line matches — be more specific.':'That PO line is no longer on this order.'});return}
+      const r=assistantRemovePoLine(cur,{itemIdx:matches[0].itemIdx,plIdx:matches[0].plIdx,size:(d.target||{}).size||null});
+      if(r.error){answer(ev,{ok:false,error:r.error});return}
+      commit(r.next,ev,r.summary);
+    };
+    window.addEventListener('nsa:assistant-get-order',hGet);
+    window.addEventListener('nsa:assistant-edit-line',hEdit);
+    window.addEventListener('nsa:assistant-remove-line',hRemove);
+    window.addEventListener('nsa:assistant-po-remove',hPoRemove);
+    return ()=>{window.removeEventListener('nsa:assistant-get-order',hGet);window.removeEventListener('nsa:assistant-edit-line',hEdit);window.removeEventListener('nsa:assistant-remove-line',hRemove);window.removeEventListener('nsa:assistant-po-remove',hPoRemove);};
+  },[o,isE,isSO,onSave,cu]);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
