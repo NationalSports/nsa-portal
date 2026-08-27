@@ -2357,6 +2357,11 @@ export default function App(){
   // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
   const _histInvsCount=useRef(0);
   React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
+  // Same trick for customers — `customers` is a COLD table the core poll skips, so if it ever lands
+  // empty every order/job/art card in the app renders its customer as "Unknown" until a full sync
+  // 30 minutes later. The poll's self-heal below watches this to refill it within one poll instead.
+  const _custCount=useRef(0);
+  React.useEffect(()=>{_custCount.current=cust.length},[cust]);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
@@ -2772,6 +2777,22 @@ export default function App(){
           else if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(_obApplied[c.id]||prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
+          // The _custTimedOutEmpty fallback above cannot actually fire: it needs a local cache in
+          // `cust`, but the nsa_cust cache it was written for is purged at dbEngine load (~3702) and
+          // nothing writes it any more, so `cust` is always [] at boot and the guard silently
+          // degrades to setCust([]) — every order, job and art-dashboard card reading "Unknown", and
+          // customer-name search matching nothing. `customers` is COLD (the core poll skips it), so
+          // that state would otherwise stand until the next full sync ~30 min out. Retry the one
+          // group directly — cheap, bounded, and the same self-heal shape the poll uses for the
+          // NetSuite invoice history. Not awaited: it must not delay the remaining initial setters.
+          // Snapshot BEFORE state so the [cust] diff-save effect sees no local edit to push back.
+          if(d._custTimedOut&&!d.customers.length){
+            _dbLoad({only:new Set(['customers'])}).then(cr=>{
+              if(!cr||cr._custTimedOut||!cr.customers.length){console.warn('[DB] customers still empty after initial-load retry — the poll self-heal will refill');return}
+              _dbSnap.current.cust=cr.customers;setCust(cr.customers);
+              console.log('[DB] customers recovered on initial-load retry ('+cr.customers.length+' customers)');
+            }).catch(e=>console.warn('[DB] customers initial-load retry failed:',e?.message||e));
+          }
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
             if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
@@ -3243,6 +3264,21 @@ export default function App(){
         // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
         // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
         if(d.customers.length)setCust(prev=>{const _mcArt=c=>{const lp=prev.find(p=>p.id===c.id);if(!lp||!lp.art_files?.length||!_recentlySavedByMe(c.id))return c;const ma=mergeArtFileSuperset(c.art_files,lp.art_files);return ma===c.art_files?c:{...c,art_files:ma}};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):_mcArt(c));return changed(prev,merged)?merged:prev}const merged2=d.customers.map(_mcArt);return changed(prev,merged2)?merged2:prev});
+        // Customers self-heal — the cold-table twin of the NetSuite history recovery above, and the
+        // backstop for the initial-load retry. `customers` is skipped on core polls, so a load that
+        // once returned it empty leaves EVERY order, job and art-dashboard card rendering "Unknown"
+        // (and customer-name search matching nothing) until a full sync up to 30 min later. Refetch
+        // the one group the moment we notice state has none — on core polls too, which is exactly
+        // when the normal path can't. Self-limiting: the condition only holds while the list is
+        // really empty, and one success ends it. Snapshot first, so the [cust] diff-save effect
+        // doesn't read the refill as a local edit and push 2.5k customers back at the DB.
+        if(_custCount.current===0){
+          const _cr=await _dbLoad({only:new Set(['customers'])});
+          if(_cr&&!_cr._custTimedOut&&_cr.customers.length){
+            _dbSnap.current.cust=_cr.customers;setCust(_cr.customers);
+            console.log('[DB] customers recovered on poll ('+_cr.customers.length+' customers) — orders were showing "Unknown"');
+          }
+        }
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
@@ -22789,7 +22825,18 @@ export default function App(){
     const _ART_COL_RANK={waiting_for_art:0,needs_approval:1,approved:2,art_complete:3};
     const _artColRank=j=>{const r=_ART_COL_RANK[getArtFileStatus(j)];return r==null?9:r};
     const _famed=list=>consolidateArtFamilies(list,_artColRank);
-    const artistJobs=_famed(filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j)));
+    // A job only reaches `filtered` still on needs_art when an ARTIST IS ASSIGNED — the gather above
+    // skips every other needs_art job (line ~22612). That is the rep picking the artist without ever
+    // clicking Request Art. Excluding needs_art wholesale here dropped those jobs out of EVERY section
+    // on this page: this list feeds the three columns, and In Production / Completed want art_complete
+    // while Hidden wants art_hidden — so they were gathered and then rendered nowhere at all, with an
+    // artist assigned and their art files sitting at waiting_for_art (SO-2151 JOB-01/-02, SO-2193
+    // JOB-01: invisible to everyone, including the artist they were assigned to). getArtFileStatus
+    // already resolves them to 'waiting_for_art', so they land in the column matching their real state.
+    // Jobs whose decoration already finished stay out — that work is done, not waiting on an artist.
+    const _assignedButNeverRequested=j=>j.art_status==='needs_art'&&!['completed','shipped'].includes(j.prod_status);
+    const artistJobs=_famed(filtered.filter(j=>j.art_status!=='art_complete'&&!j.art_hidden&&!_repOwnsProdStep(j)
+      &&(j.art_status!=='needs_art'||_assignedButNeverRequested(j))));
     // In Production: art complete but decoration not finished yet
     const inProductionJobs=_famed(filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
     // Hidden: jobs the artist has hidden from the workboard (booking orders, far-out items, etc.)
