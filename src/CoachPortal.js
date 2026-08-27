@@ -2397,7 +2397,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div className="cp-col">
         {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
         {page==='home'&&<div>
-          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}
+          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}/* Tablet/phone: the logo panel used to be display:none here, which dropped the
+             school logo out of the hero entirely below 881px — the team (or, for a sub-team,
+             its parent department's) identity vanished on exactly the devices coaches use
+             most. Stack it above the copy at a fixed height instead of hiding it. */
+          @media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-heroleft{max-width:100%!important;padding:24px 24px 32px!important}.nsa-herologo{position:relative!important;width:100%!important;bottom:auto!important;justify-content:flex-start!important;padding:24px 24px 0!important}.nsa-herologobox{width:100%!important;max-width:260px;height:104px!important;padding:10px 20px;box-sizing:border-box}.nsa-heromono{font-size:38px!important}}
           /* ── Dashboard-only restyle tokens (flat/rounded, teamshop-aligned). Scoped to this
              home-page block only — NOT touching the shared .nsa-tile/.nsa-skew/.nsa-card rules
              above, which other pages (Orders/Billing/Art Locker/Shop) still rely on. ── */
@@ -2408,8 +2412,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Pennant hero ── */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:16,minHeight:320,boxShadow:'0 10px 32px rgba(15,26,56,.18)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
             <div className="nsa-herologo" style={{position:'absolute',top:0,right:0,bottom:0,width:'42%',display:'flex',alignItems:'center',justifyContent:'center',padding:'34px 40px'}}>
-              <div style={{width:'100%',height:'100%',borderRadius:16,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
+              <div className="nsa-herologobox" style={{width:'100%',height:'100%',borderRadius:16,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp nsa-heromono" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
               </div>
             </div>
             <div className="nsa-heroleft" style={{position:'relative',maxWidth:'56%',padding:'40px',color:'#fff'}}>
