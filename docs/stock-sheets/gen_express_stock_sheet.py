@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..'))
 NSA_LOGO = os.path.join(REPO, 'public', 'NEW NSA Logo on white.png')
 EXP_LOGO = os.path.join(HERE, 'express-logo.png')
-OUT_PDF  = os.path.join(HERE, 'Encinitas_Express_Stock_On_Hand_2026-08-26.pdf')
+OUT_PDF  = os.path.join(HERE, 'Encinitas_Express_Stock_On_Hand_2026-08-27.pdf')
 COUNTED_AS_OF = 'Aug 26 2026'
 
 from reportlab.lib.pagesizes import letter, landscape
@@ -70,6 +70,9 @@ D = [
  ('JF2875-EXP','GK Jersey SS — Adult','Red','Jersey',75,{'S':3,'XL':2},['S','XL'],'Aug 20',0),
  ('JF2871-EXP',"GK Jersey LS — Women's",'Red','Jersey',75,{'S':7,'M':7,'L':3},['S','M','L'],'May 5',1),
  ('JF2880-EXP',"GK Jersey SS — Women's",'Red','Jersey',75,{'S':2,'M':2},['S','M'],'Aug 18',0),
+ ('AE152-EXP-CB','Astra Tee','Columbia Blue','Tees',None,{'XS':1,'S':18,'M':13,'L':9},['XS','S','M','L'],'Aug 10',0),
+ ('AE152-EXP-N','Astra Tee','Navy','Tees',None,{'M':13,'L':7},['M','L'],'Aug 10',0),
+ ('AE152-EXP-R','Astra Tee','Red','Tees',None,{'L':2},['L'],'Aug 10',0),
  ('KB4029-EXP','Adult Shorts','Navy','Shorts',40,{'M':11,'L':4,'XL':1},['M','L','XL'],'Aug 26',0),
  ('KB4032-EXP',"Women's Shorts",'Navy','Shorts',40,{'XS':0,'S':5,'M':52,'L':9,'XL':3},['XS','S','M','L','XL'],'Aug 26',0),
  ('JP0179-EXP','GK Shorts — Adult','Red','Shorts',50,{'S':4,'M':8,'L':8,'XL':2},['S','M','L','XL'],'Jul 27',0),
@@ -79,12 +82,15 @@ D = [
  ('KB3914-EXP','All Weather Jacket — Adult','Navy','Outerwear',85,{'L':3,'XL':1,'2XL':1},['L','XL','2XL'],'Jul 27',0),
  ('KE9910-EXP','Adult Pant','Navy','Pants',60,{'S':20,'M':13,'L':1,'XL':3,'2XL':5},['S','M','L','XL','2XL'],'Aug 26',0),
  ('JY5389-EXP',"Women's Pant",'Navy','Pants',60,{'S':2,'M':5,'L':2,'XL':3},['S','M','L','XL'],'Aug 26',0),
+ ('JW6705-EXP-N','Team Sock','Navy','Socks',25,{'S':12,'M':53,'L':90},['S','M','L'],'Jul 27',0),
+ ('JW6705-EXP-R','Team Sock','Red','Socks',25,{'XS':6,'S':11},['XS','S'],'Jul 27',0),
 ]
 Y = [
  ('JD7373-EXP-N','Youth Jersey','Navy','Jersey',50,{'YXS':2,'YS':20,'YM':6,'YL':24,'YXL':25},['YXS','YS','YM','YL','YXL'],'Aug 26',0),
  ('JD7373-EXP-W','Youth Jersey','White','Jersey',50,{'YXS':2,'YS':23,'YM':7,'YL':27,'YXL':25},['YXS','YS','YM','YL','YXL'],'Aug 26',0),
  ('JF2887-EXP','GK Jersey LS — Youth','Red','Jersey',70,{'YXL':2},['YXL'],'May 5',1),
  ('JD7358-EXP','GK Jersey SS — Youth','Red','Jersey',70,{'YS':4,'YM':2,'YL':4,'YXL':5},['YS','YM','YL','YXL'],'Aug 18',0),
+ ('AE153Y-EXP','Astra Tee','Columbia Blue','Tees',None,{'YS':2,'YM':1,'YL':19,'YXL':13},['YS','YM','YL','YXL'],'Aug 10',0),
  ('KB4028-EXP','Youth Shorts','Navy','Shorts',35,{'YXS':10,'YS':40,'YM':37,'YL':3,'YXL':29},['YXS','YS','YM','YL','YXL'],'Aug 26',0),
  ('JF2872-EXP','GK Shorts — Youth','Red','Shorts',50,{'YS':3,'YL':16,'YXL':1},['YS','YL','YXL'],'Jul 30',0),
  ('JY5390-EXP','Youth Jacket','Navy','Outerwear',60,{'YM':2,'YL':50,'YXL':28},['YM','YL','YXL'],'Aug 26',0),
@@ -174,7 +180,7 @@ def grid(rows, scale, label):
         data.append(cells)
 
     sw = 34 if scale is ADULT else 40
-    widths = [176, 46, 76, 52] + [sw] * len(scale) + [42]
+    widths = [176, 74, 76, 52] + [sw] * len(scale) + [42]
     t = Table(data, colWidths=widths, repeatRows=1, hAlign='LEFT')
     style = [
         ('BACKGROUND',(0,0),(-1,0), NAVY),
@@ -244,7 +250,7 @@ def build(path):
                       Paragraph(d, st(fontSize=7.4, textColor=MUTED)),
                       Paragraph(str(q), st(fontSize=8.8, fontName='Helvetica-Bold', textColor=NAVY))]
                      for s, i, c, cat, r, q, d, _ in O]
-    t = Table(rows, colWidths=[176, 46, 76, 52, 76], hAlign='LEFT')
+    t = Table(rows, colWidths=[176, 74, 76, 52, 76], hAlign='LEFT')
     t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0), NAVY), ('TEXTCOLOR',(0,0),(-1,0), colors.white),
                            ('FONT',(0,0),(-1,0),'Helvetica-Bold',7.4),
                            ('ALIGN',(4,0),(-1,-1),'CENTER'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'),

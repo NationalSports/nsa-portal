@@ -79,14 +79,65 @@ long-sleeve products, and its `socks` slot at the general `KB7233` Adisock 26 3S
 new rows carry stock but are not yet orderable through the roster flow. Repointing a kit
 slot is a business decision, not a data fix.
 
+## Follow-up 2 — socks and Astra tees (2026-08-27)
+
+Applied by `scripts/add-encinitas-express-socks-and-astra-tees-2026-08-27.sql`.
+Staff confirmed the size scales that had blocked these two, so the Express tab is now
+fully loaded — every row on it has a product carrying its count.
+
+| Product | Sizes loaded | On hand | Cost / retail |
+|---|---|---|---|
+| `p-exp-JW6705-EXP-N` — Team Sock (Navy) | S 12, M 53, L 90 | 155 | 10.31 / $25 |
+| `p-exp-JW6705-EXP-R` — Team Sock (Red) | XS 6, S 11 | 17 | 10.31 / $25 |
+| `p-exp-AE153Y-EXP` — Astra Tee Youth (Columbia Blue) | YS 2, YM 1, YL 19, YXL 13 | 35 | **unset** |
+| `p-exp-AE152-EXP-CB` — Astra Tee (Columbia Blue) | XS 1, S 18, M 13, L 9 | 41 | **unset** |
+| `p-exp-AE152-EXP-N` — Astra Tee (Navy) | M 13, L 7 | 20 | **unset** |
+| `p-exp-AE152-EXP-R` — Astra Tee (Red) | L 2 | 2 | **unset** |
+
+**The sock ambiguity resolved in favour of the header columns.** The counts sat under the
+sheet's main `XS`–`XL` header while the block's own label row read `KXXL` / `KXL`; staff
+confirmed the header is right — navy is S/M/L, red is XS/S. Both colours now reconcile
+exactly with the sheet's own Total cells (155 and 17), which is the check the earlier
+ambiguity had made impossible.
+
+**`AE153Y`'s stale Total.** The sheet's Total cell reads 31 but its size cells sum to 35.
+The staff-confirmed per-size counts (2 / 1 / 19 / 13 = 35) were loaded; the Total cell in
+the sheet is stale and worth correcting there.
+
+**Astra tee cost and brand are deliberately NULL.** `AE152` / `AE153Y` appear nowhere else
+in the catalog, the sheet carries no cost for any Express row, and there is no sibling to
+inherit from — so no cost was invented (693 catalog rows, 361 active, already sit this
+way). Set `nsa_cost` and `retail_price` when the club's price list is to hand. Brand is
+likewise unset: "Astra Sport" is a screen-print **decoration vendor** elsewhere in this
+codebase, not a garment label, so the sheet's name probably refers to who decorated the
+tee rather than who made it.
+
+The socks took the figures already on the general-catalog `JW6705` row
+("Adidas adisock 25 Custom", $25 / 10.31) — same garment, no assumption.
+
+## Club stock sheet
+
+`Encinitas_Express_Stock_On_Hand_2026-08-27.pdf` — a co-branded (NSA + Express) stock
+sheet, 33 items / 1,548 units, grouped into Adult & Women's, Youth and One Size grids
+because the two size scales don't share a header row. Generated from the database and
+diffed cell-by-cell against it.
+
+It carries **no cost or retail figures**: it is branded for the club as well as NSA, so
+NSA's cost basis has no business being on it. It does carry a per-row **Counted** date,
+because the rows were not all counted on the same day.
+
 ## Still open
 
-| Sheet row | Counted | Blocker |
-|---|---|---|
-| Socks `JW6705` Navy (155) / Red (17) | 7/27 | The counts don't line up with the sheet's size header. Navy's 12 / 53 / 90 sit in the `S` `M` `L` columns while the row above labels them `KXXL` / `KXL`; red's 6 / 11 sit in `XS` / `S`. Which sizes these are needs a human call before the stock is loaded. |
-| `AE152` Astra Tee (Navy / Columbia Blue / Red), `AE153Y` (Columbia Blue) | 8/10 | No product rows. `AE153Y`'s Total (31) also disagrees with its own size cells (sum 35) — worth a recount before loading. |
-| `JW1322` soccer balls | 8/6 | Out of scope by request. |
+- **The three long-sleeve keeper jerseys** (`JF2881`, `JF2871`, `JF2887`) are still flagged
+  "needs recount" in the sheet from 5 May and should be recounted before the stock sheet
+  goes to the club.
+- **Short-sleeve keeper jersey pricing** copies the long-sleeve siblings — confirm against
+  the club's price list (see Follow-up 1).
+- **Astra tee cost, retail and brand** are unset, as above.
+- **Kit catalog** still points its `keeper_jersey` slot at the long-sleeve products and its
+  `socks` slot at the general `KB7233` Adisock 26 3S rather than the club's own `JW6705`.
+  The new rows carry stock but are not yet orderable through the roster flow; repointing a
+  kit slot changes what coaches order, so it stays a business decision.
+- **Soccer balls `JW1322`** — out of scope by request.
 
-Also worth a look in the sheet itself: the three LS GK rows are still flagged
-"needs recount" from 5/5, and row 19 (`JF2871-EXP`) has its Updated date typo'd
-as `5026-05-05`.
+Row 19 (`JF2871-EXP`) also still has its Updated date typo'd as `5026-05-05` in the sheet.

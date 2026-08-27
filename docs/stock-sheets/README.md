@@ -4,12 +4,16 @@ Co-branded, customer-facing PDFs showing a club's own inventory held at NSA.
 Same shape as [`docs/pricing/`](../pricing/): the PDF, its generator, and its
 logo asset live together so the sheet can be regenerated rather than re-made.
 
-## `Encinitas_Express_Stock_On_Hand_2026-08-26.pdf`
+## `Encinitas_Express_Stock_On_Hand_2026-08-27.pdf`
 
-Encinitas Express Soccer Club (`c-ns-3978`) — 1,278 units across 27 items,
+Encinitas Express Soccer Club (`c-ns-3978`) — 1,548 units across 33 items,
 from the 2026-08-26 physical recount loaded by
-[`scripts/sync-encinitas-express-inventory-2026-08-26.sql`](../../scripts/sync-encinitas-express-inventory-2026-08-26.sql)
-and [`scripts/add-encinitas-express-gk-ss-and-socks-2026-08-26.sql`](../../scripts/add-encinitas-express-gk-ss-and-socks-2026-08-26.sql).
+[`scripts/sync-encinitas-express-inventory-2026-08-26.sql`](../../scripts/sync-encinitas-express-inventory-2026-08-26.sql),
+[`scripts/add-encinitas-express-gk-ss-and-socks-2026-08-26.sql`](../../scripts/add-encinitas-express-gk-ss-and-socks-2026-08-26.sql)
+and [`scripts/add-encinitas-express-socks-and-astra-tees-2026-08-27.sql`](../../scripts/add-encinitas-express-socks-and-astra-tees-2026-08-27.sql).
+
+The Express tab is now fully represented — every row on it has a product row
+carrying its count.
 
 ### Quantities only — no cost, no retail
 
@@ -31,6 +35,10 @@ it a filename that can't be confused with the customer one.
 - **Dash vs. red zero.** `–` = the size isn't carried in that item; a red `0` =
   carried but out of stock. Two of those today (women's shorts XS, women's
   jacket L).
+- **The Astra tees carry no price anywhere in the portal** (`nsa_cost` and
+  `retail_price` are NULL on `AE152-EXP-*` / `AE153Y-EXP`). That is invisible
+  here because the sheet shows no prices at all — but it will matter the moment
+  someone builds the internal copy.
 - **Brand colors are sampled from the logos themselves**, not guessed: NSA navy
   `#1B2C54` / red `#A62B2B`, Express gold `#C4B382` / blue `#5178C2`. Gold is
   darkened to `#8A7A45` for text on white — the logo gold is unreadable at body
@@ -56,5 +64,11 @@ select p.sku || '|' ||
   from products p where p.id like 'p-exp-%' order by 1;
 ```
 
-That per-SKU signature is what the committed PDF was diffed against — all 27
-items matched exactly, including the 1,278 total.
+That per-SKU signature is what the committed PDF was diffed against — all 33
+items matched exactly, including the 1,548 total. Re-run the diff after every
+edit to `D` / `Y` / `O`; the snapshot is the one thing here that can silently
+drift from the database.
+
+Row shape is `(sku, item, color, category, retail, {size: qty}, [scale],
+counted, needs_recount)`. `retail` is carried for reference only — nothing in
+the customer-facing layout renders it.
