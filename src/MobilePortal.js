@@ -53,7 +53,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
-  const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
+  const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick ordering-bot form is open
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
   const[detail,setDetail]=useState(null);
@@ -1153,11 +1153,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       {/* To-Do List */}
       <div className="mp-section-title" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <span>To-Do ({myTodos.length})</span>
-        {onAssignBot&&<button onClick={()=>setBotCompose(botCompose?null:{title:'',so_id:''})} style={{background:botCompose?'#0f766e':'#f0fdfa',color:botCompose?'white':'#0f766e',border:'1px solid #5eead4',borderRadius:8,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer'}}>🤖 Assign to Claude</button>}
+        {onAssignBot&&<button onClick={()=>setBotCompose(botCompose?null:{title:'',so_id:''})} style={{background:botCompose?'#0f766e':'#f0fdfa',color:botCompose?'white':'#0f766e',border:'1px solid #5eead4',borderRadius:8,padding:'4px 10px',fontSize:12,fontWeight:700,cursor:'pointer'}}>🤖 Assign Adidas cart</button>}
       </div>
       {botCompose&&<div className="mp-list-card" style={{background:'#f0fdfa',border:'1px solid #99f6e4'}}>
-        <div style={{fontSize:11,fontWeight:700,color:'#0f766e',marginBottom:6}}>New task for Claude</div>
-        <input value={botCompose.title} onChange={e=>setBotCompose(b=>({...b,title:e.target.value}))} placeholder="What should Claude do? e.g. Add PO NSA-123 to Adidas cart"
+        <div style={{fontSize:11,fontWeight:700,color:'#0f766e',marginBottom:6}}>New Adidas cart task for Chief of Staff</div>
+        <input value={botCompose.title} onChange={e=>setBotCompose(b=>({...b,title:e.target.value}))} placeholder="e.g. Add Adidas PO NSA-123 to CLICK cart"
           style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:14,marginBottom:6,boxSizing:'border-box'}}/>
         <select value={botCompose.so_id} onChange={e=>setBotCompose(b=>({...b,so_id:e.target.value}))}
           style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:14,marginBottom:8,boxSizing:'border-box',background:'white'}}>
@@ -1166,8 +1166,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </select>
         <div style={{display:'flex',gap:8}}>
           <button onClick={()=>setBotCompose(null)} style={{flex:1,padding:'8px',border:'1px solid #e2e8f0',borderRadius:8,background:'white',fontSize:13,fontWeight:600,color:'#64748b'}}>Cancel</button>
-          <button disabled={!botCompose.title.trim()} onClick={()=>{const so=sos.find(s=>s.id===botCompose.so_id);if(onAssignBot({title:botCompose.title,so_id:botCompose.so_id||null,customer_id:so?.customer_id||null,priority:1}))setBotCompose(null)}}
-            style={{flex:2,padding:'8px',border:'none',borderRadius:8,background:botCompose.title.trim()?'#0f766e':'#cbd5e1',color:'white',fontSize:13,fontWeight:700}}>Assign to Claude</button>
+          <button disabled={!botCompose.title.trim()} onClick={()=>{const so=sos.find(s=>s.id===botCompose.so_id);if(onAssignBot({title:botCompose.title,so_id:botCompose.so_id||null,customer_id:so?.customer_id||null,priority:1,bot_payload:{task_type:'add_to_cart',target:'adidas_click',vendor_name:'Adidas'}}))setBotCompose(null)}}
+            style={{flex:2,padding:'8px',border:'none',borderRadius:8,background:botCompose.title.trim()?'#0f766e':'#cbd5e1',color:'white',fontSize:13,fontWeight:700}}>Assign Adidas cart</button>
         </div>
       </div>}
       {myTodos.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:20,fontSize:13}}>No open tasks</div>}

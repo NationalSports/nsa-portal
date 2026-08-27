@@ -40,7 +40,7 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
   const botMemberId = opts.botMemberId || 'bot-claude';
   const hasLines = Array.isArray(p.lines) && p.lines.length > 0;
   // Resolved/structured order -> use its vendor. Otherwise default to Adidas
-  // CLICK so creds fill in, and let Claude work from the task notes.
+  // CLICK so creds fill in, and let the ordering agent work from the task notes.
   const target = p.target || (hasLines ? 'unknown' : 'adidas_click');
   const creds = credsForTarget(target);
   const tpl = readFileSync(join(__dirname, 'prompts', 'add_to_cart.md'), 'utf8');
@@ -114,7 +114,7 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])
-    .map((c) => `- ${c.user_id === botMemberId ? 'Claude' : 'Human'}: ${c.text}`)
+    .map((c) => `- ${c.user_id === botMemberId ? 'Chief of Staff' : 'Human'}: ${c.text}`)
     .join('\n') || '(no prior messages)';
   const poInstruction = p.po_number
     ? `Enter the exact Customer PO # "${p.po_number}" on the cart.`

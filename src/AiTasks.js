@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Icon } from './components';
+import { BOT_MEMBER_ID } from './lib/botTasks';
 
 const OPEN_BOT = new Set(['queued', 'scheduled', 'in_progress', 'needs_input', 'needs_review']);
 const OPEN_REQUEST = new Set(['processing', 'needs_review']);
@@ -32,7 +33,7 @@ export default function AiTasks({ supabase, customers = [], notify }) {
         .eq('is_rep_command', true).order('received_at', { ascending: false }).limit(300),
       supabase.from('assigned_todos')
         .select('id,title,description,created_by,assigned_to,so_id,customer_id,priority,status,source,created_at,updated_at,completed_at,completed_by,completion_note,bot_payload,bot_status')
-        .eq('assigned_to', 'bot-claude').order('created_at', { ascending: false }).limit(500),
+        .eq('assigned_to', BOT_MEMBER_ID).order('created_at', { ascending: false }).limit(500),
     ]);
     if (requestResult.error) notify?.(`AI requests could not load: ${requestResult.error.message}`, 'error');
     if (taskResult.error) notify?.(`Bot tasks could not load: ${taskResult.error.message}`, 'error');

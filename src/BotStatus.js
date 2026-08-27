@@ -1,4 +1,4 @@
-// BotStatus — a small live pill showing whether the Claude bot is awake and
+// BotStatus — a small live pill showing whether the ordering bot is awake and
 // how much work is waiting/needs review. Self-contained: subscribes to the
 // bot_heartbeats table and treats the bot as online if it checked in recently.
 //
@@ -7,8 +7,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from './lib/supabase';
+import { BOT_DISPLAY_NAME, BOT_MEMBER_ID } from './lib/botTasks';
 
-const BOT_ID = 'bot-claude';
 // Online if we've heard from the worker within ~2.5 polls (default poll 30s).
 const ONLINE_WINDOW_MS = 75000;
 
@@ -20,11 +20,11 @@ export default function BotStatus({ assignedTodos = [], onClick, hidden = false 
   useEffect(() => {
     if (!supabase) return;
     let active = true;
-    supabase.from('bot_heartbeats').select('*').eq('bot_id', BOT_ID).maybeSingle()
+    supabase.from('bot_heartbeats').select('*').eq('bot_id', BOT_MEMBER_ID).maybeSingle()
       .then(({ data }) => { if (active) setHb(data || null); });
     const ch = supabase
       .channel('bot-heartbeat')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bot_heartbeats', filter: `bot_id=eq.${BOT_ID}` },
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bot_heartbeats', filter: `bot_id=eq.${BOT_MEMBER_ID}` },
         (payload) => setHb(payload.new || null))
       .subscribe();
     return () => { active = false; supabase.removeChannel(ch); };
@@ -39,7 +39,7 @@ export default function BotStatus({ assignedTodos = [], onClick, hidden = false 
   const { queued, needsReview } = useMemo(() => {
     let q = 0, r = 0;
     (assignedTodos || []).forEach((t) => {
-      if (t.assigned_to !== BOT_ID || t.status !== 'open') return;
+      if (t.assigned_to !== BOT_MEMBER_ID || t.status !== 'open') return;
       if (t.bot_status === 'needs_review') r++;
       else if (t.bot_status === 'queued' || t.bot_status === 'in_progress') q++;
     });
@@ -58,8 +58,8 @@ export default function BotStatus({ assignedTodos = [], onClick, hidden = false 
   const label = working ? 'Working' : online ? 'Online' : 'Offline';
   const ago = lastSeen ? _ago(now - lastSeen) : 'never';
   const title = online
-    ? `Claude bot ${label.toLowerCase()}${hb?.host ? ' on ' + hb.host : ''} · last seen ${ago} ago`
-    : `Claude bot offline · last seen ${ago}. Queued tasks will run when it's back online.`;
+    ? `${BOT_DISPLAY_NAME} ${label.toLowerCase()}${hb?.host ? ' on ' + hb.host : ''} · last seen ${ago} ago`
+    : `${BOT_DISPLAY_NAME} offline · last seen ${ago}. Queued tasks will run when it's back online.`;
 
   return (
     <span onClick={onClick} title={title}
@@ -68,7 +68,7 @@ export default function BotStatus({ assignedTodos = [], onClick, hidden = false 
         color: '#475569', cursor: onClick ? 'pointer' : 'default', whiteSpace: 'nowrap' }}>
       <span style={{ width: 8, height: 8, borderRadius: 999, background: dot,
         boxShadow: working ? '0 0 0 3px rgba(245,158,11,0.2)' : 'none' }} />
-      🤖 Claude · {label}
+      🤖 {BOT_DISPLAY_NAME} · {label}
       {queued > 0 && <span style={{ background: '#eff6ff', color: '#1e40af', borderRadius: 999, padding: '0 6px' }}>{queued} queued</span>}
       {needsReview > 0 && <span style={{ background: '#fef3c7', color: '#92400e', borderRadius: 999, padding: '0 6px' }}>{needsReview} to review</span>}
     </span>

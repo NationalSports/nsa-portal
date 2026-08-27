@@ -8,7 +8,7 @@ import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import AiInbox from './AiInbox';
 import AiTasks from './AiTasks';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
+import { BOT_DISPLAY_NAME, BOT_MEMBER_ID, botTeamMemberName, canBotAddToCart, findOrderingBot, isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -7907,14 +7907,14 @@ export default function App(){
     </div>
   </div>;
 
-  // Stop a Claude bot task from being silently checked off before the bot actually
+  // Stop an ordering-bot task from being silently checked off before the bot actually
   // placed the order. Returns false (abort) if the user declines the warning. Used
   // by every completion entry point so the guard can't be bypassed by surface.
   const _confirmTodoComplete=(id)=>{
     const t=(assignedTodos||[]).find(x=>x.id===id);
     const warn=botCompleteNeedsConfirm(t);
     if(!warn)return true;
-    return window.confirm('⚠️ This is a Claude bot task and the bot has NOT finished it (status: '+warn+').\n\nMarking it complete only checks the task off — it does NOT place the order, and the PO will look ordered when it isn\'t.\n\nComplete it anyway?');
+    return window.confirm('⚠️ This is a '+BOT_DISPLAY_NAME+' task and the bot has NOT finished it (status: '+warn+').\n\nMarking it complete only checks the task off — it does NOT place the order, and the PO will look ordered when it isn\'t.\n\nComplete it anyway?');
   };
   // Mark an assigned TODO complete from anywhere (e.g. the open-tasks banner on a sales order).
   // Mirrors the dashboard's _todoComplete: optimistic local update + snapshot sync + DB write.
@@ -7927,16 +7927,17 @@ export default function App(){
     if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));
     nf('Task completed!')
   };
-  // Quick-create a task assigned to the Claude bot (used by the mobile view,
+  // Quick-create a task assigned to the ordering bot (used by the mobile view,
   // which has no Assign Task modal). Mirrors the modal's save shape.
   const assignBotTask=({title,description='',so_id=null,customer_id=null,priority=1,bot_payload=null})=>{
-    const bot=REPS.find(r=>r.is_active!==false&&r.role==='bot');
-    if(!bot){nf('No Claude bot found — apply the bot migration first','error');return false}
+    if(!isBotOwner(cu)){nf('Only the bot owner can assign '+BOT_DISPLAY_NAME,'error');return false}
+    const bot=findOrderingBot(REPS);
+    if(!bot){nf('No '+BOT_DISPLAY_NAME+' bot found — apply the bot migration first','error');return false}
     if(!title||!title.trim()){nf('Task needs a title','error');return false}
     const newTodo={id:'todo-'+Date.now(),title:title.trim(),description:(description||'').trim(),created_by:cu.id,assigned_to:bot.id,so_id:so_id||null,customer_id:customer_id||null,if_id:null,priority,due_date:null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[],bot_status:'queued'};
     if(bot_payload)newTodo.bot_payload=bot_payload;
     setAssignedTodos(prev=>[newTodo,...prev]);
-    nf('🤖 Assigned to Claude');
+    nf('🤖 Assigned to '+BOT_DISPLAY_NAME);
     return true;
   };
   const deleteSO = (soId) => {
@@ -8609,7 +8610,7 @@ export default function App(){
         const upd={bot_status:'queued',updated_at:ts};
         _dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] bot requeue:',r.error.message)}));
       }
-      nf('🔁 Task requeued — Claude will retry shortly');
+      nf('🔁 Task requeued — '+BOT_DISPLAY_NAME+' will retry shortly');
     };
     const _workspaceLabels={
       note:[
@@ -9577,7 +9578,7 @@ export default function App(){
             <span className="dash-action-row__marker"><Icon name={(t.priority??2)<=1?'alert':'check'} size={14}/></span>
             <span className="dash-action-row__copy">
               <strong>{t.title}{_bot&&<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_bot.pillBg,color:_bot.pillFg,whiteSpace:'nowrap'}}>{_bot.label}</span>}</strong>
-              <small>{isAssignedToMe?'From '+(creator?.name||'Team'):(assignee?.name||'Unassigned')}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.comments?.length>0?' · '+t.comments.length+' comment'+(t.comments.length!==1?'s':''):''}</small>
+              <small>{isAssignedToMe?'From '+(creator?.name||'Team'):(botTeamMemberName(assignee)||'Unassigned')}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.comments?.length>0?' · '+t.comments.length+' comment'+(t.comments.length!==1?'s':''):''}</small>
             </span>
             <span className={`dash-action-row__priority ${(t.priority??2)<=1?'is-high':''}`}>{(t.priority??2)<=1?'High':'Normal'}</span>
             <span className="dash-action-row__actions">
@@ -9711,7 +9712,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:botTeamMemberName(assignee)}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -9782,7 +9783,7 @@ export default function App(){
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(botTeamMemberName(assignee)||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
             <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
@@ -10187,14 +10188,14 @@ export default function App(){
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
-    {/* Claude needs you — loud banner when a bot task is waiting on a human
+    {/* Chief of Staff needs you — loud banner when a bot task is waiting on a human
         (a question, a cart ready to submit, or a blocker). The row pill alone
         is easy to miss; this sits at the top of the dashboard until acted on. */}
-    {isBotOwner(cu)&&(()=>{const _need=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to==='bot-claude'&&['needs_input','needs_review','blocked'].includes(t.bot_status));
+    {isBotOwner(cu)&&(()=>{const _need=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===BOT_MEMBER_ID&&['needs_input','needs_review','blocked'].includes(t.bot_status));
       if(_need.length===0)return null;
       return<div className="card" style={{marginBottom:16,border:'2px solid #fb7185',background:'#fff1f2'}}>
         <div className="card-body" style={{padding:'12px 16px'}}>
-          <div style={{fontSize:14,fontWeight:800,color:'#be123c',marginBottom:8}}>🤖 Claude is waiting on you ({_need.length})</div>
+          <div style={{fontSize:14,fontWeight:800,color:'#be123c',marginBottom:8}}>🤖 {BOT_DISPLAY_NAME} is waiting on you ({_need.length})</div>
           {_need.map(t=>{const _b=botRowUI(t.bot_status);return<div key={t.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #fecdd3'}}>
             <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b?.pillBg,color:_b?.pillFg,whiteSpace:'nowrap',flexShrink:0}}>{_b?.label||t.bot_status}</span>
             <span style={{fontSize:12,fontWeight:600,color:'#334155',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
@@ -10215,13 +10216,13 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:botTeamMemberName(assignee)}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
               {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
-              {t.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(t.bot_status)&&<button title="Retry — requeue for Claude" style={{background:'none',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#1e40af',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_botRequeue(t.id)}}>🔁</button>}
+              {t.assigned_to===BOT_MEMBER_ID&&['failed','blocked','needs_input'].includes(t.bot_status)&&<button title={'Retry — requeue for '+BOT_DISPLAY_NAME} style={{background:'none',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#1e40af',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_botRequeue(t.id)}}>🔁</button>}
               <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
               <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
             </div>
@@ -10328,7 +10329,7 @@ export default function App(){
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:botTeamMemberName(assignee)}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
@@ -10399,7 +10400,7 @@ export default function App(){
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(botTeamMemberName(assignee)||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
             <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][t.priority]||'Normal'}</span>
@@ -10750,7 +10751,7 @@ export default function App(){
         <div className="modal-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12,fontSize:12}}>
             <div><span style={{color:'#64748b'}}>Created by:</span> <strong>{creator?.name}</strong></div>
-            <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{assignee?.name}</strong></div>
+            <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{botTeamMemberName(assignee)}</strong></div>
             {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> {custRef.alpha_tag||custRef.name}</div>}
             {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
             {ifId&&<div><span style={{color:'#64748b'}}>IF:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{const ifSo=soRef||sos.find(s=>safeItems(s).some(it=>safePicks(it).some(pk=>pk.pick_id===ifId)));if(ifSo){setTodoDetailId(null);setESO(ifSo);setESOC(cust.find(c=>c.id===ifSo.customer_id));setESOTab('items');setPg('orders')}else{nf('Item Fulfillment '+ifId+' not found','warn')}}}>{ifId}</span></div>}
@@ -10761,7 +10762,7 @@ export default function App(){
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
           {/* Live bot progress — the worker relays the agent's PROGRESS narration in
               realtime while the run is active; cleared automatically when it finishes. */}
-          {td.assigned_to==='bot-claude'&&td.bot_status==='in_progress'&&(()=>{const _p=botProgress(td);const _pct=_p?Math.min(100,Math.round(_p.step/_p.total*100)):5;return<div style={{marginBottom:12,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8}}>
+          {td.assigned_to===BOT_MEMBER_ID&&td.bot_status==='in_progress'&&(()=>{const _p=botProgress(td);const _pct=_p?Math.min(100,Math.round(_p.step/_p.total*100)):5;return<div style={{marginBottom:12,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8,marginBottom:6}}>
               <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>🤖 {_p?`Step ${_p.step} of ${_p.total} — ${_p.label}`:'Bot working…'}</div>
               {_p?.at&&<div style={{fontSize:10,color:'#64748b',whiteSpace:'nowrap'}}>{new Date(_p.at).toLocaleTimeString()}</div>}
@@ -10771,7 +10772,7 @@ export default function App(){
           {/* Bot retry — failed/blocked/needs_input tasks never ran to completion; requeue
               instead of forcing a manual comment. needs_input also has this via replying, but
               the button makes it discoverable without knowing that trick. */}
-          {td.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(td.bot_status)&&(()=>{const _ui=botRowUI(td.bot_status);return<div style={{marginBottom:12,padding:'10px 12px',background:_ui?.bg||'#fef2f2',border:'1px solid '+(_ui?.bar||'#fecaca'),borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+          {td.assigned_to===BOT_MEMBER_ID&&['failed','blocked','needs_input'].includes(td.bot_status)&&(()=>{const _ui=botRowUI(td.bot_status);return<div style={{marginBottom:12,padding:'10px 12px',background:_ui?.bg||'#fef2f2',border:'1px solid '+(_ui?.bar||'#fecaca'),borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
             <div style={{fontSize:12,color:'#334155'}}><strong style={{color:_ui?.bar||'#b91c1c'}}>{_ui?.label||'Bot stopped'}</strong> — {td.bot_status==='failed'?'the run did not complete.':td.bot_status==='blocked'?'the bot could not proceed.':'reply above, or retry to run it again as-is.'}</div>
             <button className="btn btn-sm btn-primary" onClick={()=>_botRequeue(td.id)}>🔁 Retry</button>
           </div>})()}
@@ -10813,7 +10814,7 @@ export default function App(){
             });
             return(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===(c.author_id||c.user_id));
               return<div key={c.id} style={{padding:'8px 10px',marginBottom:4,background:c.author_id===cu.id?'#dbeafe':'#f1f5f9',borderRadius:6,fontSize:12}}>
-                <div style={{fontWeight:600,marginBottom:2}}>{auth?.name||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
+                <div style={{fontWeight:600,marginBottom:2}}>{botTeamMemberName(auth)||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
                 <div style={{lineHeight:1.5}}>{_richText(c.text)}</div>
               </div>});
             })()}
@@ -10821,11 +10822,11 @@ export default function App(){
               <input className="form-input" placeholder="Add a comment or question..." style={{flex:1,fontSize:12}} id="_todo_comment_input"
                 onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
                   const text=e.target.value.trim();const newComment={id:'tc-'+Date.now(),todo_id:td.id,author_id:cu.id,text,created_at:new Date().toISOString()};
-                  setAssignedTodos(prev=>prev.map(t=>{if(t.id!==td.id)return t;const u={...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()};if(t.assigned_to==='bot-claude'&&t.bot_status==='needs_input'){u.bot_status='queued';if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update({bot_status:'queued',updated_at:u.updated_at}).eq('id',td.id).then(r=>{if(r.error)console.error('[DB] bot resume:',r.error.message)}));nf('🤖 Reply sent — Claude will resume')}return u}));
+                  setAssignedTodos(prev=>prev.map(t=>{if(t.id!==td.id)return t;const u={...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()};if(t.assigned_to===BOT_MEMBER_ID&&t.bot_status==='needs_input'){u.bot_status='queued';if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update({bot_status:'queued',updated_at:u.updated_at}).eq('id',td.id).then(r=>{if(r.error)console.error('[DB] bot resume:',r.error.message)}));nf('🤖 Reply sent — '+BOT_DISPLAY_NAME+' will resume')}return u}));
                   e.target.value='';nf('Comment added')}}}/>
               <button className="btn btn-sm btn-secondary" onClick={()=>{const inp=document.getElementById('_todo_comment_input');if(inp?.value?.trim()){
                 const text=inp.value.trim();const newComment={id:'tc-'+Date.now(),todo_id:td.id,author_id:cu.id,text,created_at:new Date().toISOString()};
-                setAssignedTodos(prev=>prev.map(t=>{if(t.id!==td.id)return t;const u={...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()};if(t.assigned_to==='bot-claude'&&t.bot_status==='needs_input'){u.bot_status='queued';if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update({bot_status:'queued',updated_at:u.updated_at}).eq('id',td.id).then(r=>{if(r.error)console.error('[DB] bot resume:',r.error.message)}));nf('🤖 Reply sent — Claude will resume')}return u}));
+                setAssignedTodos(prev=>prev.map(t=>{if(t.id!==td.id)return t;const u={...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()};if(t.assigned_to===BOT_MEMBER_ID&&t.bot_status==='needs_input'){u.bot_status='queued';if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update({bot_status:'queued',updated_at:u.updated_at}).eq('id',td.id).then(r=>{if(r.error)console.error('[DB] bot resume:',r.error.message)}));nf('🤖 Reply sent — '+BOT_DISPLAY_NAME+' will resume')}return u}));
                 inp.value='';nf('Comment added')}}}>Send</button>
             </div>}
           </div>
@@ -14524,7 +14525,7 @@ export default function App(){
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:22,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
-                {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
+                {isBotOwner(cu)&&canBotAddToCart(vg.name||vk)&&findOrderingBot(REPS)&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to Chief of Staff — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
                   // Decorator-bound group (vendor:decoId): deliver to the decorator with the
@@ -14534,7 +14535,7 @@ export default function App(){
                     :resolveShipToClient(_botSoId,sos,cust);
                   const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:_botShipTo});
                   assignBotTask({title,description,priority:1,bot_payload});
-                }}>🤖 Assign to Claude</button>}
+                }}>🤖 Assign to Chief of Staff</button>}
               </div>
             </div>
             {vg.threshold>0&&(()=>{const pct=Math.max(0,Math.min(100,Math.round(total/vg.threshold*100)));return<div>
@@ -17537,7 +17538,7 @@ export default function App(){
               const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);
               return<tr key={t.id} style={{cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
                 <td style={{fontWeight:600}}>{t.title}</td>
-                <td>{assignee?.name||'?'}</td>
+                <td>{botTeamMemberName(assignee)||'?'}</td>
                 <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
                 <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
                 <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority===0?'Urgent':t.priority===1?'High':'Normal'}</span></td>
@@ -17555,7 +17556,7 @@ export default function App(){
               const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);
               return<tr key={t.id}>
                 <td>{t.title}</td>
-                <td>{assignee?.name||'?'}</td>
+                <td>{botTeamMemberName(assignee)||'?'}</td>
                 <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
                 <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
                 <td style={{fontSize:10,color:'#94a3b8'}}>{t.updated_at?new Date(t.updated_at).toLocaleDateString():''}</td>
@@ -22333,7 +22334,7 @@ export default function App(){
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:14,fontWeight:600}}>{t.title}</div>
               {t.description&&<div style={{fontSize:12,color:'#475569',marginTop:2}}>{t.description}</div>}
-              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(botTeamMemberName(assignee)||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>{const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_whDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_whFmtDue(t.due_date)}</span>}
@@ -36621,7 +36622,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={isBotOwner(cu)?assignBotTask:null} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary><PortalAssistant variant="mobile" pg={pg} screenTitle={titles[pg]||'Portal'} userName={cu?.name} onSearch={handleAssistantSearch} openResult={(row)=>{try{window.dispatchEvent(new CustomEvent('nsa:mobile-open-result',{detail:row}))}catch(e){}}} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote}/></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
@@ -36755,10 +36756,10 @@ export default function App(){
                 <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#f1f5f9',color:'#64748b',textTransform:'uppercase'}}>{r.kind}</span>
               </div>})}
           </div></>}
-          {/* Global "Claude needs you" bell — visible on EVERY page (not just the
+          {/* Global "Chief of Staff needs you" bell — visible on EVERY page (not just the
               dashboard banner), so a finished cart or a bot question can't sit
               unnoticed. Counts bot tasks waiting on a human; click opens the oldest. */}
-          {isBotOwner(cu)&&(()=>{const _w=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to==='bot-claude'&&['needs_review','needs_input','blocked'].includes(t.bot_status));
+          {isBotOwner(cu)&&(()=>{const _w=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===BOT_MEMBER_ID&&['needs_review','needs_input','blocked'].includes(t.bot_status));
             if(!_w.length)return null;
             const _rev=_w.filter(t=>t.bot_status==='needs_review').length;
             const _oldest=_w.slice().sort((a,b)=>new Date(a.updated_at||0)-new Date(b.updated_at||0))[0];
@@ -36924,7 +36925,7 @@ export default function App(){
             })}</div>};
           return<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
             <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-              <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>🤖 Claude · Add to cart</span>
+              <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>🤖 {BOT_DISPLAY_NAME} · Add to cart</span>
               <span className="badge badge-blue">{bp.vendor_name||bp.target||'vendor'}</span>
               <span className="badge badge-gray">PO {bp.po_number||'—'}</span>
               <span className="badge badge-gray">{lines.length} item{lines.length===1?'':'s'} · {totQty} pcs</span>
@@ -36934,11 +36935,11 @@ export default function App(){
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}}>{shipTo?.attention?'🎨 Drop ship to decorator — deliver to':'📦 Drop ship — deliver to'}</div>
                 {shipTo?<div style={{fontSize:13,color:'#0f172a',lineHeight:1.5}}>
                   <b>{shipTo.name}</b>{shipTo.attention?<span style={{marginLeft:6,color:'#7c3aed',fontWeight:700}}>· Attn: {shipTo.attention}</span>:null}<br/>{shipTo.line1}<br/>{shipTo.city}{shipTo.city&&shipTo.state?', ':''}{shipTo.state} {shipTo.zip}
-                </div>:<div style={{fontSize:12,color:'#b91c1c',fontWeight:600}}>⚠ No delivery address on file{lines.some(l=>l.ship_to_deco_id)?' for this decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" on the SO's ship-to customer"} — Claude can't set the delivery location. Add the address before assigning.</div>}
+                </div>:<div style={{fontSize:12,color:'#b91c1c',fontWeight:600}}>⚠ No delivery address on file{lines.some(l=>l.ship_to_deco_id)?' for this decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" on the SO's ship-to customer"} — {BOT_DISPLAY_NAME} can't set the delivery location. Add the address before assigning.</div>}
               </div>
               :<div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',fontSize:12,color:'#64748b'}}>🏭 Ships to the <b style={{color:'#334155'}}>National Sports warehouse</b> (vendor default delivery location)</div>}
             <div style={{maxHeight:200,overflowY:'auto'}}>
-              {lines.length===0&&<div style={{padding:'10px 14px',fontSize:12,color:'#94a3b8'}}>No structured line items — Claude works from the task title/description.</div>}
+              {lines.length===0&&<div style={{padding:'10px 14px',fontSize:12,color:'#94a3b8'}}>No structured line items — {BOT_DISPLAY_NAME} works from the task title/description.</div>}
               {lines.map((l,i)=><div key={i} style={{padding:'8px 14px',borderBottom:i<lines.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',gap:10,alignItems:'baseline'}}>
                 <div style={{minWidth:0}}>
                   <div style={{fontSize:13,color:'#0f172a'}}><b style={{fontFamily:'ui-monospace,monospace'}}>{l.sku}</b>{l.color?<span style={{color:'#64748b'}}> · {l.color}</span>:null}</div>
@@ -36966,7 +36967,7 @@ export default function App(){
                 </div>
               </div>)}
             </div>
-            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
+            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>{BOT_DISPLAY_NAME} adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — {BOT_DISPLAY_NAME} verifies live.</span>:null}</div>
           </div>;
         })()}
         {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&<>
@@ -36976,9 +36977,9 @@ export default function App(){
               <input type="date" className="form-input" value={todoModal.bot_delivery||''} onChange={e=>setTodoModal(m=>({...m,bot_delivery:e.target.value}))} style={{flex:1}}/>
               {todoModal.bot_delivery&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,bot_delivery:''}))}>Clear</button>}
             </div>
-            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Claude orders <strong>now</strong> and sets this as the delivery date in Adidas CLICK. Leave blank for the default.</div>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{BOT_DISPLAY_NAME} orders <strong>now</strong> and sets this as the delivery date in Adidas CLICK. Leave blank for the default.</div>
           </div>
-          {/* When sizes have different restock dates, let the rep choose how Claude groups
+          {/* When sizes have different restock dates, let the rep choose how the ordering bot groups
               the cart's delivery dates. Default 'complete' = the prior behavior. */}
           <div style={{marginBottom:12}}>
             <label className="form-label">🚚 If restock dates differ</label>
@@ -36999,7 +37000,7 @@ export default function App(){
             const _long=[];(todoModal.bot_payload?.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const s=_sched[l.sku];if(s&&(s.mode==='now'||(s.mode==='date'&&s.date)))return;Object.entries(l.sizes||{}).forEach(([sz,q])=>{const r=a[sz];if(r&&(r.stock||0)<Number(q)&&!_in14(r.date))_long.push(l.sku+' '+sz+(r.date?' (restock '+r.date+')':' (no date)'))})});
             if(_long.length===0)return null;
             return<div style={{marginBottom:12}}>
-              <label className="form-label">⏳ {_long.length} size{_long.length===1?'':'s'} restock beyond 2 weeks — what should Claude do?</label>
+              <label className="form-label">⏳ {_long.length} size{_long.length===1?'':'s'} restock beyond 2 weeks — what should {BOT_DISPLAY_NAME} do?</label>
               <select className="form-select" value={todoModal.bot_backorder||'ask'} onChange={e=>setTodoModal(m=>({...m,bot_backorder:e.target.value}))}>
                 <option value="ask">Ask me — pause with a question (default)</option>
                 <option value="order">Order everything anyway — schedule under restock dates</option>
@@ -37022,13 +37023,19 @@ export default function App(){
               {(()=>{
                 const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
                 const isWhLead=WAREHOUSE_LEAD_IDS.includes(cu.id);
-                // The Claude bot is just another assignee (role 'bot'); offer it everywhere except warehouse-only contexts.
-                const bots=isBotOwner(cu)?REPS.filter(r=>r.is_active!==false&&r.role==='bot'):[];
-                const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>;
+                // The ordering bot can take explicit Adidas cart tasks, generic tasks
+                // (which become Adidas cart tasks on save), and Cowork order-status tasks.
+                // Never offer it for a structured unsupported-vendor cart payload.
+                const _tbp=todoModal.bot_payload;
+                const _botEligible=!_tbp||_tbp.task_type==='track_po_status'
+                  ||(_tbp.task_type==='add_to_cart'&&canBotAddToCart(_tbp.vendor_name||_tbp.target));
+                const _orderingBot=findOrderingBot(REPS);
+                const bots=isBotOwner(cu)&&_botEligible&&_orderingBot?[_orderingBot]:[];
+                const botOpt=bots.length>0&&<optgroup key="bots" label="🤖 Automation">{bots.map(r=><option key={r.id} value={r.id}>{botTeamMemberName(r)}</option>)}</optgroup>;
                 // Warehouse-context tasks (from the warehouse page / item rows) only assign to warehouse crew.
                 if(todoModal.wh_only){return REPS.filter(r=>r.is_active!==false&&r.role==='warehouse').map(r=><option key={r.id} value={r.id}>{r.name}{r.id===cu.id?' (me)':''}</option>)}
                 if(isAdminGm){
-                  // CSRs only (no sales reps) + warehouse, plus Claude for the bot owner.
+                  // CSRs only (no sales reps) + warehouse, plus the ordering bot for its owner.
                   const office=REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='admin'));
                   const warehouse=REPS.filter(r=>r.is_active!==false&&r.role==='warehouse');
                   return[
@@ -37053,6 +37060,7 @@ export default function App(){
               <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
             </select></div>
         </div>
+        {todoModal.assigned_to===BOT_MEMBER_ID&&!todoModal.bot_payload&&<div style={{margin:'-4px 0 12px',padding:'8px 10px',borderRadius:7,background:'#f0fdfa',border:'1px solid #99f6e4',fontSize:11,color:'#0f766e',fontWeight:600}}>Chief of Staff currently supports Adidas CLICK cart fill only and always stops for human review before submit.</div>}
         <div style={{marginBottom:12}}><label className="form-label">Due Date (optional)</label>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             <input type="date" className="form-input" value={todoModal.due_date||''} onChange={e=>setTodoModal(m=>({...m,due_date:e.target.value}))} style={{flex:1}}/>
@@ -37082,11 +37090,13 @@ export default function App(){
           // A PO-assigned task carries the PO number in doc_label (it differs from the SO id and isn't an IF/EST/SO ref).
           const _poId=todoModal.po_id||((todoModal.doc_label&&todoModal.doc_label!==todoModal.so_id&&!_ifId&&!/^(IF-|EST-|SO-)/i.test(todoModal.doc_label))?todoModal.doc_label:null);
           const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,if_id:_ifId,po_id:_poId,priority:todoModal.priority,due_date:todoModal.due_date||null,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
-          // Bot task: queue it for the worker. Attach structured payload when present
-          // (batch button); otherwise queue from the title/description alone.
-          if(REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'){
+          // Bot task: queue it for the worker. A generic task selected for Chief
+          // of Staff is explicitly an Adidas CLICK add_to_cart task; structured
+          // payloads retain their already-validated task type and target.
+          if(todoModal.assigned_to===BOT_MEMBER_ID&&findOrderingBot(REPS)){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
+            if(!_bp.task_type){_bp.task_type='add_to_cart';_bp.target='adidas_click';_bp.vendor_name='Adidas'}
             if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
             _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
             // Ship the portal's availability snapshot (needed sizes only) + the rep's
@@ -37111,7 +37121,7 @@ export default function App(){
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
           setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{}});
-          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+          nf('Task assigned to '+(botTeamMemberName(REPS.find(r=>r.id===todoModal.assigned_to))||''))
         }}>Assign Task</button>
       </div>
     </div></div>}

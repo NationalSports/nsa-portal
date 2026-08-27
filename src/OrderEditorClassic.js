@@ -40,7 +40,7 @@ import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoI
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
-import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
+import { buildBotCartPayload, buildBotTrackPayload, canBotAddToCart, findOrderingBot, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
@@ -4956,7 +4956,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {o.credit_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('credit_applied',false);sv('credit_amount',0);nf('Credit removed')}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Remove Credit</button>}
             {onAssignTodo&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onAssignTodo({title:'',description:'',so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:o.id})}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📋 Assign TODO</button></>}
             {isSO&&onAssignTodo&&isBotOwner(cu)&&(()=>{
-              const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
+              const bot=findOrderingBot(REPS);
               if(!bot)return null;
               // Distinct OPEN Adidas POs on this SO get the live CLICK read; the email covers every PO.
               const openAdi=(()=>{const m={};safeItems(o).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl.po_id||!/adidas/i.test(pl.vendor||it.brand||''))return;let ord=0,rcv=0,can=0;Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&!k.startsWith('_')&&typeof v==='number')ord+=v});Object.values(pl.received||{}).forEach(v=>{if(typeof v==='number')rcv+=v});Object.values(pl.cancelled||{}).forEach(v=>{if(typeof v==='number')can+=v});if(ord-rcv-can>0)m[pl.po_id]={id:pl.po_id}})});return Object.values(m)})();
@@ -10353,8 +10353,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setBatchReadyPopup(null)}>Continue working</button>
-          {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&batchReadyPopup.vendorKey==='adidas'&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
-            const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
+          {onAssignTodo&&isBotOwner(cu)&&findOrderingBot(REPS)&&batchReadyPopup.vendorKey==='adidas'&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to Chief of Staff — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
+            const bot=findOrderingBot(REPS);
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
             // Decorator-bound batch: blanks deliver to the decorator with the DPO on the
             // attention line; otherwise a drop-ship goes to the program's own address.
@@ -10365,7 +10365,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const{title,description,bot_payload}=buildBotCartPayload({poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id,shipTo:_shipTo});
             onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:1,bot_payload});
             setBatchReadyPopup(null);
-          }}>🤖 Assign to Claude</button>}
+          }}>🤖 Assign to Chief of Staff</button>}
           {batchReadyPopup.vendorKey==='sanmar'&&<button className="btn btn-secondary" style={{color:'#6d28d9',borderColor:'#c4b5fd'}} onClick={()=>{
             // Route through apiOrder/isBatch so a submitted order is RECORDED (queue promoted,
             // ack stamped) — the old preview-only modal placed real orders with no bookkeeping.
@@ -14625,7 +14625,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             const updated={...o,items:updatedItems,_deletedPoIds:[...new Set([...(o._deletedPoIds||[]),_editPoId,..._rmPoIds])].filter(Boolean),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={10}/> Delete PO</button>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title="Assign a task to your CSR (or the Claude bot) to order this PO" onClick={()=>{
+            {onAssignTodo&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#0891b2',borderColor:'#a5f3fc'}} title={canBotAddToCart(po.vendor)?'Assign a task to your CSR (or Chief of Staff) to order this Adidas PO':'Assign a task to your CSR to order this PO'} onClick={()=>{
               // Build the full order payload — EVERY line on this PO (not just the clicked item),
               // plus the drop-ship destination and attention line — so the Assign Task card and
               // the bot both see the complete picture.

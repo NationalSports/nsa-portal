@@ -2,7 +2,7 @@
   "name": "nsa-bot-worker",
   "version": "0.1.0",
   "private": true,
-  "description": "Always-on Claude Code worker that acts like a CSR — picks up tasks assigned to the 'Claude (Bot)' team member and drives vendor portals (Adidas CLICK, etc.).",
+  "description": "Always-on Playwright worker that runs Claude Code behind the 'Chief of Staff (Grok Bot)' portal identity and fills vendor carts for human review.",
   "type": "module",
   "engines": {
     "node": ">=18"

@@ -1,4 +1,4 @@
-// Bot tasks — helpers for assigning work to the Claude bot via the normal
+// Bot tasks — helpers for assigning work to the Chief of Staff ordering bot via the normal
 // "Assign Task" flow. The bot is just another team member (role 'bot'); you
 // assign it an assigned_todos row whose `bot_payload` carries the structured
 // details it needs to act (e.g. add a PO's items to a vendor cart).
@@ -6,8 +6,19 @@
 // See supabase/migrations/00099_assigned_todos_bot.sql for the schema and the
 // bot_status lifecycle (queued -> in_progress -> needs_review -> done/failed).
 
-// Only this portal user sees/uses the Claude bot (status pill, Assign-to-Claude
-// button, and the bot option in the Assign Task dropdown). Tasks themselves are
+// Keep this stable: the Mac mini and existing assigned_todos rows use this ID.
+// The portal-facing identity is intentionally separate so renames never strand work.
+export const BOT_MEMBER_ID = 'bot-claude';
+export const BOT_DISPLAY_NAME = 'Chief of Staff';
+export const BOT_TEAM_MEMBER_NAME = 'Chief of Staff (Grok Bot)';
+export const botTeamMemberName = (member) =>
+  member?.id === BOT_MEMBER_ID ? BOT_TEAM_MEMBER_NAME : member?.name;
+export const findOrderingBot = (members) =>
+  (members || []).find((member) =>
+    member?.id === BOT_MEMBER_ID && member.is_active !== false && member.role === 'bot');
+
+// Only this portal user sees/uses the ordering bot (status pill, assign button,
+// and the bot option in the Assign Task dropdown). Tasks themselves are
 // already private to their creator/assignee; this just hides the controls from
 // other reps/CSRs. Matched by team_members.id OR email, so it can't misfire if
 // the logged-in profile resolves a different id than expected.
@@ -35,6 +46,12 @@ export function botTargetForVendor(vendorName) {
   if (v.includes('sanmar')) return 'sanmar';
   return v.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown';
 }
+
+// The Mac mini only has credentials and a tested cart flow for Adidas CLICK.
+// Other target slugs are reserved for future runners and must not be presented
+// as working ordering-bot actions.
+export const canBotAddToCart = (vendorName) =>
+  botTargetForVendor(vendorName) === 'adidas_click';
 
 // Flatten queued batch POs into a flat, worker-friendly line-item list.
 // Each batch (bp) has { id, po_id, so_id, customer, items:[{sku,name,color,qty,unit_cost,sizes}] }.
@@ -213,7 +230,7 @@ export function resolveBatchDestination({ batches, decoId = null, allOrders = []
 
 // Build the title/description/bot_payload for an "add all items to the vendor
 // cart" task from a ready batch. The caller hands the result to onAssignTodo,
-// which opens the standard Assign Task modal pre-filled for the Claude bot.
+// which opens the standard Assign Task modal pre-filled for the ordering bot.
 export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null, shipTo = null, deliveryStrategy = 'complete' }) {
   const target = botTargetForVendor(vendorName);
   const lines = batchesToLines(batches);
@@ -282,7 +299,7 @@ export function botProgress(t) {
 
 // Visual styling for a task row by the bot's progress. Returns null for non-bot
 // tasks (render normally). The amber 'needs_review' is the human's cue that
-// Claude finished and the order just needs reviewing/submitting.
+// Chief of Staff finished and the order just needs reviewing/submitting.
 export function botRowUI(botStatus) {
   switch (botStatus) {
     case 'queued':       return { label: '🤖 Queued',                  bg: '#f8fafc', bar: '#94a3b8', pillBg: '#e2e8f0', pillFg: '#475569' };
