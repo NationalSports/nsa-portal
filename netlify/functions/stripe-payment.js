@@ -9,6 +9,40 @@ const { sendRefundNotice } = require('./_webstoreEmail');
 // email builds its own via _webstoreEmail's `money`.
 const usd = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// Validate requested item links against the DB rows and split the exact refund
+// cents across them. The last line receives the rounding remainder, so allocation
+// cents always sum exactly to the Stripe refund amount.
+const buildRefundItemAllocations = (amountCents, requested, itemRows) => {
+  const req = Array.isArray(requested) ? requested.slice(0, 100) : [];
+  if (!req.length) return [];
+  const byId = new Map((itemRows || []).map((i) => [String(i.id), i]));
+  const combined = new Map();
+  for (const a of req) {
+    const id = String((a && a.item_id) || '').trim();
+    const qty = Math.floor(Number(a && a.qty));
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) || !Number.isFinite(qty) || qty <= 0) {
+      throw new Error('Choose a valid item quantity for the refund.');
+    }
+    combined.set(id, (combined.get(id) || 0) + qty);
+  }
+  const rows = [...combined.entries()].map(([item_id, qty]) => {
+    const item = byId.get(item_id);
+    if (!item) throw new Error('A selected refund item is not on this order.');
+    const available = Math.max(0, (Number(item.cancelled_qty) || 0) - (Number(item.refunded_qty) || 0));
+    if (qty > available) throw new Error(`${item.name || item.sku || 'That item'} only has ${available} cancelled unit${available === 1 ? '' : 's'} awaiting refund.`);
+    const unit = Math.max(0, (Number(item.unit_price) || 0) + (Number(item.unit_fundraise) || 0));
+    return { item_id, qty, item, weight: unit > 0 ? unit * qty : qty };
+  });
+  const weightTotal = rows.reduce((n, r) => n + r.weight, 0) || rows.length;
+  let assigned = 0;
+  return rows.map((r, idx) => {
+    const cents = idx === rows.length - 1 ? amountCents - assigned : Math.floor(amountCents * r.weight / weightTotal);
+    assigned += cents;
+    return { item_id: r.item_id, qty: r.qty, amount: cents / 100 };
+  });
+};
+exports.buildRefundItemAllocations = buildRefundItemAllocations;
+
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
 
@@ -256,18 +290,41 @@ exports.handler = async (event) => {
 
       const admin = getSupabaseAdmin();
       const { data: orders, error: oErr } = await admin.from('webstore_orders')
-        .select('id,total,refunded_amt,status,stripe_pi_id,payment_mode').eq('id', webstore_order_id).limit(1);
+        .select('id,total,original_total,refunded_amt,status,stripe_pi_id,payment_mode').eq('id', webstore_order_id).limit(1);
       if (oErr) return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: oErr.message }) };
       const order = orders && orders[0];
       if (!order) return { statusCode: 404, headers: corsHeaders(), body: JSON.stringify({ error: 'Order not found' }) };
 
-      const total = Number(order.total) || 0;
+      const total = Number(order.original_total != null ? order.original_total : order.total) || 0;
       const already = Number(order.refunded_amt) || 0;
       const remainingCents = Math.round((total - already) * 100);
       if (remainingCents <= 0) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'This order is already fully refunded.' }) };
       let cents = amount_cents != null ? Math.round(Number(amount_cents)) : remainingCents; // default: full remaining
       if (!Number.isFinite(cents) || cents <= 0) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Enter a valid amount.' }) };
       if (cents > remainingCents) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the refundable balance.' }) };
+
+      // Item links are optional for a genuine order-level adjustment. When present,
+      // each selected quantity must already be cancelled by the transactional item
+      // editor; this is what makes report removal and money movement auditable as one
+      // chain without letting a browser attach a refund to an unrelated row.
+      let refundItems = [];
+      const requestedItems = Array.isArray(body.item_allocations) ? body.item_allocations.slice(0, 100) : [];
+      if (requestedItems.length) {
+        const requestedIds = [...new Set(requestedItems.map((a) => String((a && a.item_id) || '').trim()))];
+        if (requestedIds.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+          return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Choose a valid item for the refund.' }) };
+        }
+        const { data: itemRows, error: itemErr } = await admin.from('webstore_order_items')
+          .select('id,order_id,sku,name,size,color,player_name,player_number,unit_price,unit_fundraise,cancelled_qty,refunded_qty')
+          .eq('order_id', order.id).in('id', requestedIds);
+        if (itemErr) return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: itemErr.message }) };
+        try { refundItems = buildRefundItemAllocations(cents, requestedItems, itemRows || []); }
+        catch (e) { return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: e.message }) }; }
+      }
+      const itemReason = refundItems.length
+        ? `Item refund: ${refundItems.reduce((n, a) => n + a.qty, 0)} unit${refundItems.reduce((n, a) => n + a.qty, 0) === 1 ? '' : 's'} across ${refundItems.length} linked line${refundItems.length === 1 ? '' : 's'}`
+        : null;
+      const refundReason = reason || itemReason;
 
       let stripeRefundId, kind;
       if (order.stripe_pi_id) {
@@ -288,7 +345,8 @@ exports.handler = async (event) => {
 
       const { data: rpc, error: rErr } = await admin.rpc('apply_webstore_refund', {
         p_order_id: order.id, p_amount: cents / 100, p_kind: kind,
-        p_stripe_refund_id: stripeRefundId, p_actor: v.teamMemberId || null, p_reason: reason || null,
+        p_stripe_refund_id: stripeRefundId, p_actor: v.teamMemberId || null, p_reason: refundReason || null,
+        p_items: refundItems,
       });
       if (rErr) {
         console.error('[stripe-payment] refund recorded-FAILED for order', order.id, 'stripe_refund', stripeRefundId, '-', rErr.message);
@@ -312,7 +370,7 @@ exports.handler = async (event) => {
         // Report what actually happened, not whether an address existed. `notified` used
         // to be `!!row.buyer_email`, which claimed success for an email that may never
         // have left the building — the one thing this notice must not do quietly.
-        const notice = await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason, message: customerMessage });
+        const notice = await sendRefundNotice(admin, row, { amount: cents / 100, kind, reason: refundReason, message: customerMessage });
         notified = !!(notice && notice.sent);
         if (!notified) {
           notifyError = (notice && notice.reason) || 'unknown';
@@ -329,7 +387,7 @@ exports.handler = async (event) => {
           author: 'NSA Team', author_id: v.teamMemberId || null,
           // Record what the buyer was actually told, not just that something was sent —
           // the next person on this order needs to read the same words the family did.
-          text: `Refund issued: ${usd(cents / 100)}${kind === 'credit' ? ' (credited to the team account)' : ' back to the card on file'}${reason ? ` — ${reason}` : ''}.`
+          text: `Refund issued: ${usd(cents / 100)}${kind === 'credit' ? ' (credited to the team account)' : ' back to the card on file'}${refundReason ? ` — ${refundReason}` : ''}.`
             + (customerMessage ? `\n\n${notified ? 'Emailed' : 'Message (NOT emailed)'}: ${customerMessage}` : '')
             + (notified ? '' : `\n⚠️ Confirmation email did not send${notifyError ? ` (${notifyError})` : ''}.`),
           ts: new Date().toLocaleString(), dept: 'store', from_customer: false, read_by_staff: true,
@@ -337,7 +395,7 @@ exports.handler = async (event) => {
       } catch (e) {
         console.error('[stripe-payment] refund notice failed for order', order.id, 'refund', stripeRefundId, '-', e.message);
       }
-      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, notified, notify_error: notifyError, ...(rpc || {}) }) };
+      return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, kind, stripe_refund_id: stripeRefundId, notified, notify_error: notifyError, item_allocations: refundItems.length, ...(rpc || {}) }) };
     }
 
     if (action === 'refund') {
