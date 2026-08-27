@@ -27,7 +27,7 @@ import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
+import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -36202,6 +36202,10 @@ export default function App(){
   // mutation events apply + (for SOs) save inside the editor. The mutation math itself lives once
   // in businessLogic.js (assistantFindLine / assistantLineEdit / assistantRemoveLine* /
   // assistant*PoLine) — the same functions the editors run — so preview and result can't drift.
+  // Current sos, readable from a ConfirmCard commit thunk minutes after the draft was built —
+  // the closure's own `sos` is frozen at draft time (same staleness class the review flagged
+  // on the PO-removal commit), so commits re-resolve through this ref instead.
+  const _assistantSosRef=useRef(sos);useEffect(()=>{_assistantSosRef.current=sos},[sos]);
   function _assistantLiveOrder(){
     const rec=(pg==='estimates'&&eEst)?{id:eEst.id,kind:'estimate',fallback:eEst}:(pg==='orders'&&eSO)?{id:eSO.id,kind:'so',fallback:eSO}:null;
     if(!rec)return null;
@@ -36240,9 +36244,9 @@ export default function App(){
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
     const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false};
-    const szEntries=Object.entries(sizes||{}).map(([sz,v])=>[String(sz).trim(),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz,v])=>sz&&v>0);
+    const szEntries=Object.entries(sizes||{}).map(([sz,v])=>[assistantNormSize(line,sz),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz,v])=>sz&&v>0);
     if(szEntries.length){line.sizes=Object.fromEntries(szEntries);line.available_sizes=[...new Set([...(line.available_sizes||[]),...szEntries.map(([sz])=>sz)])];}
-    else if(Number(qty)>0){line.est_qty=Math.floor(Number(qty));}
+    else if(Number(qty)>0){line.est_qty=Math.floor(Number(qty));line.qty_only=true;/* est_qty only shows via the editor's qty-only UI */}
     const noCost=(m!=null&&nsa<=0);
     const lines=[{label:'Add to',value:cur.id},{label:'Product',value:(p.sku||'')+' '+name+(p.color?' ('+p.color+')':'')},
       {label:'Sell',value:'$'+unit_sell.toFixed(2)+(applied?' ('+margin_pct+'% margin)':noCost?' (no cost on file — default price)':'')}];
@@ -36305,7 +36309,7 @@ export default function App(){
     if(!cands.length)sos.forEach(s=>{if(cur&&cur.kind==='so'&&s.id===cur.id)return;assistantFindPoLine(s,target).forEach(mm=>cands.push({so:s,live:false,m:mm}))});
     if(!cands.length)return {error:'I couldn\'t find that PO line'+(target.poRef?' on '+target.poRef:'')+(target.sku?' for '+target.sku:'')+'. Double-check the PO number and SKU.'};
     if(cands.length>1)return {error:'More than one PO line matches: '+cands.slice(0,4).map(c=>c.m.poId+' · '+(c.m.item.sku||'?')+' on '+c.so.id).join('; ')+' — give me the PO number and exact SKU'+(target.size?'':' (and the size, if you mean one size)')+'.'};
-    const {so,live,m}=cands[0];
+    const {so,m}=cands[0];
     const dry=assistantRemovePoLine(so,{itemIdx:m.itemIdx,plIdx:m.plIdx,size:target.size});
     if(dry.error)return {error:dry.error};
     const ordStr=Object.entries(m.pl).filter(([k,v])=>!k.startsWith('_')&&typeof v==='number'&&k!=='unit_cost'&&v>0&&!['status'].includes(k)).map(([sz,v])=>v+'/'+sz).join(' ');
@@ -36313,8 +36317,17 @@ export default function App(){
       {label:target.size?'Cancelling':'Removing',value:target.size?('all open '+target.size+' units on this line'):('the whole line — ordered: '+(ordStr||'—'))},
       {label:'After',value:'Those sizes go back to open-to-order; job/SO status updates on its own.'}];
     const commit=async()=>{
-      if(live)return _assistantEditorCommit('nsa:assistant-po-remove',{target},so.id);
-      const r=assistantRemovePoLine(so,{itemIdx:m.itemIdx,plIdx:m.plIdx,size:target.size});
+      // Re-resolve at COMMIT time, never from the preview-time snapshot: first offer the
+      // event to a live editor (it applies against its own current state), else re-find the
+      // SO and the PO line in current App state so guards run against fresh received/billed.
+      let viaEditor=null;
+      try{window.dispatchEvent(new CustomEvent('nsa:assistant-po-remove',{detail:{target,orderId:so.id,respond:x=>{viaEditor=x}}}))}catch(e){}
+      if(viaEditor)return viaEditor.ok?{ok:true,message:viaEditor.message||'Done.'}:{ok:false,message:viaEditor.error||"Couldn't apply that change."};
+      const freshSo=(_assistantSosRef.current||[]).find(s2=>s2.id===so.id);
+      if(!freshSo)return {ok:false,message:so.id+" isn't there any more — nothing was changed."};
+      const fm=assistantFindPoLine(freshSo,target);
+      if(fm.length!==1)return {ok:false,message:'That PO line changed since the preview — nothing was saved. Ask me again to get a fresh look.'};
+      const r=assistantRemovePoLine(freshSo,{itemIdx:fm[0].itemIdx,plIdx:fm[0].plIdx,size:target.size});
       if(r.error)return {ok:false,message:r.error};
       try{savSO(r.next);}catch(e){return {ok:false,message:"Couldn't save the PO change — try again."}}
       return {ok:true,message:r.summary+'. Saved.'};
@@ -36333,7 +36346,8 @@ export default function App(){
     if(!matches.length)return {error:'I couldn\'t find a product with SKU "'+sku+'".'};
     if(matches.length>1)return {error:'Several products match '+sku+': '+matches.slice(0,4).map(x=>x.sku+(x.color?' ('+x.color+')':'')).join(', ')+' — which one?'};
     const p=matches[0];
-    const want=Object.entries(sizes||{}).map(([sz,v])=>[String(sz).trim(),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz])=>sz);
+    const _invItem={sizes:p._inv||{},available_sizes:p.available_sizes||[]};// normalize "l"/"large" onto the product's real size buckets
+    const want=Object.entries(sizes||{}).map(([sz,v])=>[assistantNormSize(_invItem,sz),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz])=>sz);
     const binVal=bin!=null?String(bin).trim():null;
     if(!want.length&&binVal==null)return {error:'Tell me the new on-hand quantity per size (e.g. "set L to 40"), and optionally a bin.'};
     const lines=[{label:'Product',value:(p.sku||'')+' '+(p.name||'')+(p.color?' ('+p.color+')':'')}];

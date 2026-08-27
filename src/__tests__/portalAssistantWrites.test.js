@@ -64,9 +64,22 @@ describe('assistantLineEdit', () => {
     expect(r.next.items[1].unit_sell).toBe(40);
     expect(r.next.items[1]._sizeSells.L).toBe(40);
   });
-  test('bare qty only for est_qty lines', () => {
-    expect(bl.assistantLineEdit(mkOrder(), 2, { qty: 20 }, {}).next.items[2].est_qty).toBe(20);
+  test('bare qty only for est_qty lines, and flags qty_only so the editor shows it', () => {
+    const r = bl.assistantLineEdit(mkOrder(), 2, { qty: 20 }, {});
+    expect(r.next.items[2].est_qty).toBe(20);
+    expect(r.next.items[2].qty_only).toBe(true);
     expect(bl.assistantLineEdit(mkOrder(), 0, { qty: 20 }, {}).error).toMatch(/per-size/);
+  });
+  test('size keys normalize onto the real buckets — "xl"/"large" edit XL/L, no phantom size', () => {
+    const r = bl.assistantLineEdit(mkOrder(), 0, { sizes: { xl: 2, large: 3 } }, {});
+    expect(r.error).toBeUndefined();
+    expect(r.next.items[0].sizes.XL).toBe(2);
+    expect(r.next.items[0].sizes.L).toBe(3);
+    expect(r.next.items[0].sizes.xl).toBeUndefined();
+    expect(r.next.items[0].available_sizes).toEqual(['M', 'L', 'XL']);
+    // remove_sizes normalizes too: "take off the xl" zeroes XL, not a no-op
+    const r2 = bl.assistantLineEdit(mkOrder(), 0, { remove_sizes: ['xl'] }, {});
+    expect(r2.next.items[0].sizes.XL).toBe(0);
   });
 });
 

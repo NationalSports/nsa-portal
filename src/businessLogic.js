@@ -1541,6 +1541,24 @@ function garmentCost(it) {
 // handlers, which run the same functions to build the ConfirmCard preview. One copy of the
 // math means the preview the user confirms and the change that lands can't drift.
 
+// Map a user-worded size onto the record's REAL size bucket, so "set the xl to 12" edits
+// XL instead of minting a phantom lowercase 'xl' bucket that inflates totals. Order:
+// exact key, case-insensitive match against the item's existing sizes/available_sizes,
+// canonical alias (large->L, xxl->2XL, one size->OSFA…), else uppercase short tokens.
+const _ASN_SIZE_ALIAS = { xs: 'XS', s: 'S', small: 'S', m: 'M', med: 'M', medium: 'M', l: 'L', lg: 'L', large: 'L', xl: 'XL', xlarge: 'XL', 'x-large': 'XL', 'x large': 'XL', xxl: '2XL', '2x': '2XL', '2xl': '2XL', xxxl: '3XL', '3x': '3XL', '3xl': '3XL', '4x': '4XL', '4xl': '4XL', osfa: 'OSFA', 'one size': 'OSFA', 'one-size': 'OSFA', os: 'OSFA', ys: 'YS', ym: 'YM', yl: 'YL', yxl: 'YXL' };
+function assistantNormSize(item, raw) {
+  const s = safeStr(raw).trim();
+  if (!s) return '';
+  const keys = [...new Set([...Object.keys(safeSizes(item)), ...safeArr(item && item.available_sizes).map(safeStr)])];
+  if (keys.includes(s)) return s;
+  const low = s.toLowerCase();
+  const ci = keys.find(k => k.toLowerCase() === low);
+  if (ci) return ci;
+  const alias = _ASN_SIZE_ALIAS[low];
+  if (alias) { const ci2 = keys.find(k => k.toLowerCase() === alias.toLowerCase()); return ci2 || alias; }
+  return s.length <= 4 ? s.toUpperCase() : s;
+}
+
 // Resolve which line the user means from a SKU or free-text description. Exact SKU first,
 // then SKU-contains, then all-words-in sku+name+color, then a unique any-word match.
 // Returns {idx, item} | {error:'not_found'} | {error:'ambiguous', matches:[...]}.
@@ -1579,11 +1597,14 @@ function assistantLineEdit(order, idx, edit, opts) {
   item = Object.assign({}, item);
   const changes = [], notes = [];
   const by = safeStr(opts && opts.by);
-  const setSizes = Object.entries(safeObj(edit && edit.sizes));
-  const rmSizes = safeArr(edit && edit.remove_sizes).map(s => safeStr(s).trim()).filter(Boolean);
+  // Normalize every requested size key onto the line's real buckets first (see
+  // assistantNormSize) — later duplicates win so "xl" and "XL" can't both land.
+  const _szMap = new Map();
+  Object.entries(safeObj(edit && edit.sizes)).forEach(([k, v]) => { const sz = assistantNormSize(item, k); if (sz) _szMap.set(sz, v); });
   // Removing a size = setting it to 0 (the committed-units guards below still apply);
   // the size bucket stays visible at 0, which is the reversible, honest form of "off".
-  rmSizes.forEach(sz => { if (!setSizes.some(([k]) => k === sz)) setSizes.push([sz, 0]); });
+  safeArr(edit && edit.remove_sizes).forEach(s => { const sz = assistantNormSize(item, s); if (sz && !_szMap.has(sz)) _szMap.set(sz, 0); });
+  const setSizes = [..._szMap.entries()];
   for (const [szRaw, vRaw] of setSizes) {
     const sz = safeStr(szRaw).trim();
     const n = Math.max(0, Math.floor(safeNum(Number(vRaw))));
@@ -1609,6 +1630,9 @@ function assistantLineEdit(order, idx, edit, opts) {
     if (szTotal > 0) return { error: 'That line has per-size quantities — tell me the size(s) to change (e.g. "set L to 12").' };
     changes.push({ label: 'Quantity', before: String(safeNum(item.est_qty)), after: String(n) });
     item.est_qty = n;
+    // est_qty is only visible/editable through the editor's qty-only UI (the "Custom —
+    // No Sizes / Qty Only" mode); without the flag the quantity prices invisibly.
+    if (!item.qty_only) item.qty_only = true;
   }
   let targetSell = null;
   if (edit && edit.margin_pct != null) {
@@ -1750,7 +1774,7 @@ module.exports = {
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Portal Assistant confirmed writes (shared by both editors + App.js previews)
-  assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine,
+  assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
