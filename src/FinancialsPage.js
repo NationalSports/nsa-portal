@@ -14,7 +14,9 @@ import { calcOrderMargin } from './pricing';
 import {
   billedByMonth, matchedPL, arAging, backlogSchedule,
   forecastRevenue, cashForecast, insights, monthKey, parseDate,
+  portalStatement, combineStatement,
 } from './lib/financeEngine';
+import { LEGACY_STATEMENTS } from './data/legacyStatements';
 
 // ── Portal look (Reports palette) + validated chart palette ─────────
 const FD = "'Barlow Condensed','Arial Narrow',sans-serif";
@@ -177,6 +179,8 @@ const LEVEL_META = {
 export default function FinancialsPage() {
   const { sos, invs, histInvs, cu } = useAppData();
   const [tab, setTab] = useState('overview');
+  const legacyKeys = useMemo(() => Object.keys(LEGACY_STATEMENTS).sort(), []);
+  const [stmtKey, setStmtKey] = useState(legacyKeys[legacyKeys.length - 1]);
   const isAdmin = cu?.role === 'admin' || cu?.role === 'super_admin';
 
   const today = useMemo(() => new Date(), []);
@@ -199,14 +203,17 @@ export default function FinancialsPage() {
     const rev = forecastRevenue({ billedHistory: billed, backlog, sos, calcMargin, asOf: today, horizon: 4 });
     const cash = cashForecast({ aging, revForecast: rev, asOf: today });
     const notes = insights({ pl, aging, backlog, billedHistory: billed, asOf: today });
-    return { billed, pl, aging, backlog, rev, cash, notes };
-  }, [isAdmin, histInvs, invs, sos, calcMargin, today]);
+    const legacy = LEGACY_STATEMENTS[stmtKey];
+    const stmtPortal = portalStatement({ sos, invs, calcMargin, through: stmtKey });
+    const statement = legacy ? combineStatement({ legacy, portal: stmtPortal }) : null;
+    return { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy };
+  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey]);
 
   if (!isAdmin) {
     return <div className="card"><div className="card-body"><h2>Admins only</h2><p>The Financials suite is limited to admin accounts.</p></div></div>;
   }
   if (!model) return null;
-  const { billed, pl, aging, backlog, rev, cash, notes } = model;
+  const { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy } = model;
 
   // ── Derived display data ──────────────────────────────────────────
   const year = today.getFullYear();
@@ -228,7 +235,7 @@ export default function FinancialsPage() {
     .sort((a, b) => b.open - a.open);
 
   const tabs = [
-    ['overview', 'Overview'], ['pl', 'P&L'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
+    ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
   const card = { background: '#fff', border: '1px solid ' + HAIR, borderRadius: 12, padding: 16 };
@@ -343,6 +350,73 @@ export default function FinancialsPage() {
             </div>
           </div>
         </>
+      )}
+
+      {tab === 'statement' && statement && (
+        <div style={{ ...card, maxWidth: 720 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
+            <h2 style={S.h2}>Income Statement — combined</h2>
+            <select value={stmtKey} onChange={(e) => setStmtKey(e.target.value)} style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, border: '1px solid ' + HAIR, background: '#fff', color: INK2 }}>
+              {legacyKeys.map((k) => <option key={k} value={k}>{LEGACY_STATEMENTS[k].periodLabel}</option>)}
+            </select>
+          </div>
+          <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
+            NetSuite (legacy ledger, imported {legacy.runDate}) plus live portal activity through the period —
+            portal revenue net of sales tax, portal cost matched to invoiced work. The two invoice streams share
+            no document numbers, so nothing counts twice.
+          </div>
+          {(() => {
+            const rowLine = (r, i) => (
+              <tr key={i}>
+                <td style={{ ...tdL, paddingLeft: 8 + (r.indent ? 18 : 0) + (r.kind ? 0 : 10), fontWeight: r.kind ? 700 : 400 }}>{r.label}</td>
+                <td style={{ ...td, fontWeight: r.kind === 'subtotal' ? 700 : 400 }}>
+                  {r.amount == null ? '' : (r.amount < 0 ? '($' + Math.abs(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ')' : '$' + r.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}
+                  {r.portalAmount != null && <span style={{ fontSize: 10, color: C3, marginLeft: 6 }}>incl. portal {$k(r.portalAmount)}</span>}
+                  {r.portalLine && <span style={{ fontSize: 10, color: C3, marginLeft: 6 }}>live</span>}
+                </td>
+              </tr>
+            );
+            const totalRow = (label, v, strong) => (
+              <tr>
+                <td style={{ ...tdL, fontWeight: 700, borderTop: '2px solid ' + INK, background: strong ? '#ecfdf5' : undefined }}>{label}</td>
+                <td style={{ ...td, fontWeight: 700, borderTop: '2px solid ' + INK, background: strong ? '#ecfdf5' : undefined }}>
+                  {'$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </td>
+              </tr>
+            );
+            const header = (label) => (
+              <tr><td colSpan={2} style={{ ...tdL, fontWeight: 700 }}>{label}</td></tr>
+            );
+            return (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 460 }}>
+                  <thead><tr>
+                    <th style={{ ...th, textAlign: 'left' }}>Financial row</th><th style={th}>Amount</th>
+                  </tr></thead>
+                  <tbody>
+                    {header('Income')}
+                    {statement.income.map(rowLine)}
+                    {totalRow('Total - Income', statement.totalIncome)}
+                    {header('Cost Of Sales')}
+                    {statement.cogs.map(rowLine)}
+                    {totalRow('Total - Cost Of Sales', statement.totalCogs)}
+                    {totalRow('Gross Profit', statement.grossProfit)}
+                    {header('Expense')}
+                    {statement.expense.map(rowLine)}
+                    {totalRow('Total - Expense', statement.totalExpense)}
+                    {totalRow('Net Income', statement.netIncome, true)}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+          <div style={{ fontSize: 11, color: INK3, marginTop: 10 }}>
+            Portal side this period: sales {$0(stmtPortal.sales)} + shipping {$0(stmtPortal.shipping)} billed,
+            matched cost {$0(stmtPortal.cogs)}. Expenses are the legacy ledger's (payroll, rent, overhead cover the
+            whole company). Legacy figures update by importing the latest NetSuite statement — automatic once
+            QuickBooks reporting is connected.
+          </div>
+        </div>
       )}
 
       {tab === 'ar' && (

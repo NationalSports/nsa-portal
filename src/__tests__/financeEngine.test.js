@@ -2,6 +2,7 @@
 import {
   parseDate, monthKey, addMonths, billedByMonth, matchedPL, arAging,
   backlogSchedule, forecastRevenue, cashForecast, insights,
+  portalStatement, combineStatement,
 } from '../lib/financeEngine';
 
 // Simple margin stub: rev = order.rev, cost = order.cost, shipRev = order.ship||0.
@@ -172,5 +173,64 @@ describe('insights', () => {
     expect(texts).toMatch(/past 90 days/);
     expect(texts).toMatch(/Open order book/);
     expect(texts).toMatch(/vs the same period last year/);
+  });
+});
+
+describe('portalStatement', () => {
+  const sos = [
+    { id: 'SO-1', created_at: '6/1/2026', _rev: 1000, _ship: 100, _cost: 600 },
+    { id: 'SO-2', created_at: '7/5/2026', _rev: 500, _ship: 0, _cost: 250 },
+  ];
+  const invs = [
+    // SO-1 half-invoiced in June ($550 net of $1,100 order value), $40 of it shipping
+    { id: 'I1', so_id: 'SO-1', date: '6/20/2026', total: 585, tax: 35, shipping: 40, status: 'paid' },
+    // SO-2 fully invoiced, but in August — beyond the July cutoff
+    { id: 'I2', so_id: 'SO-2', date: '8/02/2026', total: 500, tax: 0, status: 'open' },
+    { id: 'I3', so_id: 'SO-1', date: '6/22/2026', total: 99, tax: 0, status: 'void' }, // excluded
+  ];
+  test('nets tax, splits shipping, matches cost pro-rata, honors the cutoff', () => {
+    const calcMargin = (o) => ({ rev: o._rev, cost: o._cost, shipRev: o._ship });
+    const s = portalStatement({ sos, invs, calcMargin, through: '2026-07' });
+    expect(s.sales).toBeCloseTo(585 - 35 - 40);   // 510
+    expect(s.shipping).toBeCloseTo(40);
+    expect(s.revenue).toBeCloseTo(550);
+    expect(s.cogs).toBeCloseTo(600 * (550 / 1100)); // 300 — SO-2 not invoiced yet, contributes nothing
+    expect(s.gp).toBeCloseTo(250);
+  });
+});
+
+describe('combineStatement', () => {
+  const legacy = {
+    income: [
+      { label: '40000 - Sales', amount: 1000, leaf: true },
+      { label: '40100 - Shipping and Handling', amount: -20, leaf: true },
+    ],
+    cogs: [
+      { label: '51300 - Purchases', amount: 600, leaf: true },
+      { label: 'Total - group', amount: 600, kind: 'subtotal' }, // must NOT double-count
+    ],
+    expense: [{ label: '60000 - Salaries and Wages', amount: 200, leaf: true }],
+  };
+  test('folds portal into 40000/40100, adds a portal COGS line, sums leaves only', () => {
+    const c = combineStatement({ legacy, portal: { sales: 500, shipping: 30, cogs: 260 } });
+    expect(c.income.find((r) => /^40000/.test(r.label)).amount).toBeCloseTo(1500);
+    expect(c.income.find((r) => /^40100/.test(r.label)).amount).toBeCloseTo(10);
+    expect(c.totalIncome).toBeCloseTo(1510);
+    expect(c.totalCogs).toBeCloseTo(860);          // 600 + 260, subtotal row ignored
+    expect(c.grossProfit).toBeCloseTo(650);
+    expect(c.totalExpense).toBeCloseTo(200);
+    expect(c.netIncome).toBeCloseTo(450);
+    expect(c.cogs.find((r) => r.portalLine).amount).toBeCloseTo(260);
+  });
+  test('real Jan–Jul snapshot reproduces the published statement', () => {
+    const { LEGACY_STATEMENTS } = require('../data/legacyStatements');
+    const c = combineStatement({
+      legacy: LEGACY_STATEMENTS['2026-07'],
+      portal: { sales: 832110, shipping: 27661, cogs: 490024 },
+    });
+    expect(c.totalIncome).toBeCloseTo(5329921.84, 1);
+    expect(c.totalCogs).toBeCloseTo(3504343.65, 1);
+    expect(c.grossProfit).toBeCloseTo(1825578.19, 1);
+    expect(c.netIncome).toBeCloseTo(455922.77, 1);
   });
 });

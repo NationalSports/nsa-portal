@@ -292,3 +292,60 @@ export function insights({ pl, aging, backlog, billedHistory = [], asOf }) {
   }
   return out;
 }
+
+// ── Income statement (account-line P&L) ─────────────────────────────
+// portalStatement: the portal side of the statement for Jan 1 through the
+// end of `through` (a 'YYYY-MM' key). Revenue = invoices dated in the
+// period, net of sales tax, split into product/deco sales vs shipping
+// billed. COGS is matched: each order's cost (from calcMargin) recognized
+// only in proportion to the revenue invoiced by the cutoff — cost on
+// in-production work stays in WIP, exactly like matchedPL.
+export function portalStatement({ sos = [], invs = [], calcMargin, through }) {
+  let sales = 0, shipping = 0;
+  const invBySo = new Map();
+  for (const inv of invs) {
+    if (!liveInv(inv)) continue;
+    const key = monthKey(parseDate(inv.date));
+    if (!key || key > through) continue;
+    const net = N(inv.total) - N(inv.tax);
+    const ship = N(inv.shipping);
+    sales += net - ship; shipping += ship;
+    const arr = invBySo.get(inv.so_id) || [];
+    arr.push(net); invBySo.set(inv.so_id, arr);
+  }
+  let cogs = 0;
+  for (const so of sos) {
+    if (!liveSO(so)) continue;
+    const nets = invBySo.get(so.id);
+    if (!nets) continue;
+    const m = calcMargin(so);
+    const ordVal = N(m.rev) + N(m.shipRev);
+    if (ordVal <= 0) continue;
+    const invNet = nets.reduce((a, v) => a + v, 0);
+    cogs += N(m.cost) * Math.min(1, invNet / ordVal);
+  }
+  return { sales, shipping, revenue: sales + shipping, cogs, gp: sales + shipping - cogs };
+}
+
+// combineStatement: merge a legacy (NetSuite) statement snapshot with the
+// portal's computed side into one account-line income statement.
+// Portal sales/shipping fold into the matching 40000/40100 rows (each row
+// carries `portalAmount` so the UI can annotate the inclusion); portal COGS
+// is its own labeled line. Section totals sum leaf rows only.
+export function combineStatement({ legacy, portal }) {
+  const secTotal = (rows) => rows.reduce((a, r) => a + (r.leaf ? N(r.amount) : 0), 0);
+  const income = legacy.income.map((r) => {
+    if (r.leaf && /^40000\b/.test(r.label)) return { ...r, amount: N(r.amount) + portal.sales, portalAmount: portal.sales };
+    if (r.leaf && /^40100\b/.test(r.label)) return { ...r, amount: N(r.amount) + portal.shipping, portalAmount: portal.shipping };
+    return { ...r };
+  });
+  const cogs = [...legacy.cogs.map((r) => ({ ...r })),
+    { label: '51900 - Portal Cost of Sales (matched)', amount: portal.cogs, leaf: true, portalLine: true }];
+  const expense = legacy.expense.map((r) => ({ ...r }));
+  const totalIncome = secTotal(income);
+  const totalCogs = secTotal(cogs);
+  const grossProfit = totalIncome - totalCogs;
+  const totalExpense = secTotal(expense);
+  const netIncome = grossProfit - totalExpense;
+  return { income, cogs, expense, totalIncome, totalCogs, grossProfit, totalExpense, netIncome };
+}
