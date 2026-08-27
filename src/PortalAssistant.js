@@ -216,6 +216,7 @@ function ensureStyles() {
 .nsa-as-callout .nsa-as-count{font-size:11px;color:#94a3b8;margin-right:auto}
 .nsa-as-btn{border:none;border-radius:7px;padding:7px 13px;font-size:12.5px;font-weight:600;cursor:pointer}
 .nsa-as-btn.primary{background:#2563eb;color:#fff}
+.nsa-as-btn.danger{background:#dc2626;color:#fff}
 .nsa-as-btn.ghost{background:#f1f5f9;color:#475569}
 .nsa-as-results{max-width:94%;background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
 .nsa-as-results-head{padding:8px 12px;font-size:12px;font-weight:700;color:#0f172a;background:#f8fafc;border-bottom:1px solid #e2e8f0}
@@ -466,8 +467,10 @@ function StockCard({ stock }) {
   );
 }
 
-// A write the user must confirm before it saves (a reminder or a note). Shows
-// the resolved draft, then Confirm/Cancel. Nothing is written until Confirm.
+// A write the user must confirm before it saves (a reminder, note, line change, PO-line
+// removal, inventory adjustment…). Shows the resolved draft (before → after), then
+// Confirm/Cancel. Nothing is written until Confirm; destructive drafts (draft.danger)
+// get a red confirm button and explicit copy.
 function ConfirmCard({ draft, onCommit }) {
   const [state, setState] = useState('pending'); // pending | saving | done | error | cancelled
   const [msg, setMsg] = useState('');
@@ -488,7 +491,7 @@ function ConfirmCard({ draft, onCommit }) {
         {state === 'pending' && (
           <div className="nsa-as-confirm-actions">
             <button className="nsa-as-btn ghost" onClick={() => setState('cancelled')}>Cancel</button>
-            <button className="nsa-as-btn primary" onClick={confirm}>{draft.confirmLabel || 'Confirm & save'}</button>
+            <button className={`nsa-as-btn ${draft.danger ? 'danger' : 'primary'}`} onClick={confirm}>{draft.confirmLabel || 'Confirm & save'}</button>
           </div>
         )}
         {state === 'saving' && <div className="nsa-as-results-more">Saving…</div>}
@@ -517,7 +520,7 @@ function ReportCard({ report, onPrint }) {
 }
 
 // ── Main widget ────────────────────────────────────────────────────────────────
-export default function PortalAssistant({ pg, screenTitle, userName, variant, openRecord, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote, onFindProducts }) {
+export default function PortalAssistant({ pg, screenTitle, userName, userRole, variant, openRecord, onNavigate, onSearch, openResult, onReorder, onAddLine, onBrief, onCustomer360, onVendorStock, onStartEstimate, onReport, onPrintReport, onSetReminder, onAddNote, onFindProducts, onUpdateLine, onRemoveLine, onPoRemoveLine, onAdjustInventory }) {
   const mCls = variant === 'mobile' ? ' nsa-as-m' : '';
   ensureStyles();
   const [open, setOpen] = useState(() => {
@@ -605,21 +608,27 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, op
     setMessages((prev) => [...prev, { id: `r${Date.now()}`, from: 'bot', kind: 'results', results: res }]);
   }, [onSearch]);
 
+  // Shared confirm-then-commit flow for every record write: the App handler resolves the
+  // request and returns either {error} or a draft {title, lines, danger?, confirmLabel?, commit};
+  // the draft renders as a ConfirmCard and NOTHING happens until the user hits Confirm.
+  const doConfirmWrite = useCallback(async (handler, spec, missingMsg) => {
+    const pushBot = (text) => setMessages((prev) => [...prev, { id: `w${Date.now()}`, from: 'bot', text }]);
+    if (!handler) { pushBot(missingMsg || "I can't make that change from here."); return; }
+    let res = null;
+    try { res = await handler(spec); } catch { res = null; }
+    if (!res || res.error) { pushBot((res && res.error) || "I couldn't set that change up — try rephrasing."); return; }
+    setMessages((prev) => [...prev, { id: `w${Date.now()}`, from: 'bot', kind: 'confirm', draft: { title: res.title || 'Confirm change', lines: res.lines, confirmLabel: res.confirmLabel || 'Confirm & save', danger: !!res.danger }, commit: res.commit }]);
+  }, []);
+
   const doAddLine = useCallback(async (spec) => {
     const pushBot = (text) => setMessages((prev) => [...prev, { id: `a${Date.now()}`, from: 'bot', text }]);
     if (!onAddLine) { pushBot("I can't add items here yet."); return; }
     let res = null;
     try { res = await onAddLine(spec); } catch { res = null; }
-    if (!res || res.error === 'no_estimate_open') { pushBot('Open an estimate first, then tell me what to add — e.g. "add adidas navy LS pregame tee at 40% margin".'); return; }
+    if (!res || res.error === 'no_estimate_open') { pushBot('Open an estimate or sales order first, then tell me what to add — e.g. "add adidas navy LS pregame tee at 40% margin".'); return; }
     if (res.error === 'not_found') { pushBot(`I couldn't find a product matching "${spec.description}". Try a SKU or different wording.`); return; }
-    if (res.ok) {
-      const p = res.product || {};
-      let txt = `Added ${p.name || 'the item'}${p.color ? ` (${p.color})` : ''} to the estimate at $${p.unit_sell}`;
-      txt += res.applied ? ` — about ${res.margin}% margin.` : (res.noCost ? ` — no cost on file, so I used the default price instead of ${res.margin}% margin.` : '.');
-      txt += ' Set the sizes/quantities and Save when it looks right.';
-      if (res.others && res.others.length) txt += ` Not the right one? Others: ${res.others.map((o) => o.sku).filter(Boolean).join(', ')}.`;
-      pushBot(txt);
-    }
+    if (res.error) { pushBot(res.error); return; }
+    setMessages((prev) => [...prev, { id: `a${Date.now()}`, from: 'bot', kind: 'confirm', draft: { title: res.title || 'Add line — confirm', lines: res.lines, confirmLabel: 'Add line' }, commit: res.commit }]);
   }, [onAddLine]);
 
   const doBrief = useCallback(() => {
@@ -721,7 +730,11 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, op
     if (a.type === 'start_tutorial' && a.tour_id) startTour(a.tour_id);
     else if (a.type === 'highlight' && a.target_id) highlight(a.target_id);
     else if (a.type === 'search' && a.spec) doSearch(a.spec);
-    else if (a.type === 'add_line' && a.description) doAddLine({ description: a.description, margin_pct: a.margin_pct });
+    else if (a.type === 'add_line' && a.description) doAddLine({ description: a.description, margin_pct: a.margin_pct, sizes: a.sizes, qty: a.qty });
+    else if (a.type === 'update_line' && a.spec) doConfirmWrite(onUpdateLine, a.spec, "I can't change lines from here — use the editor.");
+    else if (a.type === 'remove_line' && a.spec) doConfirmWrite(onRemoveLine, a.spec, "I can't remove lines from here — use the editor.");
+    else if (a.type === 'po_remove_line' && a.spec) doConfirmWrite(onPoRemoveLine, a.spec, "I can't edit POs from here — use the editor.");
+    else if (a.type === 'adjust_inventory' && a.spec) doConfirmWrite(onAdjustInventory, a.spec, 'Inventory adjustments are admin-only.');
     else if (a.type === 'daily_brief') doBrief();
     else if (a.type === 'customer_360' && a.customer) doCustomer360(a.customer);
     else if (a.type === 'vendor_stock' && a.query) doVendorStock(a.query);
@@ -731,7 +744,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, op
     else if (a.type === 'add_note' && a.note) doAddNote(a.note);
     else if (a.type === 'guide' && a.steps) doGuide(a.intro, a.steps);
     else if (a.type === 'find_products' && a.spec) doFindProducts(a.spec);
-  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide, doFindProducts]);
+  }, [startTour, highlight, doSearch, doAddLine, doBrief, doCustomer360, doVendorStock, doStartEstimate, doReport, doSetReminder, doAddNote, doGuide, doFindProducts, doConfirmWrite, onUpdateLine, onRemoveLine, onPoRemoveLine, onAdjustInventory]);
 
   // As a guided walkthrough advances, move the user to each step's screen (desktop nav).
   // onNavigate is kept in a ref so this fires only when the step changes — not on every
@@ -828,6 +841,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, op
           messages: apiMessages,
           screen: { id: pg || '', title: screenTitle || '' },
           openRecord: openRecord || null,
+          user: { role: userRole || '' },
           screens: SCREENS,
           tours: TOURS.map((t) => ({ id: t.id, title: t.title, desc: t.desc })),
           targets: TARGETS,
@@ -851,7 +865,7 @@ export default function PortalAssistant({ pg, screenTitle, userName, variant, op
     } finally {
       setBusy(false);
     }
-  }, [busy, messages, pg, screenTitle, openRecord, runActions]);
+  }, [busy, messages, pg, screenTitle, openRecord, userRole, runActions]);
 
   // Deterministic quick-actions (work even when the AI endpoint is down).
   const quickChips = [

@@ -27,7 +27,7 @@ import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
+import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -36195,12 +36195,40 @@ export default function App(){
     setEEst(ne);setEEstC(c);setPg('estimates');
     return {ok:true,name:c.name||'',estId,added,notFound};
   }
-  // Assistant "add a line to the open estimate". Resolves the product via the same server
-  // catalog search the editor uses, prices it here (money math stays out of the AI), and hands a
-  // fully-formed line to the open estimate editor via a window event (see OrderEditor listener).
-  // Per-line margin basis matches the editor's own display: (unit_sell - nsa_cost)/unit_sell.
-  async function handleAssistantAddLine({description,margin_pct}){
-    if(pg!=='estimates'||!eEst)return {error:'no_estimate_open'};
+  // ── Assistant confirmed writes on the OPEN estimate / sales order ──
+  // The open editor holds its own local copy of the record (unsaved edits live there, not in
+  // eEst/eSO), so both the ConfirmCard preview and the committed change go through the editor's
+  // window-event channel: 'nsa:assistant-get-order' reads the LIVE order synchronously, and the
+  // mutation events apply + (for SOs) save inside the editor. The mutation math itself lives once
+  // in businessLogic.js (assistantFindLine / assistantLineEdit / assistantRemoveLine* /
+  // assistant*PoLine) — the same functions the editors run — so preview and result can't drift.
+  // Current sos, readable from a ConfirmCard commit thunk minutes after the draft was built —
+  // the closure's own `sos` is frozen at draft time (same staleness class the review flagged
+  // on the PO-removal commit), so commits re-resolve through this ref instead.
+  const _assistantSosRef=useRef(sos);useEffect(()=>{_assistantSosRef.current=sos},[sos]);
+  function _assistantLiveOrder(){
+    const rec=(pg==='estimates'&&eEst)?{id:eEst.id,kind:'estimate',fallback:eEst}:(pg==='orders'&&eSO)?{id:eSO.id,kind:'so',fallback:eSO}:null;
+    if(!rec)return null;
+    let live=null;
+    try{window.dispatchEvent(new CustomEvent('nsa:assistant-get-order',{detail:{orderId:rec.id,respond:r=>{if(r&&r.ok&&r.order)live=r.order}}}))}catch(e){}
+    return {id:rec.id,kind:rec.kind,order:live||rec.fallback};
+  }
+  // Dispatch one confirmed mutation to the open editor and collect its synchronous answer.
+  function _assistantEditorCommit(eventName,detail,openId){
+    let res=null;
+    try{window.dispatchEvent(new CustomEvent(eventName,{detail:{...detail,orderId:openId,respond:x=>{res=x}}}))}catch(e){}
+    if(!res)return {ok:false,message:'The editor didn\'t respond — is '+openId+' still open?'};
+    if(!res.ok)return {ok:false,message:res.error||"Couldn't apply that change."};
+    return {ok:true,message:res.message||'Done.'};
+  }
+  // Assistant "add a line to the open estimate/order". Resolves the product via the same server
+  // catalog search the editor uses, prices it here (money math stays out of the AI), previews it
+  // in a ConfirmCard, and on confirm hands the fully-formed line to the open editor via the
+  // window event (see the OrderEditor/OrderEditorClassic listener). Per-line margin basis matches
+  // the editor's own display: (unit_sell - nsa_cost)/unit_sell.
+  async function handleAssistantAddLine({description,margin_pct,sizes,qty}){
+    const cur=_assistantLiveOrder();
+    if(!cur)return {error:'no_estimate_open'};
     const desc=String(description||'').trim();
     if(!desc)return {error:'not_found',description:desc};
     let products=[];
@@ -36211,13 +36239,133 @@ export default function App(){
     const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
     let unit_sell,applied=false;
     if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
-    else if(nsa>0){unit_sell=Math.round((nsa*(eEst.default_markup||1.65))*100)/100;}
+    else if(nsa>0){unit_sell=Math.round((nsa*(cur.order.default_markup||1.65))*100)/100;}
     else{unit_sell=Number(p.retail_price)||0;}
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
     const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false};
-    window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
-    return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
+    const szEntries=Object.entries(sizes||{}).map(([sz,v])=>[assistantNormSize(line,sz),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz,v])=>sz&&v>0);
+    if(szEntries.length){line.sizes=Object.fromEntries(szEntries);line.available_sizes=[...new Set([...(line.available_sizes||[]),...szEntries.map(([sz])=>sz)])];}
+    else if(Number(qty)>0){line.est_qty=Math.floor(Number(qty));line.qty_only=true;/* est_qty only shows via the editor's qty-only UI */}
+    const noCost=(m!=null&&nsa<=0);
+    const lines=[{label:'Add to',value:cur.id},{label:'Product',value:(p.sku||'')+' '+name+(p.color?' ('+p.color+')':'')},
+      {label:'Sell',value:'$'+unit_sell.toFixed(2)+(applied?' ('+margin_pct+'% margin)':noCost?' (no cost on file — default price)':'')}];
+    if(szEntries.length)lines.push({label:'Sizes',value:szEntries.map(([sz,v])=>v+'/'+sz).join(' ')});
+    else if(line.est_qty)lines.push({label:'Quantity',value:String(line.est_qty)});
+    else lines.push({label:'Sizes',value:'— set in the editor after adding'});
+    const others=products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}));
+    if(others.length)lines.push({label:'Not it?',value:'Others: '+others.map(x=>x.sku).filter(Boolean).join(', ')});
+    const commit=async()=>{
+      const r=_assistantEditorCommit('nsa:assistant-add-line',{line},cur.id);
+      if(!r.ok)return r;
+      return {ok:true,message:'Added '+(p.sku||'the line')+' to '+cur.id+' — review and Save when it looks right.'};
+    };
+    return {ok:true,title:'Add line to '+cur.id+' — confirm',lines,commit};
+  }
+  // Change sizes / qty / sell / margin on a line of the OPEN estimate or sales order.
+  function handleAssistantUpdateLine(spec){
+    const cur=_assistantLiveOrder();
+    if(!cur)return {error:'Open the estimate or sales order first, then tell me what to change.'};
+    if(spec.order_id&&String(spec.order_id).trim().toLowerCase()!==String(cur.id).toLowerCase())return {error:'That looks like '+spec.order_id+', but '+cur.id+' is what\'s open. Open '+spec.order_id+' and ask me again.'};
+    const f=assistantFindLine(cur.order,spec.line);
+    if(f.error==='ambiguous')return {error:'A few lines match "'+spec.line+'" on '+cur.id+': '+f.matches.map(x=>x.sku+(x.color?' '+x.color:'')).join(', ')+' — which one?'};
+    if(f.error)return {error:'I couldn\'t find a line matching "'+spec.line+'" on '+cur.id+'.'};
+    const edit={sizes:spec.sizes,remove_sizes:spec.remove_sizes,qty:spec.qty,unit_sell:spec.unit_sell,margin_pct:spec.margin_pct};
+    const r=assistantLineEdit(cur.order,f.idx,edit,{by:cu?.name||''});
+    if(r.error)return {error:r.error};
+    const lines=[{label:'Record',value:cur.id},{label:'Line',value:(f.item.sku||'')+' '+(f.item.name||'')+(f.item.color?' ('+f.item.color+')':'')}];
+    r.changes.forEach(c=>lines.push({label:c.label,value:c.before+' → '+c.after}));
+    r.notes.forEach(nt=>lines.push({label:'Also',value:nt}));
+    const commit=async()=>_assistantEditorCommit('nsa:assistant-edit-line',{line:spec.line,edit},cur.id);
+    return {ok:true,title:'Change line on '+cur.id+' — confirm',lines,commit};
+  }
+  // Remove a whole line from the OPEN estimate or sales order (rmI's guards, via businessLogic).
+  function handleAssistantRemoveLine(spec){
+    const cur=_assistantLiveOrder();
+    if(!cur)return {error:'Open the estimate or sales order first, then tell me which line to remove.'};
+    if(spec.order_id&&String(spec.order_id).trim().toLowerCase()!==String(cur.id).toLowerCase())return {error:'That looks like '+spec.order_id+', but '+cur.id+' is what\'s open. Open '+spec.order_id+' and ask me again.'};
+    const f=assistantFindLine(cur.order,spec.line);
+    if(f.error==='ambiguous')return {error:'A few lines match "'+spec.line+'" on '+cur.id+': '+f.matches.map(x=>x.sku+(x.color?' '+x.color:'')).join(', ')+' — which one?'};
+    if(f.error)return {error:'I couldn\'t find a line matching "'+spec.line+'" on '+cur.id+'.'};
+    const g=assistantRemoveLineGuard(cur.order,f.idx,cur.kind==='so');
+    if(g.error)return {error:g.error};
+    const qtyStr=Object.entries(safeSizes(f.item)).filter(([,v])=>Number(v)>0).map(([sz,v])=>v+'/'+sz).join(' ')||(Number(f.item.est_qty)>0?String(f.item.est_qty):'—');
+    const lines=[{label:'Record',value:cur.id},{label:'Removing',value:(f.item.sku||'')+' '+(f.item.name||'')+(f.item.color?' ('+f.item.color+')':'')},{label:'Quantities',value:qtyStr}];
+    if(g.frozenJobIds&&g.frozenJobIds.length)lines.push({label:'⚠ Heads up',value:'This line is part of released/merged job(s) '+g.frozenJobIds.join(', ')+' — removing it takes the garment out of those jobs.'});
+    const commit=async()=>_assistantEditorCommit('nsa:assistant-remove-line',{line:spec.line},cur.id);
+    return {ok:true,title:'Remove line from '+cur.id+' — confirm',danger:true,confirmLabel:'Yes, remove it',lines,commit};
+  }
+  // Remove a PO line (or cancel one size's open units) — by PO number + SKU, or off the open SO.
+  // Received/billed units refuse (same guard as the editor's Delete PO). If the SO is open in the
+  // editor the change goes through it (live state + its onSave); otherwise it applies to App state
+  // and saves via savSO — the same save the editor's onSave uses. Status math needs no extra step:
+  // job/SO item status derives live from po_lines, exactly as after a human Delete PO.
+  function handleAssistantPoRemoveLine({po,sku,size}){
+    const target={poRef:String(po||'').trim()||null,sku:String(sku||'').trim()||null,size:String(size||'').trim()||null};
+    if(!target.poRef&&!target.sku)return {error:'Which PO line? Give me the PO number and/or the SKU.'};
+    const cur=_assistantLiveOrder();
+    const cands=[];
+    if(cur&&cur.kind==='so')assistantFindPoLine(cur.order,target).forEach(mm=>cands.push({so:cur.order,live:true,m:mm}));
+    if(!cands.length)sos.forEach(s=>{if(cur&&cur.kind==='so'&&s.id===cur.id)return;assistantFindPoLine(s,target).forEach(mm=>cands.push({so:s,live:false,m:mm}))});
+    if(!cands.length)return {error:'I couldn\'t find that PO line'+(target.poRef?' on '+target.poRef:'')+(target.sku?' for '+target.sku:'')+'. Double-check the PO number and SKU.'};
+    if(cands.length>1)return {error:'More than one PO line matches: '+cands.slice(0,4).map(c=>c.m.poId+' · '+(c.m.item.sku||'?')+' on '+c.so.id).join('; ')+' — give me the PO number and exact SKU'+(target.size?'':' (and the size, if you mean one size)')+'.'};
+    const {so,m}=cands[0];
+    const dry=assistantRemovePoLine(so,{itemIdx:m.itemIdx,plIdx:m.plIdx,size:target.size});
+    if(dry.error)return {error:dry.error};
+    const ordStr=Object.entries(m.pl).filter(([k,v])=>!k.startsWith('_')&&typeof v==='number'&&k!=='unit_cost'&&v>0&&!['status'].includes(k)).map(([sz,v])=>v+'/'+sz).join(' ');
+    const lines=[{label:'PO',value:m.poId},{label:'Sales order',value:so.id},{label:'Line',value:(m.item.sku||'')+' '+(m.item.name||'')+(m.item.color?' ('+m.item.color+')':'')},
+      {label:target.size?'Cancelling':'Removing',value:target.size?('all open '+target.size+' units on this line'):('the whole line — ordered: '+(ordStr||'—'))},
+      {label:'After',value:'Those sizes go back to open-to-order; job/SO status updates on its own.'}];
+    const commit=async()=>{
+      // Re-resolve at COMMIT time, never from the preview-time snapshot: first offer the
+      // event to a live editor (it applies against its own current state), else re-find the
+      // SO and the PO line in current App state so guards run against fresh received/billed.
+      let viaEditor=null;
+      try{window.dispatchEvent(new CustomEvent('nsa:assistant-po-remove',{detail:{target,orderId:so.id,respond:x=>{viaEditor=x}}}))}catch(e){}
+      if(viaEditor)return viaEditor.ok?{ok:true,message:viaEditor.message||'Done.'}:{ok:false,message:viaEditor.error||"Couldn't apply that change."};
+      const freshSo=(_assistantSosRef.current||[]).find(s2=>s2.id===so.id);
+      if(!freshSo)return {ok:false,message:so.id+" isn't there any more — nothing was changed."};
+      const fm=assistantFindPoLine(freshSo,target);
+      if(fm.length!==1)return {ok:false,message:'That PO line changed since the preview — nothing was saved. Ask me again to get a fresh look.'};
+      const r=assistantRemovePoLine(freshSo,{itemIdx:fm[0].itemIdx,plIdx:fm[0].plIdx,size:target.size});
+      if(r.error)return {ok:false,message:r.error};
+      try{savSO(r.next);}catch(e){return {ok:false,message:"Couldn't save the PO change — try again."}}
+      return {ok:true,message:r.summary+'. Saved.'};
+    };
+    return {ok:true,title:'Remove PO line — confirm',danger:true,confirmLabel:'Yes, remove it',lines,commit};
+  }
+  // Admin-only: set warehouse on-hand quantities (and bin) for a product. Saves through savI —
+  // the exact function the Adjust Inventory modal uses — so the adjustment log, changeLog
+  // attribution, and the product_inventory merge-save all behave identically to the human path.
+  function handleAssistantAdjustInventory({sku,sizes,bin,reason}){
+    if(!(cu?.role==='admin'||cu?.role==='super_admin'))return {error:'Inventory adjustments are admin-only.'};
+    const sq=String(sku||'').trim().toLowerCase();
+    if(!sq)return {error:'Which product? Give me the SKU.'};
+    let matches=prod.filter(x=>String(x.sku||'').toLowerCase()===sq);
+    if(!matches.length&&sq.length>=3)matches=prod.filter(x=>String(x.sku||'').toLowerCase().includes(sq));
+    if(!matches.length)return {error:'I couldn\'t find a product with SKU "'+sku+'".'};
+    if(matches.length>1)return {error:'Several products match '+sku+': '+matches.slice(0,4).map(x=>x.sku+(x.color?' ('+x.color+')':'')).join(', ')+' — which one?'};
+    const p=matches[0];
+    const _invItem={sizes:p._inv||{},available_sizes:p.available_sizes||[]};// normalize "l"/"large" onto the product's real size buckets
+    const want=Object.entries(sizes||{}).map(([sz,v])=>[assistantNormSize(_invItem,sz),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz])=>sz);
+    const binVal=bin!=null?String(bin).trim():null;
+    if(!want.length&&binVal==null)return {error:'Tell me the new on-hand quantity per size (e.g. "set L to 40"), and optionally a bin.'};
+    const lines=[{label:'Product',value:(p.sku||'')+' '+(p.name||'')+(p.color?' ('+p.color+')':'')}];
+    const inv={...(p._inv||{})};const deltas={};
+    want.forEach(([sz,n])=>{const before=Number(p._inv?.[sz])||0;if(n!==before){deltas[sz]=n-before;lines.push({label:'On hand '+sz,value:before+' → '+n});}inv[sz]=n;});
+    const binChanged=binVal!=null&&binVal!==(p.bin||'');
+    if(binChanged)lines.push({label:'Bin',value:(p.bin||'—')+' → '+(binVal||'—')});
+    if(lines.length===1)return {error:'Those quantities already match what\'s on hand — nothing to change.'};
+    if(reason)lines.push({label:'Reason',value:String(reason)});
+    const avail=[...new Set([...(p.available_sizes||[]),...want.map(([sz])=>sz)])];
+    const commit=async()=>{
+      try{
+        if(Object.keys(deltas).length)savI(p.id,inv,deltas,String(reason||'Portal Assistant chat'),'manual',avail);
+        if(binChanged)setProd(pp=>pp.map(x=>x.id===p.id?{...x,bin:binVal}:x));
+      }catch(e){return {ok:false,message:"Couldn't save the inventory change — try again."}}
+      return {ok:true,message:'Inventory updated for '+p.sku+'.'};
+    };
+    return {ok:true,title:'Inventory adjustment — confirm',danger:true,confirmLabel:'Yes, adjust it',lines,commit};
   }
   // "What needs my attention" — runs the key ops queries (scoped to the current user) and
   // returns a compact summary. Reuses runPortalSearch, so counts/totals match the search page.
@@ -37589,7 +37737,7 @@ export default function App(){
       if(pg==='invoices'&&viewInvoice){const c=cust.find(x=>x.id===viewInvoice.customer_id);return{type:'invoice',id:viewInvoice.id,customer:c?.name||c?.alpha_tag||''};}
       if(pg==='customers'&&selC){return{type:'customer',id:selC.id,customer:selC.name||selC.alpha_tag||''};}
       if(pg==='products'&&selP){return{type:'product',id:selP.sku||selP.id,customer:''};}
-    }catch(e){}return null;})()} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote} onFindProducts={handleAssistantFindProducts}/>
+    }catch(e){}return null;})()} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote} onFindProducts={handleAssistantFindProducts} userRole={cu?.role||''} onUpdateLine={handleAssistantUpdateLine} onRemoveLine={handleAssistantRemoveLine} onPoRemoveLine={handleAssistantPoRemoveLine} onAdjustInventory={handleAssistantAdjustInventory}/>
   </div></AppDataProvider>);
 }
 
