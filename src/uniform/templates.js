@@ -203,6 +203,15 @@ const TEMPLATES = {
     atlasFlipY: false,
     views: { front: SHORTS_FRONT, back: SHORTS_BACK },
   },
+  momentec_4r3vtb_shorts: {
+    id: 'momentec_4r3vtb_shorts', name: '4R3VTB Elite 8-inch Basketball Shorts', category: 'Basketball',
+    credit: 'Momentec / Russell Athletic production garment',
+    model3d: PUB('/uniform/catalog/momentec/models/4R3VTB.glb'),
+    atlasFlipY: false,
+    // The source GLB exposes the exterior and lining as `main` and `reverse`.
+    // Design-specific panels arrive as UV SVG atlases, not separate meshes.
+    views: { front: SHORTS_FRONT, back: SHORTS_BACK },
+  },
   hoodie: {
     id: 'hoodie', name: 'Hoodie', category: 'Tops',
     views: { front: HOODIE_FRONT, back: HOODIE_BACK },
@@ -299,17 +308,24 @@ const TEMPLATES = {
       },
     },
   },
-  // AYSONSA is full garment artwork authored over front and back elevations.
-  // The live renderer projects those elevations over this same approved soccer
-  // foundation, preserving the original PBR fabric and all builder decorations.
+  // AYSONSA uses the artist-approved artwork baked into the AGI-1012 UV atlas.
+  // UV alignment keeps the front, back, sleeves and sewn side boundaries stable
+  // through folds and every camera angle; colors remain builder-controlled.
   ayson_jersey: {
     id: 'ayson_jersey', name: 'AYSONSA Soccer', category: 'Photoreal', type: 'raster',
     credit: 'NSA soccer foundation · AYSONSA supplied vector layout',
     model3d: PUB('/uniform/agi-1012-jersey.glb'),
-    proceduralLayout: 'ayson',
-    projectionFront: PUB('/uniform/designs/ayson/projection-front.png?v=3'),
-    projectionBack: PUB('/uniform/designs/ayson/projection-back.png?v=3'),
-    projectionBodyU: { frontMin: 0.243, frontMax: 0.681, backMin: 0.339, backMax: 0.743 },
+    productionVector: PUB('/uniform/designs/ayson/AYSONSA.svg?v=1'),
+    // The AGI-1012 UV islands were authored for the original stripe design;
+    // forcing AYSONSA through that atlas stretches the supplied motif and
+    // leaves a visible channel where the front/back islands do not meet.
+    // Project the artist-approved elevations in garment space instead.
+    artworkProjection: 'ayson-elevation',
+    projectionFront: PUB('/uniform/designs/ayson/projection-front.png?v=2'),
+    projectionBack: PUB('/uniform/designs/ayson/projection-back.png?v=2'),
+    projectionBounds: { xMin: -0.334, xMax: 0.334, yMin: 0, yMax: 0.677, depthCenter: 0 },
+    projectionBodyU: { frontMin: 0.251, frontMax: 0.687, backMin: 0.348, backMax: 0.747 },
+    projectionSleeveU: { frontMin: 0.086, frontMax: 0.852, backMin: 0.180, backMax: 0.916 },
     views: {
       front: {
         base: PUB('/uniform/agi-1012-proof-base-front.png?v=6'), mask: PUB('/uniform/designs/ayson/proof-mask-front.png?v=2'),
@@ -440,6 +456,24 @@ const TEMPLATES = {
     // Extracted vendor SVGs share glTF's native lower-left UV origin.
     // Disabling the browser-image Y flip keeps armhole/hem shells from landing
     // on the torso as large circular or block-shaped artifacts.
+    atlasFlipY: false,
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.36, size: 150 }, name: { x: 0.5, y: 0.19, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.43, size: 225 }, name: { x: 0.5, y: 0.18, size: 70 } },
+      },
+    },
+  },
+  momentec_4r3cha: {
+    id: 'momentec_4r3cha', name: '4R3CHA Elite Basketball Jersey', category: 'Basketball', type: 'raster',
+    credit: 'Momentec / Russell Athletic production garment',
+    model3d: PUB('/uniform/catalog/momentec/models/4R3CHA.glb'),
     atlasFlipY: false,
     views: {
       front: {

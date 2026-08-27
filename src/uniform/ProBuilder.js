@@ -16,7 +16,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
-import { SETTINGS_DEFAULTS, BASKETBALL_4R3CHB_PRESETS, loadBuilderSettings } from './builderSettings';
+import { SETTINGS_DEFAULTS, BASKETBALL_4R3CHB_PRESETS, MOMENTEC_4R3CHA_DESIGNS, loadBuilderSettings } from './builderSettings';
 import { FABRIC_DETAILS, fabricSwatchDataURL } from './fabricInfo';
 import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
 import { renderProductionSVG, downloadSVG } from './renderSvg';
@@ -46,7 +46,17 @@ const EMBEDDED = (() => { try { return new URLSearchParams(window.location.searc
 // Dedicated review links for the approved soccer layouts. They bypass
 // autosave/catalog state so every URL opens a deterministic starting point.
 const REVIEW_DESIGN = (() => { try { return new URLSearchParams(window.location.search).get('design') || ''; } catch { return ''; } })();
-const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'AYSONSA' || REVIEW_DESIGN === 'FF-228187' || REVIEW_DESIGN === 'BB-4R3CHB';
+// Named render-review assets let the team compare uploaded artist bases under
+// the exact same camera/material pipeline without changing the approved design
+// or exposing an alternate cut to customers. Numeric legacy `asset` values are
+// intentionally ignored.
+const RENDER_REVIEW_ASSET = (() => {
+  try {
+    const asset = new URLSearchParams(window.location.search).get('asset') || '';
+    return ['sahrul2', 'vikram'].includes(asset) ? asset : '';
+  } catch { return ''; }
+})();
+const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'AYSONSA' || REVIEW_DESIGN === 'FF-228187' || REVIEW_DESIGN === 'BB-4R3CHB' || REVIEW_DESIGN === 'BB-MOMENTEC-4R3CHA';
 // The artist-built Holloway 321821 soccer short replaces the early procedural
 // study. Keep the paired-garment flow enabled so the jersey and short can be
 // reviewed as one kit, while each piece remains independently editable.
@@ -95,6 +105,10 @@ const BASKETBALL_4R3CHB_DESIGNS = BASKETBALL_4R3CHB_PRESETS.map((preset) => {
     tintable: true, tint_mode: 'atlas', colors: zone.patternColorCount,
   };
 });
+const MOMENTEC_4R3CHA_PRINTS = MOMENTEC_4R3CHA_DESIGNS.map(([slug, name, colors]) => ({
+  id: `4r3cha-${slug}`, name, image: `/uniform/designs/4r3cha/${slug}.svg`,
+  tintable: true, tint_mode: 'atlas', colors,
+}));
 // Human-readable "Construction Materials" row value for a section/zone.
 const zoneRowValue = (z) => {
   if (z.pattern === 'custom') return `Print: ${z.patternName || 'Custom'}`;
@@ -210,6 +224,7 @@ function effectiveBottomSections(cfg) {
 function bottomSpecFromConfig(cfg) {
   const B = effectiveBottomSections(cfg);
   const basketball = cfg.neckStyle === 'basketball4r3chb';
+  const momentecBasketball = cfg.neckStyle === 'momentec4r3cha';
   const basketballShortDesigns = new Set([
     'all_star', 'arizona', 'atlanta', 'brooklyn', 'cameron_classic', 'chicago', 'custom_design_line',
     'digital_wave', 'dominant', 'drive', 'fast_break', 'indiana', 'mardi_gras', 'miami', 'nyc', 'okc',
@@ -223,7 +238,7 @@ function bottomSpecFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: basketball ? 'basketball_4r3chb_shorts' : 'shorts_321821', fabric: cfg.fabric || 'sublimated',
+    garmentId: basketball ? 'basketball_4r3chb_shorts' : momentecBasketball ? 'momentec_4r3vtb_shorts' : 'shorts_321821', fabric: cfg.fabric || 'sublimated',
     zones: {
       legL: zoneOf(B.legs), legR: zoneOf(B.legs),
       waistband: zoneOf(B.waistband),
@@ -232,7 +247,7 @@ function bottomSpecFromConfig(cfg) {
       // so its design line is applied as a full atlas rather than pretending
       // that the accent is a separate 3D mesh. Corner Kick gives us a clean,
       // two-ink first test: jersey body -> shorts body, jersey secondary -> art.
-      body: {
+      body: momentecBasketball ? zoneOf(B.legs) : {
         ...zoneOf(B.legs),
         color2: B.stripe.color,
         pattern: 'custom',
@@ -473,11 +488,14 @@ function garmentFor(cfg) {
   if (cfg.neckStyle === 'vikram') return 'vikram_jersey';  // Vikram
   if (cfg.neckStyle === 'flag228187') return 'flag228187_jersey'; // Holloway reversible flag cut
   if (cfg.neckStyle === 'basketball4r3chb') return 'basketball_4r3chb'; // Holloway reversible basketball cut
+  if (cfg.neckStyle === 'momentec4r3cha') return 'momentec_4r3cha'; // Russell/Momentec Elite basketball cut
   const byNeck = PROGRAM_GARMENTS[cfg.program] || PROGRAM_GARMENTS.mens;
   return byNeck[cfg.neckStyle === 'crew' ? 'crew' : 'vneck'];
 }
 
 export function modelGarmentFor(cfg) {
+  if (RENDER_REVIEW_ASSET === 'sahrul2') return 'sahrul2_jersey';
+  if (RENDER_REVIEW_ASSET === 'vikram') return 'vikram_jersey';
   // Approved catalog designs must use one physical cut all the way from the
   // live viewer through proofing and production. Artist comparisons were
   // useful during model selection, but leaving them selectable on a real
@@ -587,7 +605,7 @@ function agi1011PreviewConfig() {
 function aysonPreviewConfig() {
   const artwork = {
     color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064',
-    pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4',
+    pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=6',
     patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2,
   };
   return {
@@ -639,6 +657,27 @@ function basketball4r3chbPreviewConfig() {
       sleeveL: { color: '#FFFFFF', color2: '#192853', pattern: 'solid' },
       sleeveR: { color: '#FFFFFF', color2: '#192853', pattern: 'solid' },
       collar: { color: '#192853', color2: '#962C32', pattern: 'solid' },
+    },
+  };
+}
+
+function momentec4r3chaPreviewConfig() {
+  return {
+    ...DEFAULT_CONFIG,
+    sport: 'basketball', designId: 'BB-MOMENTEC-4R3CHA', neckStyle: 'momentec4r3cha',
+    teamName: '4R3CHA', playerNumber: '23', frontNumber: 'center',
+    numberColor: '#FFFFFF', outlineColor: 'auto',
+    bottom: { ...defaultBottom(), enabled: true, linked: true },
+    teamPalette: ['#192853', '#962C32', '#FFFFFF', '#0B0B0B'],
+    sections: {
+      body: {
+        color: '#005B9B', color2: '#68737A', color3: '#F1582A', color4: '#009949', color5: '#16246E',
+        pattern: 'custom', patternImage: '/uniform/designs/4r3cha/all_star.svg', patternName: 'All Star',
+        patternTint: true, patternTintMode: 'atlas', patternColorCount: 3,
+      },
+      sleeveL: { color: '#005B9B', color2: '#68737A', pattern: 'solid' },
+      sleeveR: { color: '#005B9B', color2: '#68737A', pattern: 'solid' },
+      collar: { color: '#68737A', color2: '#005B9B', pattern: 'solid' },
     },
   };
 }
@@ -732,6 +771,7 @@ function restoredConfig() {
   if (REVIEW_DESIGN === 'AYSONSA') return aysonPreviewConfig();
   if (REVIEW_DESIGN === 'FF-228187') return flag228187PreviewConfig();
   if (REVIEW_DESIGN === 'BB-4R3CHB') return basketball4r3chbPreviewConfig();
+  if (REVIEW_DESIGN === 'BB-MOMENTEC-4R3CHA') return momentec4r3chaPreviewConfig();
   const a = loadAutosave();
   if (!a || !a.config) return { ...DEFAULT_CONFIG };
   // Merge over defaults so configs saved before new fields/slots existed stay
@@ -1012,7 +1052,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                 </div>
               </>
             )}
-            {printLib.length > 0 && (
+            {printLib.length > 0 && def.allowPrint !== false && (
               <>
                 <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
                 <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
@@ -1025,7 +1065,9 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                           border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
                           boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)' }}>
                         <span aria-hidden="true" style={{ width: 42, height: 36, flex: '0 0 42px', borderRadius: 3, border: '1px solid ' + C.mid,
-                          backgroundImage: `url(${p.image})`, backgroundSize: '24px 18px', backgroundRepeat: 'repeat' }} />
+                          backgroundColor: '#F7F8FB', backgroundImage: `url(${p.image})`,
+                          backgroundSize: p.tint_mode === 'atlas' ? 'contain' : '24px 18px',
+                          backgroundPosition: 'center', backgroundRepeat: p.tint_mode === 'atlas' ? 'no-repeat' : 'repeat' }} />
                         <span style={{ minWidth: 0 }}>
                           <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, color: C.navy, textTransform: 'uppercase', letterSpacing: 0.5 }}>{p.name}</span>
                           <span style={{ display: 'block', marginTop: 2, fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>{on ? 'Applied — edit colors below' : 'Click to apply to this section'}</span>
@@ -1456,7 +1498,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     ...config,
     sections: config.reverseSections || config.sections,
   }), [config]);
-  const shortsTpl = getTemplate(config.neckStyle === 'basketball4r3chb' ? 'basketball_4r3chb_shorts' : 'shorts_321821');
+  const shortsTpl = getTemplate(config.neckStyle === 'basketball4r3chb'
+    ? 'basketball_4r3chb_shorts'
+    : config.neckStyle === 'momentec4r3cha'
+    ? 'momentec_4r3vtb_shorts'
+    : 'shorts_321821');
   const showingShorts = stagePiece === 'shorts' && bottom.enabled;
   useEffect(() => {
     // Jersey and shorts have very different proportions. Never reuse the
@@ -1477,7 +1523,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const [reverseStageFallback, setReverseStageFallback] = useState(null);
   const stageColors = showingShorts
     ? [bottomSections.legs.color, bottomSections.stripe.color, bottomSections.waistband.color]
-    : [SX.body.color, SX.sleeveL.color, SX.collar.color];
+    : config.neckStyle === 'momentec4r3cha' && SX.body.patternTintMode === 'atlas'
+      ? [SX.body.color, SX.body.color2, SX.body.color3]
+      : [SX.body.color, SX.sleeveL.color, SX.collar.color];
   const stageActiveArea = step !== 'jersey' ? null : (showingShorts && !bottom.linked)
     ? ({ legs: 'legs', waistband: 'waistband', stripe: 'stripe' })[designBottomSection]
     : showingShorts ? null : viewerActiveArea;
@@ -1535,7 +1583,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       if (key === 'sleeveL' || key === 'sleeveR') key = 'sleeveL';
       if (key === 'sleeveBandL' || key === 'sleeveBandR') key = 'sleeveBands';
     }
-    const definitions = config.neckStyle === 'flag228187'
+    const definitions = config.neckStyle === 'flag228187' || config.neckStyle === 'momentec4r3cha'
       ? [{ key: 'body' }, { key: 'collar' }]
       : config.neckStyle === 'ayson'
       ? AYSON_SECTIONS
@@ -1567,7 +1615,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         try {
           // Basketball cards self-capture the commissioned GLB lazily below.
           // Do not replace those frames with the flat SVG/2D proof pipeline.
-          if (pz.config.neckStyle === 'basketball4r3chb') continue;
+          if (pz.config.neckStyle === 'basketball4r3chb' || pz.config.neckStyle === 'momentec4r3cha') continue;
           if (pz.thumbnail) {
             thumbCache[pz.id] = pz.thumbnail;
             if (alive) setThumbs((t) => ({ ...t, [pz.id]: pz.thumbnail }));
@@ -1840,7 +1888,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const reverseSections = sectionsFromZones(spec.reverseZones || {});
     const patch = { sections, ...(Object.keys(reverseSections).length ? { reverseSections } : {}) };
     const st = d.styling || {};
-    const approvedCut = ['agi1011', 'agi1012', 'ayson', 'flag228187', 'basketball4r3chb'].includes(config.neckStyle);
+    const approvedCut = ['agi1011', 'agi1012', 'ayson', 'flag228187', 'basketball4r3chb', 'momentec4r3cha'].includes(config.neckStyle);
     if (!approvedCut && (st.neckStyle === 'vneck' || st.neckStyle === 'crew')) patch.neckStyle = st.neckStyle;
     if (['right', 'left', 'center', 'none'].includes(st.frontNumber)
       && (config.creationMode !== 'ai' || st.frontNumber === config.frontNumber)) {
@@ -2775,7 +2823,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                 <button key={pz.id} onClick={() => pickDesign(pz)} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
                     {thumbs[pz.id] ? <img src={thumbs[pz.id]} alt={pz.name} style={{ width: '86%', height: 'auto' }} />
-                      : pz.config.neckStyle === 'basketball4r3chb'
+                      : pz.config.neckStyle === 'basketball4r3chb' || pz.config.neckStyle === 'momentec4r3cha'
                         ? <Gallery3DThumbnail preset={pz} onReady={(id, url) => { thumbCache[id] = url; setThumbs((t) => ({ ...t, [id]: url })); }} />
                         : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
                   </span>
@@ -2903,7 +2951,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               {/* floating info card — top left */}
               <div style={{ position: 'absolute', top: narrow ? 10 : 20, left: narrow ? 14 : 24, maxWidth: narrow ? 220 : 300, pointerEvents: 'none' }}>
                 <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 10 : 11, textTransform: 'uppercase', letterSpacing: 1.5, color: C.red }}>Custom Build · {PROGRAM_LABELS[config.program] || "Men's"}</div>
-                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 20, textTransform: 'uppercase', color: C.navy, margin: '3px 0 9px', lineHeight: 1.06 }}>{showingShorts && config.neckStyle === 'basketball4r3chb'
+                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 20, textTransform: 'uppercase', color: C.navy, margin: '3px 0 9px', lineHeight: 1.06 }}>{showingShorts && config.neckStyle === 'momentec4r3cha'
+                  ? '4R3VTB Elite Basketball Shorts'
+                  : showingShorts && config.neckStyle === 'basketball4r3chb'
                   ? '4R3CHB Basketball Shorts'
                   : `${config.teamName || 'Team'} ${config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}${showingShorts ? 'Shorts' : 'Jersey'}`}</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -3021,14 +3071,16 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                       {renderAiAssistant()}
                     </RailCard>
                   )}
-                  <RailCard num={builderMode === 'ai' ? 4 : 3} title="Cut &amp; Style" value={config.neckStyle === 'basketball4r3chb' ? '228125 Reversible' : config.neckStyle === 'flag228187' ? '228187 Reversible' : config.neckStyle === 'ayson' ? 'AYSONSA · AGI-1012 Cut' : config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
-                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb') ? (
+                  <RailCard num={builderMode === 'ai' ? 4 : 3} title="Cut &amp; Style" value={config.neckStyle === 'momentec4r3cha' ? '4R3CHA Elite' : config.neckStyle === 'basketball4r3chb' ? '228125 Reversible' : config.neckStyle === 'flag228187' ? '228187 Reversible' : config.neckStyle === 'ayson' ? 'AYSONSA · AGI-1012 Cut' : config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
+                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb' || config.neckStyle === 'momentec4r3cha') ? (
                       <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
-                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'flag228187' ? '228187 Reversible · Prototype Cut' : config.neckStyle === 'basketball4r3chb' ? '228125 Reversible · Production Cut' : `${config.designId} · AGI-1012 Production Cut`}</strong>
+                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'momentec4r3cha' ? '4R3CHA Elite · Production Cut' : config.neckStyle === 'flag228187' ? '228187 Reversible · Prototype Cut' : config.neckStyle === 'basketball4r3chb' ? '228125 Reversible · Production Cut' : `${config.designId} · AGI-1012 Production Cut`}</strong>
                         {config.neckStyle === 'flag228187'
                           ? 'This commissioned flag-football garment stays locked while its source asset is evaluated.'
                           : config.neckStyle === 'basketball4r3chb'
                           ? 'Both reversible faces stay locked to the approved basketball garment and remain visible together.'
+                          : config.neckStyle === 'momentec4r3cha'
+                          ? 'The physical garment and supplied normal map are installed. Exact design panels unlock only from their matching supplier UV atlas.'
                           : 'This approved garment is locked so the 3D view, proof, and finished order always match.'}
                       </div>
                     ) : (
@@ -3061,7 +3113,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     action={showingShorts ? <button onClick={bottom.linked ? unlinkBottom : relinkBottom}
                       style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {bottom.linked ? 'Customize' : 'Match Jersey'}
-                    </button> : (config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb' || config.neckStyle === 'ayson') ? null : <button onClick={toggleSleevesLinked}
+                    </button> : (config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb' || config.neckStyle === 'momentec4r3cha' || config.neckStyle === 'ayson') ? null : <button onClick={toggleSleevesLinked}
                       style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
                     </button>}>
@@ -3080,18 +3132,20 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                   )}
                   {showingShorts ? (bottom.linked ? (
                     <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
-                      <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'basketball4r3chb' ? '4R3CHB · Matching Kit' : 'Corner Kick · Matching Kit'}</strong>
+                      <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'momentec4r3cha' ? '4R3CHA + 4R3VTB · Matching Kit' : config.neckStyle === 'basketball4r3chb' ? '4R3CHB · Matching Kit' : 'Corner Kick · Matching Kit'}</strong>
                       Body and artwork colors follow the jersey automatically. Choose Customize only when the shorts need a different colorway.
                     </div>
                   ) : (
                     <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
                       onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={[]} teamColors={teamColors}
-                      layoutLocked layoutLabel={config.neckStyle === 'basketball4r3chb' ? '4R3CHB matching layout' : '321821 Corner Kick layout'} />
+                      layoutLocked layoutLabel={config.neckStyle === 'momentec4r3cha' ? '4R3VTB production cut' : config.neckStyle === 'basketball4r3chb' ? '4R3CHB matching layout' : '321821 Corner Kick layout'} />
                   )) : <SectionEditor
                     sectionDefs={config.neckStyle === 'flag228187'
                       ? [{ key: 'body', label: 'Exterior' }, { key: 'collar', label: 'Reverse Side' }]
                       : config.neckStyle === 'basketball4r3chb'
                       ? [{ key: 'body', label: 'Jersey Artwork' }]
+                      : config.neckStyle === 'momentec4r3cha'
+                      ? [{ key: 'body', label: 'Exterior' }, { key: 'collar', label: 'Interior / Lining', allowPrint: false }]
                       : config.neckStyle === 'ayson'
                       ? AYSON_SECTIONS
                       : config.neckStyle === 'agi1012'
@@ -3104,9 +3158,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     sections={SX}
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
-                    onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={config.neckStyle === 'flag228187' ? FLAG_228187_DESIGNS : config.neckStyle === 'basketball4r3chb' ? BASKETBALL_4R3CHB_DESIGNS : (config.neckStyle === 'ayson' ? [] : printLib)} teamColors={teamColors}
-                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb'}
-                    layoutLabel={config.neckStyle === 'flag228187' ? '228187 reversible prototype' : config.neckStyle === 'basketball4r3chb' ? `228125 · Side ${reversibleSide}` : `${config.designId || 'AGI'} approved layout`} />
+                    onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={config.neckStyle === 'flag228187' ? FLAG_228187_DESIGNS : config.neckStyle === 'basketball4r3chb' ? BASKETBALL_4R3CHB_DESIGNS : config.neckStyle === 'momentec4r3cha' ? MOMENTEC_4R3CHA_PRINTS : (config.neckStyle === 'ayson' ? [] : printLib)} teamColors={teamColors}
+                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb' || config.neckStyle === 'momentec4r3cha'}
+                    layoutLabel={config.neckStyle === 'momentec4r3cha' ? '4R3CHA production atlas · UV aligned' : config.neckStyle === 'flag228187' ? '228187 reversible prototype' : config.neckStyle === 'basketball4r3chb' ? `228125 · Side ${reversibleSide}` : `${config.designId || 'AGI'} approved layout`} />
                   }
                   </RailCard>
                   </div>

@@ -1,4 +1,5 @@
 import { cleanZone, DEFAULT_ZONE } from '../designSpec';
+import { getTemplate } from '../templates';
 
 describe('custom print patterns', () => {
   test('accepts an approved local pattern and preserves duotone editing', () => {
@@ -66,18 +67,29 @@ describe('custom print patterns', () => {
   test('preserves a versioned design atlas used by an approved garment', () => {
     const zone = cleanZone({
       pattern: 'custom',
-      patternImage: '/uniform/designs/ayson/design-atlas.png?v=4',
+      patternImage: '/uniform/designs/ayson/design-atlas.png?v=6',
       patternName: 'AYSONSA Layout',
       patternTint: true,
       patternTintMode: 'atlas',
-      patternColorCount: 5,
+      patternColorCount: 2,
     }, DEFAULT_ZONE);
 
     expect(zone).toMatchObject({
       pattern: 'custom',
-      patternImage: '/uniform/designs/ayson/design-atlas.png?v=4',
+      patternImage: '/uniform/designs/ayson/design-atlas.png?v=6',
       patternTintMode: 'atlas',
-      patternColorCount: 5,
+      patternColorCount: 2,
     });
+  });
+
+  test('maps AYSONSA with seam-safe garment-space elevations', () => {
+    const template = getTemplate('ayson_jersey');
+
+    expect(template.model3d).toContain('/uniform/agi-1012-jersey.glb');
+    expect(template.productionVector).toContain('/uniform/designs/ayson/AYSONSA.svg');
+    expect(template.proceduralLayout).toBeUndefined();
+    expect(template.artworkProjection).toBe('ayson-elevation');
+    expect(template.projectionFront).toContain('/uniform/designs/ayson/projection-front.png');
+    expect(template.projectionBack).toContain('/uniform/designs/ayson/projection-back.png');
   });
 });
