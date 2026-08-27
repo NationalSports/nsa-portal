@@ -245,6 +245,13 @@
 [functions."bill-anomaly-digest"]
   schedule = "30 21 * * *"
 
+# Weekly financial digest — Mondays 14:00 UTC (~6-7 AM PT). Owner's summary of
+# billed / AR / order intake (computed live from Supabase) plus margin and order
+# book read from the Financials page's newest finance_snapshots row.
+# Env: FINANCE_DIGEST_EMAILS (comma list; defaults to Steve).
+[functions."weekly-financial-digest"]
+  schedule = "0 14 * * 1"
+
 # Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
 # whose roster deadline is within 3 days and whose team isn't locked yet, once
 # per session (deadline_reminded_at).

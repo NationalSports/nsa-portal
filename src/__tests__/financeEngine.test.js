@@ -2,7 +2,7 @@
 import {
   parseDate, monthKey, addMonths, billedByMonth, matchedPL, arAging,
   backlogSchedule, forecastRevenue, cashForecast, insights,
-  portalStatement, combineStatement,
+  portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
 } from '../lib/financeEngine';
 
 // Simple margin stub: rev = order.rev, cost = order.cost, shipRev = order.ship||0.
@@ -232,5 +232,98 @@ describe('combineStatement', () => {
     expect(c.totalCogs).toBeCloseTo(3504343.65, 1);
     expect(c.grossProfit).toBeCloseTo(1825578.19, 1);
     expect(c.netIncome).toBeCloseTo(455922.77, 1);
+  });
+});
+
+describe('profitByEntity', () => {
+  const customers = [
+    { id: 'C1', name: 'Alpha HS', primary_rep_id: 'R1' },
+    { id: 'C2', name: 'Beta HS', primary_rep_id: 'R2' },
+  ];
+  const sos = [
+    // Big biller, thin margin, only half invoiced
+    { id: 'SO-1', customer_id: 'C1', created_at: '6/1/2026', _rev: 2000, _ship: 0, _cost: 1800 },
+    // Smaller biller, fat margin, fully invoiced
+    { id: 'SO-2', customer_id: 'C2', created_at: '6/2/2026', _rev: 800, _ship: 0, _cost: 300 },
+  ];
+  const invs = [
+    { id: 'I1', so_id: 'SO-1', date: '6/20/2026', total: 1050, tax: 50, paid: 1050, status: 'paid' }, // $1000 net = half
+    { id: 'I2', so_id: 'SO-2', date: '6/21/2026', total: 800, tax: 0, paid: 0, status: 'open' },      // full, unpaid
+  ];
+  const calcMargin = (o) => ({ rev: o._rev, cost: o._cost, shipRev: o._ship });
+
+  test('recognizes only invoiced revenue with its matching share of cost', () => {
+    const rows = profitByEntity({ sos, invs, calcMargin, customers, groupBy: 'customer' });
+    const c1 = rows.find((r) => r.key === 'C1');
+    expect(c1.revenue).toBeCloseTo(1000);
+    expect(c1.cogs).toBeCloseTo(900);      // half of 1800, matching the half invoiced
+    expect(c1.gp).toBeCloseTo(100);
+    expect(c1.openValue).toBeCloseTo(1000); // the uninvoiced half
+    const c2 = rows.find((r) => r.key === 'C2');
+    expect(c2.gp).toBeCloseTo(500);
+    expect(c2.openBalance).toBeCloseTo(800); // invoiced but unpaid
+  });
+
+  test('ranks by gross profit, not billings — the small account wins', () => {
+    const rows = profitByEntity({ sos, invs, calcMargin, customers, groupBy: 'customer' });
+    expect(rows[0].key).toBe('C2');
+    expect(rows[0].revenue).toBeLessThan(rows[1].revenue); // billed less, earned more
+  });
+
+  test('groups by rep via the customer primary rep', () => {
+    const rows = profitByEntity({ sos, invs, calcMargin, customers, groupBy: 'rep' });
+    expect(rows.map((r) => r.key).sort()).toEqual(['R1', 'R2']);
+    expect(rows.find((r) => r.key === 'R2').gp).toBeCloseTo(500);
+  });
+});
+
+describe('forecastAccuracy', () => {
+  const snapshots = [
+    { as_of_month: '2026-06', target_month: '2026-06', horizon: 0, base: 100, low: 90, high: 115 },
+    { as_of_month: '2026-06', target_month: '2026-07', horizon: 1, base: 200, low: 150, high: 230 },
+    { as_of_month: '2026-06', target_month: '2026-09', horizon: 3, base: 400, low: 300, high: 460 }, // future — not scored
+  ];
+  const actualByMonth = new Map([['2026-06', 125], ['2026-07', 200]]);
+
+  test('scores only completed months and computes error, bias and hit rate', () => {
+    const a = forecastAccuracy({ snapshots, actualByMonth, asOf: new Date(2026, 7, 15) }); // Aug
+    expect(a.scored).toBe(2);
+    const jun = a.rows.find((r) => r.targetMonth === '2026-06');
+    expect(jun.error).toBeCloseTo(-25);            // forecast 100 vs actual 125 — model ran low
+    expect(jun.errorPct).toBeCloseTo(-0.2);
+    expect(jun.withinBand).toBe(false);            // 125 above the 90–115 band
+    const jul = a.rows.find((r) => r.targetMonth === '2026-07');
+    expect(jul.error).toBeCloseTo(0);
+    expect(jul.withinBand).toBe(true);
+    expect(a.mape).toBeCloseTo(0.1);               // (20% + 0%) / 2
+    expect(a.bias).toBeCloseTo(-0.1);              // signed — runs low on average
+    expect(a.hitRate).toBeCloseTo(0.5);
+  });
+
+  test('returns nulls rather than NaN when nothing is scoreable yet', () => {
+    const a = forecastAccuracy({ snapshots: [], actualByMonth, asOf: new Date(2026, 7, 15) });
+    expect(a.scored).toBe(0);
+    expect(a.mape).toBeNull();
+    expect(a.bias).toBeNull();
+  });
+});
+
+describe('buildSnapshotRows', () => {
+  test('emits one row per forecast month carrying a shared KPI block', () => {
+    const rows = buildSnapshotRows({
+      revForecast: { months: [
+        { month: '2026-08', committed: 100.4, newBusiness: 50.6, base: 151, low: 100, high: 173 },
+        { month: '2026-09', committed: 40, newBusiness: 60, base: 100, low: 40, high: 115 },
+      ] },
+      aging: { total: 5000, buckets: { current: 3000, d1_30: 1000, d31_60: 500, d61_90: 300, d90plus: 200 } },
+      backlog: { totalValue: 9000, totalGp: 4000, orders: 12 },
+      pl: { months: [{ month: '2026-07', revenue: 1000, gp: 400 }], wip: 777 },
+      asOf: new Date(2026, 7, 15),
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ as_of_month: '2026-08', as_of_date: '2026-08-15', target_month: '2026-08', horizon: 0, base: 151 });
+    expect(rows[1].horizon).toBe(1);
+    expect(rows[0].kpis).toMatchObject({ arTotal: 5000, ar60plus: 500, backlogValue: 9000, wip: 777, ytdRev: 1000, ytdGp: 400 });
+    expect(rows[0].kpis).toEqual(rows[1].kpis); // same block on every row
   });
 });

@@ -10,11 +10,12 @@
 // ═══════════════════════════════════════════════════════════════════
 import React, { useMemo, useState } from 'react';
 import { useAppData } from './AppContext';
+import { supabase } from './lib/supabase';
 import { calcOrderMargin } from './pricing';
 import {
   billedByMonth, matchedPL, arAging, backlogSchedule,
   forecastRevenue, cashForecast, insights, monthKey, parseDate,
-  portalStatement, combineStatement,
+  portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
 } from './lib/financeEngine';
 import { LEGACY_STATEMENTS } from './data/legacyStatements';
 
@@ -82,7 +83,8 @@ function Legend({ items }) {
 }
 
 // Grouped/stacked monthly bars. series: [{label,color,get(row)->number,stack?}]
-function MonthBars({ rows, series, height = 170, labelEvery = 1, valueFmt = $k }) {
+// monthFmt lets the same chart label non-month categories (customer / rep names).
+function MonthBars({ rows, series, height = 170, labelEvery = 1, valueFmt = $k, monthFmt = monLabel }) {
   const [tip, setTip] = useState(null);
   const W = Math.max(320, rows.length * 44), H = height, padB = 20, padT = 8;
   const plotH = H - padB - padT;
@@ -111,7 +113,7 @@ function MonthBars({ rows, series, height = 170, labelEvery = 1, valueFmt = $k }
               onMouseMove={(e) => {
                 const rect = e.currentTarget.ownerSVGElement.parentNode.getBoundingClientRect();
                 setTip({
-                  x: e.clientX - rect.left, y: e.clientY - rect.top, title: monLabel(r.month),
+                  x: e.clientX - rect.left, y: e.clientY - rect.top, title: monthFmt(r.month),
                   rows: series.map((s) => ({ color: s.color, value: valueFmt(s.get(r)), label: s.label })),
                 });
               }}
@@ -129,7 +131,9 @@ function MonthBars({ rows, series, height = 170, labelEvery = 1, valueFmt = $k }
                 return <rect key={si} x={x0} y={y(v)} width={gW} height={Math.max(0, y(0) - y(v))} rx={4} fill={s.color} opacity={s.wash ? 0.35 : 1} />;
               })}
               {ri % labelEvery === 0 && (
-                <text x={cx} y={H - 6} fontSize={9.5} fill={INK2} textAnchor="middle">{monLabel(r.month)}</text>
+                <text x={cx} y={H - 6} fontSize={9.5} fill={INK2} textAnchor="middle">
+                  {(() => { const t = monthFmt(r.month); return t.length > 12 ? t.slice(0, 11) + '\u2026' : t; })()}
+                </text>
               )}
             </g>
           );
@@ -177,10 +181,13 @@ const LEVEL_META = {
 };
 
 export default function FinancialsPage() {
-  const { sos, invs, histInvs, cu } = useAppData();
+  const { sos, invs, histInvs, cu, cust, REPS } = useAppData();
   const [tab, setTab] = useState('overview');
   const legacyKeys = useMemo(() => Object.keys(LEGACY_STATEMENTS).sort(), []);
   const [stmtKey, setStmtKey] = useState(legacyKeys[legacyKeys.length - 1]);
+  const [profitBy, setProfitBy] = useState('customer');
+  const [snaps, setSnaps] = useState(null);        // saved forecast snapshots (null = loading)
+  const [snapNote, setSnapNote] = useState('');
   const isAdmin = cu?.role === 'admin' || cu?.role === 'super_admin';
 
   const today = useMemo(() => new Date(), []);
@@ -206,14 +213,50 @@ export default function FinancialsPage() {
     const legacy = LEGACY_STATEMENTS[stmtKey];
     const stmtPortal = portalStatement({ sos, invs, calcMargin, through: stmtKey });
     const statement = legacy ? combineStatement({ legacy, portal: stmtPortal }) : null;
-    return { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy };
-  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey]);
+    const profit = profitByEntity({ sos, invs, calcMargin, customers: cust || [], groupBy: profitBy });
+    return { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit };
+  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey, cust, profitBy]);
+
+
+  // Forecast snapshots: load the saved history, then record THIS month's forecast
+  // once (idempotent upsert on as_of_month+target_month) so the model builds a
+  // track record without anyone remembering to press a button. Read-only failure
+  // is non-fatal — the tab still renders, just without accuracy history.
+  React.useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('finance_snapshots').select('*').order('target_month', { ascending: true });
+        if (error) throw error;
+        if (cancelled) return;
+        setSnaps(data || []);
+        const rows = buildSnapshotRows({ revForecast: rev, aging, backlog, pl, asOf: today });
+        if (!rows.length) return;
+        const { error: upErr } = await supabase
+          .from('finance_snapshots').upsert(rows, { onConflict: 'as_of_month,target_month' });
+        if (cancelled) return;
+        if (upErr) { setSnapNote('Could not save this month\u2019s forecast: ' + upErr.message); return; }
+        setSnapNote('This month\u2019s forecast recorded ' + rows[0].as_of_date + ' \u00b7 ' + rows.length + ' months');
+        const merged = new Map((data || []).map((r) => [r.as_of_month + '|' + r.target_month, r]));
+        for (const r of rows) merged.set(r.as_of_month + '|' + r.target_month, r);
+        setSnaps([...merged.values()]);
+      } catch (e) {
+        if (!cancelled) { setSnaps([]); setSnapNote('Snapshot history unavailable: ' + (e?.message || e)); }
+      }
+    })();
+    return () => { cancelled = true; };
+    // Intentionally keyed on isAdmin alone: this records the forecast once per
+    // mount. The model values it reads (rev/aging/backlog/pl) are recomputed on
+    // every render, so depending on them would re-upsert the same row constantly.
+  }, [isAdmin]);
 
   if (!isAdmin) {
     return <div className="card"><div className="card-body"><h2>Admins only</h2><p>The Financials suite is limited to admin accounts.</p></div></div>;
   }
   if (!model) return null;
-  const { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy } = model;
+  const { billed, pl, aging, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit } = model;
 
   // ── Derived display data ──────────────────────────────────────────
   const year = today.getFullYear();
@@ -229,13 +272,18 @@ export default function FinancialsPage() {
   const plYtd = pl.months.filter((r) => r.month.startsWith(String(year)));
   const ytdRev = plYtd.reduce((a, r) => a + r.revenue, 0);
   const ytdGp = plYtd.reduce((a, r) => a + r.gp, 0);
+  const actualByMonth = new Map(billed.map((r) => [r.month, r.net]));
+  const accuracy = forecastAccuracy({ snapshots: snaps || [], actualByMonth, asOf: today });
+  const repName = (id) => (REPS || []).find((r) => r.id === id)?.name || id || '\u2014';
+  const custName = (id) => (cust || []).find((c) => c.id === id)?.name || id || '\u2014';
   const arSorted = invs
     .filter((i) => i && i.status !== 'void' && !i.deleted_at && (Number(i.total) || 0) - (Number(i.paid) || 0) > 0.005)
     .map((i) => ({ ...i, open: (Number(i.total) || 0) - (Number(i.paid) || 0), d: parseDate(i.date) }))
     .sort((a, b) => b.open - a.open);
 
   const tabs = [
-    ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
+    ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
+    ['profit', 'Profitability'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
   const card = { background: '#fff', border: '1px solid ' + HAIR, borderRadius: 12, padding: 16 };
@@ -419,6 +467,92 @@ export default function FinancialsPage() {
         </div>
       )}
 
+      {tab === 'profit' && (
+        <>
+          <div style={card}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
+              <h2 style={S.h2}>Profitability by {profitBy === 'rep' ? 'rep' : 'customer'}</h2>
+              <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 8, padding: 3 }}>
+                {[['customer', 'By customer'], ['rep', 'By rep']].map(([id, label]) => (
+                  <button key={id} onClick={() => setProfitBy(id)} style={{
+                    border: 'none', cursor: 'pointer', borderRadius: 6, padding: '4px 11px',
+                    fontSize: 11.5, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase',
+                    background: profitBy === id ? NAVY : 'transparent', color: profitBy === id ? '#fff' : INK2,
+                  }}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
+              Ranked by gross profit earned, not by billings. Revenue is what has actually been invoiced;
+              cost is the matching share of each order&rsquo;s cost, so a half-shipped order counts half.
+              &ldquo;Open&rdquo; is order value still to invoice &mdash; profit not yet earned.
+            </div>
+            {profit.length === 0 ? (
+              <div style={{ fontSize: 13, color: INK2 }}>No invoiced work yet in this view.</div>
+            ) : (
+              <>
+                <MonthBars
+                  rows={profit.slice(0, 12).map((r) => ({ month: r.key, ...r }))}
+                  labelEvery={1}
+                  series={[
+                    { label: 'Revenue', color: C1, get: (r) => r.revenue },
+                    { label: 'Gross profit', color: C3, get: (r) => r.gp },
+                  ]}
+                  monthFmt={(k) => (profitBy === 'rep' ? repName(k) : custName(k))}
+                />
+                <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                  <table style={{ borderCollapse: 'collapse', minWidth: 660 }}>
+                    <thead><tr>
+                      <th style={{ ...th, textAlign: 'left' }}>{profitBy === 'rep' ? 'Rep' : 'Customer'}</th>
+                      <th style={th}>Revenue</th><th style={th}>COGS</th><th style={th}>Gross profit</th>
+                      <th style={th}>Margin</th><th style={th}>Orders</th>
+                      <th style={th}>Open to invoice</th><th style={th}>Unpaid</th>
+                    </tr></thead>
+                    <tbody>
+                      {profit.slice(0, 40).map((r) => (
+                        <tr key={r.key}>
+                          <td style={tdL}>{profitBy === 'rep' ? repName(r.key) : custName(r.key)}</td>
+                          <td style={td}>{$0(r.revenue)}</td>
+                          <td style={td}>{$0(r.cogs)}</td>
+                          <td style={{ ...td, fontWeight: 700 }}>{$0(r.gp)}</td>
+                          <td style={{ ...td, color: r.gpPct < 0.25 ? CRIT : r.gpPct < 0.35 ? WARN : INK }}>{pct1(r.gpPct)}</td>
+                          <td style={td}>{r.orders}</td>
+                          <td style={td}>{$0(r.openValue)}</td>
+                          <td style={{ ...td, color: r.openBalance > 0 ? WARN : INK3 }}>{$0(r.openBalance)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {profit.length > 40 && (
+                  <div style={{ fontSize: 11, color: INK3, marginTop: 6 }}>
+                    Showing the top 40 of {profit.length} by gross profit.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <div style={card}>
+            <h2 style={S.h2}>Thin-margin work worth a look</h2>
+            {(() => {
+              const thin = profit.filter((r) => r.revenue > 2000 && r.gpPct < 0.30).slice(0, 10);
+              if (!thin.length) return <div style={{ fontSize: 13, color: INK2 }}>Nothing under a 30% margin on meaningful volume &mdash; margins are holding.</div>;
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                  {thin.map((r) => (
+                    <div key={r.key} style={{ display: 'flex', alignItems: 'baseline', gap: 9, fontSize: 13 }}>
+                      <span style={{ color: r.gpPct < 0.2 ? CRIT : WARN, fontSize: 10 }} aria-hidden="true">&#9632;</span>
+                      <b style={{ minWidth: 180 }}>{profitBy === 'rep' ? repName(r.key) : custName(r.key)}</b>
+                      <span style={{ color: INK2 }}>{pct1(r.gpPct)} margin on {$0(r.revenue)} invoiced ({$0(r.gp)} gross profit)</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+        </>
+      )}
+
       {tab === 'ar' && (
         <>
           <div style={card}>
@@ -503,6 +637,61 @@ export default function FinancialsPage() {
                 </tbody>
               </table>
             </div>
+          </div>
+          <div style={card}>
+            <h2 style={S.h2}>How accurate has this forecast been?</h2>
+            {snaps === null ? (
+              <div style={{ fontSize: 13, color: INK2 }}>Loading snapshot history&hellip;</div>
+            ) : accuracy.scored === 0 ? (
+              <div style={{ fontSize: 13, color: INK2 }}>
+                No completed month has been scored yet. Each visit records the current forecast, so the
+                first score appears once a forecast month finishes &mdash; check back after month end
+                before leaning on these numbers for cash planning.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <Tile label="Avg error" value={pct1(accuracy.mape)} sub={'across ' + accuracy.scored + ' scored forecast' + (accuracy.scored === 1 ? '' : 's')}
+                    subColor={accuracy.mape > 0.2 ? WARN : GOOD} />
+                  <Tile label="Bias" value={(accuracy.bias >= 0 ? '+' : '') + pct1(accuracy.bias)}
+                    sub={accuracy.bias >= 0 ? 'runs high \u2014 trim before planning' : 'runs low \u2014 upside likely'}
+                    subColor={Math.abs(accuracy.bias) > 0.1 ? WARN : GOOD} />
+                  <Tile label="Landed in range" value={pct1(accuracy.hitRate)} sub="actual fell between low and high" />
+                </div>
+                <MonthBars rows={accuracy.rows.map((r) => ({ month: r.targetMonth, ...r }))} series={[
+                  { label: 'Forecast', color: C4, wash: true, get: (r) => r.forecast },
+                  { label: 'Actual billed', color: C1, get: (r) => r.actual },
+                ]} />
+                <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                  <table style={{ borderCollapse: 'collapse', minWidth: 540 }}>
+                    <thead><tr>
+                      <th style={{ ...th, textAlign: 'left' }}>Month</th><th style={th}>Forecast made</th>
+                      <th style={th}>Forecast</th><th style={th}>Actual</th><th style={th}>Miss</th><th style={th}>In range</th>
+                    </tr></thead>
+                    <tbody>
+                      {accuracy.rows.map((r) => (
+                        <tr key={r.targetMonth + '|' + r.asOfMonth}>
+                          <td style={tdL}>{monLabel(r.targetMonth)}</td>
+                          <td style={td}>{monLabel(r.asOfMonth)}{r.horizon ? ' (+' + r.horizon + 'mo)' : ' (same mo)'}</td>
+                          <td style={td}>{$0(r.forecast)}</td>
+                          <td style={{ ...td, fontWeight: 700 }}>{$0(r.actual)}</td>
+                          <td style={{ ...td, color: Math.abs(r.errorPct) > 0.15 ? CRIT : Math.abs(r.errorPct) > 0.07 ? WARN : GOOD }}>
+                            {(r.error >= 0 ? '+' : '') + $0(r.error)} ({(r.errorPct >= 0 ? '+' : '') + pct1(r.errorPct)})
+                          </td>
+                          <td style={{ ...td, color: r.withinBand ? GOOD : WARN }}>{r.withinBand ? 'yes' : 'no'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: 11.5, color: INK2, marginTop: 8 }}>
+                  Actuals are billed revenue net of tax (both invoice streams). Only completed months are
+                  scored &mdash; a month still in progress would always read as a miss. A positive bias means
+                  the model forecasts more than lands.
+                </div>
+              </>
+            )}
+            {snapNote && <div style={{ fontSize: 11, color: INK3, marginTop: 8 }}>{snapNote}</div>}
           </div>
           <div style={card}>
             <h2 style={S.h2}>Cash coming in — next 3 months</h2>

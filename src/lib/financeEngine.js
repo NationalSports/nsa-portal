@@ -349,3 +349,118 @@ export function combineStatement({ legacy, portal }) {
   const netIncome = grossProfit - totalExpense;
   return { income, cogs, expense, totalIncome, totalCogs, grossProfit, totalExpense, netIncome };
 }
+
+// ── Profitability by customer / rep ─────────────────────────────────
+// Matched basis, same as matchedPL: an order contributes the revenue actually
+// invoiced and the matching share of its cost — so a big order that has only
+// half shipped counts half, not all of it. That is the difference between
+// "who bills the most" and "who is actually profitable".
+//
+// Rep attribution mirrors the sales dashboard: the customer's primary rep,
+// falling back to whoever created the order.
+export function profitByEntity({ sos = [], invs = [], calcMargin, customers = [], groupBy = 'customer' }) {
+  const custById = new Map(customers.map((c) => [c.id, c]));
+  const invBySo = new Map();
+  for (const inv of invs) {
+    if (!liveInv(inv)) continue;
+    const arr = invBySo.get(inv.so_id) || [];
+    arr.push(inv); invBySo.set(inv.so_id, arr);
+  }
+  const rows = new Map();
+  for (const so of sos) {
+    if (!liveSO(so)) continue;
+    const cust = custById.get(so.customer_id);
+    const key = groupBy === 'rep'
+      ? (cust?.primary_rep_id || so.created_by || '—')
+      : (so.customer_id || '—');
+    const m = calcMargin(so);
+    const ordVal = N(m.rev) + N(m.shipRev);
+    if (ordVal <= 0) continue;
+    const soInvs = invBySo.get(so.id) || [];
+    const invNet = soInvs.reduce((a, i) => a + N(i.total) - N(i.tax), 0);
+    const share = Math.min(1, invNet / ordVal);
+    const r = rows.get(key) || {
+      key, revenue: 0, cogs: 0, orders: 0, invoices: 0, openValue: 0, openBalance: 0,
+    };
+    r.revenue += invNet;
+    r.cogs += N(m.cost) * share;
+    r.orders++;
+    r.invoices += soInvs.length;
+    r.openValue += Math.max(0, ordVal - invNet);
+    r.openBalance += soInvs.reduce((a, i) => a + Math.max(0, N(i.total) - N(i.paid)), 0);
+    rows.set(key, r);
+  }
+  return [...rows.values()]
+    .map((r) => ({ ...r, gp: r.revenue - r.cogs, gpPct: r.revenue > 0 ? (r.revenue - r.cogs) / r.revenue : 0 }))
+    .filter((r) => r.revenue > 0 || r.openValue > 0)
+    .sort((a, b) => b.gp - a.gp);
+}
+
+// ── Forecast accuracy ───────────────────────────────────────────────
+// Joins saved forecast snapshots to what actually billed in the target month.
+// Only scores months that are COMPLETE (target month < current month) — grading
+// a month still in progress would always read as a miss.
+// Returns per-month rows plus MAPE (average absolute error) and bias (signed
+// average: positive = the model runs high).
+export function forecastAccuracy({ snapshots = [], actualByMonth = new Map(), asOf }) {
+  const thisMonth = monthKey(asOf || new Date());
+  const rows = [];
+  for (const s of snapshots) {
+    if (!s || !s.target_month || s.target_month >= thisMonth) continue;
+    const actual = N(actualByMonth.get(s.target_month));
+    if (actual <= 0) continue;
+    const base = N(s.base);
+    const err = base - actual;
+    rows.push({
+      targetMonth: s.target_month,
+      asOfMonth: s.as_of_month,
+      horizon: N(s.horizon),
+      forecast: base,
+      committed: N(s.committed),
+      actual,
+      error: err,
+      errorPct: actual > 0 ? err / actual : 0,
+      withinBand: actual >= N(s.low) && actual <= N(s.high),
+    });
+  }
+  rows.sort((a, b) => a.targetMonth.localeCompare(b.targetMonth) || a.horizon - b.horizon);
+  const scored = rows.length;
+  const mape = scored ? rows.reduce((a, r) => a + Math.abs(r.errorPct), 0) / scored : null;
+  const bias = scored ? rows.reduce((a, r) => a + r.errorPct, 0) / scored : null;
+  const hitRate = scored ? rows.filter((r) => r.withinBand).length / scored : null;
+  return { rows, scored, mape, bias, hitRate };
+}
+
+// ── Snapshot builder ────────────────────────────────────────────────
+// The rows the Financials page persists to finance_snapshots: one per forecast
+// month, each carrying the same KPI block so the weekly digest can read the
+// newest row without recomputing anything.
+export function buildSnapshotRows({ revForecast, aging, backlog, pl, asOf }) {
+  const today = asOf || new Date();
+  const asOfMonth = monthKey(today);
+  const y = String(today.getFullYear());
+  const ytd = (pl?.months || []).filter((r) => r.month.startsWith(y));
+  const kpis = {
+    arTotal: Math.round(aging?.total || 0),
+    ar60plus: Math.round((aging?.buckets?.d61_90 || 0) + (aging?.buckets?.d90plus || 0)),
+    backlogValue: Math.round(backlog?.totalValue || 0),
+    backlogGp: Math.round(backlog?.totalGp || 0),
+    backlogOrders: backlog?.orders || 0,
+    wip: Math.round(pl?.wip || 0),
+    ytdRev: Math.round(ytd.reduce((a, r) => a + r.revenue, 0)),
+    ytdGp: Math.round(ytd.reduce((a, r) => a + r.gp, 0)),
+  };
+  const asOfDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  return (revForecast?.months || []).map((m, i) => ({
+    as_of_month: asOfMonth,
+    as_of_date: asOfDate,
+    target_month: m.month,
+    horizon: i,
+    committed: Math.round(m.committed),
+    new_business: Math.round(m.newBusiness),
+    base: Math.round(m.base),
+    low: Math.round(m.low),
+    high: Math.round(m.high),
+    kpis,
+  }));
+}
