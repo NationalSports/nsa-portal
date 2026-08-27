@@ -31,6 +31,23 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
   const ab = Array.isArray(customer && customer.allowed_brands) ? customer.allowed_brands : [];
   const tier = (customer && customer.adidas_ua_tier) || 'B';
 
+  // Parent account (athletic dept). A sub-team with no logo / colors / brands of
+  // its own inherits the parent's in the coach portal and catalog, so show the
+  // inherited values here instead of a misleading blank.
+  const [parent, setParent] = useState(null);
+  useEffect(() => {
+    setParent(null);
+    const pid = customer && customer.parent_id;
+    if (!supabase || !pid) return;
+    supabase.from('customers').select('id,name,logo_url,school_colors,allowed_brands').eq('id', pid).limit(1)
+      .then((r) => { if (!r.error && r.data && r.data[0]) setParent(r.data[0]); });
+  }, [customer && customer.parent_id]);
+  const pSc = Array.isArray(parent && parent.school_colors) ? parent.school_colors : [];
+  const pAb = Array.isArray(parent && parent.allowed_brands) ? parent.allowed_brands : [];
+  const logoInherited = !(customer && customer.logo_url) && !!(parent && parent.logo_url);
+  const scInherited = !sc.length && pSc.length > 0;
+  const abInherited = !ab.length && pAb.length > 0;
+
   const invite = async (email, name) => {
     try {
       const { data: _s } = await supabase.auth.getSession();
@@ -140,11 +157,16 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {customer && customer.logo_url
               ? <img src={customer.logo_url} alt="School logo" style={{ height: 54, maxWidth: 170, objectFit: 'contain', border: '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff' }} />
-              : <div style={{ height: 54, width: 54, borderRadius: 10, border: '1px dashed #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 22 }}>🏫</div>}
+              : logoInherited
+                ? <img src={parent.logo_url} alt="School logo (inherited)" style={{ height: 54, maxWidth: 170, objectFit: 'contain', border: '1px dashed #94a3b8', borderRadius: 10, padding: 6, background: '#fff', opacity: 0.9 }} />
+                : <div style={{ height: 54, width: 54, borderRadius: 10, border: '1px dashed #cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 22 }}>🏫</div>}
             <button className="btn btn-sm btn-secondary" onClick={pickLogo}>{customer && customer.logo_url ? 'Replace logo' : 'Upload logo'}</button>
             {customer && customer.logo_url && <button className="btn btn-sm" style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }} onClick={removeLogo}>Remove</button>}
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Shown in the coach portal hero. A transparent PNG/SVG looks best.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>
+            {logoInherited ? <>Inherited from <strong>{parent.name}</strong> — upload a logo to use this team's own. </> : null}
+            Shown in the coach portal hero. A transparent PNG/SVG looks best.
+          </div>
         </div>
 
         <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px', lineHeight: 1.5 }}>
@@ -210,39 +232,47 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
         {/* Brand access */}
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
-            Brands {ab.length ? '(' + ab.length + ' of ' + CATALOG_BRANDS.length + ')' : '— all brands'}
+            Brands {ab.length ? '(' + ab.length + ' of ' + CATALOG_BRANDS.length + ')' : abInherited ? '— inherited from parent' : '— all brands'}
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {CATALOG_BRANDS.map((b) => {
               const on = ab.includes(b);
+              const inh = !on && abInherited && pAb.includes(b);
               return (
                 <button key={b} onClick={() => toggleBrand(b)}
-                  style={{ border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569', borderRadius: 999, padding: '3px 11px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{ border: '1px ' + (inh ? 'dashed #64748b' : 'solid ' + (on ? '#191919' : '#e2e8f0')), background: on ? '#191919' : inh ? '#f1f5f9' : '#fff', color: on ? '#fff' : inh ? '#334155' : '#475569', borderRadius: 999, padding: '3px 11px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
                   {b}
                 </button>
               );
             })}
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Limits which brands this account's coaches see in the catalog. None selected = all brands.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>
+            {abInherited ? <>Inherited from <strong>{parent.name}</strong> — pick brands to set this team's own. </> : null}
+            Limits which brands this account's coaches see in the catalog. None selected = all brands.
+          </div>
         </div>
 
         {/* School colors */}
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
-            School colors {sc.length ? '(' + sc.length + '/5)' : '— click to set'}
+            School colors {sc.length ? '(' + sc.length + '/5)' : scInherited ? '— inherited from parent' : '— click to set'}
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {FAMILIES.map((fam) => {
               const on = sc.includes(fam);
+              const inh = !on && scInherited && pSc.includes(fam);
               return (
                 <button key={fam} title={fam} onClick={() => toggleColor(fam)}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569', borderRadius: 999, padding: '3px 9px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px ' + (inh ? 'dashed #64748b' : 'solid ' + (on ? '#191919' : '#e2e8f0')), background: on ? '#191919' : inh ? '#f1f5f9' : '#fff', color: on ? '#fff' : inh ? '#334155' : '#475569', borderRadius: 999, padding: '3px 9px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
                   <span style={{ width: 11, height: 11, borderRadius: '50%', background: HEX[fam], border: '1px solid rgba(0,0,0,.15)', display: 'inline-block', flexShrink: 0 }} />{fam}
                 </button>
               );
             })}
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Pre-loads the coach's color filter on the catalog. Saves automatically.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>
+            {scInherited ? <>Inherited from <strong>{parent.name}</strong> — pick colors to set this team's own. </> : null}
+            Pre-loads the coach's color filter on the catalog. Saves automatically.
+          </div>
         </div>
 
         {/* Invite */}
