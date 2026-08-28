@@ -6440,6 +6440,34 @@ export default function App(){
     setBoxModal({box:survivor,combineWith:''});
     nf(srcBox.id+' combined into '+tgt.id+' — one label reprinted');
   };
+  // ─── AUTO-SHIP BOXES ─── A box whose whole ORDER has left (SO shipped, or every
+  // non-draft job completed/shipped — "when everything goes") is marked shipped, so
+  // the move check-in station and Where-is-it views stop counting it as on-hand.
+  // Client-side reconciliation on purpose: it catches every ship path (ship modal,
+  // manual ship, ShipStation webhook poll) without wiring each one, at the cost of
+  // only running while someone has the portal open. Ref guards one attempt per box
+  // per session so a failed write can't loop.
+  const _autoShippedRef=useRef(new Set());
+  useEffect(()=>{
+    if(!supabase||!boxRows.length||!sos.length)return;
+    const soDone=(so)=>{
+      if(!so||so.deleted_at)return false;
+      if(so._shipped===true||so._shipping_status==='shipped')return true;
+      const js=safeJobs(so).filter(j=>j.prod_status!=='draft');
+      return js.length>0&&js.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+    };
+    const doneIds=new Set(sos.filter(soDone).map(so=>so.id));
+    if(!doneIds.size)return;
+    boxRows.forEach(b=>{
+      if(!b||b.status==='shipped'||b.status==='combined')return;
+      if(_autoShippedRef.current.has(b.id))return;
+      const refSos=[b.so_id,...(b.source_refs||[]).filter(r=>r&&r.type==='SO').map(r=>r.id)].filter(Boolean);
+      // every order this box belongs to must be done — a multi-SO box with one open order stays
+      if(!refSos.length||!refSos.every(id=>doneIds.has(id)))return;
+      _autoShippedRef.current.add(b.id);
+      _boxUpdate(b.id,{status:'shipped'});
+    });
+  },[sos,boxRows]);// eslint-disable-line react-hooks/exhaustive-deps
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
@@ -12356,6 +12384,9 @@ export default function App(){
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
       <button data-tour-id="inv-pos-tab" className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
       {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>{setInvTab('b2b');refreshAdidasLastSync()}} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
+      {/* Building-move box check-in station (src/movecheckin) — opens in its own tab so
+          the scanning phone/tablet keeps the station up while the desk uses the portal. */}
+      <a href="/move-checkin" target="_blank" rel="noopener noreferrer" style={{marginLeft:'auto',alignSelf:'center',display:'inline-flex',alignItems:'center',gap:6,background:'#0f172a',color:'#f1f5f9',border:'1px solid #334155',borderRadius:8,padding:'8px 14px',fontSize:12,fontWeight:700,textDecoration:'none',whiteSpace:'nowrap'}} title="Scan boxes into the new building — check in, staging, shelves, and the move stocktake">📦 Move Check-In</a>
     </div>
     {invTab==='stock'&&rInvStock()}
     {invTab==='clearance'&&isA&&rInvClearance()}
@@ -36723,7 +36754,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';
