@@ -5,12 +5,19 @@
 // ordered by ORDER NUMBER, and the shipping address repeated on EVERY row so a single
 // filtered line still says where the box goes.
 
+jest.mock('xlsx', () => {
+  const actual = jest.requireActual('xlsx');
+  return { ...actual, writeFile: jest.fn() };
+});
+
+const XLSX = require('xlsx');
 const { downloadSoPlayerReport } = require('../lib/soPlayerReport');
 
 // Capture what downloadCsv would have written, without a DOM download.
 let captured = null;
 beforeEach(() => {
   captured = null;
+  XLSX.writeFile.mockClear();
   global.Blob = function Blob(parts) { this.parts = parts; captured = String(parts.join('')); };
   global.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
   const a = { click: () => {}, set href(v) {}, set download(v) { this._name = v; } };
@@ -39,10 +46,11 @@ const SO_ITEMS = [
 
 function supabaseStub() {
   const tables = {
-    webstores: [{ id: 'ws-1', name: 'St. Francis Tennis', omg_sale_code: 'V7ESK' }],
+    webstores: [{ id: 'ws-1', name: 'St. Francis Tennis', omg_sale_code: 'V7ESK', customer_id: 'c-1', delivery_mode: 'deliver_club', shipstation_carrier: 'ups' }],
     webstore_orders: ORDERS.map((o) => ({ ...o, store_id: 'ws-1', so_id: 'SO-2035', status: 'paid' })),
     webstore_order_items: LINES,
     adidas_ss_sku_xref: [{ ss_sku: 'AT310-50', adidas_article: 'JL5410', rank: 1 }],
+    customers: [{ id: 'c-1', name: 'St. Francis', shipping_attention: 'Athletics', shipping_address_line1: '5900 College Rd', shipping_city: 'Reno', shipping_state: 'NV', shipping_zip: '89503' }],
   };
   return {
     from: (t) => {
@@ -115,7 +123,7 @@ describe('player report CSV', () => {
     expect(rows[1]).toContain('AT310-50,JL5410');
   });
 
-  test.each(['product', 'pdf'])('%s report prints both numbers for the S&S item', async (format) => {
+  test('PDF report prints both numbers for the S&S item', async () => {
     let html = '';
     const popup = {
       document: { write: (value) => { html += value; }, close: () => {} },
@@ -123,7 +131,27 @@ describe('player report CSV', () => {
     };
     jest.spyOn(window, 'open').mockReturnValue(popup);
     jest.spyOn(global, 'setTimeout').mockImplementation(() => 0);
-    expect(await run(format)).toBe(true);
+    expect(await run('pdf')).toBe(true);
     expect(html).toContain('<b>S&amp;S:</b> AT310-50 · <b>Adidas tag:</b> JL5410');
+  });
+
+  test('product report downloads the exact Silver Screen Domestic columns', async () => {
+    expect(await run('product')).toBe(true);
+    expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
+    const [workbook, filename] = XLSX.writeFile.mock.calls[0];
+    expect(workbook.SheetNames).toEqual(['Domestic']);
+    expect(filename).toMatch(/^SO-2035_Fulfillment_Template_\d+\.\d+\.\d+\.xlsx$/);
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets.Domestic, { header: 1, defval: '' });
+    expect(rows[0]).toEqual([
+      'REFERENCE # (if applicable)', 'SHIP TO ATTENTION (required)', 'COMPANY NAME (if applicable)',
+      'QUANTITY (required)', 'SIZE (required)', 'COLOR (required)', 'STYLE # (required)',
+      'ITEM DESCRIPTION (required)', 'SHIP TO ADDRESS LINE 1 (required)',
+      'SHIP TO ADDRESS LINE 2 (if applicable)', 'CITY (required)', 'STATE (required)',
+      'POSTAL CODE (required)', 'SHIP METHOD (required)',
+      'BILLING - 3RD PARTY SHIPPING ACCOUNT # (if applicable)',
+      'BILLING - 3RD PARTY POSTAL CODE (if applicable)',
+    ]);
+    expect(rows.slice(1).reduce((sum, row) => sum + Number(row[3]), 0)).toBe(3);
+    expect(rows.slice(1).some((row) => row[6] === 'AT310-50' && /Adidas tag JL5410/.test(row[7]))).toBe(true);
   });
 });

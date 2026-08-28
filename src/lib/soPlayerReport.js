@@ -11,6 +11,7 @@
 // store is one SO (the OMG flow) and every order counts.
 
 import { attachAdidasTagSkus } from './adidasSsReport';
+import { downloadSilverScreenFulfillment } from './silverScreenFulfillment';
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
@@ -444,21 +445,21 @@ async function fetchLines(supabase, orderIds) {
 // Fetch → remap → print. so: the live editor's order object (its items are the truth,
 // unsaved edits included). Returns true when a report was produced.
 // format: 'pdf' (default — the printable per-player sheet) | 'csv' (flat one-row-per-line
-// file, ordered by order number, ship-to repeated on every row) | 'product' (current
-// SO product/size roll-up, reconciled to the same active customer lines).
-export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf' }) {
+// file, ordered by order number, ship-to repeated on every row) | 'product' (Silver
+// Screen Domestic XLSX, reconciled to the same active customer lines and current SO).
+export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format = 'pdf', customer = null }) {
   const toast = nf || ((m) => alert(m));
   if (!supabase) { toast('No database connection — player report needs the store orders.', 'error'); return false; }
   try {
     let ws = null;
     if (so.webstore_id) {
-      const { data } = await supabase.from('webstores').select('id,name,omg_sale_code').eq('id', so.webstore_id).maybeSingle();
+      const { data } = await supabase.from('webstores').select('id,name,omg_sale_code,customer_id,delivery_mode,shipstation_carrier,shipstation_service').eq('id', so.webstore_id).maybeSingle();
       ws = data || null;
     }
     if (!ws) {
       const code = omgCodeFromMemo(so.memo);
       if (code) {
-        const { data } = await supabase.from('webstores').select('id,name,omg_sale_code').eq('omg_sale_code', code).maybeSingle();
+        const { data } = await supabase.from('webstores').select('id,name,omg_sale_code,customer_id,delivery_mode,shipstation_carrier,shipstation_service').eq('omg_sale_code', code).maybeSingle();
         ws = data || null;
       }
     }
@@ -488,7 +489,21 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     const lines = await attachAdidasTagSkus(supabase, mapped.lines);
     const { substitutions, unmatched } = mapped;
     if (format === 'csv') renderCsv({ so, storeName: ws.name || '', lines, orderById });
-    else if (format === 'product') renderProductReport({ so, storeName: ws.name || '', lines, substitutions, unmatched });
+    else if (format === 'product') {
+      let fulfillmentCustomer = customer;
+      if (!fulfillmentCustomer && ws.customer_id) {
+        const { data } = await supabase.from('customers').select('id,name,contact_name,shipping_attention,shipping_address_line1,shipping_address_line2,shipping_city,shipping_state,shipping_zip').eq('id', ws.customer_id).maybeSingle();
+        fulfillmentCustomer = data || null;
+      }
+      const sourceUnits = activeLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
+      const soUnits = sumSoUnits(soItems);
+      const audit = {
+        unmatched: unmatched.map((item) => ({ soId: so.id, item })),
+        unitMismatches: sourceUnits === soUnits ? [] : [{ soId: so.id, sourceUnits, soUnits, delta: soUnits - sourceUnits }],
+      };
+      const result = downloadSilverScreenFulfillment({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit, reference: so.id });
+      toast(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+    }
     else renderReport({ so, storeName: ws.name || '', lines, orderById, substitutions, unmatched });
     return true;
   } catch (e) {
