@@ -20,7 +20,7 @@
 // the heavy child-table loads are bounded to the working set: orders still open,
 // plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
-const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd, quoteAgeDays, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS } = require('../../src/lib/opsRecap');
+const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd, quoteAgeDays, quoteInDigest, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS, QUOTE_DIGEST_MAX_DAYS } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
@@ -142,8 +142,9 @@ exports.handler = async (event) => {
       (q) => q.eq('status', 'approved').gte('approved_at', start.toISOString()).lt('approved_at', end.toISOString())))
       .filter((e) => !e.deleted_at && inWin(e.approved_at));
 
-    // Quotes going cold — sent estimates ≥7 days old, same aging tiers as the
-    // dashboard todo builder (shared via opsRecap.quoteAgeDays). Snoozed quotes
+    // Quotes going cold — sent estimates 7–30 days old, same aging tiers as the
+    // dashboard todo builder (shared via opsRecap.quoteAgeDays). Quotes older than
+    // 30 days stay available in My Day but leave the daily email. Snoozed quotes
     // (follow_up_at in the future) stay out, mirroring the dashboard; approval or
     // conversion flips status off 'sent', so status alone is the no-response test.
     // Items are loaded only for the cold ones, for the quote-total callout.
@@ -152,7 +153,7 @@ exports.handler = async (event) => {
     const coldQuotes = sentEsts
       .filter((e) => !(e.follow_up_at && parseDate(e.follow_up_at) > now))
       .map((e) => ({ e, days: quoteAgeDays(e, now.getTime()) }))
-      .filter((c) => c.days != null && c.days >= QUOTE_COLD_DAYS);
+      .filter((c) => quoteInDigest(c.days));
     const cqItemsByEst = {};
     (await loadIn(admin, 'estimate_items', '*', 'estimate_id', coldQuotes.map((c) => c.e.id))).forEach((it) => {
       (cqItemsByEst[it.estimate_id] || (cqItemsByEst[it.estimate_id] = [])).push(it);
@@ -452,7 +453,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       `${esc(custName(inv.customer_id))} · due ${esc(String(inv.due_date).slice(0, 10))}`,
       `<span style="font-size:12px;font-weight:800;color:#B91C1C">${dpd}d past due</span> &nbsp;`, invLink(inv.id))).join('')) : '';
   // Quotes going cold — bucketed on the shared dashboard tiers: 7-13d going cold,
-  // 14d+ stale. Dollar figures are goods value (units × sell; no deco).
+  // 14-30d stale. Dollar figures are goods value (units × sell; no deco).
   const cqRow = ({ e, days, value }, color) => row(
     `${esc(e.id)} <span style="color:${SUB};font-weight:600">· sent ${days}d ago</span>`,
     esc(custName(e.customer_id)) + (e.memo ? ` · ${esc(e.memo)}` : ''),
@@ -463,7 +464,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
   const subHead = (t, c) => `<div style="font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:${c};font-weight:800;margin:10px 0 2px">${t}</div>`;
   const coldQuoteBlock = b.coldQuotes.length ? sectionHead('🥶 Quotes Going Cold')
     + (cqCold.length ? subHead(`Going cold · ${QUOTE_COLD_DAYS}–${QUOTE_STALE_DAYS - 1} days`, '#B45309') + table(cqCold.map((c) => cqRow(c, '#B45309')).join('')) : '')
-    + (cqStale.length ? subHead(`Stale · ${QUOTE_STALE_DAYS}+ days`, '#B91C1C') + table(cqStale.map((c) => cqRow(c, '#B91C1C')).join('')) : '') : '';
+    + (cqStale.length ? subHead(`Stale · ${QUOTE_STALE_DAYS}–${QUOTE_DIGEST_MAX_DAYS} days`, '#B91C1C') + table(cqStale.map((c) => cqRow(c, '#B91C1C')).join('')) : '') : '';
   const deadlineBlock = b.deadlines.length ? sectionHead('⏰ Deadlines Approaching') + table(b.deadlines.map(({ so, due, daysOut }) => {
     const overdue = daysOut < 0;
     const badge = `<span style="font-size:12px;font-weight:800;color:${overdue ? '#B91C1C' : daysOut <= 3 ? '#B45309' : '#075985'}">${overdue ? `${Math.abs(daysOut)}d overdue` : daysOut === 0 ? 'due today' : `${daysOut}d out`}</span> &nbsp;`;

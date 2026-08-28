@@ -23,11 +23,11 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
-import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost } from './businessLogic';
+import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -2358,6 +2358,11 @@ export default function App(){
   // Live count for the poll's self-heal (the poll effect has [] deps, so it can't read histInvs directly).
   const _histInvsCount=useRef(0);
   React.useEffect(()=>{_histInvsCount.current=histInvs.length},[histInvs]);
+  // Same trick for customers — `customers` is a COLD table the core poll skips, so if it ever lands
+  // empty every order/job/art card in the app renders its customer as "Unknown" until a full sync
+  // 30 minutes later. The poll's self-heal below watches this to refill it within one poll instead.
+  const _custCount=useRef(0);
+  React.useEffect(()=>{_custCount.current=cust.length},[cust]);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
@@ -2773,6 +2778,22 @@ export default function App(){
           else if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(_obApplied[c.id]||prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
+          // The _custTimedOutEmpty fallback above cannot actually fire: it needs a local cache in
+          // `cust`, but the nsa_cust cache it was written for is purged at dbEngine load (~3702) and
+          // nothing writes it any more, so `cust` is always [] at boot and the guard silently
+          // degrades to setCust([]) — every order, job and art-dashboard card reading "Unknown", and
+          // customer-name search matching nothing. `customers` is COLD (the core poll skips it), so
+          // that state would otherwise stand until the next full sync ~30 min out. Retry the one
+          // group directly — cheap, bounded, and the same self-heal shape the poll uses for the
+          // NetSuite invoice history. Not awaited: it must not delay the remaining initial setters.
+          // Snapshot BEFORE state so the [cust] diff-save effect sees no local edit to push back.
+          if(d._custTimedOut&&!d.customers.length){
+            _dbLoad({only:new Set(['customers'])}).then(cr=>{
+              if(!cr||cr._custTimedOut||!cr.customers.length){console.warn('[DB] customers still empty after initial-load retry — the poll self-heal will refill');return}
+              _dbSnap.current.cust=cr.customers;setCust(cr.customers);
+              console.log('[DB] customers recovered on initial-load retry ('+cr.customers.length+' customers)');
+            }).catch(e=>console.warn('[DB] customers initial-load retry failed:',e?.message||e));
+          }
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
             if(!_estTimedOutEmpty)setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
@@ -3244,6 +3265,21 @@ export default function App(){
         // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
         // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
         if(d.customers.length)setCust(prev=>{const _mcArt=c=>{const lp=prev.find(p=>p.id===c.id);if(!lp||!lp.art_files?.length||!_recentlySavedByMe(c.id))return c;const ma=mergeArtFileSuperset(c.art_files,lp.art_files);return ma===c.art_files?c:{...c,art_files:ma}};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):_mcArt(c));return changed(prev,merged)?merged:prev}const merged2=d.customers.map(_mcArt);return changed(prev,merged2)?merged2:prev});
+        // Customers self-heal — the cold-table twin of the NetSuite history recovery above, and the
+        // backstop for the initial-load retry. `customers` is skipped on core polls, so a load that
+        // once returned it empty leaves EVERY order, job and art-dashboard card rendering "Unknown"
+        // (and customer-name search matching nothing) until a full sync up to 30 min later. Refetch
+        // the one group the moment we notice state has none — on core polls too, which is exactly
+        // when the normal path can't. Self-limiting: the condition only holds while the list is
+        // really empty, and one success ends it. Snapshot first, so the [cust] diff-save effect
+        // doesn't read the refill as a local edit and push 2.5k customers back at the DB.
+        if(_custCount.current===0){
+          const _cr=await _dbLoad({only:new Set(['customers'])});
+          if(_cr&&!_cr._custTimedOut&&_cr.customers.length){
+            _dbSnap.current.cust=_cr.customers;setCust(_cr.customers);
+            console.log('[DB] customers recovered on poll ('+_cr.customers.length+' customers) — orders were showing "Unknown"');
+          }
+        }
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(!d._coreOnly)setAssignedTodos(prev=>{const v=_mergeAssignedTodos(d.assignedTodos||[],prev);return changed(prev,v)?v:prev});
@@ -6405,6 +6441,34 @@ export default function App(){
     setBoxModal({box:survivor,combineWith:''});
     nf(srcBox.id+' combined into '+tgt.id+' — one label reprinted');
   };
+  // ─── AUTO-SHIP BOXES ─── A box whose whole ORDER has left (SO shipped, or every
+  // non-draft job completed/shipped — "when everything goes") is marked shipped, so
+  // the move check-in station and Where-is-it views stop counting it as on-hand.
+  // Client-side reconciliation on purpose: it catches every ship path (ship modal,
+  // manual ship, ShipStation webhook poll) without wiring each one, at the cost of
+  // only running while someone has the portal open. Ref guards one attempt per box
+  // per session so a failed write can't loop.
+  const _autoShippedRef=useRef(new Set());
+  useEffect(()=>{
+    if(!supabase||!boxRows.length||!sos.length)return;
+    const soDone=(so)=>{
+      if(!so||so.deleted_at)return false;
+      if(so._shipped===true||so._shipping_status==='shipped')return true;
+      const js=safeJobs(so).filter(j=>j.prod_status!=='draft');
+      return js.length>0&&js.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+    };
+    const doneIds=new Set(sos.filter(soDone).map(so=>so.id));
+    if(!doneIds.size)return;
+    boxRows.forEach(b=>{
+      if(!b||b.status==='shipped'||b.status==='combined')return;
+      if(_autoShippedRef.current.has(b.id))return;
+      const refSos=[b.so_id,...(b.source_refs||[]).filter(r=>r&&r.type==='SO').map(r=>r.id)].filter(Boolean);
+      // every order this box belongs to must be done — a multi-SO box with one open order stays
+      if(!refSos.length||!refSos.every(id=>doneIds.has(id)))return;
+      _autoShippedRef.current.add(b.id);
+      _boxUpdate(b.id,{status:'shipped'});
+    });
+  },[sos,boxRows]);// eslint-disable-line react-hooks/exhaustive-deps
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
@@ -12321,6 +12385,9 @@ export default function App(){
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
       <button data-tour-id="inv-pos-tab" className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
       {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>{setInvTab('b2b');refreshAdidasLastSync()}} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
+      {/* Building-move box check-in station (src/movecheckin) — opens in its own tab so
+          the scanning phone/tablet keeps the station up while the desk uses the portal. */}
+      <a href="/move-checkin" target="_blank" rel="noopener noreferrer" style={{marginLeft:'auto',alignSelf:'center',display:'inline-flex',alignItems:'center',gap:6,background:'#0f172a',color:'#f1f5f9',border:'1px solid #334155',borderRadius:8,padding:'8px 14px',fontSize:12,fontWeight:700,textDecoration:'none',whiteSpace:'nowrap'}} title="Scan boxes into the new building — check in, staging, shelves, and the move stocktake">📦 Move Check-In</a>
     </div>
     {invTab==='stock'&&rInvStock()}
     {invTab==='clearance'&&isA&&rInvClearance()}
@@ -22790,11 +22857,27 @@ export default function App(){
     const _ART_COL_RANK={waiting_for_art:0,needs_approval:1,approved:2,art_complete:3};
     const _artColRank=j=>{const r=_ART_COL_RANK[getArtFileStatus(j)];return r==null?9:r};
     const _famed=list=>consolidateArtFamilies(list,_artColRank);
-    const artistJobs=_famed(filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j)));
+    // A job only reaches `filtered` still on needs_art when an ARTIST IS ASSIGNED — the gather above
+    // skips every other needs_art job (line ~22612). That is the rep picking the artist without ever
+    // clicking Request Art. Excluding needs_art wholesale here dropped those jobs out of EVERY section
+    // on this page: this list feeds the three columns, and In Production / Completed want art_complete
+    // while Hidden wants art_hidden — so they were gathered and then rendered nowhere at all, with an
+    // artist assigned and their art files sitting at waiting_for_art (SO-2151 JOB-01/-02, SO-2193
+    // JOB-01: invisible to everyone, including the artist they were assigned to). getArtFileStatus
+    // already resolves them to 'waiting_for_art', so they land in the column matching their real state.
+    // Jobs whose decoration already finished stay out — that work is done, not waiting on an artist.
+    const _assignedButNeverRequested=j=>j.art_status==='needs_art'&&!['completed','shipped'].includes(j.prod_status);
+    // A persisted complete SO is financially closed and should never put an unfinished legacy
+    // job back into an artist's active queue. Keep its genuinely completed jobs available in the
+    // Completed reference list below, but suppress stale/inconsistent active states (SO-1576:
+    // a fulfilled names-only job remained art_in_progress and resurfaced a month later).
+    const _orderOpenForArt=j=>j.so?.status!=='complete';
+    const artistJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_status!=='art_complete'&&!j.art_hidden&&!_repOwnsProdStep(j)
+      &&(j.art_status!=='needs_art'||_assignedButNeverRequested(j))));
     // In Production: art complete but decoration not finished yet
-    const inProductionJobs=_famed(filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
+    const inProductionJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
     // Hidden: jobs the artist has hidden from the workboard (booking orders, far-out items, etc.)
-    const hiddenArtJobs=_famed(filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status)));
+    const hiddenArtJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_hidden&&!['completed','shipped'].includes(j.prod_status)));
     // Completed: art complete AND decoration done (completed/shipped) — reference for artists
     const completedArtJobs=_famed(allArtJobs.filter(j=>{
       if(j.art_status!=='art_complete'||!['completed','shipped'].includes(j.prod_status))return false;
@@ -23162,10 +23245,13 @@ export default function App(){
           // garment's art file instead of this one's (SO-2063).
           const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
           const itIdx=skuItem?.item_idx;
-          const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
-          const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
+          const item=itIdx!=null?safeItems(so)[itIdx]:null;
+          // Scope to THIS job's decoration indexes. A names-only job sharing a garment with a
+          // logo has no art_file_id of its own; scanning every decoration routed its upload into
+          // that unrelated logo and left this modal blank (SO-1576 JOB-04).
+          const skuArtIds=[...new Set(jobItemDecosOfKind(skuItem,item,'art').filter(d=>d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
           // Prefer art files this item actually uses; if multiple, take the first; fall back to the job's primary
-          return skuArtIds[0]||j.art_file_id||null;
+          return skuArtIds[0]||(j.art_file_id&&j.art_file_id!=='__tbd'?j.art_file_id:null);
         };
         // Composite key for per-item mockups: SKU + color, so the same SKU in different colors
         // doesn't collapse onto a single entry — via garmentMockKey, which keys the hand-typed
@@ -23178,7 +23264,10 @@ export default function App(){
           const sku=g?.sku;const color=g?.color;
           setArtJobDetailUploading(true);
           try{
-            const artId=targetArtId||resolveItemArtId(g);
+            let artId=targetArtId||resolveItemArtId(g);
+            // `__tbd` is a reserved decoration sentinel, never a valid so_art_files id. Treat an
+            // upload against it as the first real proof and promote the job to a normal art id.
+            if(artId==='__tbd')artId=null;
             const mk=slotKey||_mockKey(g);
             if(typeof nf==='function')nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
             const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
@@ -23188,6 +23277,7 @@ export default function App(){
             if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
+            const legacyTbd=existingArt.find(a=>a.id==='__tbd');
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
             let updArt;let newArtFileId=artId;
             if(hasMatch){
@@ -23196,18 +23286,25 @@ export default function App(){
               // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
               // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
               const existing=curItemMockups[mk]||(mk===_mockKey(g)?(curItemMockups[sku]||[]):[]);
-              const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
+              // A retry keeps the newest upload and drops older copies with the same filename.
+              const updItemMockups={...curItemMockups,[mk]:dedupeMockDupes([...uploaded,...existing])};
               updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[mk]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
-              updArt=[...existingArt,newAf];
+              const legacyMocks=legacyTbd?.item_mockups||{};
+              const legacySlot=legacyMocks[mk]||(mk===_mockKey(g)?(legacyMocks[sku]||[]):[]);
+              const newAf={...(legacyTbd||{}),id:newArtFileId,name:legacyTbd?.name||j.art_name||'Art',deco_type:legacyTbd?.deco_type||j.deco_type||'screen_print',ink_colors:legacyTbd?.ink_colors||'',thread_colors:legacyTbd?.thread_colors||'',art_size:legacyTbd?.art_size||'',art_sizes:legacyTbd?.art_sizes||{},files:legacyTbd?.files||[],mockup_files:legacyTbd?.mockup_files||[],item_mockups:{...legacyMocks,[mk]:dedupeMockDupes([...uploaded,...legacySlot])},prod_files:legacyTbd?.prod_files||[],notes:legacyTbd?.notes||'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt.filter(a=>a.id!=='__tbd'),newAf];
             }
-            const newSO=savSO({...liveSO,art_files:updArt});
+            const createdJobArtId=!hasMatch&&!artId?newArtFileId:null;
+            const jobArtFileId=j.art_file_id&&j.art_file_id!=='__tbd'?j.art_file_id:createdJobArtId;
+            const updatedJobs=createdJobArtId?buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:jobArtFileId,_art_ids:[...new Set([...(jj._art_ids||[]).filter(id=>id&&id!=='__tbd'),jobArtFileId])],art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj):safeJobs(liveSO);
+            const updatedItems=createdJobArtId?attachJobArtToUnresolvedDecos(safeItems(liveSO),j,jobArtFileId):safeItems(liveSO);
+            const newSO=savSO({...liveSO,art_files:updArt,...(createdJobArtId?{jobs:updatedJobs,items:updatedItems}:{})});
             // Only refresh the modal if it's still open on this job — the rep may have closed it and moved on
             // while the upload finished in the background; reopening it out from under them is worse than stale.
-            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]}:m);
+            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,art_file_id:jobArtFileId,artFile:updArt.find(a=>a.id===jobArtFileId)||updArt[0]}:m);
             const ok=await _dbSaveSO(newSO);
             if(ok===false){if(typeof nf==='function')nf('Mockup uploaded but failed to save to order. Please retry.','error');return}
             if(typeof nf==='function')nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
@@ -23793,12 +23890,15 @@ export default function App(){
             if(!artId){
               const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
               const itIdx=skuItem?.item_idx;
-              const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
-              const skuArtIds=decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id);
+              const item=itIdx!=null?safeItems(so)[itIdx]:null;
+              // Only inspect decorations this job owns. Names/numbers-only jobs must create and
+              // attach their own proof record, never borrow a sibling logo's art file.
+              const skuArtIds=jobItemDecosOfKind(skuItem,item,'art').filter(d=>d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id);
               const uniqueSkuArts=[...new Set(skuArtIds)];
               // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
+            if(artId==='__tbd')artId=null;
             const mk=slotKey||_mockKey(g);
             nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+(g?.name||sku)+'...');
             const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
@@ -23808,13 +23908,14 @@ export default function App(){
             if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
+            const legacyTbd=existingArt.find(a=>a.id==='__tbd');
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
-            const liveAf=hasMatch?existingArt.find(a=>a.id===artId):af;
+            const liveAf=hasMatch?existingArt.find(a=>a.id===artId):(legacyTbd||af);
             const curItemMockups=liveAf?.item_mockups||{};
             // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
             // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
             const existing=curItemMockups[mk]||(mk===_mockKey(g)?(curItemMockups[sku]||[]):[]);
-            const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
+            const updItemMockups={...curItemMockups,[mk]:dedupeMockDupes([...uploaded,...existing])};
             let updArt;
             let newArtFileId=artId;
             if(hasMatch){
@@ -23823,15 +23924,17 @@ export default function App(){
               // Create art file if none exists for this job
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[mk]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
-              updArt=[...existingArt,newAf];
-              if(!j.art_file_id)j.art_file_id=newArtFileId;
+              const newAf={...(legacyTbd||{}),id:newArtFileId,name:legacyTbd?.name||j.art_name||'Art',deco_type:legacyTbd?.deco_type||j.deco_type||'screen_print',ink_colors:legacyTbd?.ink_colors||'',thread_colors:legacyTbd?.thread_colors||'',art_size:legacyTbd?.art_size||'',art_sizes:legacyTbd?.art_sizes||{},files:legacyTbd?.files||[],mockup_files:legacyTbd?.mockup_files||[],item_mockups:updItemMockups,prod_files:legacyTbd?.prod_files||[],notes:legacyTbd?.notes||'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt.filter(a=>a.id!=='__tbd'),newAf];
             }
-            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
-            const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
-            const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+            const createdJobArtId=!hasMatch&&!artId?newArtFileId:null;
+            const jobArtFileId=j.art_file_id&&j.art_file_id!=='__tbd'?j.art_file_id:createdJobArtId;
+            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:jobArtFileId,...(createdJobArtId?{_art_ids:[...new Set([...(jj._art_ids||[]).filter(id=>id&&id!=='__tbd'),jobArtFileId])]}:{}),art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedItems=createdJobArtId?attachJobArtToUnresolvedDecos(safeItems(liveSO),j,jobArtFileId):safeItems(liveSO);
+            const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs,items:updatedItems});
+            const updatedAf=updArt.find(a=>a.id===jobArtFileId);
             // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
-            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,art_file_id:jobArtFileId,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
             // Block on the DB write so the success toast only fires after the mockup is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Mockup file uploaded but failed to save to order. Please retry.','error');return}
@@ -23929,8 +24032,8 @@ export default function App(){
           if(targetArtId){handleItemMockupUpload(files,g,targetArtId,slotKey);return;}
           const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
           const itIdx=skuItem?.item_idx;
-          const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
-          const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id))];
+          const item=itIdx!=null?safeItems(so)[itIdx]:null;
+          const skuArtIds=[...new Set(jobItemDecosOfKind(skuItem,item,'art').filter(d=>d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
           const skuArts=skuArtIds.map(aid=>allArtFiles.find(a=>a.id===aid)).filter(Boolean);
           if(skuArts.length<=1||allArtFiles.length<=1){
             // single art — just upload
@@ -36196,12 +36299,40 @@ export default function App(){
     setEEst(ne);setEEstC(c);setPg('estimates');
     return {ok:true,name:c.name||'',estId,added,notFound};
   }
-  // Assistant "add a line to the open estimate". Resolves the product via the same server
-  // catalog search the editor uses, prices it here (money math stays out of the AI), and hands a
-  // fully-formed line to the open estimate editor via a window event (see OrderEditor listener).
-  // Per-line margin basis matches the editor's own display: (unit_sell - nsa_cost)/unit_sell.
-  async function handleAssistantAddLine({description,margin_pct}){
-    if(pg!=='estimates'||!eEst)return {error:'no_estimate_open'};
+  // ── Assistant confirmed writes on the OPEN estimate / sales order ──
+  // The open editor holds its own local copy of the record (unsaved edits live there, not in
+  // eEst/eSO), so both the ConfirmCard preview and the committed change go through the editor's
+  // window-event channel: 'nsa:assistant-get-order' reads the LIVE order synchronously, and the
+  // mutation events apply + (for SOs) save inside the editor. The mutation math itself lives once
+  // in businessLogic.js (assistantFindLine / assistantLineEdit / assistantRemoveLine* /
+  // assistant*PoLine) — the same functions the editors run — so preview and result can't drift.
+  // Current sos, readable from a ConfirmCard commit thunk minutes after the draft was built —
+  // the closure's own `sos` is frozen at draft time (same staleness class the review flagged
+  // on the PO-removal commit), so commits re-resolve through this ref instead.
+  const _assistantSosRef=useRef(sos);useEffect(()=>{_assistantSosRef.current=sos},[sos]);
+  function _assistantLiveOrder(){
+    const rec=(pg==='estimates'&&eEst)?{id:eEst.id,kind:'estimate',fallback:eEst}:(pg==='orders'&&eSO)?{id:eSO.id,kind:'so',fallback:eSO}:null;
+    if(!rec)return null;
+    let live=null;
+    try{window.dispatchEvent(new CustomEvent('nsa:assistant-get-order',{detail:{orderId:rec.id,respond:r=>{if(r&&r.ok&&r.order)live=r.order}}}))}catch(e){}
+    return {id:rec.id,kind:rec.kind,order:live||rec.fallback};
+  }
+  // Dispatch one confirmed mutation to the open editor and collect its synchronous answer.
+  function _assistantEditorCommit(eventName,detail,openId){
+    let res=null;
+    try{window.dispatchEvent(new CustomEvent(eventName,{detail:{...detail,orderId:openId,respond:x=>{res=x}}}))}catch(e){}
+    if(!res)return {ok:false,message:'The editor didn\'t respond — is '+openId+' still open?'};
+    if(!res.ok)return {ok:false,message:res.error||"Couldn't apply that change."};
+    return {ok:true,message:res.message||'Done.'};
+  }
+  // Assistant "add a line to the open estimate/order". Resolves the product via the same server
+  // catalog search the editor uses, prices it here (money math stays out of the AI), previews it
+  // in a ConfirmCard, and on confirm hands the fully-formed line to the open editor via the
+  // window event (see the OrderEditor/OrderEditorClassic listener). Per-line margin basis matches
+  // the editor's own display: (unit_sell - nsa_cost)/unit_sell.
+  async function handleAssistantAddLine({description,margin_pct,sizes,qty}){
+    const cur=_assistantLiveOrder();
+    if(!cur)return {error:'no_estimate_open'};
     const desc=String(description||'').trim();
     if(!desc)return {error:'not_found',description:desc};
     let products=[];
@@ -36212,13 +36343,133 @@ export default function App(){
     const m=(margin_pct>0&&margin_pct<100)?margin_pct/100:null;
     let unit_sell,applied=false;
     if(m!=null&&nsa>0){unit_sell=Math.round((nsa/(1-m))*100)/100;applied=true;}
-    else if(nsa>0){unit_sell=Math.round((nsa*(eEst.default_markup||1.65))*100)/100;}
+    else if(nsa>0){unit_sell=Math.round((nsa*(cur.order.default_markup||1.65))*100)/100;}
     else{unit_sell=Number(p.retail_price)||0;}
     const bl=String(p.brand||''),nm=String(p.name||'');
     const name=(bl&&!nm.toLowerCase().startsWith(bl.toLowerCase()))?(bl+' '+nm):nm;
     const line={product_id:p.id,sku:p.sku,name,brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:nsa,retail_price:p.retail_price,unit_sell,available_sizes:p.available_sizes||[],sizes:{},qty_only:false,decorations:[],no_deco:true,_is_clearance:p.is_clearance||false};
-    window.dispatchEvent(new CustomEvent('nsa:assistant-add-line',{detail:{line}}));
-    return {ok:true,applied,margin:margin_pct||null,noCost:(m!=null&&nsa<=0),product:{sku:p.sku,name,color:p.color,unit_sell},others:products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}))};
+    const szEntries=Object.entries(sizes||{}).map(([sz,v])=>[assistantNormSize(line,sz),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz,v])=>sz&&v>0);
+    if(szEntries.length){line.sizes=Object.fromEntries(szEntries);line.available_sizes=[...new Set([...(line.available_sizes||[]),...szEntries.map(([sz])=>sz)])];}
+    else if(Number(qty)>0){line.est_qty=Math.floor(Number(qty));line.qty_only=true;/* est_qty only shows via the editor's qty-only UI */}
+    const noCost=(m!=null&&nsa<=0);
+    const lines=[{label:'Add to',value:cur.id},{label:'Product',value:(p.sku||'')+' '+name+(p.color?' ('+p.color+')':'')},
+      {label:'Sell',value:'$'+unit_sell.toFixed(2)+(applied?' ('+margin_pct+'% margin)':noCost?' (no cost on file — default price)':'')}];
+    if(szEntries.length)lines.push({label:'Sizes',value:szEntries.map(([sz,v])=>v+'/'+sz).join(' ')});
+    else if(line.est_qty)lines.push({label:'Quantity',value:String(line.est_qty)});
+    else lines.push({label:'Sizes',value:'— set in the editor after adding'});
+    const others=products.slice(1,4).map(x=>({sku:x.sku,name:x.name,color:x.color}));
+    if(others.length)lines.push({label:'Not it?',value:'Others: '+others.map(x=>x.sku).filter(Boolean).join(', ')});
+    const commit=async()=>{
+      const r=_assistantEditorCommit('nsa:assistant-add-line',{line},cur.id);
+      if(!r.ok)return r;
+      return {ok:true,message:'Added '+(p.sku||'the line')+' to '+cur.id+' — review and Save when it looks right.'};
+    };
+    return {ok:true,title:'Add line to '+cur.id+' — confirm',lines,commit};
+  }
+  // Change sizes / qty / sell / margin on a line of the OPEN estimate or sales order.
+  function handleAssistantUpdateLine(spec){
+    const cur=_assistantLiveOrder();
+    if(!cur)return {error:'Open the estimate or sales order first, then tell me what to change.'};
+    if(spec.order_id&&String(spec.order_id).trim().toLowerCase()!==String(cur.id).toLowerCase())return {error:'That looks like '+spec.order_id+', but '+cur.id+' is what\'s open. Open '+spec.order_id+' and ask me again.'};
+    const f=assistantFindLine(cur.order,spec.line);
+    if(f.error==='ambiguous')return {error:'A few lines match "'+spec.line+'" on '+cur.id+': '+f.matches.map(x=>x.sku+(x.color?' '+x.color:'')).join(', ')+' — which one?'};
+    if(f.error)return {error:'I couldn\'t find a line matching "'+spec.line+'" on '+cur.id+'.'};
+    const edit={sizes:spec.sizes,remove_sizes:spec.remove_sizes,qty:spec.qty,unit_sell:spec.unit_sell,margin_pct:spec.margin_pct};
+    const r=assistantLineEdit(cur.order,f.idx,edit,{by:cu?.name||''});
+    if(r.error)return {error:r.error};
+    const lines=[{label:'Record',value:cur.id},{label:'Line',value:(f.item.sku||'')+' '+(f.item.name||'')+(f.item.color?' ('+f.item.color+')':'')}];
+    r.changes.forEach(c=>lines.push({label:c.label,value:c.before+' → '+c.after}));
+    r.notes.forEach(nt=>lines.push({label:'Also',value:nt}));
+    const commit=async()=>_assistantEditorCommit('nsa:assistant-edit-line',{line:spec.line,edit},cur.id);
+    return {ok:true,title:'Change line on '+cur.id+' — confirm',lines,commit};
+  }
+  // Remove a whole line from the OPEN estimate or sales order (rmI's guards, via businessLogic).
+  function handleAssistantRemoveLine(spec){
+    const cur=_assistantLiveOrder();
+    if(!cur)return {error:'Open the estimate or sales order first, then tell me which line to remove.'};
+    if(spec.order_id&&String(spec.order_id).trim().toLowerCase()!==String(cur.id).toLowerCase())return {error:'That looks like '+spec.order_id+', but '+cur.id+' is what\'s open. Open '+spec.order_id+' and ask me again.'};
+    const f=assistantFindLine(cur.order,spec.line);
+    if(f.error==='ambiguous')return {error:'A few lines match "'+spec.line+'" on '+cur.id+': '+f.matches.map(x=>x.sku+(x.color?' '+x.color:'')).join(', ')+' — which one?'};
+    if(f.error)return {error:'I couldn\'t find a line matching "'+spec.line+'" on '+cur.id+'.'};
+    const g=assistantRemoveLineGuard(cur.order,f.idx,cur.kind==='so');
+    if(g.error)return {error:g.error};
+    const qtyStr=Object.entries(safeSizes(f.item)).filter(([,v])=>Number(v)>0).map(([sz,v])=>v+'/'+sz).join(' ')||(Number(f.item.est_qty)>0?String(f.item.est_qty):'—');
+    const lines=[{label:'Record',value:cur.id},{label:'Removing',value:(f.item.sku||'')+' '+(f.item.name||'')+(f.item.color?' ('+f.item.color+')':'')},{label:'Quantities',value:qtyStr}];
+    if(g.frozenJobIds&&g.frozenJobIds.length)lines.push({label:'⚠ Heads up',value:'This line is part of released/merged job(s) '+g.frozenJobIds.join(', ')+' — removing it takes the garment out of those jobs.'});
+    const commit=async()=>_assistantEditorCommit('nsa:assistant-remove-line',{line:spec.line},cur.id);
+    return {ok:true,title:'Remove line from '+cur.id+' — confirm',danger:true,confirmLabel:'Yes, remove it',lines,commit};
+  }
+  // Remove a PO line (or cancel one size's open units) — by PO number + SKU, or off the open SO.
+  // Received/billed units refuse (same guard as the editor's Delete PO). If the SO is open in the
+  // editor the change goes through it (live state + its onSave); otherwise it applies to App state
+  // and saves via savSO — the same save the editor's onSave uses. Status math needs no extra step:
+  // job/SO item status derives live from po_lines, exactly as after a human Delete PO.
+  function handleAssistantPoRemoveLine({po,sku,size}){
+    const target={poRef:String(po||'').trim()||null,sku:String(sku||'').trim()||null,size:String(size||'').trim()||null};
+    if(!target.poRef&&!target.sku)return {error:'Which PO line? Give me the PO number and/or the SKU.'};
+    const cur=_assistantLiveOrder();
+    const cands=[];
+    if(cur&&cur.kind==='so')assistantFindPoLine(cur.order,target).forEach(mm=>cands.push({so:cur.order,live:true,m:mm}));
+    if(!cands.length)sos.forEach(s=>{if(cur&&cur.kind==='so'&&s.id===cur.id)return;assistantFindPoLine(s,target).forEach(mm=>cands.push({so:s,live:false,m:mm}))});
+    if(!cands.length)return {error:'I couldn\'t find that PO line'+(target.poRef?' on '+target.poRef:'')+(target.sku?' for '+target.sku:'')+'. Double-check the PO number and SKU.'};
+    if(cands.length>1)return {error:'More than one PO line matches: '+cands.slice(0,4).map(c=>c.m.poId+' · '+(c.m.item.sku||'?')+' on '+c.so.id).join('; ')+' — give me the PO number and exact SKU'+(target.size?'':' (and the size, if you mean one size)')+'.'};
+    const {so,m}=cands[0];
+    const dry=assistantRemovePoLine(so,{itemIdx:m.itemIdx,plIdx:m.plIdx,size:target.size});
+    if(dry.error)return {error:dry.error};
+    const ordStr=Object.entries(m.pl).filter(([k,v])=>!k.startsWith('_')&&typeof v==='number'&&k!=='unit_cost'&&v>0&&!['status'].includes(k)).map(([sz,v])=>v+'/'+sz).join(' ');
+    const lines=[{label:'PO',value:m.poId},{label:'Sales order',value:so.id},{label:'Line',value:(m.item.sku||'')+' '+(m.item.name||'')+(m.item.color?' ('+m.item.color+')':'')},
+      {label:target.size?'Cancelling':'Removing',value:target.size?('all open '+target.size+' units on this line'):('the whole line — ordered: '+(ordStr||'—'))},
+      {label:'After',value:'Those sizes go back to open-to-order; job/SO status updates on its own.'}];
+    const commit=async()=>{
+      // Re-resolve at COMMIT time, never from the preview-time snapshot: first offer the
+      // event to a live editor (it applies against its own current state), else re-find the
+      // SO and the PO line in current App state so guards run against fresh received/billed.
+      let viaEditor=null;
+      try{window.dispatchEvent(new CustomEvent('nsa:assistant-po-remove',{detail:{target,orderId:so.id,respond:x=>{viaEditor=x}}}))}catch(e){}
+      if(viaEditor)return viaEditor.ok?{ok:true,message:viaEditor.message||'Done.'}:{ok:false,message:viaEditor.error||"Couldn't apply that change."};
+      const freshSo=(_assistantSosRef.current||[]).find(s2=>s2.id===so.id);
+      if(!freshSo)return {ok:false,message:so.id+" isn't there any more — nothing was changed."};
+      const fm=assistantFindPoLine(freshSo,target);
+      if(fm.length!==1)return {ok:false,message:'That PO line changed since the preview — nothing was saved. Ask me again to get a fresh look.'};
+      const r=assistantRemovePoLine(freshSo,{itemIdx:fm[0].itemIdx,plIdx:fm[0].plIdx,size:target.size});
+      if(r.error)return {ok:false,message:r.error};
+      try{savSO(r.next);}catch(e){return {ok:false,message:"Couldn't save the PO change — try again."}}
+      return {ok:true,message:r.summary+'. Saved.'};
+    };
+    return {ok:true,title:'Remove PO line — confirm',danger:true,confirmLabel:'Yes, remove it',lines,commit};
+  }
+  // Admin-only: set warehouse on-hand quantities (and bin) for a product. Saves through savI —
+  // the exact function the Adjust Inventory modal uses — so the adjustment log, changeLog
+  // attribution, and the product_inventory merge-save all behave identically to the human path.
+  function handleAssistantAdjustInventory({sku,sizes,bin,reason}){
+    if(!(cu?.role==='admin'||cu?.role==='super_admin'))return {error:'Inventory adjustments are admin-only.'};
+    const sq=String(sku||'').trim().toLowerCase();
+    if(!sq)return {error:'Which product? Give me the SKU.'};
+    let matches=prod.filter(x=>String(x.sku||'').toLowerCase()===sq);
+    if(!matches.length&&sq.length>=3)matches=prod.filter(x=>String(x.sku||'').toLowerCase().includes(sq));
+    if(!matches.length)return {error:'I couldn\'t find a product with SKU "'+sku+'".'};
+    if(matches.length>1)return {error:'Several products match '+sku+': '+matches.slice(0,4).map(x=>x.sku+(x.color?' ('+x.color+')':'')).join(', ')+' — which one?'};
+    const p=matches[0];
+    const _invItem={sizes:p._inv||{},available_sizes:p.available_sizes||[]};// normalize "l"/"large" onto the product's real size buckets
+    const want=Object.entries(sizes||{}).map(([sz,v])=>[assistantNormSize(_invItem,sz),Math.max(0,Math.floor(Number(v)||0))]).filter(([sz])=>sz);
+    const binVal=bin!=null?String(bin).trim():null;
+    if(!want.length&&binVal==null)return {error:'Tell me the new on-hand quantity per size (e.g. "set L to 40"), and optionally a bin.'};
+    const lines=[{label:'Product',value:(p.sku||'')+' '+(p.name||'')+(p.color?' ('+p.color+')':'')}];
+    const inv={...(p._inv||{})};const deltas={};
+    want.forEach(([sz,n])=>{const before=Number(p._inv?.[sz])||0;if(n!==before){deltas[sz]=n-before;lines.push({label:'On hand '+sz,value:before+' → '+n});}inv[sz]=n;});
+    const binChanged=binVal!=null&&binVal!==(p.bin||'');
+    if(binChanged)lines.push({label:'Bin',value:(p.bin||'—')+' → '+(binVal||'—')});
+    if(lines.length===1)return {error:'Those quantities already match what\'s on hand — nothing to change.'};
+    if(reason)lines.push({label:'Reason',value:String(reason)});
+    const avail=[...new Set([...(p.available_sizes||[]),...want.map(([sz])=>sz)])];
+    const commit=async()=>{
+      try{
+        if(Object.keys(deltas).length)savI(p.id,inv,deltas,String(reason||'Portal Assistant chat'),'manual',avail);
+        if(binChanged)setProd(pp=>pp.map(x=>x.id===p.id?{...x,bin:binVal}:x));
+      }catch(e){return {ok:false,message:"Couldn't save the inventory change — try again."}}
+      return {ok:true,message:'Inventory updated for '+p.sku+'.'};
+    };
+    return {ok:true,title:'Inventory adjustment — confirm',danger:true,confirmLabel:'Yes, adjust it',lines,commit};
   }
   // "What needs my attention" — runs the key ops queries (scoped to the current user) and
   // returns a compact summary. Reuses runPortalSearch, so counts/totals match the search page.
@@ -36504,7 +36755,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';
@@ -37590,7 +37841,7 @@ export default function App(){
       if(pg==='invoices'&&viewInvoice){const c=cust.find(x=>x.id===viewInvoice.customer_id);return{type:'invoice',id:viewInvoice.id,customer:c?.name||c?.alpha_tag||''};}
       if(pg==='customers'&&selC){return{type:'customer',id:selC.id,customer:selC.name||selC.alpha_tag||''};}
       if(pg==='products'&&selP){return{type:'product',id:selP.sku||selP.id,customer:''};}
-    }catch(e){}return null;})()} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote} onFindProducts={handleAssistantFindProducts}/>
+    }catch(e){}return null;})()} onNavigate={(scr)=>{try{if(_PG_IDS.has(scr))setPg(scr)}catch(e){}}} onSearch={handleAssistantSearch} openResult={openPortalResult} onReorder={(row)=>{if(!row||!row._rec)return;if(window.confirm(`Create a new draft estimate from ${row.id}? It opens in the editor for you to review — nothing is saved until you hit Save.`))cloneToEstimate(row._rec,{persist:false})}} onAddLine={handleAssistantAddLine} onBrief={handleAssistantBrief} onCustomer360={handleAssistantCustomer360} onVendorStock={handleAssistantVendorStock} onStartEstimate={handleAssistantStartEstimate} onReport={handleAssistantReport} onPrintReport={(doc)=>{try{printDoc(doc)}catch(e){}}} onSetReminder={handleAssistantSetReminder} onAddNote={handleAssistantAddNote} onFindProducts={handleAssistantFindProducts} userRole={cu?.role||''} onUpdateLine={handleAssistantUpdateLine} onRemoveLine={handleAssistantRemoveLine} onPoRemoveLine={handleAssistantPoRemoveLine} onAdjustInventory={handleAssistantAdjustInventory}/>
   </div></AppDataProvider>);
 }
 

@@ -1,9 +1,10 @@
 /* Regression tests for the doubled-PO-creation fix (SO-2121 "PO 58203 FPUA" / SO-2105 /
  * SO-1248, 2026-08-24):
- *   1. The duplicate-PO guard in _dbSaveSOInner now collapses multiple clean copies of the SAME
+ *   1. The duplicate-PO guard in _dbSaveSOInner now collapses multiple copies of the SAME
  *      po_id with an identical size signature on one item. The create-time race wrote such pairs,
  *      and the old guard only dropped NEW duplicates against a db-known po_id — two db-known
- *      copies of one po_id survived every subsequent save.
+ *      copies of one po_id survived every subsequent save, especially after receiving/billing
+ *      made the old "clean line" guard stop considering them.
  *   2. _dbPersistNewPoLine is serialized through the per-SO save queue. Two back-to-back calls
  *      for different lines must BOTH write (the queue's latest-wins coalescing must not collapse
  *      them), which the fresh-saveFn-per-call wiring guarantees.
@@ -54,7 +55,7 @@ const withSupabaseEnv = () => {
 };
 const restoreEnv = () => { process.env = { ...ORIG_ENV }; };
 
-describe('_dbSaveSOInner — identical clean copies of the same po_id collapse to one (self-heal)', () => {
+describe('_dbSaveSOInner — identical copies of the same po_id collapse to one (self-heal)', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
@@ -117,6 +118,57 @@ describe('_dbSaveSOInner — identical clean copies of the same po_id collapse t
     expect(rows.length).toBe(1); // one copy survives, the exact duplicate is dropped
     expect(rows[0].po_id).toBe('PO 58203 FPUA');
     expect(rows[0].sizes['2XL']).toBe(3);
+  });
+
+  test('received/billed duplicate copies also collapse without losing fulfillment history', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    const dirtyRow = (id, withBilling) => ({
+      id, so_item_id: 'oi-1', po_id: 'PO 57240 WVCSOCW', vendor: 'SanMar', status: 'received',
+      sizes: { XS: 13, S: 10, M: 4, L: 4, XL: 2, unit_cost: 5.68 },
+      received: { XS: 13, S: 10, M: 4, L: 4, XL: 2 },
+      billed: withBilling ? { XS: 13 } : {}, cancelled: {}, shipments: [],
+      tracking_numbers: withBilling ? ['TRACK-1'] : [],
+    });
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null }, error: null },
+        { error: null },
+      ],
+      so_items: [
+        { data: [{ id: 'oi-1', item_index: 0, sku: 'LST400', color: 'Light Grey Hth', product_id: null }], error: null },
+        { data: [{ id: 'n1' }], error: null },
+      ],
+      so_art_files: [{ data: [], error: null }],
+      so_item_po_lines: [
+        { data: [dirtyRow('po-row-1', false), dirtyRow('po-row-2', true)], error: null },
+        { data: [{ po_id: 'PO 57240 WVCSOCW' }, { po_id: 'PO 57240 WVCSOCW' }], error: null },
+        { data: [{ po_id: 'PO 57240 WVCSOCW' }], error: null },
+        { error: null },
+        { count: 1, error: null },
+      ],
+      so_item_pick_lines: [{ data: [], error: null }, { data: [], error: null }],
+    };
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const received = { XS: 13, S: 10, M: 4, L: 4, XL: 2 };
+    const line = (extra = {}) => ({
+      po_id: 'PO 57240 WVCSOCW', vendor: 'SanMar', status: 'received', received,
+      cancelled: {}, shipments: [], unit_cost: 5.68, XS: 13, S: 10, M: 4, L: 4, XL: 2,
+      ...extra,
+    });
+    const result = await _dbSaveSO({
+      id: 'SO-2019', _decosHydrated: true,
+      items: [{ sku: 'LST400', color: 'Light Grey Hth', sizes: received, pick_lines: [],
+        po_lines: [line(), line({ billed: { XS: 13 }, tracking_numbers: ['TRACK-1'] })] }],
+    });
+
+    expect(result).toBe(true);
+    const insert = __mockState.calls.find(c => c.table === 'so_item_po_lines' && c.method === 'insert');
+    expect(insert.args[0]).toHaveLength(1);
+    expect(insert.args[0][0].received.XS).toBe(13);
+    expect(insert.args[0][0].billed.XS).toBe(13);
+    expect(insert.args[0][0].tracking_numbers).toEqual(['TRACK-1']);
   });
 });
 

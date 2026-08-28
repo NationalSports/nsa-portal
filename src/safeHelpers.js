@@ -57,6 +57,31 @@ export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
 };
+// Promote an unresolved art slot owned by a job to a real art-file id. Art Dashboard uploads
+// can begin on the reserved `__tbd` placeholder; once the first proof exists, both the job and
+// its decoration must point at a normal id or the line-item picker/approval guard will continue
+// to read it as Art TBD. Scope by the job's deco indexes so sibling designs are untouched.
+export const attachJobArtToUnresolvedDecos = (items, job, artFileId) => {
+  if (!artFileId || artFileId === '__tbd') return safeArr(items);
+  const owned = new Map();
+  safeArr(job?.items).forEach(gi => {
+    if (gi?.item_idx == null) return;
+    const dis = jobItemDecoIdxs(gi);
+    const cur = owned.get(gi.item_idx);
+    if (cur === null || dis === null) owned.set(gi.item_idx, null);
+    else owned.set(gi.item_idx, new Set([...(cur || []), ...dis]));
+  });
+  return safeArr(items).map((it, ii) => {
+    if (!owned.has(ii)) return it;
+    const dis = owned.get(ii); let changed = false;
+    const decorations = safeDecos(it).map((d, di) => {
+      if (d?.kind !== 'art' || (dis && !dis.has(di)) || (d.art_file_id && d.art_file_id !== '__tbd')) return d;
+      changed = true;
+      return {...d, art_file_id: artFileId, art_tbd_type: null, tbd_colors: null, tbd_stitches: null, tbd_dtf_size: null};
+    });
+    return changed ? {...it, decorations} : it;
+  });
+};
 // The set of art files a job owns across its garments. Seeded from the job's declared art
 // (_art_ids / art_file_id) and augmented with the art files referenced by the decorations the
 // job actually owns (jobItemDecoIdxs). Scoping to owned decos is load-bearing: on an art-split

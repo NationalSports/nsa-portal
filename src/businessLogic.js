@@ -1534,6 +1534,233 @@ function garmentCost(it) {
   return { cost, poQty, q };
 }
 
+// ── Portal Assistant write helpers ──
+// Single source of truth for the assistant's confirmed record mutations. Used by BOTH
+// editors' 'nsa:assistant-*' window-event listeners (OrderEditor.js / OrderEditorClassic.js
+// — the listeners must stay identical, see CLAUDE.md) AND by App.js's handleAssistant*
+// handlers, which run the same functions to build the ConfirmCard preview. One copy of the
+// math means the preview the user confirms and the change that lands can't drift.
+
+// Map a user-worded size onto the record's REAL size bucket, so "set the xl to 12" edits
+// XL instead of minting a phantom lowercase 'xl' bucket that inflates totals. Order:
+// exact key, case-insensitive match against the item's existing sizes/available_sizes,
+// canonical alias (large->L, xxl->2XL, one size->OSFA…), else uppercase short tokens.
+const _ASN_SIZE_ALIAS = { xs: 'XS', s: 'S', small: 'S', m: 'M', med: 'M', medium: 'M', l: 'L', lg: 'L', large: 'L', xl: 'XL', xlarge: 'XL', 'x-large': 'XL', 'x large': 'XL', xxl: '2XL', '2x': '2XL', '2xl': '2XL', xxxl: '3XL', '3x': '3XL', '3xl': '3XL', '4x': '4XL', '4xl': '4XL', osfa: 'OSFA', 'one size': 'OSFA', 'one-size': 'OSFA', os: 'OSFA', ys: 'YS', ym: 'YM', yl: 'YL', yxl: 'YXL' };
+function assistantNormSize(item, raw) {
+  const s = safeStr(raw).trim();
+  if (!s) return '';
+  const keys = [...new Set([...Object.keys(safeSizes(item)), ...safeArr(item && item.available_sizes).map(safeStr)])];
+  if (keys.includes(s)) return s;
+  const low = s.toLowerCase();
+  const ci = keys.find(k => k.toLowerCase() === low);
+  if (ci) return ci;
+  const alias = _ASN_SIZE_ALIAS[low];
+  if (alias) { const ci2 = keys.find(k => k.toLowerCase() === alias.toLowerCase()); return ci2 || alias; }
+  return s.length <= 4 ? s.toUpperCase() : s;
+}
+
+// Resolve which line the user means from a SKU or free-text description. Exact SKU first,
+// then SKU-contains, then all-words-in sku+name+color, then a unique any-word match.
+// Returns {idx, item} | {error:'not_found'} | {error:'ambiguous', matches:[...]}.
+function assistantFindLine(order, query) {
+  const items = safeItems(order).map((it, i) => ({ it, i }));
+  const q = safeStr(query).trim().toLowerCase();
+  if (!q) return { error: 'not_found' };
+  const hay = (it) => (safeStr(it.sku) + ' ' + safeStr(it.name) + ' ' + safeStr(it.color)).toLowerCase();
+  let m = items.filter(({ it }) => safeStr(it.sku).toLowerCase() === q);
+  if (!m.length && q.length >= 3) m = items.filter(({ it }) => safeStr(it.sku).toLowerCase().includes(q));
+  if (!m.length) {
+    const words = q.split(/\s+/).filter(w => w.length > 1);
+    if (words.length) m = items.filter(({ it }) => words.every(w => hay(it).includes(w)));
+  }
+  if (!m.length) {
+    const words = q.split(/\s+/).filter(w => w.length > 2);
+    const any = items.filter(({ it }) => words.some(w => hay(it).includes(w)));
+    if (any.length === 1) m = any;
+  }
+  if (!m.length) return { error: 'not_found' };
+  if (m.length > 1) return { error: 'ambiguous', matches: m.slice(0, 4).map(({ it, i }) => ({ idx: i, sku: it.sku, name: it.name, color: it.color })) };
+  return { idx: m[0].i, item: m[0].it };
+}
+
+// Plan/apply an edit to one line: size quantities (absolute), a bare qty (est_qty lines),
+// sell price, or a target margin. Pure — returns the next order plus human-readable
+// change rows for the ConfirmCard, or {error}. Size reductions that dip into PO-committed
+// units run through planSizeCut exactly like the editor's uSz does; 'blocked'/'absorb'
+// outcomes are refused (those need the editor's own modals), open-unit cuts are applied
+// with a note. Sell edits mirror the editor's per-size-sell rescale (OrderEditor.js
+// "Sell" $In onChange) so upcharge items keep their blended price.
+function assistantLineEdit(order, idx, edit, opts) {
+  const items = safeItems(order);
+  let item = items[idx];
+  if (!item) return { error: 'That line is no longer on the order.' };
+  item = Object.assign({}, item);
+  const changes = [], notes = [];
+  const by = safeStr(opts && opts.by);
+  // Normalize every requested size key onto the line's real buckets first (see
+  // assistantNormSize) — later duplicates win so "xl" and "XL" can't both land.
+  const _szMap = new Map();
+  Object.entries(safeObj(edit && edit.sizes)).forEach(([k, v]) => { const sz = assistantNormSize(item, k); if (sz) _szMap.set(sz, v); });
+  // Removing a size = setting it to 0 (the committed-units guards below still apply);
+  // the size bucket stays visible at 0, which is the reversible, honest form of "off".
+  safeArr(edit && edit.remove_sizes).forEach(s => { const sz = assistantNormSize(item, s); if (sz && !_szMap.has(sz)) _szMap.set(sz, 0); });
+  const setSizes = [..._szMap.entries()];
+  for (const [szRaw, vRaw] of setSizes) {
+    const sz = safeStr(szRaw).trim();
+    const n = Math.max(0, Math.floor(safeNum(Number(vRaw))));
+    if (!sz) continue;
+    const cur = safeNum(safeSizes(item)[sz]);
+    if (n === cur) continue;
+    const picked = safePicks(item).filter(pk => pk.status === 'pulled').reduce((a, pk) => a + safeNum(pk[sz]), 0);
+    const committed = picked + poCommitted(safePOs(item), sz);
+    if (n < committed && committed > 0) {
+      const plan = planSizeCut(item, sz, n, { by });
+      if (plan.kind === 'blocked') return { error: 'Cannot reduce ' + sz + ' below ' + plan.picked + ' — those units are already pulled for this order. Return the pick to stock in the editor first.' };
+      if (plan.kind === 'absorb') return { error: sz + ' has units already received/billed on ' + plan.absorbPoIds.join(', ') + ' — that write-off needs to be confirmed in the editor, not from chat.' };
+      if (plan.kind === 'cut' && plan.po_lines) { item.po_lines = plan.po_lines; notes.push(plan.poIds.join(', ') + ' lowered by ' + plan.cut + ' open unit' + (plan.cut !== 1 ? 's' : '') + ' to match'); }
+    }
+    item.sizes = Object.assign({}, safeSizes(item)); item.sizes[sz] = n;
+    if (!safeArr(item.available_sizes).includes(sz)) item.available_sizes = [...safeArr(item.available_sizes), sz];
+    changes.push({ label: 'Size ' + sz, before: String(cur), after: String(n) });
+  }
+  if (Object.values(safeSizes(item)).reduce((a, v) => a + safeNum(v), 0) > 0 && safeNum(item.est_qty) > 0) item.est_qty = 0; // mirrors uSz
+  if (edit && edit.qty != null) {
+    const n = Math.max(0, Math.floor(safeNum(Number(edit.qty))));
+    const szTotal = Object.values(safeSizes(item)).reduce((a, v) => a + safeNum(v), 0);
+    if (szTotal > 0) return { error: 'That line has per-size quantities — tell me the size(s) to change (e.g. "set L to 12").' };
+    changes.push({ label: 'Quantity', before: String(safeNum(item.est_qty)), after: String(n) });
+    item.est_qty = n;
+    // est_qty is only visible/editable through the editor's qty-only UI (the "Custom —
+    // No Sizes / Qty Only" mode); without the flag the quantity prices invisibly.
+    if (!item.qty_only) item.qty_only = true;
+  }
+  let targetSell = null;
+  if (edit && edit.margin_pct != null) {
+    const m = Number(edit.margin_pct);
+    if (!(m > 0 && m < 100)) return { error: 'Margin must be between 0 and 100.' };
+    const cost = safeNum(item.nsa_cost);
+    if (!(cost > 0)) return { error: 'No cost on file for ' + (item.sku || 'that line') + ' — set the sell price directly instead.' };
+    targetSell = Math.round((cost / (1 - m / 100)) * 100) / 100;
+  }
+  if (edit && edit.unit_sell != null) {
+    const v = Number(edit.unit_sell);
+    if (!(v >= 0 && isFinite(v))) return { error: 'That sell price doesn\'t look right.' };
+    targetSell = Math.round(v * 100) / 100;
+  }
+  if (targetSell != null) {
+    // Mirror of the editor's Sell $In onChange: rescale per-size sells to the entered
+    // per-each (cent precision) before setting unit_sell, so upcharge lines stay blended.
+    if (item._sizeSells && item._sizeCosts) {
+      const mk = safeNum(order && order.default_markup) || 1.65;
+      const szQty = Object.values(safeSizes(item)).reduce((a, v) => a + safeNum(v), 0);
+      const pCost = Object.entries(safeSizes(item)).reduce((a, [sz, v]) => a + safeNum(v) * safeNum(item._sizeCosts[sz] != null ? item._sizeCosts[sz] : item.nsa_cost), 0);
+      const avgCost = szQty > 0 ? pCost / szQty : safeNum(item.nsa_cost);
+      const ratio = avgCost > 0 ? targetSell / (avgCost * mk) : 1;
+      const ns = {};
+      Object.entries(item._sizeCosts).forEach(([sz, c]) => { ns[sz] = Math.round(safeNum(c) * mk * ratio * 100) / 100; });
+      item._sizeSells = ns;
+    }
+    changes.push({ label: edit.margin_pct != null && edit.unit_sell == null ? 'Sell (at ' + Number(edit.margin_pct) + '% margin)' : 'Sell price', before: '$' + safeNum(item.unit_sell).toFixed(2), after: '$' + targetSell.toFixed(2) });
+    item.unit_sell = targetSell;
+  }
+  if (!changes.length) return { error: 'Nothing to change — tell me the sizes, quantity, sell price, or margin.' };
+  const next = Object.assign({}, order, { items: items.map((it, x) => x === idx ? item : it), updated_at: new Date().toLocaleString() });
+  return { next, item, changes, notes };
+}
+
+// Guard + apply for deleting a whole line — the exact rules of the editors' rmI (kept in
+// lockstep with rmI in OrderEditor.js / OrderEditorClassic.js; if rmI's guards change,
+// change these too). Guard returns {error} (received/billed/PO'd items) or
+// {frozenJobIds:[...]} — frozen refs are a warning the ConfirmCard shows instead of
+// rmI's window.confirm. Apply returns the next order: tombstone, item dropped, and
+// job/deco-PO item_idx remapped exactly like rmI.
+function assistantRemoveLineGuard(order, idx, isSO) {
+  const item = safeItems(order)[idx];
+  if (!item) return { error: 'That line is no longer on the order.' };
+  if (isSO) {
+    const pos = safePOs(item);
+    if (pos.length > 0) {
+      const hasReceived = pos.some(po => Object.values(po.received || {}).some(v => v > 0));
+      const hasBilled = pos.some(po => Object.values(po.billed || {}).some(v => v > 0));
+      if (hasReceived || hasBilled) return { error: 'Cannot delete — this item has ' + (hasReceived ? 'received' : '') + (hasReceived && hasBilled ? ' and ' : '') + (hasBilled ? 'billed' : '') + ' PO quantities. Remove billing/receiving first.' };
+      return { error: 'Cannot delete — this item has PO(s). Delete the PO(s) first (I can remove a PO line for you), then remove the item.' };
+    }
+  }
+  const frozenJobIds = safeJobs(order).filter(j => (j._released || (j.key || '').startsWith('released_') || j._merged || j.split_from) && (j.items || []).some(gi => gi.item_idx === idx)).map(j => j.id);
+  return { frozenJobIds };
+}
+function assistantRemoveLineApply(order, idx, itemKey) {
+  const item = safeItems(order)[idx];
+  const _ri = ii => ii > idx ? ii - 1 : ii;
+  return Object.assign({}, order, {
+    _deletedItemKeys: (item && itemKey) ? [...safeArr(order._deletedItemKeys), itemKey] : safeArr(order._deletedItemKeys),
+    items: safeItems(order).filter((_, x) => x !== idx),
+    jobs: safeJobs(order).map(j => Object.assign({}, j, { items: (j.items || []).filter(gi => gi.item_idx !== idx).map(gi => Object.assign({}, gi, { item_idx: _ri(gi.item_idx) })) })),
+    deco_pos: safeArr(order.deco_pos).map(dp => Object.assign({}, dp, { item_idxs: (dp.item_idxs || []).filter(ii => ii !== idx).map(_ri) })),
+    updated_at: new Date().toLocaleString(),
+  });
+}
+
+// PO-line removal. Find the target line(s) on one order by PO number and/or SKU (+size),
+// then apply the same transformation the human paths use: size-level → cancel the open
+// units on that size (the full-page PO view's cancel tool); whole line → drop the
+// item's po_line for that PO (the edit-PO modal's Delete PO), stamping the
+// _deletedPoIds session tombstone when no other line still carries the PO. Received or
+// billed units always refuse. Job/SO status needs no explicit recompute — it derives
+// live from po_lines (deriveJobItemStatus), same as after a human Delete PO.
+const _asnPoIdMatch = (poId, ref) => {
+  const norm = s => safeStr(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const a = norm(poId), b = norm(ref);
+  return !!a && !!b && (a === b || a === 'po' + b || 'po' + a === b);
+};
+function assistantFindPoLine(order, { poRef, sku, size }) {
+  const out = [];
+  safeItems(order).forEach((it, itemIdx) => {
+    if (sku) {
+      const s = safeStr(sku).toLowerCase(), have = safeStr(it.sku).toLowerCase();
+      if (!(have === s || (s.length >= 3 && have.includes(s)))) return;
+    }
+    safePOs(it).forEach((pl, plIdx) => {
+      if (poRef && !_asnPoIdMatch(pl.po_id, poRef)) return;
+      if (size && !(safeNum(pl[size]) > 0)) return;
+      out.push({ itemIdx, plIdx, poId: pl.po_id, item: it, pl });
+    });
+  });
+  return out;
+}
+function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
+  const items = safeItems(order);
+  const item = items[itemIdx];
+  const pl = item && safePOs(item)[plIdx];
+  if (!pl) return { error: 'That PO line is no longer there.' };
+  const poId = pl.po_id;
+  const sizeKeys = _poLineSizeKeys(pl);
+  const lockedSizes = sizeKeys.filter(sz => (size ? sz === size : true) && (safeNum((pl.received || {})[sz]) > 0 || safeNum((pl.billed || {})[sz]) > 0));
+  if (lockedSizes.length) return { error: 'Cannot remove — ' + poId + ' already has received/billed units' + (size ? ' for ' + size : '') + ' (' + lockedSizes.join(', ') + '). Handle receiving/billing in the editor first.' };
+  if (pl.status === 'queued' || pl.po_type === 'outside_deco') return { error: poId + ' is ' + (pl.po_type === 'outside_deco' ? 'an outside-decoration PO' : 'batch-queued') + ' — manage it from its own screen, not from chat.' };
+  let nextItems, removedWholePo = false, summary;
+  if (size) {
+    const open = Math.max(0, safeNum(pl[size]) - safeNum((pl.cancelled || {})[size]));
+    if (!(open > 0)) return { error: 'No open ' + size + ' units on ' + poId + ' for that line.' };
+    const cancelled = Object.assign({}, pl.cancelled, { [size]: safeNum((pl.cancelled || {})[size]) + open });
+    const totR = sizeKeys.reduce((a, s2) => a + safeNum((pl.received || {})[s2]), 0);
+    const totOpen = sizeKeys.reduce((a, s2) => a + Math.max(0, safeNum(pl[s2]) - safeNum((pl.received || {})[s2]) - safeNum(cancelled[s2])), 0);
+    const status = totOpen <= 0 && totR > 0 ? 'received' : totR > 0 ? 'partial' : pl.status;
+    const nextPl = Object.assign({}, pl, { cancelled, status });
+    nextItems = items.map((it, x) => x === itemIdx ? Object.assign({}, it, { po_lines: safePOs(it).map((p, pi) => pi === plIdx ? nextPl : p) }) : it);
+    summary = 'Cancelled ' + open + ' open ' + size + ' unit' + (open !== 1 ? 's' : '') + ' on ' + poId;
+  } else {
+    nextItems = items.map((it, x) => x === itemIdx ? Object.assign({}, it, { po_lines: safePOs(it).filter((_, pi) => pi !== plIdx) }) : it);
+    removedWholePo = !nextItems.some(it => safePOs(it).some(p => p.po_id === poId));
+    summary = 'Removed the ' + safeStr(item.sku) + ' line from ' + poId + ' — those sizes go back to open';
+  }
+  // Object.assign, not object spread — a single {...x} in this file breaks the CJS->ESM
+  // transform and wipes every named export from the production build (see NOTE above planSizeCut).
+  const extra = removedWholePo ? { _deletedPoIds: [...new Set([...safeArr(order._deletedPoIds), poId])].filter(Boolean) } : {};
+  const next = Object.assign({}, order, { items: nextItems, updated_at: new Date().toLocaleString() }, extra);
+  return { next, poId, summary, removedWholePo };
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
@@ -1546,6 +1773,8 @@ module.exports = {
   poCommitted, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
+  // Portal Assistant confirmed writes (shared by both editors + App.js previews)
+  assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

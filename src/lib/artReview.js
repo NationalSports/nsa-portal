@@ -102,6 +102,9 @@ export function sendArtBackOnSO(so, { match, artIds, reason, by, at, updatedAt }
     ? {
       ...jj,
       art_status: 'art_requested',
+      // Sending art back means the artist has work to do NOW — a job parked off the workboard with
+      // "Hide from board" must come back, or the revision request is invisible to them (SO-1571).
+      art_hidden: false,
       ...ART_PULLBACK_CLEARS,
       rejections: [...(jj.rejections || []), rejection],
     }

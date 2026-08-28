@@ -39,10 +39,10 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, dedup
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit } from './businessLogic';
+import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, garmentNeedsUnderbase, garmentCost, pickCwAsset, isCommissionRep, planSizeCut, absorbedSizes, poOverCommit, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantRemoveLineApply, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
@@ -288,7 +288,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
     const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
     const _revFamIdx=new Set(_artFamilyIdxs(ji));
-    const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+    const updJobs=safeJobs(o).map((jj,i2)=>_revFamIdx.has(i2)?{...jj,art_status:'art_requested',art_hidden:false,...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
     const updArt2=safeArt(o).map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(a.files),prod_files:markDstsStale(a.prod_files)}:a);
     saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
   };
@@ -375,16 +375,66 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // dead "Convert to SO" button that would spawn a second SO (and double-spend promo/credit funds).
   const linkedSO=isE?(allOrders||[]).find(s=>s.estimate_id===o.id):null;
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[editingRep,setEditingRep]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);const[editingJobName,setEditingJobName]=useState(null);
-  // Portal Assistant → "add a line to the open estimate". The assistant runs at App scope and
-  // cannot reach this editor's local `o` (the sync effect below intentionally ignores external
+  // Portal Assistant → "add a line to the open estimate/order". The assistant runs at App scope
+  // and cannot reach this editor's local `o` (the sync effect below intentionally ignores external
   // item additions), so it hands us a fully-formed, already-priced line via a window event and
-  // we append it here, marking dirty. Estimate editor only; the user reviews before saving.
+  // we append it here, marking dirty; the user reviews before saving. detail.orderId (when
+  // present) must match the open record, and detail.respond (when present) gets a sync ack so
+  // the assistant's ConfirmCard can report honestly.
   React.useEffect(()=>{
-    if(!isE)return;
-    const h=(ev)=>{const line=ev&&ev.detail&&ev.detail.line;if(!line)return;setO(prev=>({...prev,items:[...(prev.items||[]),line],updated_at:new Date().toISOString()}));setDirty(true);};
+    if(!isE&&!isSO)return;
+    const h=(ev)=>{const d=ev&&ev.detail;const line=d&&d.line;if(!line)return;
+      if(d.orderId&&String(d.orderId)!==String(o.id||''))return;
+      setO(prev=>({...prev,items:[...(prev.items||[]),line],updated_at:new Date().toISOString()}));setDirty(true);
+      try{if(typeof d.respond==='function')d.respond({ok:true})}catch(e2){}};
     window.addEventListener('nsa:assistant-add-line',h);
     return ()=>window.removeEventListener('nsa:assistant-add-line',h);
-  },[isE]);
+  },[isE,isSO,o.id]);
+  // Portal Assistant → confirmed write channel. App.js resolves a requested mutation and shows a
+  // ConfirmCard built with the SAME shared businessLogic helpers used here; on user confirm it
+  // dispatches one of these events with a respond() callback, and we apply the change to the LIVE
+  // local `o` and answer synchronously. Estimates stay drafts (dirty — the user reviews and Saves,
+  // like every other estimate edit); sales-order changes persist immediately via onSave, the same
+  // call the editor's own Delete PO button makes. This block must stay byte-identical in
+  // OrderEditor.js and OrderEditorClassic.js (CLAUDE.md).
+  React.useEffect(()=>{
+    if(!isE&&!isSO)return;
+    const mine=(ev)=>!!(ev&&ev.detail)&&String(ev.detail.orderId||'')===String(o.id||'');
+    const answer=(ev,r)=>{try{if(typeof ev.detail.respond==='function')ev.detail.respond(r)}catch(e2){}};
+    const commit=(next,ev,okMsg)=>{
+      setO(next);oRef.current=next;
+      if(isSO){onSave(next);answer(ev,{ok:true,saved:true,message:okMsg+' — saved.'});}
+      else{setDirty(true);answer(ev,{ok:true,saved:false,message:okMsg+' — review the estimate and Save when it looks right.'});}
+    };
+    const findErr=(f)=>f.error==='ambiguous'?'More than one line matches that now — be more specific.':"That line isn't on the order any more.";
+    const hGet=(ev)=>{if(!mine(ev))return;answer(ev,{ok:true,order:oRef.current||o});};
+    const hEdit=(ev)=>{if(!mine(ev))return;const d=ev.detail;const cur=oRef.current||o;
+      const f=assistantFindLine(cur,d.line);
+      if(f.error){answer(ev,{ok:false,error:findErr(f)});return}
+      const r=assistantLineEdit(cur,f.idx,d.edit,{by:cu?.name||''});
+      if(r.error){answer(ev,{ok:false,error:r.error});return}
+      commit(r.next,ev,'Updated '+(f.item.sku||'the line')+(r.notes.length?' ('+r.notes.join('; ')+')':''));
+    };
+    const hRemove=(ev)=>{if(!mine(ev))return;const d=ev.detail;const cur=oRef.current||o;
+      const f=assistantFindLine(cur,d.line);
+      if(f.error){answer(ev,{ok:false,error:findErr(f)});return}
+      const g=assistantRemoveLineGuard(cur,f.idx,isSO);
+      if(g.error){answer(ev,{ok:false,error:g.error});return}
+      commit(assistantRemoveLineApply(cur,f.idx,soItemKey(f.item)),ev,'Removed '+(f.item.sku||'the line'));
+    };
+    const hPoRemove=(ev)=>{if(!mine(ev))return;const d=ev.detail;const cur=oRef.current||o;
+      const matches=assistantFindPoLine(cur,d.target||{});
+      if(matches.length!==1){answer(ev,{ok:false,error:matches.length?'More than one PO line matches — be more specific.':'That PO line is no longer on this order.'});return}
+      const r=assistantRemovePoLine(cur,{itemIdx:matches[0].itemIdx,plIdx:matches[0].plIdx,size:(d.target||{}).size||null});
+      if(r.error){answer(ev,{ok:false,error:r.error});return}
+      commit(r.next,ev,r.summary);
+    };
+    window.addEventListener('nsa:assistant-get-order',hGet);
+    window.addEventListener('nsa:assistant-edit-line',hEdit);
+    window.addEventListener('nsa:assistant-remove-line',hRemove);
+    window.addEventListener('nsa:assistant-po-remove',hPoRemove);
+    return ()=>{window.removeEventListener('nsa:assistant-get-order',hGet);window.removeEventListener('nsa:assistant-edit-line',hEdit);window.removeEventListener('nsa:assistant-remove-line',hRemove);window.removeEventListener('nsa:assistant-po-remove',hPoRemove);};
+  },[o,isE,isSO,onSave,cu]);
   // selJob is stored as a numeric index into the jobs array. The array can re-order
   // when external updates merge in (coach approval, warehouse picks), making the
   // index point at the wrong job or nothing. We capture the selected job's stable
@@ -3532,7 +3582,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // mint a new root id while its child kept the retired parent id. Using the repaired source for
     // every lookup lets the normal slice-ownership pass remove the duplicated garment and makes
     // Merge Back usable again (SO-2106).
-    const _sourceJobs=reparentOrphanSplitJobs(safeJobs(o));
+    // Recover stale positional claims BEFORE any live-deco lookup or identity refresh. A deletion
+    // or two SKU substitutions collapsing into one line can shift released rows onto another
+    // garment; refreshing first launders that wrong garment into the snapshot, splits the real line,
+    // and strands its active art request on the old grouping.
+    const _sourceJobs=reparentOrphanSplitJobs(safeJobs(o).map(j=>(j&&
+      (j._released||j.key?.startsWith('released_')||j._merged||j.split_from))
+      ?remapFrozenJobItemIndexes(j,safeItems(o)):j));
     // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'). Computed up front
     // because it gates BOTH which decorations spawn in-house jobs (itemSigs, below) AND whether a
     // frozen released/merged job is retired. A deco PO whose type matches none of an item's
@@ -4539,9 +4595,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {isSO&&o.webstore_id&&!o.omg_store_id&&onNavWebstore&&<div style={{fontSize:11,color:'#166534'}}>🛒 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavWebstore} title="Open the webstore this batch was pulled from">Webstore</span></div>}
           {/* Player report rebuilt from the CURRENT SO items — swapped items print as what
               we're actually buying, so this is the copy that goes to Silver Screen. */}
-          {/* Two formats off one report (owner 2026-08-18). Keep in sync with the same pair
+          {/* Three formats off one reconciliation source. Keep in sync with the same group
               in OrderEditor.js. */}
-          {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<div style={{fontSize:11,color:'#166534'}}>👥 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf})} title="Print the per-player report using the items as they are on THIS sales order — items swapped for stock/speed show the replacement, marked with what it replaced">Player Report</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,format:'csv'})} title="Download the same report as a CSV — one row per line, ordered by order number, with the ship-to address repeated on every row">⬇ CSV</span></div>}
+          {isSO&&supabase&&(o.webstore_id||omgCodeFromMemo(o.memo))&&<div style={{fontSize:11,color:'#166534'}}>👥 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf})} title="Print the per-player report using the items as they are on THIS sales order — items swapped for stock/speed show the replacement, marked with what it replaced">Player Report</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,format:'product',customer:cust})} title="Download Silver Screen's Domestic fulfillment workbook using active customer quantities and the current items/sizes on this sales order">📋 Silver Screen XLSX</span> · <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>downloadSoPlayerReport({so:o,soItems:safeItems(o),supabase,nf,format:'csv'})} title="Download the same report as a CSV — one row per line, ordered by order number, with the ship-to address repeated on every row">⬇ CSV</span></div>}
           {isE&&linkedSO&&onViewSO&&<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
@@ -4853,7 +4909,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(promoBudget<=0){nf('No promo funds available','error');return}
               // Calculate promo cost per item (retail price + 25% deco markup)
               const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)}})});
-              let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;let footwearSkipped=0;
+              let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
               // Pre-compute original revenue per item so flat shipping can be allocated proportionally,
               // matching how promoTotals.promoShip distributes flat ship across promo items.
               const _origRev=items.map(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);let r=q2*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q2;const dp=dP(d,q2,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q2*2:q2);r+=eq*dp.sell});return r});
@@ -4861,7 +4917,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const _flatShip=o.shipping_type==='flat'?safeNum(o.shipping_value):0;
               items.forEach((it,_ix)=>{
                 const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q){newItems.push(it);return}
-                if(it.is_footwear){footwearSkipped++;newItems.push(it);return}
                 if(remaining<=0){newItems.push(it);return}
                 const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
                 let itemPromoCost=q*promoSell;
@@ -4919,11 +4974,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   sv('promo_amount',promoUsed);
                 }
               }
-              const totalItems=items.filter(it=>!it.is_footwear&&Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
-              const _fwNote=footwearSkipped?' ('+footwearSkipped+' footwear item(s) not promo-eligible)':'';
-              if(fullCount===totalItems){nf('Promo mode enabled — all eligible items set to retail pricing'+_fwNote)}
-              else if(partialItem){nf(fullCount+' item(s) fully covered, 1 partially discounted — customer pays the rest'+_fwNote)}
-              else{nf('Promo applied to '+fullCount+' of '+totalItems+' eligible items — customer pays for rest'+_fwNote)}
+              const totalItems=items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
+              if(fullCount===totalItems){nf('Promo mode enabled — all eligible items set to retail pricing')}
+              else if(partialItem){nf(fullCount+' item(s) fully covered, 1 partially discounted — customer pays the rest')}
+              else{nf('Promo applied to '+fullCount+' of '+totalItems+' eligible items — customer pays for rest')}
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               // Reverse the deduction by deleting any usage tied to this doc (by so_id on an SO, by estimate_id
@@ -5218,7 +5272,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         <option value="">⚠️ Select artwork...</option>
                         <option value="__tbd">🎨 Art TBD</option>
                         <option value="__new_tbd">➕ New Art TBD...</option>
-                        {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
+                        {af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                       </select>
                       <select className="form-select" style={{fontSize:10,padding:'1px 3px',height:24,maxWidth:110,border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:600,background:'white'}} value={d.position||''} onChange={e=>uD(idx,di,'position',e.target.value)} title="Decoration position">{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                     </span>;
@@ -5279,7 +5333,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
-                {o.promo_applied&&!item.is_footwear&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);if(item._sizeSells){uI(idx,'_pre_promo_sizeSells',item._sizeSells);uI(idx,'_sizeSells',undefined)}uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);if(item._pre_promo_sizeSells){uI(idx,'_sizeSells',item._pre_promo_sizeSells);uI(idx,'_pre_promo_sizeSells',undefined)}uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
+                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);if(item._sizeSells){uI(idx,'_pre_promo_sizeSells',item._sizeSells);uI(idx,'_sizeSells',undefined)}uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);if(item._pre_promo_sizeSells){uI(idx,'_sizeSells',item._pre_promo_sizeSells);uI(idx,'_pre_promo_sizeSells',undefined)}uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
                 {o.promo_applied&&!item.is_promo&&safeNum(item._promo_partial_qty)>0&&<span title={'Promo covers '+item._promo_partial_qty+' of '+qty+' units at retail. Sell prices on this line are blended across all '+qty+' units.'} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 {item._promo_partial_qty}/{qty} at retail (blended)</span>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:600}}>Sell: {/* display at cent precision too — $In re-fires onChange with the displayed value on blur, so a quarter-snapped display would re-round the per-size sells right back */}<$In value={item._sizeSells&&szQty>0?Math.round(pRev/szQty*100)/100:item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const mk=o.default_markup||1.65;const avgCost=szQty>0?pCost/szQty:safeNum(item.nsa_cost);/* Scale per-size sells to the entered per-each, rounding to CENTS. Quarter-snapping each size (and the old rQ'd denominator) drifted the blended price away from what was typed — a CSR's $50 saved as $47.25 on upcharge items. */const ratio=avgCost>0?v/(avgCost*mk):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=Math.round(c*mk*ratio*100)/100});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
@@ -5600,7 +5654,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:null})}else if(v==='__new_tbd'){const tbdCount=af.filter(f=>f.name&&f.name.startsWith('ART TBD')).length;const newName='ART TBD '+(tbdCount+1);const newTbd={id:'af'+Date.now(),name:newName,deco_type:'screen_print',status:'waiting_for_art',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',uploaded:new Date().toLocaleDateString()};setO(e=>({...e,art_files:[...(e.art_files||[]),newTbd],items:safeItems(e).map((it,x)=>x===idx?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,art_file_id:newTbd.id}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf('Created '+newName)}else{changeArtFileId(idx,di,v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
-                    <option value="__new_tbd">➕ New Art TBD...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
+                    <option value="__new_tbd">➕ New Art TBD...</option>{af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:null})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:null})}>
@@ -10583,7 +10637,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{width:70,fontSize:12,fontWeight:800,color:colors[di]||'#475569'}}>Design {di+1}</span>
                 <select className="form-select" style={{flex:'1 1 240px',fontSize:12,minWidth:200,borderColor:colors[di]||'#d1d5db'}} value={d.art_file_id||''} onChange={e=>setArt(di,e.target.value||'')}>
                   <option value="">⚠️ Choose art (or assign later)…</option>
-                  {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
+                  {af.filter(f=>f.id!=='__tbd').map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}
                 </select>
                 <select className="form-select" style={{width:140,fontSize:12}} value={d.position||'Front Center'} onChange={e=>setPos(di,e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>fillAll(di)} title="Put every piece on this design">All →</button>
@@ -12313,10 +12367,14 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
           // so the new art must earn a fresh rep approval. The new request supersedes any still-open
           // one — leaving an old request 'in_progress' makes every activeReq lookup show the wrong
           // artist/status ("at most one active request per job").
+          // A new request also un-parks the job. art_hidden survived every other field reset here, so a card
+          // someone hid from the workboard stayed invisible while carrying an OPEN request assigned to an
+          // artist: the rep re-sends art, nothing appears on the board, and the work is silently lost
+          // (SO-1571 JOB-02/-06). Asking for art means the job is active work — it belongs on the board.
           const _wasInProd2=_activeProd(j2job?.prod_status);
           const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
           if(_wasInProd2&&onStopJobClock&&j2job)onStopJobClock(o.id,j2job.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
@@ -13434,10 +13492,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // so the new art must earn a fresh rep approval. The new request supersedes any still-open
           // one — leaving an old request 'in_progress' makes every activeReq lookup show the wrong
           // artist/status ("at most one active request per job").
+          // A new request also un-parks the job. art_hidden survived every other field reset here, so a card
+          // someone hid from the workboard stayed invisible while carrying an OPEN request assigned to an
+          // artist: the rep re-sends art, nothing appears on the board, and the work is silently lost
+          // (SO-1571 JOB-02/-06). Asking for art means the job is active work — it belongs on the board.
           const _wasInProd3=_activeProd(j?.prod_status);
           const sibs3=_artSiblingsInProd(artIds3,j?.id);
           if(_wasInProd3&&onStopJobClock&&j)onStopJobClock(o.id,j.id);// re-hold below — stop any running decorator clock (L10)
-          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
+          let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,art_hidden:false,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,

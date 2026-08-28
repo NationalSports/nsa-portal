@@ -6,7 +6,7 @@
 
 const {
   soFulfillment, isShippedNotInvoiced, isReadyToInvoice, soGoodsValue,
-  quoteAgeDays, quoteColdBucket, numericSizeKeys, shortOnPull, NON_SIZE,
+  quoteAgeDays, quoteColdBucket, quoteInDigest, numericSizeKeys, shortOnPull, NON_SIZE,
 } = require('../lib/opsRecap');
 
 // Minimal SO: one line fully covered, jobs optional.
@@ -152,5 +152,14 @@ describe('quote aging (shared dashboard/digest tiers)', () => {
     expect(quoteColdBucket(13)).toBe('going_cold');
     expect(quoteColdBucket(14)).toBe('stale');
     expect(quoteColdBucket(null)).toBe(null);
+  });
+
+  test('daily digest includes day 30 but removes quotes over 30 days old', () => {
+    expect(quoteInDigest(6)).toBe(false);
+    expect(quoteInDigest(7)).toBe(true);
+    expect(quoteInDigest(30)).toBe(true);
+    expect(quoteInDigest(31)).toBe(false);
+    expect(quoteInDigest(64)).toBe(false);
+    expect(quoteInDigest(null)).toBe(false);
   });
 });

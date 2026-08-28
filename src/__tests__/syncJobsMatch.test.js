@@ -18,7 +18,51 @@ import {
   splitSliceOwnedKeys,
   splitFamilyMembers,
   pruneStaleSliceRows,
+  remapFrozenJobItemIndexes,
 } from '../lib/syncJobsMatch';
+
+describe('remapFrozenJobItemIndexes', () => {
+  const live = [
+    { sku: 'A', color: 'Royal' },
+    { sku: 'TM1LD001-Black', color: 'Black' },
+    { sku: 'BG225-GustyGreyHeather', color: 'Gusty Grey Heather' },
+    { sku: 'LK864-White', color: 'White' },
+  ];
+
+  test('SO-2199: restores released rows shifted onto the wrong garments', () => {
+    const request = { id: 'AR-2199', status: 'requested', artist: 'mo' };
+    const job = { id: 'JOB-2199-02', key: 'released_embroidery_JOB-2199-02',
+      art_status: 'art_requested', art_requests: [request], items: [
+      { item_idx: 2, sku: 'TM1LD001-Black', color: 'Black', deco_idx: 0, units: 2 },
+      { item_idx: 4, sku: 'LK864-White', color: 'White', deco_idx: 0, units: 1 },
+    ] };
+    const healed = remapFrozenJobItemIndexes(job, live);
+    expect(healed.items.map((gi) => gi.item_idx)).toEqual([1, 3]);
+    expect(healed.items.map((gi) => gi.units)).toEqual([2, 1]);
+    expect(healed.key).toBe('released_embroidery_JOB-2199-02');
+    expect(healed.art_status).toBe('art_requested');
+    expect(healed.art_requests).toEqual([request]);
+  });
+
+  test('keeps an already-correct positional claim unchanged', () => {
+    const job = { items: [{ item_idx: 1, sku: 'TM1LD001-Black', color: 'Black' }] };
+    expect(remapFrozenJobItemIndexes(job, live)).toBe(job);
+  });
+
+  test('does not guess between duplicate sku/color lines', () => {
+    const duplicated = [...live, { sku: 'LK864-White', color: 'White' }];
+    const job = { items: [{ item_idx: 9, sku: 'LK864-White', color: 'White' }] };
+    expect(remapFrozenJobItemIndexes(job, duplicated)).toBe(job);
+    expect(job.items[0].item_idx).toBe(9);
+  });
+
+  test('does not mutate the saved job snapshot', () => {
+    const job = { items: [{ item_idx: 2, sku: 'TM1LD001-Black', color: 'Black' }] };
+    const healed = remapFrozenJobItemIndexes(job, live);
+    expect(healed).not.toBe(job);
+    expect(job.items[0].item_idx).toBe(2);
+  });
+});
 
 const pantsRejection = {
   reason: 'Remove logo.... pants will be blank',

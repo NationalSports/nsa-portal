@@ -18,8 +18,13 @@ import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCl
 import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import QuickMockBuilder from './QuickMockBuilder';
+import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
+import { attachAdidasTagSkus } from './lib/adidasSsReport';
+import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
+const orderNetCollected = (o) => Math.max(0, originalOrderTotal(o) - (Number(o && o.refunded_amt) || 0));
 
 // Create a ShipStation label (base64 PDF) for one ship-to-home webstore order.
 async function createWebstoreLabel(order, items, store, weightByPid = {}, imageByPid = {}) {
@@ -309,18 +314,28 @@ const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.pro
 // exist in this file (loadStores stats, gatherAll, OrdersTab's `listable`, …) with
 // slightly different exclusion sets — use this helper in new code and fold the old
 // copies in as they're touched.
-const isLiveWebstoreOrder = (o) => o && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded';
-
 // Render the calendar day a batch cutoff instant refers to. The cutoff is stored as
 // the creating rep's LOCAL end-of-day; rendering that instant directly shows the
 // NEXT day for viewers east of the creator. Nudging back 12h lands mid-day of the
 // intended date for any viewer within ±11h of the creator's timezone.
 const batchCutoffDay = (c) => new Date(new Date(c).getTime() - 12 * 3600 * 1000).toLocaleDateString();
 
+function reportSyncBanner(audit) {
+  if (!audit) return '';
+  const rows = [];
+  (audit.substitutions || []).forEach((s) => rows.push(`↺ ${esc(s.soId)} · ${esc(s.from)} → <b>${esc(s.to)}</b>${s.verify ? ' <i>(best match — verify)</i>' : ''}`));
+  (audit.sizeChanges || []).forEach((s) => rows.push(`↺ ${esc(s.soId)} · ${esc(s.sku)} size ${esc(s.from)} → <b>${esc(s.to)}</b>${s.verify ? ' <i>(verify player assignment)</i>' : ''}`));
+  (audit.unmatched || []).forEach((u) => rows.push(`⚠ ${esc(u.soId)} · ${esc(u.item)} is active in the store but not matched to the SO`));
+  (audit.missingSos || []).forEach((soId) => rows.push(`⚠ ${esc(soId)} could not be loaded`));
+  (audit.wrongStoreLinks || []).forEach((x) => rows.push(`⚠ ${esc(x.soId)} belongs to another store — fix the batch link before fulfillment`));
+  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} SO units vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  return rows.length ? `<div class="syncwarn"><b>Sales-order reconciliation:</b><br>${rows.join('<br>')}</div>` : '';
+}
+
 // ─── Per-player roll-up ──────────────────────────────────────────────
 // One section per player: exactly what they're getting across the whole store,
 // plus the roster members who haven't ordered yet.
-function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
+function buildPlayerReport(store, lines, orderById, roster, stockByPid, audit) {
   const players = {};
   lines.forEach((i) => {
     const o = orderById[i.order_id] || {};
@@ -329,7 +344,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
-    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', adidasTagSku: i._adidasTagSku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '', wasSku: i._wasSku || '', wasSize: i._wasSize || '', verify: !!i._verify, unmatched: !!i._unmatched });
     // Who placed it + where it goes — the "more info" for each player block.
     if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
@@ -341,7 +356,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const block = (p) => {
-    const rows = p.items.map((it) => `<tr><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    const rows = p.items.map((it) => `<tr${it.unmatched ? ' class="warnrow"' : ''}><td>${esc(it.name)}${it.sku ? `<div class="sub">${it.adidasTagSku ? `<b>S&amp;S:</b> ${esc(it.sku)} · <b>Adidas tag:</b> ${esc(it.adidasTagSku)}` : esc(it.sku)}</div>` : ''}${it.wasSku ? `<div class="was">↺ was SKU ${esc(it.wasSku)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.wasSize ? `<div class="was">↺ was size ${esc(it.wasSize)}${it.verify ? ' — verify' : ''}</div>` : ''}${it.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
     const contacts = Object.values(p.orders).map((c) => {
       const sh = shipLine(c.ship);
       return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
@@ -360,15 +375,16 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     table.grid{width:100%;border-collapse:collapse;font-size:13px}
     .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9}.grid td.c{text-align:center}.grid td.b{font-weight:800}
-    .sub{font-size:11px;color:#94a3b8}
+    .sub{font-size:11px;color:#94a3b8}.was{font-size:11px;color:#b45309;font-weight:700}.warnrow td{background:#fffbeb}
     .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
     .contact{font-size:12px;color:#475569;margin:0 0 8px;line-height:1.5}.contact a{color:#2563eb;text-decoration:none}.contact .ship{color:#64748b;margin-top:2px}
-    .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}
+    .warn,.syncwarn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}.syncwarn{margin:12px 0}
   </style></head><body>
     <h1>Player Report</h1>
     <div class="meta">${esc(store.name)} · ${new Date().toLocaleString()}</div>
     <div class="chips">${chip(list.length, 'Players')}${chip(totalUnits, 'Items')}${(roster && roster.length) ? chip(notOrdered.length, 'Not ordered') : ''}</div>
+    ${reportSyncBanner(audit)}
     ${list.map(block).join('') || '<div class="meta">No orders yet.</div>'}
     ${notOrdered.length ? `<h3>Roster — not ordered yet</h3><div class="warn">${notOrdered.map((r) => esc(r.player_name || '') + (r.player_number ? ' #' + esc(String(r.player_number)) : '')).join(' · ')}</div>` : ''}
   </body></html>`);
@@ -641,18 +657,22 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
 // One row per product (effective SKU): image, name, SKU, color, and how many
 // of each size were ordered. The concise "what do we actually need to make"
 // view — no buyers, no stock math.
-function buildProductReport(store, label, lines, metaByPid, stockByPid) {
+function buildProductReport(store, label, lines, metaByPid, stockByPid, audit) {
   const groups = {};
   lines.forEach((i) => {
     const sku = i._effSku || i.sku || '';
-    const key = (i.product_id || '') + '|' + sku;
+    const key = (i.product_id || '') + '|' + sku + '|' + (i.color || '');
     const m = (i.product_id && metaByPid[i.product_id]) || {};
     const st = (i.product_id && stockByPid[i.product_id]) || {};
-    const g = groups[key] || (groups[key] = { name: m.name || _itemName(i, stockByPid), sku, color: m.color || st.color || '', image: m.image || st.image_front_url || '', sizes: {}, total: 0 });
+    const g = groups[key] || (groups[key] = { name: i.name || m.name || _itemName(i, stockByPid), sku, adidasTagSku: i._adidasTagSku || '', color: i.color || m.color || st.color || '', image: i._reportImage || i.image_url || m.image || st.image_front_url || '', sizes: {}, total: 0, wasSkus: new Set(), wasSizes: new Set(), verify: false, unmatched: false });
     const size = i.size || 'OS';
     const qty = i.qty || 1;
     g.sizes[size] = (g.sizes[size] || 0) + qty;
     g.total += qty;
+    if (i._wasSku) g.wasSkus.add(i._wasSku);
+    if (i._wasSize) g.wasSizes.add(i._wasSize);
+    g.verify = g.verify || !!i._verify;
+    g.unmatched = g.unmatched || !!i._unmatched;
   });
   const list = Object.values(groups).sort((a, b) => a.name.localeCompare(b.name) || a.sku.localeCompare(b.sku));
   const totalUnits = list.reduce((a, g) => a + g.total, 0);
@@ -662,7 +682,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid) {
       .map((sz) => `<span class="sz"><b>${esc(sz)}</b> × ${g.sizes[sz]}</span>`).join('');
     return `<tr>
       <td class="img">${g.image ? `<img src="${esc(g.image)}" alt="">` : '<div class="noimg">—</div>'}</td>
-      <td><div class="nm">${esc(g.name)}</div>${g.sku ? `<div class="sub">${esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}</td>
+      <td><div class="nm">${esc(g.name)}</div>${g.sku ? `<div class="sub">${g.adidasTagSku ? `<b>S&amp;S:</b> ${esc(g.sku)} · <b>Adidas tag:</b> ${esc(g.adidasTagSku)}` : esc(g.sku)}</div>` : ''}${g.color ? `<div class="sub">${esc(g.color)}</div>` : ''}${g.wasSkus.size ? `<div class="was">↺ was SKU ${[...g.wasSkus].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.wasSizes.size ? `<div class="was">↺ includes size change from ${[...g.wasSizes].map(esc).join(', ')}${g.verify ? ' — verify' : ''}</div>` : ''}${g.unmatched ? '<div class="was">⚠ not matched to SO — verify</div>' : ''}</td>
       <td class="szs">${sizes}</td>
       <td class="c b">${g.total}</td>
     </tr>`;
@@ -679,7 +699,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid) {
     .grid td.c{text-align:center}.grid td.b{font-weight:800;font-size:15px}
     td.img{width:56px}td.img img{width:48px;height:48px;object-fit:contain;border:1px solid #e2e8f0;border-radius:8px;background:#fff}
     .noimg{width:48px;height:48px;border:1px dashed #e2e8f0;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#cbd5e1}
-    .nm{font-weight:700}.sub{font-size:11px;color:#94a3b8}
+    .nm{font-weight:700}.sub{font-size:11px;color:#94a3b8}.was{font-size:11px;color:#b45309;font-weight:700}.syncwarn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7;margin:12px 0}
     td.szs{line-height:2}
     .sz{display:inline-block;background:#f1f5f9;border-radius:6px;padding:2px 8px;margin-right:6px;font-size:12px;white-space:nowrap}
     .sz b{font-weight:800}
@@ -688,6 +708,7 @@ function buildProductReport(store, label, lines, metaByPid, stockByPid) {
     <h1>Product Report</h1>
     <div class="meta">${esc(store.name)} · ${esc(label)} · ${new Date().toLocaleString()}</div>
     <div class="chips">${chip(list.length, 'Products')}${chip(totalUnits, 'Units ordered')}</div>
+    ${reportSyncBanner(audit)}
     ${list.length ? `<table class="grid"><thead><tr><th></th><th>Item</th><th>Sizes ordered</th><th class="c">Total</th></tr></thead><tbody>${list.map(row).join('')}</tbody></table>` : '<div class="meta">No orders yet.</div>'}
   </body></html>`);
 }
@@ -708,7 +729,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
       imageUrl: imageByPid[i.product_id] || undefined,
       options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
     })),
-    amountPaid: order.payment_mode === 'paid' ? (Number(order.total) || 0) : 0,
+    amountPaid: order.payment_mode === 'paid' ? orderNetCollected(order) : 0,
     carrierCode: null, serviceCode: null, packageCode: null, confirmation: 'none',
     advancedOptions: {
       source: 'NSA Webstore', customField1: store.name, customField2: order.so_id || '',
@@ -1487,12 +1508,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // processed (every order batched onto a Sales Order) from one still waiting —
       // and so a processed store can link straight to the SO(s) it was batched onto
       // instead of showing a storefront URL nobody needs once the store is worked.
-      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, status, refunded_amt, so_id');
+      const { data: aggOrders } = await supabase.from('webstore_orders').select('store_id, total, original_total, status, refunded_amt, so_id');
       const stats = {};
       const soSets = {};
       (aggOrders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled').forEach((o) => {
         if (!stats[o.store_id]) { stats[o.store_id] = { revenue: 0, orders: 0, batched: 0, soIds: [] }; soSets[o.store_id] = new Set(); }
-        stats[o.store_id].revenue += Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+        stats[o.store_id].revenue += orderNetCollected(o);
         stats[o.store_id].orders += 1;
         if (o.so_id) { stats[o.store_id].batched += 1; soSets[o.store_id].add(o.so_id); }
       });
@@ -3142,61 +3163,36 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { flash('Email failed: ' + e.message); return { error: true }; }
   }, [sel, flash, loadDetail]);
 
-  // Edit an order's line items (size/qty/remove), then recompute its totals.
+  // Edit an order's line items (size/qty/remove) transactionally. The RPC keeps
+  // removed rows as qty=0/cancelled, records the before/after audit, and returns
+  // any cancelled units still waiting to be tied to a refund.
   const saveOrderEdits = useCallback(async (order, edited) => {
-    for (const it of edited) {
-      if (it._removed) await supabase.from('webstore_order_items').delete().eq('id', it.id);
-      else await supabase.from('webstore_order_items').update({ size: it.size || null, qty: Number(it.qty) || 1 }).eq('id', it.id);
+    const edits = (edited || []).map((it) => ({
+      id: it.id,
+      size: it.size || null,
+      qty: Math.max(1, Number(it.qty) || 1),
+      removed: !!it._removed,
+    }));
+    const { data, error } = await supabase.rpc('apply_webstore_order_item_edits', {
+      p_order_id: order.id,
+      p_edits: edits,
+    });
+    if (error || !data || data.ok === false) {
+      const msg = (error && error.message) || (data && data.error) || 'unknown error';
+      flash('Save failed: ' + msg);
+      return { error: msg };
     }
-    // Recompute over ALL of the order's items, not just the edited (component) rows.
-    // A bundle's price lives on its parent row (components are $0) and the parent is
-    // never in the editable set — summing only `edited` would drop every package's
-    // value and zero out the order's revenue and the club's fundraising payout.
-    const editById = {}; edited.forEach((e) => { editById[e.id] = e; });
-    const effective = (detail?.orderItems || []).filter((i) => i.order_id === order.id).map((i) => {
-      const e = editById[i.id];
-      if (!e) return i;                 // parents / untouched rows keep their stored price
-      if (e._removed) return null;
-      return { ...i, size: e.size, qty: Number(e.qty) || 1 };
-    }).filter(Boolean);
-    const round2 = (n) => Math.round(n * 100) / 100;
-    const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
-    const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
-    // Processing fee and sales tax are both levied on the product subtotal, so they scale
-    // with it. Re-derive each from THIS order's own stored ratio (fee/subtotal, tax/subtotal)
-    // and re-apply to the new subtotal: a size-only edit (subtotal unchanged) leaves the total
-    // exactly as charged, while a qty/removal edit scales the fee + tax to match. Dropping
-    // them — the old behavior — pushed the DB total below what the card actually paid and
-    // broke the refund cap (which reads `total`). Mirrors webstore-checkout's preTax + tax.
-    const oldSub = Number(order.subtotal) || 0;
-    const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * subtotal : (Number(order.processing_fee) || 0));
-    const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * subtotal : (Number(order.tax) || 0));
-    // The coupon discount is a percentage of the merchandise pot (subtotal + fundraise,
-    // per webstore-checkout couponDiscount), so it must scale with that pot when items are
-    // edited. Subtracting the ORIGINAL absolute dollars over-discounted a shrunken order —
-    // a 50%-off order edited from 2 items to 1 collapsed the goods total toward $0 while
-    // the card charge was unchanged, corrupting `total` and the refund cap that reads it.
-    // Re-derive from THIS order's own stored ratio, same approach as processing/tax above,
-    // and persist the scaled discount so the accounting ledger (sum of discount_amt)
-    // reconciles. (A coupon that also covered shipping carries a small shipping-discount
-    // component that doesn't scale with items; we don't reload the coupon here, so that
-    // residual is approximated — immaterial next to the original full-dollar bug.)
-    // NOTE: OrderManageModal's New-total preview + refund auto-suggest use the same scale.
-    const oldPot = oldSub + (Number(order.fundraise_amt) || 0);
-    const discount = round2(oldPot > 0 ? (Number(order.discount_amt) || 0) / oldPot * (subtotal + fundraise) : (Number(order.discount_amt) || 0));
-    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - discount));
-    const total = round2(preTax + tax);
-    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total, discount_amt: discount }).eq('id', order.id);
-    if (error) { flash('Save failed: ' + error.message); return { error }; }
-    flash('Order updated'); loadDetail(sel); return { ok: true };
-  }, [sel, detail, flash, loadDetail]);
+    flash('Order updated');
+    await loadDetail(sel);
+    return { ok: true, ...data };
+  }, [sel, flash, loadDetail]);
 
   // Refund: Stripe for card orders, recorded credit for team-tab orders.
   // Guarded against double-processing: an in-flight latch blocks double-clicks, and the
   // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
   // state) with an over-refund cap before any money moves.
   const refundingRef = useRef(false);
-  const refundOrder = useCallback(async (order, amount, customerMessage) => {
+  const refundOrder = useCallback(async (order, amount, customerMessage, itemAllocations = []) => {
     if (refundingRef.current) return { error: 'A refund is already in progress' };
     refundingRef.current = true;
     try {
@@ -3212,7 +3208,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       try {
         const res = await authFetch('/.netlify/functions/stripe-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null }),
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
         });
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
@@ -3265,14 +3261,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const gatherBatch = useCallback(async () => {
     // !backorder_of: bagging's child orders re-produce nothing — their goods
     // arrive via receiving; batching one would produce the shorted qty twice.
-    const open = (detail?.orders || []).filter((o) => !o.so_id && !o.backorder_of && o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const open = (detail?.orders || []).filter((o) => !o.so_id && !o.backorder_of && isLiveWebstoreOrder(o));
     const openIds = new Set(open.map((o) => o.id));
+    const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
     const skuMap = sizeSkuMapOf(detail?.catalog);
-    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), skuMap);
+    const lines = annotateEffSkus(activeWebstoreLines((detail?.orderItems || []).filter((i) => openIds.has(i.order_id)), orderById), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
     const stockBySku = await fetchOverrideSkuStock(lines);
-    const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
     return { open, openIds, lines, stockByPid, stockBySku, orderById };
   }, [detail]);
 
@@ -3287,23 +3283,49 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // All valid (non-cancelled, non-pending) orders — the whole-store picture for
   // the player + stock reports (not just the unbatched ones the FAFO report uses).
   const gatherAll = useCallback(async () => {
-    const valid = (detail?.orders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
+    const valid = (detail?.orders || []).filter(isLiveWebstoreOrder);
     const ids = new Set(valid.map((o) => o.id));
+    const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
     const skuMap = sizeSkuMapOf(detail?.catalog);
-    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent), skuMap);
+    const sourceLines = annotateEffSkus(activeWebstoreLines((detail?.orderItems || []).filter((i) => ids.has(i.order_id)), orderById), skuMap);
+    const soIds = [...new Set(valid.map((o) => o.so_id).filter(Boolean))];
+    const soItemsBySo = {};
+    const soMetaBySo = {};
+    soIds.forEach((id) => { soItemsBySo[id] = []; });
+    for (let i = 0; i < soIds.length; i += 100) {
+      const { data, error } = await supabase.from('so_items').select('so_id,sku,name,custom_desc,product_id,color,sizes').in('so_id', soIds.slice(i, i + 100));
+      if (error) throw new Error('Could not reconcile Sales Order items: ' + error.message);
+      (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
+    }
+    for (let i = 0; i < soIds.length; i += 100) {
+      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id').in('id', soIds.slice(i, i + 100));
+      if (error) throw new Error('Could not validate Sales Order links: ' + error.message);
+      (data || []).forEach((so) => { soMetaBySo[so.id] = so; });
+    }
+    let { lines, audit } = resolveWebstoreReportLines({ orders: valid, lines: sourceLines, soItemsBySo, soMetaBySo });
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
-    const stockBySku = await fetchOverrideSkuStock(lines);
-    const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
-    return { valid, lines, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
+    // Replacement lines may not exist in this store's original catalog. Hydrate
+    // their current master-product image/name by the SO SKU, never by the stale
+    // checkout product id.
+    const reportSkus = [...new Set(lines.filter((l) => l._wasSku && l._effSku).map((l) => l._effSku))];
+    const productBySku = {};
+    for (let i = 0; i < reportSkus.length; i += 100) {
+      const { data } = await supabase.from('products').select('id,sku,name,color,image_front_url').in('sku', reportSkus.slice(i, i + 100));
+      (data || []).forEach((p) => { if (p.sku && !productBySku[p.sku]) productBySku[p.sku] = p; });
+    }
+    lines = lines.map((l) => { const p = productBySku[l._effSku]; return p ? { ...l, product_id: l.product_id || p.id, name: l.name || p.name, color: l.color || p.color, _reportImage: p.image_front_url || '' } : l; });
+    lines = await attachAdidasTagSkus(supabase, lines);
+    const stockBySku = await fetchSkuStock(lines.filter((l) => l._effSku && (l._wasSku || !l.product_id || !stockByPid[l.product_id])).map((l) => l._effSku));
+    return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
   // Per-player roll-up (printable): every player and exactly what they ordered.
   const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, orderById, roster, stockByPid } = await gatherAll();
+    const { valid, lines, audit, orderById, roster, stockByPid } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildPlayerReport(sel, lines, orderById, roster, stockByPid);
+    buildPlayerReport(sel, lines, orderById, roster, stockByPid, audit);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
@@ -3315,21 +3337,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku);
   }, [sel, detail, gatherAll, flash]);
 
-  // Product roll-up (printable): every product ordered — image, SKU, color, and
-  // per-size quantities. Images/colors come from the store catalog (custom mockup
-  // first, then the master product photo / storefront snapshot).
+  // Silver Screen domestic fulfillment workbook. It uses the same active-order +
+  // current-SO reconciliation as every other report, then refuses to download if
+  // any required destination/product field is missing or still needs verification.
   const productReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, stockByPid } = await gatherAll();
+    const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    const metaByPid = {};
-    (detail.catalog || []).forEach((c) => {
-      if (!c.product_id) return;
-      const s = detail.stockByWp?.[c.id] || {};
-      metaByPid[c.product_id] = { image: c.image_url || c.image_front_url || s.image_front_url || '', color: s.color || '', name: c.display_name || s.name || '' };
-    });
-    buildProductReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, metaByPid, stockByPid);
-  }, [sel, detail, gatherAll, flash]);
+    try {
+      const result = downloadSilverScreenFulfillment({ store: sel, lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit });
+      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+    } catch (e) { flash(e?.message || 'Silver Screen fulfillment export failed', 'error'); }
+  }, [sel, detail, gatherAll, flash, cust]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
   // 'orders' (every line item with order + payment detail).
@@ -3339,7 +3358,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
-      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
+      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Adidas Tag SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
       // Sort by order number (every line of an order contiguous, oldest order first) —
       // same rule the Orders CSV got in #1991; without it the fetch order is arbitrary.
       const sorted = [...lines].sort((a, b) => {
@@ -3350,7 +3369,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           || String(a.player_name || '').localeCompare(String(b.player_name || ''))
           || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid));
       });
-      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
+      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i._adidasTagSku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
@@ -3390,7 +3409,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const openIds = new Set(open.map((o) => o.id));
     const { rows: openItems, error: fiErr } = await fetchOrderItemRows(supabase, [...openIds]);
     if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
-    const lines = annotateEffSkus(openItems.filter((i) => !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
+    const openById = {}; open.forEach((o) => { openById[o.id] = o; });
+    const lines = annotateEffSkus(activeWebstoreLines(openItems, openById), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
@@ -3754,7 +3774,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // collected via Stripe; only the team-tab total should be invoiced to the club.
     const cardOrders = bOrders.filter((o) => o.payment_mode === 'paid');
     const tabOrders = bOrders.filter((o) => o.payment_mode !== 'paid');
-    const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
+    const netOf = (o) => orderNetCollected(o);
     const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
     const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
     // Team-tab extras = the tab orders' tax/shipping/processing beyond their
@@ -6243,7 +6263,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // and sales match reality (and the per-order tabs, which already filter them).
   const validOrders = orders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
   const validOrderIds = new Set(validOrders.map((o) => o.id));
-  const totalSales = validOrders.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const totalSales = validOrders.reduce((a, o) => a + orderNetCollected(o), 0);
   const fundraiseTotal = validOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const totalItems = orderItems.filter((i) => !i.is_bundle_parent && validOrderIds.has(i.order_id)).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
@@ -10134,7 +10154,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
 // future AI-brief and customer self-serve flows can drive the same engine.
 // Who may edit the shared/curated "TEAM" favorites that show first for everyone. Personal
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
-const FAV_CURATORS = ['smpeterson327@gmail.com'];
+const FAV_CURATORS = ['steve@nationalsportsapparel.com'];
 
 // ── Live vendor-catalog search (shared by the popup modal AND the picker's main search bar).
 // Searches SanMar/District, S&S, Richardson and Momentec APIs for any style (even ones not in
@@ -12473,7 +12493,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const catByPid = {}; (catalog || []).forEach((c) => { if (c.product_id) catByPid[c.product_id] = c; });
   const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
-  const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const revenue = orders.reduce((a, o) => a + orderNetCollected(o), 0);
   const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
   // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
   // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
@@ -12516,14 +12536,14 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
     shipCharged: sumF('shipping_fee'),
     processing: sumF('processing_fee'),
     taxColl: sumF('tax'),
-    grossColl: sumF('total'),          // what every live order was billed
+    grossColl: orders.reduce((a, o) => a + originalOrderTotal(o), 0), // immutable amount billed
     refunds: sumF('refunded_amt'),
     ccFees: sumF('cc_fee'),
     labelCost: sumF('label_cost'),
   };
   acct.netColl = acct.grossColl - acct.refunds;
   acct.netAfterFees = acct.netColl - acct.ccFees - acct.labelCost;
-  const cardColl = paid.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const cardColl = paid.reduce((a, o) => a + originalOrderTotal(o), 0);
   const tabColl = acct.grossColl - cardColl;
 
   // Scope line items to LIVE orders only — orderItems carries items for every order
@@ -12889,7 +12909,12 @@ function mergeStoreTracking(sos, orders, itemsByOrder, products) {
   (orders || []).forEach((w) => { if (w.so_id && isLiveWebstoreOrder(w)) (bySo[w.so_id] = bySo[w.so_id] || []).push(w); });
   const merged = {};
   (sos || []).forEach((so) => {
-    const bOrders = (bySo[so.id] || []).map((w) => ({ ...w, items: itemsByOrder[w.id] || [] }));
+    const linked = bySo[so.id] || [];
+    const orderById = {}; linked.forEach((w) => { orderById[w.id] = w; });
+    const active = activeWebstoreLines(linked.flatMap((w) => itemsByOrder[w.id] || []), orderById);
+    const mapped = mapLinesToSoItems(active, so.items || []).lines.map(materializeMappedLine);
+    const mappedByOrder = {}; mapped.forEach((i) => { (mappedByOrder[i.order_id] = mappedByOrder[i.order_id] || []).push(i); });
+    const bOrders = linked.map((w) => ({ ...w, items: mappedByOrder[w.id] || [] }));
     if (bOrders.length) Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: so.items }, products: products || [], includeIF: true }));
   });
   return merged;
@@ -12955,9 +12980,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
               return (
                 <tr key={i.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={td}>{idx === 0 ? <span style={{ fontWeight: 600 }}>{w.buyer_name || w.buyer_email || '—'}</span> : ''}</td>
-                  <td style={td}>{i.name || i.sku || '—'}</td>
+                  <td style={td}>{t.soName || i.name || i.sku || '—'}</td>
                   <td style={td}>{t.sku ? <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px', whiteSpace: 'nowrap' }} title="SKU from the linked Sales Order">{t.sku}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
-                  <td style={td}>{i.size || '—'}</td>
+                  <td style={td}>{t.size || i.size || '—'}</td>
                   <td style={ctd}>{num(t.onHand)}</td>
                   <td style={ctd}>{num(t.ordered, true)}{t.onIf > 0 && <span style={{ color: '#0369a1', fontWeight: 700, fontSize: 11 }}> · {t.onIf} IF</span>}</td>
                   <td style={ctd}>{num(t.billed)}</td>
@@ -12977,8 +13002,15 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   // show the item number production actually sourced.
   const batchGroups = (soId) => {
     const skuMap = sizeSkuMapOf(catalog);
-    const linked = orders.filter((o) => o.so_id === soId);
-    return linked.map((o) => ({ order: o, items: annotateEffSkus(orderItems.filter((i) => i.order_id === o.id), skuMap) }));
+    const linked = orders.filter((o) => o.so_id === soId && isLiveWebstoreOrder(o));
+    const orderById = {}; linked.forEach((o) => { orderById[o.id] = o; });
+    const active = annotateEffSkus(activeWebstoreLines(orderItems.filter((i) => orderById[i.order_id]), orderById), skuMap);
+    const so = (sos || []).find((o) => o.id === soId);
+    const current = so ? mapLinesToSoItems(active, so.items || []).lines.map(materializeMappedLine) : active;
+    const partsById = {}; current.forEach((i) => { (partsById[i.id] = partsById[i.id] || []).push(i); });
+    Object.values(partsById).forEach((parts) => { let shipped = Number(parts[0]?.shipped_qty) || 0; const sourceShipped = shipped; parts.forEach((p) => { p._sourceShippedQty = sourceShipped; p.shipped_qty = Math.min(Number(p.qty) || 0, shipped); shipped = Math.max(0, shipped - p.shipped_qty); }); });
+    const byOrder = {}; current.forEach((i) => { (byOrder[i.order_id] = byOrder[i.order_id] || []).push(i); });
+    return linked.map((o) => ({ order: o, items: byOrder[o.id] || [] }));
   };
   const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
   const homeGroups = (soId) => batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
@@ -13031,7 +13063,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       const who = o.buyer_name || o.buyer_email || o.id;
       const lines = g.items.filter((i) => !i.is_bundle_parent);
       // Units still to ship per line = ordered − already shipped − short-now.
-      const plan = lines.map((i) => { const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0); return { item: i, qty: Math.max(0, remaining - (Number(i.missing_qty) || 0)) }; }).filter((x) => x.qty > 0);
+      const plan = lines.map((i) => {
+        const remaining = (Number(i.qty) || 0) - (Number(i.shipped_qty) || 0);
+        const alreadyMoved = /^(backordered|refunded)$/i.test(i.short_status || '');
+        return { item: i, qty: Math.max(0, remaining - (alreadyMoved ? 0 : (Number(i.missing_qty) || 0))) };
+      }).filter((x) => x.qty > 0);
       if (!plan.length) { held++; continue; }
       const addrErr = validateShipAddress(o.ship_address);
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
@@ -13039,8 +13075,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       try {
         const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
         if (labelData) labels.push(labelData);
-        for (const x of plan) { const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id); } catch {} i.shipped_qty = sq; if (done) i.line_status = 'shipped'; }
-        const allShipped = lines.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
+        const shippedById = {}; const targetById = {}; const lineById = {};
+        lines.forEach((i) => { targetById[i.id] = (targetById[i.id] || 0) + (Number(i.qty) || 0); lineById[i.id] = i; });
+        plan.forEach((x) => { shippedById[x.item.id] = (shippedById[x.item.id] || 0) + x.qty; });
+        for (const [id, add] of Object.entries(shippedById)) { const i = lineById[id]; const sq = (Number(i._sourceShippedQty) || 0) + add; const done = sq >= (targetById[id] || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', id); } catch {} lines.filter((l) => l.id === id).forEach((l) => { l.shipped_qty = sq; l._sourceShippedQty = sq; if (done) l.line_status = 'shipped'; }); }
+        const allShipped = Object.keys(targetById).every((id) => (Number(lineById[id].shipped_qty) || 0) >= targetById[id]);
         try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
       } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
@@ -13502,7 +13541,11 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     const lineStatus = (real.length ? real : items).reduce((acc, i) => ((SRANK[i.line_status] ?? 0) < (SRANK[acc] ?? 0) ? i.line_status : acc), (real[0] || items[0] || {}).line_status || 'pending');
     return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus };
   };
-  const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
+  // Match the actual batch/report eligibility rule exactly. Refunded/cancelled
+  // orders used to inflate this badge (live: SJM Volleyball showed 6 when only
+  // 2 paid orders could be batched), even though gatherBatch/onBatch correctly
+  // refused those rows after the button was clicked.
+  const unbatchedCount = orders.filter((o) => !o.so_id && !o.backorder_of && isLiveWebstoreOrder(o)).length;
   // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
   // cancelled orders aren't real orders; keep them out of the list so they don't show
   // as a stray "Paid" duplicate of the shopper's actual order.
@@ -13563,8 +13606,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </button>
         )}
         {onProductReport && (
-          <button className="btn btn-secondary" onClick={onProductReport} title="Every product ordered — image, SKU, color, and size quantities">
-            🏷️ Product report
+          <button className="btn btn-secondary" onClick={onProductReport} title="Download the Silver Screen Domestic fulfillment template using active orders and current sales-order items">
+            🏷️ Silver Screen XLSX
           </button>
         )}
         {onExportCsv && (
@@ -13683,9 +13726,19 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
 }
 
 // Edit an order's line items (size/qty/remove) and issue refunds.
-function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
+export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, storeName = '', onSave, onRefund, onClose }) {
   const editable = items.filter((i) => !i.is_bundle_parent);
-  const initRows = editable.map((i) => ({ id: i.id, sku: i.sku, name: nameByPid[i.product_id] || i.name, color: i.color, size: i.size || '', qty: i.qty || 1, unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, _removed: false }));
+  const initRows = editable.map((i) => {
+    const removed = /^(cancelled|canceled)$/i.test(String(i.line_status || '')) || Number(i.qty) <= 0;
+    return { id: i.id, sku: i.sku, name: nameByPid[i.product_id] || i.name, color: i.color, size: i.size || '', qty: Math.max(0, Number(i.qty) || 0), unit_price: i.unit_price, unit_fundraise: i.unit_fundraise, product_id: i.product_id, player_number: i.player_number, player_name: i.player_name, cancelled_qty: Math.max(0, Number(i.cancelled_qty) || 0), refunded_qty: Math.max(0, Number(i.refunded_qty) || 0), line_status: i.line_status, _removed: removed, _initialRemoved: removed };
+  });
+  const pendingFrom = (list) => (list || []).map((i) => ({
+    item_id: i.item_id || i.id,
+    qty: Math.max(0, Number(i.qty != null && i.item_id ? i.qty : (Number(i.cancelled_qty) || 0) - (Number(i.refunded_qty) || 0)) || 0),
+    sku: i.sku || '', name: i.name || '', color: i.color || '', size: i.size || '',
+    player_name: i.player_name || '', player_number: i.player_number || '',
+    unit_price: Number(i.unit_price) || 0, unit_fundraise: Number(i.unit_fundraise) || 0,
+  })).filter((i) => i.item_id && i.qty > 0);
   const [rows, setRows] = useState(initRows);
   const [refundAmt, setRefundAmt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -13693,10 +13746,15 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
   // Amount a completed save left owed back to the buyer. Held separately from the
   // live suggestion so the post-save resync can't wipe it before it's refunded.
   const [savedOwed, setSavedOwed] = useState(0);
+  const [pendingRefundItems, setPendingRefundItems] = useState(() => pendingFrom(initRows));
+  const [selectedRefundItems, setSelectedRefundItems] = useState(() => Object.fromEntries(pendingFrom(initRows).map((i) => [i.item_id, i.qty])));
+  const [refundHistory, setRefundHistory] = useState({ refunds: [], items: [] });
   const [composeOpen, setComposeOpen] = useState(false);
   const [refundMsg, setRefundMsg] = useState(null); // null = still the generated default
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
-  const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
+  const billedTotal = Number(order.original_total != null ? order.original_total : order.total) || 0;
+  const remaining = Math.max(0, billedTotal - (Number(order.refunded_amt) || 0));
+  const fullyRefunded = Number(order.refunded_amt) > 0 && remaining <= 0.005;
 
   // The coupon discount scales with the merchandise pot it was a percentage of, so a
   // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
@@ -13708,7 +13766,7 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
   // Only recompute total when the user has actually made a change — bundle
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
-  const hasChanges = rows.some((r, i) => r._removed || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
+  const hasChanges = rows.some((r, i) => r._removed !== initRows[i]?._initialRemoved || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
   // Bundle parents hold the package price (components are $0) and aren't editable, so
   // seed the recompute with their value — otherwise the New total drops every package.
   const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
@@ -13744,24 +13802,52 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
 
   // Re-sync the editable rows whenever the saved order comes back from the reload, so
   // the panel can stay open after a save (below) instead of closing to resync.
-  const itemsSig = editable.map((i) => `${i.id}:${i.size || ''}:${i.qty || 1}`).join('|');
-  useEffect(() => { setRows(initRows); }, [itemsSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const itemsSig = editable.map((i) => `${i.id}:${i.size || ''}:${Number(i.qty) || 0}:${i.line_status || ''}:${Number(i.cancelled_qty) || 0}:${Number(i.refunded_qty) || 0}`).join('|');
+  useEffect(() => {
+    setRows(initRows);
+    const pending = pendingFrom(initRows);
+    setPendingRefundItems(pending);
+    setSelectedRefundItems(Object.fromEntries(pending.map((i) => [i.item_id, i.qty])));
+  }, [itemsSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show the durable linkage, not just the aggregate dollars on the order row.
+  // Older refunds legitimately appear as "order-level" because their item rows
+  // were deleted before this ledger existed and cannot be reconstructed safely.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const [rr, ri] = await Promise.all([
+        supabase.from('webstore_order_refunds').select('id,amount,kind,reason,created_at').eq('order_id', order.id).order('created_at', { ascending: false }),
+        supabase.from('webstore_order_refund_items').select('refund_id,order_item_id,qty,amount,sku_snapshot,name_snapshot,color_snapshot,size_snapshot,player_name_snapshot,player_number_snapshot').eq('order_id', order.id),
+      ]);
+      if (live) setRefundHistory({ refunds: rr.data || [], items: ri.data || [] });
+    })();
+    return () => { live = false; };
+  }, [order.id]);
 
   // Saving used to close the panel, which discarded the refund the rep was mid-way
   // through issuing — the items came off the order, the total dropped, and the money
   // owed was never sent (and afterwards nothing on screen recorded that it was owed).
-  // Adjusting and refunding stay two separate, deliberate buttons; saving now just
-  // keeps the panel open and carries the amount owed into the refund box.
+  // Saving the item adjustment and moving money stay separate, deliberate actions.
+  // When a save leaves money owed, go straight to the review step so the rep cannot
+  // miss the refund or waste a click reopening it. The final Send & refund button is
+  // still the only action that actually moves money.
   const save = async () => {
     setBusy(true);
-    const _owed = owed;
     const r = await onSave(order, rows);
     setBusy(false);
     if (!r || !r.ok) return;
+    const _owed = Number(r.owed != null ? r.owed : owed) || 0;
+    const pending = pendingFrom(r.pending_items || []);
+    setPendingRefundItems(pending);
+    setSelectedRefundItems(Object.fromEntries(pending.map((i) => [i.item_id, i.qty])));
     // Accumulate across successive saves. A rep who trims the order, saves, then trims
     // again before refunding is owed the sum — overwriting here would drop the first
     // round's money on the floor, which is the exact bug this whole change is about.
-    if (_owed > 0.005) setSavedOwed((prev) => { const t = _round2(prev + _owed); setRefundAmt(t.toFixed(2)); return t; });
+    if (_owed > 0.005) {
+      setSavedOwed((prev) => { const t = _round2(prev + _owed); setRefundAmt(t.toFixed(2)); return t; });
+      setComposeOpen(true);
+    }
     setJustSaved(true); setTimeout(() => setJustSaved(false), 2500);
   };
   // Refunding goes through the compose step below — same shape as sending an invoice.
@@ -13772,7 +13858,10 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
   const refundMsgValue = refundMsg == null ? defaultRefundMsg : refundMsg; // null = untouched, so it tracks the amount
   const refund = async () => {
     setBusy(true);
-    const r = await onRefund(order, Number(refundAmt), (refundMsgValue || '').trim());
+    const allocations = pendingRefundItems
+      .map((i) => ({ item_id: i.item_id, qty: Math.min(i.qty, Math.max(0, Number(selectedRefundItems[i.item_id]) || 0)) }))
+      .filter((i) => i.qty > 0);
+    const r = await onRefund(order, Number(refundAmt), (refundMsgValue || '').trim(), allocations);
     setBusy(false);
     if (r && r.ok) { setRefundAmt(''); setSavedOwed(0); setRefundMsg(null); setComposeOpen(false); onClose(); }
   };
@@ -13789,7 +13878,8 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
             <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
             {order.order_number && <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>Order #{order.order_number}</div>}
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-              {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
+              {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(billedTotal)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(billedTotal)}</span>}
+              {Math.abs(billedTotal - (Number(order.total) || 0)) > 0.005 && <span style={{ color: '#64748b' }}> · current items {money(order.total)}</span>}
               {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
               {Number(order.refunded_amt) > 0 && <span style={{ color: '#b45309' }}> · {money(order.refunded_amt)} refunded</span>}
             </div>
@@ -13799,6 +13889,7 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
 
         <div style={{ padding: '18px 20px' }}>
           {order.so_id && <div style={{ background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>⚠️ Batched into SO <b>{order.so_id}</b> — adjust that SO too if needed.</div>}
+          {fullyRefunded && <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', color: '#475569', fontSize: 12, padding: '8px 12px', borderRadius: 8, marginBottom: 16 }}>Fully refunded — item history is locked.</div>}
 
           {/* Items */}
           <div style={sectionLabel}>Items</div>
@@ -13812,6 +13903,15 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
               // Product name up top, color + SKU beneath — same convention as the
               // expanded order row. The SKU alone wasn't enough to tell items apart.
               const sub = [r.color, r.name && r.name !== r.sku ? r.sku : null].filter(Boolean).join(' · ');
+              // A refunded cancellation is final: restoring it would put the garment
+              // back on reports without charging the buyer again. The database trigger
+              // below this UI is the authoritative backstop; this keeps the safe path
+              // obvious and removes an action that can never legitimately succeed.
+              const refundLocked = r._removed && Number(r.refunded_qty) > 0;
+              const editLocked = fullyRefunded || r._removed;
+              const maxActiveQty = Number(r.refunded_qty) > 0
+                ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty))
+                : undefined;
               return (
                 <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -13820,10 +13920,10 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
                     {(r.player_number || r.player_name) && <div style={{ fontSize: 11, color: '#94a3b8' }}>{[r.player_number && '#' + r.player_number, r.player_name].filter(Boolean).join(' · ')}</div>}
                   </div>
                   {sizes.length > 0
-                    ? <select value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
-                    : <input value={r.size} disabled={r._removed} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                  <input type="number" min={1} value={r.qty} disabled={r._removed} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
-                  <button onClick={() => upd(r.id, '_removed', !r._removed)} style={{ background: 'none', border: 'none', color: r._removed ? '#2563eb' : '#b91c1c', cursor: 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{r._removed ? 'undo' : 'remove'}</button>
+                    ? <select value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                    : <input value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
+                  <input type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <button disabled={fullyRefunded || refundLocked} onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: fullyRefunded || refundLocked ? '#94a3b8' : r._removed ? '#2563eb' : '#b91c1c', cursor: fullyRefunded || refundLocked ? 'default' : 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{fullyRefunded || refundLocked ? 'refunded' : r._removed ? 'undo' : 'remove'}</button>
                 </div>
               );
             })}
@@ -13836,10 +13936,11 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : 'Save item changes'}</button>
+          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
+          {hasChanges && owed > 0.005 && <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 7 }}>Saves the order, then opens the refund review. Nothing is refunded until you confirm.</div>}
 
-          {/* Refund — a deliberate second step. Saving the items above no longer closes
-              this panel, so the amount owed stays on screen until it's actually sent. */}
+          {/* Refund controls remain available for stand-alone/manual refunds. Item
+              reductions open the same review automatically after a successful save. */}
           <div style={{ borderTop: '1px solid #eef1f5', marginTop: 20, paddingTop: 18 }}>
             <div style={sectionLabel}>Refund</div>
             {savedOwed > 0.005 && (
@@ -13851,17 +13952,45 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
               {order.stripe_pi_id ? "Refunds the buyer's card via Stripe." : 'Team-tab order — records a credit/adjustment (no card to refund).'}
               {Number(order.refunded_amt) > 0 && <> Already refunded <b>{money(order.refunded_amt)}</b>; <b>{money(remaining)}</b> remaining.</>}
             </div>
+            {pendingRefundItems.length > 0 && (
+              <div style={{ border: '1px solid #bfdbfe', background: '#eff6ff', borderRadius: 8, padding: '9px 12px', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: '#1e40af', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Tie this refund to</div>
+                {pendingRefundItems.map((i) => {
+                  const checked = (Number(selectedRefundItems[i.item_id]) || 0) > 0;
+                  const label = [i.name || i.sku || 'Item', i.sku && i.name ? i.sku : null, i.color, i.size && `size ${i.size}`, i.player_name].filter(Boolean).join(' · ');
+                  return <label key={i.item_id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#334155', padding: '3px 0', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={checked} onChange={(e) => setSelectedRefundItems((m) => ({ ...m, [i.item_id]: e.target.checked ? i.qty : 0 }))} />
+                    <span style={{ flex: 1 }}>{label}</span><b>×{i.qty}</b>
+                  </label>;
+                })}
+                {!Object.values(selectedRefundItems).some((q) => Number(q) > 0) && <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 5 }}>No item selected — this will be recorded as an order-level refund.</div>}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
                 <span style={{ padding: '0 10px', color: '#94a3b8', fontSize: 15, borderRight: '1px solid #e2e8f0', height: '100%', display: 'grid', placeItems: 'center' }}>$</span>
                 <input type="number" min={0} step="0.01" value={refundAmt} onChange={(e) => setRefundAmt(e.target.value)} placeholder={remaining.toFixed(2)} style={{ width: 110, padding: '9px 10px', border: 'none', fontSize: 14, outline: 'none' }} />
               </div>
-              <button className="btn btn-sm btn-secondary" onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
+              <button className="btn btn-sm btn-secondary" disabled={remaining <= 0.005} onClick={() => setRefundAmt(remaining.toFixed(2))}>Full ({money(remaining)})</button>
               <button className="btn btn-primary" disabled={busy || !(Number(refundAmt) > 0)} onClick={() => setComposeOpen(true)} style={{ background: '#b91c1c', borderColor: '#b91c1c' }}>{order.stripe_pi_id ? 'Refund to card…' : 'Record credit…'}</button>
             </div>
             {order.buyer_email
               ? <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 8 }}>You'll review the email to {order.buyer_email} before anything is charged back.</div>
               : <div style={{ fontSize: 11.5, color: '#b45309', marginTop: 8 }}>No email on file for this buyer — the refund will process without one.</div>}
+            {refundHistory.refunds.length > 0 && (
+              <div style={{ marginTop: 14, borderTop: '1px solid #eef1f5', paddingTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5 }}>Refund history</div>
+                {refundHistory.refunds.map((h) => {
+                  const linked = refundHistory.items.filter((i) => i.refund_id === h.id);
+                  return <div key={h.id} style={{ fontSize: 11.5, color: '#475569', padding: '4px 0' }}>
+                    <b>{money(h.amount)}</b> · {h.created_at ? new Date(h.created_at).toLocaleDateString() : h.kind}
+                    <div style={{ color: linked.length ? '#1d4ed8' : '#94a3b8', marginTop: 1 }}>
+                      {linked.length ? linked.map((i) => `${i.name_snapshot || i.sku_snapshot || 'Item'}${i.size_snapshot ? ` (${i.size_snapshot})` : ''} ×${i.qty}`).join(', ') : 'Order-level / legacy refund — no item link'}
+                    </div>
+                  </div>;
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -13897,6 +14026,7 @@ function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}, store
               )}
               <div style={{ background: '#fff5f5', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 8, padding: '10px 14px', fontSize: 12.5, marginBottom: 16 }}>
                 Sending {order.stripe_pi_id ? `returns ${money(Number(refundAmt) || 0)} to the buyer's card` : `records a ${money(Number(refundAmt) || 0)} credit`}. This can't be undone.
+                {pendingRefundItems.some((i) => Number(selectedRefundItems[i.item_id]) > 0) && <div style={{ marginTop: 5, fontWeight: 700 }}>The refund ledger will retain the selected SKU, size, player, and quantity.</div>}
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn btn-secondary" disabled={busy} onClick={() => setComposeOpen(false)}>Cancel</button>
