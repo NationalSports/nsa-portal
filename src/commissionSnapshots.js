@@ -16,6 +16,13 @@ export function isCommissionEarnedInvoice(invoice) {
   return !!invoice && invoice.status === 'paid';
 }
 
+// Promo-funded orders never generate earned or pipeline commission. Their actual
+// garment/deco/shipping spend is handled separately as a dollar-for-dollar promo
+// cost deduction on the rep's statement.
+export function isPromoOrderCommissionExcluded(order) {
+  return !!order && order.promo_applied === true;
+}
+
 // A line may be frozen only when freezing it would freeze the TRUTH:
 //  - fully paid (a partial's final payment date isn't known yet — it keeps rendering live)
 //  - payment rows hydrated and present (else paid_date would be the invoice-date fallback)

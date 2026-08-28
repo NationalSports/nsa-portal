@@ -6,6 +6,7 @@ import {
   applySnapshotToLine,
   overrideSnapshotPatch,
   isCommissionEarnedInvoice,
+  isPromoOrderCommissionExcluded,
   COMM_RATE_STANDARD,
   COMM_RATE_LATE,
 } from '../commissionSnapshots';
@@ -39,6 +40,11 @@ describe('commission earning gate', () => {
     expect(isCommissionEarnedInvoice({ status: 'partial' })).toBe(false);
     expect(isCommissionEarnedInvoice({ status: 'unpaid' })).toBe(false);
     expect(isCommissionEarnedInvoice({ status: 'paid' })).toBe(true);
+  });
+  test('promo-funded orders are excluded from earned and pipeline commission', () => {
+    expect(isPromoOrderCommissionExcluded({ promo_applied: true })).toBe(true);
+    expect(isPromoOrderCommissionExcluded({ promo_applied: false })).toBe(false);
+    expect(isPromoOrderCommissionExcluded(null)).toBe(false);
   });
 });
 

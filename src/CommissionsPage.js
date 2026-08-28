@@ -11,7 +11,7 @@ import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
-import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
+import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice, isPromoOrderCommissionExcluded } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
 // team_members id — same single-user gate as the App.js to-do list).
@@ -188,6 +188,9 @@ export default function CommissionsPage(){
       return invs.filter(inv=>{
         if(!isCommissionEarnedInvoice(inv))return false;
         const so=sos.find(s=>s.id===inv.so_id);
+        // Promo orders are a rep expense, never commissionable revenue/GP. Their
+        // actual cost is deducted once through buildPromoLines below.
+        if(isPromoOrderCommissionExcluded(so))return false;
         if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
         return true;
       }).map(inv=>{
@@ -235,6 +238,7 @@ export default function CommissionsPage(){
       const invLines=invs.filter(inv=>{
         if(isCommissionEarnedInvoice(inv))return false;
         const so=sos.find(s=>s.id===inv.so_id);
+        if(isPromoOrderCommissionExcluded(so))return false;
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.
         if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
@@ -258,6 +262,7 @@ export default function CommissionsPage(){
       // Open SOs without any invoice (not yet invoiced)
       const soLines=sos.filter(so=>{
         if(so.status==='deleted'||so.status==='cancelled')return false;
+        if(isPromoOrderCommissionExcluded(so))return false;
         const st=calcSOStatus(so);
         if(st==='complete')return false;
         if(invoicedSOIds.has(so.id))return false;
@@ -305,12 +310,13 @@ export default function CommissionsPage(){
         const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
         const outByItem=outsourcedDecoTypes(so);
         safeItems(so).forEach((it,ii)=>{
-          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return;
-          if(it.is_promo){
-            productCost+=qty*safeNum(it.nsa_cost);
-            const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
-            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=qty*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=qty*rQ(dp2.sell*1.25)});
-          }
+          const sizeQty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          const qty=sizeQty>0?sizeQty:safeNum(it.est_qty);if(!qty)return;
+          // Promo is an order-level payment method. Count every line even on legacy
+          // records where is_promo was not persisted on a later-added service line.
+          productCost+=qty*safeNum(it.nsa_cost);
+          const sellP=safeNum(it.unit_sell)||safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=eq*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=eq*rQ(dp2.sell*1.25)});
         });
         // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);const c=bc>0?bc:safeNum(dp.qty||0)*safeNum(dp.unit_cost||0);decoCost+=c});
