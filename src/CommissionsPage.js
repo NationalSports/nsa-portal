@@ -17,7 +17,12 @@ import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnap
 // team_members id — same single-user gate as the App.js to-do list).
 const ADMIN_DASH_USER_ID='00000000-0000-0000-0000-000000000001';
 
-export default function CommissionsPage(){
+// `adminReports` renders ONLY the admin-only report tabs (Monthly Reports, Admin
+// Dashboard) — the Financials page mounts the component this way so those reports live
+// in the admin financial home. Reps keep the full Commissions page unchanged; nothing
+// about the commission math, snapshots or state moves, so there is exactly one copy of
+// the money logic and rep pay cannot drift between the two mounts.
+export default function CommissionsPage({adminReports=false}={}){
   const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos,setSOs}=useAppData();
 
     const isAdmin=cu.role==='admin'||cu.role==='super_admin';
@@ -25,6 +30,15 @@ export default function CommissionsPage(){
     const salesReps=REPS.filter(isCommissionRep);
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
+
+    // The Financials mount shows only admin report tabs; commTab is shared with the
+    // Commissions page, so a rep-oriented value ('statement') would render an empty body.
+    // Land on the first tab this user can actually see.
+    useEffect(()=>{
+      if(!adminReports)return;
+      const allowed=[...(isAdmin?['monthly']:[]),...(isSteve?['adminDash']:[])];
+      if(allowed.length&&!allowed.includes(commTab))setCommTab(allowed[0]);
+    },[adminReports,isAdmin,isSteve,commTab,setCommTab]);
 
     // ── Commission snapshots: frozen money for paid invoices ──
     // A paid invoice's GP/rate/amount/paid-date freeze the first time this page sees the
@@ -438,25 +452,25 @@ export default function CommissionsPage(){
     return(<>
       {/* Header with rep selector (admin only) */}
       <div style={{display:'flex',gap:12,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
-        {isAdmin&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
+        {isAdmin&&!adminReports&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
           <select className="form-select" style={{width:180}} value={commRep} onChange={e=>setCommRep(e.target.value)}>
             <option value="all">All Reps</option>
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
-        <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
-          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])].map(([id,label])=>
+        <div style={{display:'flex',gap:4,marginLeft:isAdmin&&!adminReports?'auto':0}}>
+          {(adminReports?[...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])]:[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])]).map(([id,label])=>
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="stats-row" style={{marginBottom:16}}>
+      {/* Summary cards — rep-statement figures; not shown in the admin-reports mount. */}
+      {!adminReports&&<div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card"><div className="stat-label">This Month</div><div className="stat-value" style={{color:'#166534'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div>{monthPromoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>−${monthPromoCost.toLocaleString()} promo</div>}</div>
         <div className="stat-card"><div className="stat-label">YTD Earned</div><div className="stat-value" style={{color:'#1e40af'}}>${ytdNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div>{ytdPromoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>−${ytdPromoCost.toLocaleString()} promo</div>}</div>
         <div className="stat-card"><div className="stat-label">Pipeline</div><div className="stat-value" style={{color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
         <div className="stat-card"><div className="stat-label">Promo Costs</div><div className="stat-value" style={{color:'#dc2626'}}>${ytdPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{allPromoLines.length} orders YTD</div></div>
         <div className="stat-card"><div className="stat-label">Avg GP%</div><div className="stat-value" style={{color:ytdRev>0&&(ytdGP/ytdRev*100)>=30?'#166534':'#d97706'}}>{ytdRev>0?Math.round(ytdGP/ytdRev*100):0}%</div></div>
-      </div>
+      </div>}
 
       {/* MONTHLY STATEMENT TAB */}
       {commTab==='statement'&&<div className="card">
