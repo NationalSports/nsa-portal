@@ -20,6 +20,7 @@ import { knockoutWhiteBackground } from './lib/imageKnockout';
 import QuickMockBuilder from './QuickMockBuilder';
 import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
+import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -3336,21 +3337,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku);
   }, [sel, detail, gatherAll, flash]);
 
-  // Product roll-up (printable): every product ordered — image, SKU, color, and
-  // per-size quantities. Images/colors come from the store catalog (custom mockup
-  // first, then the master product photo / storefront snapshot).
+  // Silver Screen domestic fulfillment workbook. It uses the same active-order +
+  // current-SO reconciliation as every other report, then refuses to download if
+  // any required destination/product field is missing or still needs verification.
   const productReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, audit, stockByPid } = await gatherAll();
+    const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    const metaByPid = {};
-    (detail.catalog || []).forEach((c) => {
-      if (!c.product_id) return;
-      const s = detail.stockByWp?.[c.id] || {};
-      metaByPid[c.product_id] = { image: c.image_url || c.image_front_url || s.image_front_url || '', color: s.color || '', name: c.display_name || s.name || '' };
-    });
-    buildProductReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, metaByPid, stockByPid, audit);
-  }, [sel, detail, gatherAll, flash]);
+    try {
+      const result = downloadSilverScreenFulfillment({ store: sel, lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit });
+      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+    } catch (e) { flash(e?.message || 'Silver Screen fulfillment export failed', 'error'); }
+  }, [sel, detail, gatherAll, flash, cust]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
   // 'orders' (every line item with order + payment detail).
@@ -13608,8 +13606,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </button>
         )}
         {onProductReport && (
-          <button className="btn btn-secondary" onClick={onProductReport} title="Every product ordered — image, SKU, color, and size quantities">
-            🏷️ Product report
+          <button className="btn btn-secondary" onClick={onProductReport} title="Download the Silver Screen Domestic fulfillment template using active orders and current sales-order items">
+            🏷️ Silver Screen XLSX
           </button>
         )}
         {onExportCsv && (
