@@ -2389,15 +2389,15 @@ describe('Promo Dollars — calcPromoTotals', () => {
     expect(result.promoRev).toBe(555);
     // Normal: 10 * 4.75 = 47.5
     expect(result.normalRev).toBe(47.5);
-    // Normal tax: 47.5 * 0.0775 = 3.68125
-    expect(result.normalTax).toBeCloseTo(3.68, 1);
+    // Promo orders are tax-free, including the non-promo/customer-paid remainder.
+    expect(result.normalTax).toBe(0);
     // Shipping base uses original revenue: 10 * 33.3 + 10 * 4.75 = 333 + 47.5 = 380.5
     // But flat $100, so base = 100
     // promoPct based on original rev: 333/380.5 ≈ 0.8752
     // promoShip = rQ(100 * 0.8752 * 1.25) = rQ(109.4) = 109.5
     // normalShip = rQ(100 * 0.1248) = rQ(12.48) = 12.5
-    // Customer pays normal items + normal shipping portion + normal tax
-    expect(result.customerPays).toBeGreaterThan(0);
+    // Customer pays normal items + normal shipping portion, with no tax.
+    expect(result.customerPays).toBe(result.normalRev + result.normalShip);
   });
 
   test('handles empty order', () => {

@@ -925,6 +925,17 @@ describe('Promo Dollars', () => {
       expect(BL.calcPromoItemSell({ nsa_cost: 10 })).toBe(20);
     });
 
+    test('reprices SanMar and S&S items from 40% cost to full retail', () => {
+      const vendors = [
+        { id: 'sm', name: 'SanMar', api_provider: 'sanmar' },
+        { id: 'ss', name: 'S&S Activewear', api_provider: 'ss_activewear' }
+      ];
+      expect(BL.calcPromoItemSell({ vendor_id: 'sm', nsa_cost: 8, retail_price: 18 }, vendors)).toBe(20);
+      expect(BL.calcPromoItemSell({ vendor_source: 'ss', nsa_cost: 10 }, vendors)).toBe(25);
+      expect(BL.calcPromoItemSell({ vendor_source: 'sanmar', nsa_cost: 825.98 }, vendors)).toBe(2064.95);
+      expect(BL.calcPromoSizeSells({ vendor_id: 'ss', _sizeCosts: { S: 8, '2XL': 10 } }, vendors)).toEqual({ S: 20, '2XL': 25 });
+    });
+
     test('handles null/undefined gracefully', () => {
       expect(BL.calcPromoItemSell({})).toBe(0);
     });
@@ -951,7 +962,7 @@ describe('Promo Dollars', () => {
       expect(result).not.toBeNull();
       expect(result.promoRev).toBe(300);  // 10 * 30
       expect(result.normalRev).toBe(100); // 5 * 20
-      expect(result.normalTax).toBeCloseTo(7, 1); // 7% of 100
+      expect(result.normalTax).toBe(0); // all promo orders are tax-free
     });
 
     test('promo portion has zero tax', () => {
@@ -971,6 +982,16 @@ describe('Promo Dollars', () => {
     test('promo shipping gets 25% markup', () => {
       expect(BL.PROMO_SHIP_MULT).toBe(1.25);
       expect(BL.PROMO_DECO_MULT).toBe(1.25);
+    });
+
+    test('percentage shipping uses repriced promo revenue', () => {
+      const result = BL.calcPromoTotals({
+        promo_applied: true,
+        items: [{ is_promo: true, sizes: { S: 1 }, unit_sell: 100, _pre_promo_sell: 60, nsa_cost: 40, decorations: [] }],
+        art_files: [], shipping_type: 'pct', shipping_value: 5
+      }, { tax_rate: 0.07 });
+      expect(result.promoShip).toBe(6.25);
+      expect(result.promoAmount).toBe(106.25);
     });
   });
 

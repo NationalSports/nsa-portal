@@ -285,6 +285,17 @@ describe('_decoVendorPrice — screen-print upcharges (dark/fleece/mesh)', () =>
 // 9. calcOrderTotals: a negative sizes total doesn't go negative on its own — it
 //    fails the `sq>0` check and falls back to est_qty (sq is only used when positive).
 describe('calcOrderTotals — negative sizes total characterization', () => {
+  test('promo orders are tax-free even when the customer has a tax rate', () => {
+    const totals = calcOrderTotals({
+      promo_applied: true,
+      items: [{ sizes: { M: 2 }, unit_sell: 50, decorations: [] }],
+      art_files: [], shipping_type: 'flat', shipping_value: 0
+    }, 0.0725);
+    expect(totals.rev).toBe(100);
+    expect(totals.tax).toBe(0);
+    expect(totals.grand).toBe(100);
+  });
+
   test('negative sizes sum falls back to est_qty rather than producing negative revenue from sizes', () => {
     const order = {
       items: [{ unit_sell: 10, est_qty: 4, sizes: { S: -5 } }],

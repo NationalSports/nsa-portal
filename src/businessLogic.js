@@ -23,6 +23,33 @@ const safeJobs = (o) => safeArr(o?.jobs);
 // or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
 const _hasMockupContent = (af) => Math.max((af.mockup_files || af.files || []).length, Object.values(af.item_mockups || {}).reduce((a, arr) => a + (arr || []).length, 0)) > 0;
 
+// Once decoration has entered the production queue, the approved art is locked. A later
+// production-file/separations request must not reopen coach approval simply because the artist
+// clicks "Send to Rep" against old garment mockups. Likewise, terminal SOs must never grow a new
+// approval task from a stale split job. To intentionally revise art after production starts, move
+// the job back to Hold first; that makes the approval round explicit instead of silently rewinding
+// a staging/completed job. (SO-1660 / SO-1027.)
+const artReviewLocked = (j, o) => {
+  if (!j) return false;
+  if (o?.deleted_at || o?._shipped || o?.status === 'ready_to_invoice' || o?.status === 'complete') return true;
+  return ['staging', 'in_process', 'completed', 'shipped'].includes(j.prod_status);
+};
+
+// Date an approval card from the actual "sent to rep" event, never the SO's updated_at. An
+// unrelated order edit otherwise makes an old proof read "Today". Legacy jobs without a system
+// message fall back to their latest art request, then job/order creation time.
+const mockupReviewDate = (j, o) => {
+  const sent = safeArr(j?.art_messages)
+    .filter(m => m && m.ts && /mockup sent to rep for approval/i.test(safeStr(m.text)))
+    .map(m => m.ts);
+  if (sent.length) return sent.sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+  const req = safeArr(j?.art_requests)
+    .map(r => r && (r.completed_at || r.updated_at || r.created_at))
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+  return req || j?.created_at || o?.created_at || null;
+};
+
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
 const rT = v => Math.round(v * 10) / 10;
@@ -878,19 +905,38 @@ function buildQBInvoice(inv, sos, cust, qbMapping) {
 // ── Promo Dollars Pricing ──
 // When promo is applied to an order:
 // - Adidas/UA/NB items: sell at retail_price (no tier discount)
+// - SanMar / S&S items: their NSA cost is 40% of retail, so sell at nsa_cost / .40
 // - Other items: sell at retail_price if available, otherwise nsa_cost * 2.0
 // - Decoration sells increase by 25%
 // - Shipping on promo portion increases by 25%
-// - Tax = $0 on promo portion
+// - The entire promo order is tax-free, including any customer-paid remainder
 const PROMO_DECO_MULT = 1.25;
 const PROMO_SHIP_MULT = 1.25;
+const PROMO_SANMAR_SS_COST_PCT = 0.40;
 
-function calcPromoItemSell(item) {
+function isSanmarSsPromoItem(item, vendors) {
+  const values = [item?.vendor_source, item?.inventory_source, item?.supplier, item?.vendor_name];
+  const vendor = (vendors || []).find(v => item?.vendor_id && v.id === item.vendor_id);
+  if (vendor) values.push(vendor.api_provider, vendor.name);
+  return values.some(value => {
+    const key = String(value || '').trim().toLowerCase().replace(/[^a-z0-9&]+/g, ' ');
+    return key.includes('sanmar') || key.includes('s&s') || key.includes('s & s') || key.includes('ss activewear') || key === 'ss';
+  });
+}
+
+function calcPromoItemSell(item, vendors) {
+  const c = safeNum(item?.nsa_cost);
+  if (isSanmarSsPromoItem(item, vendors) && c > 0) return Math.round(c / PROMO_SANMAR_SS_COST_PCT * 100) / 100;
   if (safeNum(item.retail_price) > 0) return safeNum(item.retail_price);
   // Same >0 guard as retail_price: a negative nsa_cost (cost-correction typo) must not
   // produce a negative sell price flowing into promoRev/customerPays.
-  const c = safeNum(item.nsa_cost);
   return c > 0 ? c * 2.0 : 0;
+}
+
+function calcPromoSizeSells(item, vendors) {
+  if (!isSanmarSsPromoItem(item, vendors) || !item?._sizeCosts) return null;
+  const entries = Object.entries(item._sizeCosts).filter(([, cost]) => safeNum(cost) > 0);
+  return entries.length ? Object.fromEntries(entries.map(([size, cost]) => [size, Math.round(safeNum(cost) / PROMO_SANMAR_SS_COST_PCT * 100) / 100])) : null;
 }
 
 // Calculate promo-adjusted totals for an order
@@ -939,16 +985,19 @@ function calcPromoTotals(o, cust) {
     }
   });
 
-  // Shipping: use original (pre-promo) revenue for base to avoid inflation, then apply 25% to promo portion
+  // Percentage shipping follows the repriced revenue. Flat shipping still needs to be
+  // split by the lines' original shares, because it has no per-line revenue base.
   const origTotalRev = origPromoRev + normalRev;
-  const baseShip = o.shipping_type === 'pct' ? origTotalRev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
   const promoPct = origTotalRev > 0 ? origPromoRev / origTotalRev : (promoRev > 0 ? 1 : 0);
-  const promoShip = rQ(baseShip * promoPct * PROMO_SHIP_MULT);
-  const normalShip = rQ(baseShip * (1 - promoPct));
+  const promoShip = o.shipping_type === 'pct'
+    ? rQ(promoRev * (o.shipping_value || 0) / 100 * PROMO_SHIP_MULT)
+    : rQ((o.shipping_value || 0) * promoPct * PROMO_SHIP_MULT);
+  const normalShip = o.shipping_type === 'pct'
+    ? rQ(normalRev * (o.shipping_value || 0) / 100)
+    : rQ((o.shipping_value || 0) * (1 - promoPct));
 
-  // Tax: $0 on promo portion, normal tax on non-promo
-  const taxRate = cust?.tax_exempt ? 0 : (cust?.tax_rate || 0);
-  const normalTax = normalRev * taxRate;
+  // Promo orders are tax-free, including any customer-paid/non-promo remainder.
+  const normalTax = 0;
 
   // Promo amount consumed = promo item/deco revenue + promo shipping
   const promoAmount = promoRev + promoShip;
@@ -1210,11 +1259,11 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, artReviewLocked, mockupReviewDate, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
-  PROMO_DECO_MULT, PROMO_SHIP_MULT, calcPromoItemSell, calcPromoTotals, calcPromoSpendAllocation, calcQualifyingSpend, getCurrentPromoPeriod, getPreviousPromoPeriod,
+  PROMO_DECO_MULT, PROMO_SHIP_MULT, PROMO_SANMAR_SS_COST_PCT, isSanmarSsPromoItem, calcPromoItemSell, calcPromoSizeSells, calcPromoTotals, calcPromoSpendAllocation, calcQualifyingSpend, getCurrentPromoPeriod, getPreviousPromoPeriod,
   // QB sync
   buildQBSalesOrder, buildQBInvoice,
   // Inventory
