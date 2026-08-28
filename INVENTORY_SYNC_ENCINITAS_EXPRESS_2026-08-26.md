@@ -136,8 +136,36 @@ because the rows were not all counted on the same day.
 - **Astra tee cost, retail and brand** are unset, as above.
 - **Kit catalog** still points its `keeper_jersey` slot at the long-sleeve products and its
   `socks` slot at the general `KB7233` Adisock 26 3S rather than the club's own `JW6705`.
-  The new rows carry stock but are not yet orderable through the roster flow; repointing a
-  kit slot changes what coaches order, so it stays a business decision.
+  Those 11 products are now *visible* to the club (see below) but still aren't *orderable*
+  through the roster flow; repointing a kit slot changes what coaches order, so it stays a
+  business decision.
+
+## Club stock panel (2026-08-28)
+
+Of the 33 products, only the 22 the kit catalog references were ever loaded by the roster
+view — the other 11 (both socks, the sleeve sock, all four Astra tees, the three
+short-sleeve keeper jerseys, the all-weather jacket), **457 of the 1,548 units**, were
+invisible to the club. And the availability figure a coach saw was `in-house + vendor`
+summed into one number, so club-owned stock couldn't be told apart from what adidas could
+still supply.
+
+Both are addressed:
+
+- `products.customer_id` attributes a stock pool to a club (migration
+  `20260828120000_club_stock_visibility.sql`), so a club's stock no longer has to be
+  reachable through the kit to be shown. The 33 Encinitas rows are backfilled.
+- `getStock` now returns `mine` and `vendor` alongside `avail`. **`avail` is still exactly
+  `mine + vendor`** — every covered/short/colour decision keys off it and must not move
+  because the breakdown was added.
+- A new `ClubStockPanel` shows the club its own stock, grouped the same way as the PDF.
+  It deliberately shows only `mine`; folding vendor supply back in would undo the split.
+- Gated per account by `customers.coach_stock`, default **false** — no club sees it until
+  someone turns it on. Encinitas is not switched on yet.
+
+`products` and `product_inventory` both carry `anon read = true` policies, so
+`customer_id` decides what a club is *shown*, not what the anon key could reach. Real
+isolation would need those policies tightened first — worth knowing before this is sold
+as a privacy feature.
 - **Soccer balls `JW1322`** — out of scope by request.
 
 Row 19 (`JF2871-EXP`) also still has its Updated date typo'd as `5026-05-05` in the sheet.

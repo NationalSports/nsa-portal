@@ -3,10 +3,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './lib/supabase';
 
 // ─── Size lists ───────────────────────────────────────────────────────────────
-const SZ_YOUTH = ['YXS','YS','YM','YL','YXL'];
-const SZ_ADULT = ['2XS','XS','S','M','L','XL','2XL','3XL','OSFA'];
-const SZ_STANDARD = [...SZ_YOUTH, ...SZ_ADULT];
-const SZ_SOCKS = ['3XS','2XS','XS','Youth Sleeves','Small','Medium','Large'];
+// Single copy, shared with ClubStockPanel — see src/lib/sizeScales.js.
+import { SZ_YOUTH, SZ_ADULT, SZ_STANDARD, SZ_SOCKS, SZ_ABBREV } from './lib/sizeScales';
 const STATUS_LABELS = { draft:'Draft', open:'Open', submitted:'Submitted', processing:'Processing', fulfilled:'Fulfilled' };
 const STATUS_COLORS = { draft:'#94a3b8', open:'#2563eb', submitted:'#7c3aed', processing:'#d97706', fulfilled:'#15803d' };
 
@@ -65,7 +63,7 @@ const parsePastedRoster = (text) => {
 // One tight grid: items down the side, sizes across the top, each cell showing
 // need/in-stock colored by coverage. Used under each team's grid and for the
 // session-level rollup. needBySlot: { [slot]: { [cat]: { [size]: need|[{qty}] } } }.
-const _SZ_ABBREV = { 'Youth Sleeves': 'YSlv', 'Small': 'Sm', 'Medium': 'Med', 'Large': 'Lg', 'OSFA': 'OS' };
+const _SZ_ABBREV = SZ_ABBREV;
 function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
   const needOf = (v) => Array.isArray(v) ? v.reduce((s, x) => s + (x.qty || 1), 0) : (v || 0);
 
@@ -98,17 +96,18 @@ function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
   const cellFor = (entry) => {
     if (!entry) return null;
     if (!entry.pids.size) return { need: entry.need, avail: null, color: '#475569', bg: '#f8fafc', deliveries: [] };
-    let avail = 0, incoming = 0;
+    let avail = 0, incoming = 0, mine = 0, vendor = 0;
     const deliveries = [];
     entry.pids.forEach(pid => {
       const s = getStock(pid, entry.size);
-      avail += s.avail; incoming += s.incoming;
+      avail += s.avail; incoming += s.incoming; mine += s.mine || 0; vendor += s.vendor || 0;
       (s.deliveries || []).forEach(dv => deliveries.push(dv));
     });
     deliveries.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')));
-    if (avail >= entry.need) return { need: entry.need, avail, incoming, deliveries, color: '#15803d', bg: '#f0fdf4' };
-    if (avail + incoming >= entry.need) return { need: entry.need, avail, incoming, deliveries, color: '#b45309', bg: '#fffbeb' };
-    return { need: entry.need, avail, incoming, deliveries, color: '#dc2626', bg: '#fef2f2' };
+    const base = { need: entry.need, avail, incoming, mine, vendor, deliveries };
+    if (avail >= entry.need) return { ...base, color: '#15803d', bg: '#f0fdf4' };
+    if (avail + incoming >= entry.need) return { ...base, color: '#b45309', bg: '#fffbeb' };
+    return { ...base, color: '#dc2626', bg: '#fef2f2' };
   };
 
   // Visual grouping: a hairline between the youth scale, adult scale, and sock
@@ -126,6 +125,7 @@ function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#4ade80' }} />covered</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#fbbf24' }} />covered by incoming</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 9, height: 9, borderRadius: 3, background: '#f87171' }} />short</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><span style={{ width: 3, height: 11, borderRadius: 2, background: '#cbd5e1' }} />club owns some</span>
           <span style={{ opacity: 0.65 }}>need / in stock</span>
         </span>
       </div>
@@ -157,8 +157,11 @@ function KitTotalsTable({ title, kitItems, needBySlot, getStock }) {
                     const nextDv = c.avail != null && c.avail < c.need && c.deliveries.length ? c.deliveries[0] : null;
                     return (
                       <td key={sz} style={{ padding: '4px 3px', textAlign: 'center', borderLeft: edge }}
-                        title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock${c.deliveries.length ? ` · arriving: ${_fmtDeliveries(c.deliveries)}` : ''}`}`}>
-                        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', minWidth: 42, borderRadius: 7, padding: '3px 5px', background: c.bg, lineHeight: 1.25 }}>
+                        title={`${ki.label} ${sz === 'OSFA' && ki.no_size ? '' : sz + ' '}— need ${c.need}${c.avail == null ? ' (no SKU linked)' : ` · ${c.avail} in stock (${c.mine} yours, ${c.vendor} from vendor)${c.deliveries.length ? ` · arriving: ${_fmtDeliveries(c.deliveries)}` : ''}`}`}>
+                        {/* The left tick marks stock the club already owns, so "90 available"
+                            can't be misread as 90 sitting on our shelf for them. */}
+                        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', minWidth: 42, borderRadius: 7, padding: '3px 5px', background: c.bg, lineHeight: 1.25,
+                          boxShadow: c.mine > 0 ? 'inset 2.5px 0 0 #334155' : 'none' }}>
                           <span style={{ whiteSpace: 'nowrap' }}>
                             <span style={{ fontWeight: 800, color: c.color }}>{c.need}</span>
                             <span style={{ fontSize: 10, color: c.avail == null ? '#94a3b8' : c.color, opacity: 0.75 }}>/{c.avail == null ? '—' : c.avail}</span>
@@ -378,10 +381,17 @@ function useKitInventory(items) {
     return () => { cancelled = true; };
   }, [pidKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // `mine` is the club's own stock sitting in NSA's warehouse; `vendor` is what the
+  // brand could still supply. They answer different questions — "have we already
+  // bought this?" vs "can we get it?" — so callers get them separately.
+  // `avail` stays exactly mine + vendor: every covered / short / colour decision
+  // downstream keys off it and must not shift because the breakdown was added.
   const getStock = useCallback((productId, size) => {
     const s = inv[productId]?.[size];
-    if (!s) return { avail: 0, incoming: 0, eta: null, deliveries: [] };
-    return { avail: (s.ih || 0) + (s.vendor || 0), incoming: s.incoming || 0, eta: s.eta, deliveries: s.deliveries || [] };
+    if (!s) return { avail: 0, mine: 0, vendor: 0, incoming: 0, eta: null, deliveries: [] };
+    const mine = s.ih || 0;
+    const vendor = s.vendor || 0;
+    return { avail: mine + vendor, mine, vendor, incoming: s.incoming || 0, eta: s.eta, deliveries: s.deliveries || [] };
   }, [inv]);
 
   return { inv, getStock };
@@ -1582,8 +1592,8 @@ function RosterTotals({ session, teams, kitTemplate }) {
                         const pqs = bySz[sz] || [];
                         const need = pqs.reduce((s, pq) => s + pq.qty, 0);
                         const sizeLabel = ki.no_size ? 'Included' : sz;
-                        const stock = productId ? getStock(productId, sz) : { avail: 0, incoming: 0, eta: null };
-                        const { avail, incoming, eta } = stock;
+                        const stock = productId ? getStock(productId, sz) : { avail: 0, mine: 0, vendor: 0, incoming: 0, eta: null };
+                        const { avail, mine, vendor, incoming, eta } = stock;
                         const statusColor = !productId ? '#94a3b8' :
                           avail >= need ? '#15803d' :
                           (avail + incoming) >= need ? '#b45309' : '#dc2626';
@@ -1612,6 +1622,13 @@ function RosterTotals({ session, teams, kitTemplate }) {
                               </td>
                               <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, color: avail >= need ? '#15803d' : avail > 0 ? '#b45309' : '#94a3b8', fontSize: 13 }}>
                                 {productId ? avail.toLocaleString() : '—'}
+                                {/* Split the total so nobody reads vendor supply as club stock. */}
+                                {productId && mine > 0 && (
+                                  <div style={{ fontWeight: 600, fontSize: 10, color: '#64748b', whiteSpace: 'nowrap' }}
+                                    title={`${mine} owned by this club, ${vendor} available from the vendor`}>
+                                    {mine.toLocaleString()} yours{vendor > 0 ? ` · ${vendor.toLocaleString()} vendor` : ''}
+                                  </div>
+                                )}
                               </td>
                               <td style={{ padding: '7px 14px', textAlign: 'right', fontSize: 12, color: incoming > 0 ? '#1e40af' : '#94a3b8' }}>
                                 <span title={stock.deliveries?.length ? `Arriving: ${_fmtDeliveries(stock.deliveries)}` : undefined}>
