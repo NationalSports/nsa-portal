@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
-import { pickCwAsset, normalizeWebLogos } from './businessLogicClient';
+const { pickCwAsset, normalizeWebLogos } = require('./businessLogic');
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { dP, rQ, DTF, POSITIONS, mergeColors, calcPaidQualifyingSpend } from './pricing';

@@ -10,7 +10,7 @@ import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from '
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
-import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogicClient';
+const { normalizeWebLogos, pickCwAsset, isCommissionRep } = require('./businessLogic');
 import { normSzName } from './pricing';
 import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, hydrateStoreArt } from './lib/artGrid';
 import { buildTeamArtLibrary } from './lib/artIdentity';

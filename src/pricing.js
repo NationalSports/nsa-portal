@@ -3,7 +3,7 @@ import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
 import { safeNum, safeJobs } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
-import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } from './businessLogicClient';
+const { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } = require('./businessLogic');
 // Default deco pricing tables + pure calculators live in src/lib/decoPricing.js (CJS,
 // shared verbatim with netlify/functions/quickorder-quote.js — same dual-consumer
 // pattern as src/lib/opsRecap.js). This file layers the localStorage nsa_settings

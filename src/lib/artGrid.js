@@ -5,7 +5,7 @@
 //      variant when the logo has one, else a light/dark recolor).
 //   2. Placement — resolve a garment's logo position/size from the per-style placement
 //      with an optional per-garment nudge override.
-import { normalizeWebLogos } from '../businessLogicClient';
+const { normalizeWebLogos } = require('../businessLogic');
 
 // The garment-color brightness rule, shared by Autocolor and the grid defaults so a
 // "Navy"/"Maroon"/"Forest" garment is correctly treated as dark (gets the light logo).

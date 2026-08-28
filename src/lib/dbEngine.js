@@ -18,7 +18,7 @@ import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
-import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems } from '../businessLogicClient';
+const { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems } = require('../businessLogic');
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 
