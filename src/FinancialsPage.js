@@ -18,6 +18,10 @@ import {
   portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
 } from './lib/financeEngine';
 import { LEGACY_STATEMENTS } from './data/legacyStatements';
+// Mounted in `adminReports` mode: the SAME component the Commissions page uses, showing
+// only its admin-only report tabs. Reusing it (rather than moving the tabs' code here)
+// keeps one copy of the commission math — rep pay and these reports can never disagree.
+const CommissionsPage = React.lazy(() => import('./CommissionsPage'));
 
 // ── Portal look (Reports palette) + validated chart palette ─────────
 const FD = "'Barlow Condensed','Arial Narrow',sans-serif";
@@ -284,6 +288,7 @@ export default function FinancialsPage() {
   const tabs = [
     ['overview', 'Overview'], ['pl', 'P&L'], ['statement', 'Statement'],
     ['profit', 'Profitability'], ['ar', 'Receivables'], ['forecast', 'Forecast'],
+    ['comm', 'Commission Reports'],
   ];
   const S = { h2: { fontFamily: FD, fontSize: 17, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: NAVY, margin: '0 0 8px' } };
   const card = { background: '#fff', border: '1px solid ' + HAIR, borderRadius: 12, padding: 16 };
@@ -551,6 +556,20 @@ export default function FinancialsPage() {
             })()}
           </div>
         </>
+      )}
+
+      {tab === 'comm' && (
+        <div style={card}>
+          <h2 style={S.h2}>Commission reports</h2>
+          <div style={{ fontSize: 11.5, color: INK2, marginBottom: 12 }}>
+            The admin-only side of Commissions — per-rep monthly statements and the company
+            dashboard. Reps still use the Commissions page for their own statements; this is the
+            same live report, mounted here so the admin views sit with the rest of the financials.
+          </div>
+          <React.Suspense fallback={<div style={{ fontSize: 13, color: INK2 }}>Loading commission reports&hellip;</div>}>
+            <CommissionsPage adminReports />
+          </React.Suspense>
+        </div>
       )}
 
       {tab === 'ar' && (
