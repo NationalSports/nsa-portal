@@ -74,6 +74,9 @@ UNION ALL
 SELECT 'so_jobs_orphaned', COUNT(*) FROM so_jobs j
   WHERE NOT EXISTS (SELECT 1 FROM sales_orders s WHERE s.id=j.so_id)
 UNION ALL
+SELECT 'so_art_reserved_tbd_id', COUNT(*) FROM so_art_files a
+  WHERE a.id='__tbd'
+UNION ALL
 SELECT 'so_missing_estimate_ref', COUNT(*) FROM sales_orders s
   WHERE s.deleted_at IS NULL AND s.estimate_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM estimates e WHERE e.id=s.estimate_id)
@@ -108,6 +111,20 @@ SELECT 'ws_order_missing_store', COUNT(*) FROM webstore_orders wo
 UNION ALL
 SELECT 'po_lines_orphaned', COUNT(*) FROM purchase_order_lines pl
   WHERE NOT EXISTS (SELECT 1 FROM purchase_orders po WHERE po.id=pl.po_id)
+-- ── Exact duplicate SO PO lines ─────────────────────────────────────────────
+-- The old create-time race could write the same item/PO/size line twice. The app now serializes
+-- that write and self-heals same-PO copies on the next SO save; this invariant keeps residual rows
+-- visible instead of letting received units and cost appear doubled indefinitely (SO-2019 PO 57240).
+UNION ALL
+SELECT 'so_exact_dup_po_line', COUNT(*) FROM (
+  SELECT pl.so_item_id, LOWER(TRIM(pl.po_id)),
+         pl.sizes - ARRAY['unit_cost','vendor_keys','api_order_id','api_ordered_at','batch_queue_id','batch_po_number','_billed','_tracking_numbers','shipping']::text[]
+  FROM so_item_po_lines pl
+  WHERE COALESCE(TRIM(pl.po_id),'') <> ''
+  GROUP BY pl.so_item_id, LOWER(TRIM(pl.po_id)),
+           pl.sizes - ARRAY['unit_cost','vendor_keys','api_order_id','api_ordered_at','batch_queue_id','batch_po_number','_billed','_tracking_numbers','shipping']::text[]
+  HAVING COUNT(*) > 1
+) g
 -- ── Duplicate billing ───────────────────────────────────────────────────────
 -- A vendor tracking number is one physical package; the same (tracking, sizes) — or the same
 -- (doc, sizes) — appearing twice in a PO line's _bill_details is a double-bill (the 2026-07

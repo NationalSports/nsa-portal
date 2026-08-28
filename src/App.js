@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -22835,12 +22835,17 @@ export default function App(){
     // already resolves them to 'waiting_for_art', so they land in the column matching their real state.
     // Jobs whose decoration already finished stay out — that work is done, not waiting on an artist.
     const _assignedButNeverRequested=j=>j.art_status==='needs_art'&&!['completed','shipped'].includes(j.prod_status);
-    const artistJobs=_famed(filtered.filter(j=>j.art_status!=='art_complete'&&!j.art_hidden&&!_repOwnsProdStep(j)
+    // A persisted complete SO is financially closed and should never put an unfinished legacy
+    // job back into an artist's active queue. Keep its genuinely completed jobs available in the
+    // Completed reference list below, but suppress stale/inconsistent active states (SO-1576:
+    // a fulfilled names-only job remained art_in_progress and resurfaced a month later).
+    const _orderOpenForArt=j=>j.so?.status!=='complete';
+    const artistJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_status!=='art_complete'&&!j.art_hidden&&!_repOwnsProdStep(j)
       &&(j.art_status!=='needs_art'||_assignedButNeverRequested(j))));
     // In Production: art complete but decoration not finished yet
-    const inProductionJobs=_famed(filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
+    const inProductionJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
     // Hidden: jobs the artist has hidden from the workboard (booking orders, far-out items, etc.)
-    const hiddenArtJobs=_famed(filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status)));
+    const hiddenArtJobs=_famed(filtered.filter(j=>_orderOpenForArt(j)&&j.art_hidden&&!['completed','shipped'].includes(j.prod_status)));
     // Completed: art complete AND decoration done (completed/shipped) — reference for artists
     const completedArtJobs=_famed(allArtJobs.filter(j=>{
       if(j.art_status!=='art_complete'||!['completed','shipped'].includes(j.prod_status))return false;
@@ -23208,10 +23213,13 @@ export default function App(){
           // garment's art file instead of this one's (SO-2063).
           const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
           const itIdx=skuItem?.item_idx;
-          const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
-          const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
+          const item=itIdx!=null?safeItems(so)[itIdx]:null;
+          // Scope to THIS job's decoration indexes. A names-only job sharing a garment with a
+          // logo has no art_file_id of its own; scanning every decoration routed its upload into
+          // that unrelated logo and left this modal blank (SO-1576 JOB-04).
+          const skuArtIds=[...new Set(jobItemDecosOfKind(skuItem,item,'art').filter(d=>d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
           // Prefer art files this item actually uses; if multiple, take the first; fall back to the job's primary
-          return skuArtIds[0]||j.art_file_id||null;
+          return skuArtIds[0]||(j.art_file_id&&j.art_file_id!=='__tbd'?j.art_file_id:null);
         };
         // Composite key for per-item mockups: SKU + color, so the same SKU in different colors
         // doesn't collapse onto a single entry — via garmentMockKey, which keys the hand-typed
@@ -23224,7 +23232,10 @@ export default function App(){
           const sku=g?.sku;const color=g?.color;
           setArtJobDetailUploading(true);
           try{
-            const artId=targetArtId||resolveItemArtId(g);
+            let artId=targetArtId||resolveItemArtId(g);
+            // `__tbd` is a reserved decoration sentinel, never a valid so_art_files id. Treat an
+            // upload against it as the first real proof and promote the job to a normal art id.
+            if(artId==='__tbd')artId=null;
             const mk=slotKey||_mockKey(g);
             if(typeof nf==='function')nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+sku+'...');
             const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
@@ -23234,6 +23245,7 @@ export default function App(){
             if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
+            const legacyTbd=existingArt.find(a=>a.id==='__tbd');
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
             let updArt;let newArtFileId=artId;
             if(hasMatch){
@@ -23242,18 +23254,25 @@ export default function App(){
               // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
               // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
               const existing=curItemMockups[mk]||(mk===_mockKey(g)?(curItemMockups[sku]||[]):[]);
-              const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
+              // A retry keeps the newest upload and drops older copies with the same filename.
+              const updItemMockups={...curItemMockups,[mk]:dedupeMockDupes([...uploaded,...existing])};
               updArt=existingArt.map(a=>a.id===artId?{...a,item_mockups:updItemMockups,status:'uploaded'}:a);
             }else{
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[mk]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
-              updArt=[...existingArt,newAf];
+              const legacyMocks=legacyTbd?.item_mockups||{};
+              const legacySlot=legacyMocks[mk]||(mk===_mockKey(g)?(legacyMocks[sku]||[]):[]);
+              const newAf={...(legacyTbd||{}),id:newArtFileId,name:legacyTbd?.name||j.art_name||'Art',deco_type:legacyTbd?.deco_type||j.deco_type||'screen_print',ink_colors:legacyTbd?.ink_colors||'',thread_colors:legacyTbd?.thread_colors||'',art_size:legacyTbd?.art_size||'',art_sizes:legacyTbd?.art_sizes||{},files:legacyTbd?.files||[],mockup_files:legacyTbd?.mockup_files||[],item_mockups:{...legacyMocks,[mk]:dedupeMockDupes([...uploaded,...legacySlot])},prod_files:legacyTbd?.prod_files||[],notes:legacyTbd?.notes||'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt.filter(a=>a.id!=='__tbd'),newAf];
             }
-            const newSO=savSO({...liveSO,art_files:updArt});
+            const createdJobArtId=!hasMatch&&!artId?newArtFileId:null;
+            const jobArtFileId=j.art_file_id&&j.art_file_id!=='__tbd'?j.art_file_id:createdJobArtId;
+            const updatedJobs=createdJobArtId?buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:jobArtFileId,_art_ids:[...new Set([...(jj._art_ids||[]).filter(id=>id&&id!=='__tbd'),jobArtFileId])],art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj):safeJobs(liveSO);
+            const updatedItems=createdJobArtId?attachJobArtToUnresolvedDecos(safeItems(liveSO),j,jobArtFileId):safeItems(liveSO);
+            const newSO=savSO({...liveSO,art_files:updArt,...(createdJobArtId?{jobs:updatedJobs,items:updatedItems}:{})});
             // Only refresh the modal if it's still open on this job — the rep may have closed it and moved on
             // while the upload finished in the background; reopening it out from under them is worse than stale.
-            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,artFile:updArt.find(a=>a.id===(j.art_file_id||newArtFileId))||updArt[0]}:m);
+            setArtMockupModal(m=>m&&m.id===j.id?{...j,so:newSO,art_file_id:jobArtFileId,artFile:updArt.find(a=>a.id===jobArtFileId)||updArt[0]}:m);
             const ok=await _dbSaveSO(newSO);
             if(ok===false){if(typeof nf==='function')nf('Mockup uploaded but failed to save to order. Please retry.','error');return}
             if(typeof nf==='function')nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
@@ -23839,12 +23858,15 @@ export default function App(){
             if(!artId){
               const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
               const itIdx=skuItem?.item_idx;
-              const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
-              const skuArtIds=decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id);
+              const item=itIdx!=null?safeItems(so)[itIdx]:null;
+              // Only inspect decorations this job owns. Names/numbers-only jobs must create and
+              // attach their own proof record, never borrow a sibling logo's art file.
+              const skuArtIds=jobItemDecosOfKind(skuItem,item,'art').filter(d=>d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id);
               const uniqueSkuArts=[...new Set(skuArtIds)];
               // If this SKU uses exactly one art, route there. Otherwise fall back to job primary.
               artId=uniqueSkuArts.length===1?uniqueSkuArts[0]:j.art_file_id;
             }
+            if(artId==='__tbd')artId=null;
             const mk=slotKey||_mockKey(g);
             nf('Uploading '+files.length+' file'+(files.length>1?'s':'')+' for '+(g?.name||sku)+'...');
             const results=await Promise.allSettled(files.map(f=>fileUpload(f,'nsa-art-files').then(url=>({url,name:f.name,art_file_id:artId||null,sku}))));
@@ -23854,13 +23876,14 @@ export default function App(){
             if(uploaded.length===0)return;
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const existingArt=safeArt(liveSO);
+            const legacyTbd=existingArt.find(a=>a.id==='__tbd');
             const hasMatch=artId&&existingArt.some(a=>a.id===artId);
-            const liveAf=hasMatch?existingArt.find(a=>a.id===artId):af;
+            const liveAf=hasMatch?existingArt.find(a=>a.id===artId):(legacyTbd||af);
             const curItemMockups=liveAf?.item_mockups||{};
             // Migrate any legacy plain-SKU entry onto the composite key while preserving it — but only for the
             // primary (bare sku|color) slot, so a per-decoration slot doesn't inherit the legacy mockup.
             const existing=curItemMockups[mk]||(mk===_mockKey(g)?(curItemMockups[sku]||[]):[]);
-            const updItemMockups={...curItemMockups,[mk]:[...existing,...uploaded]};
+            const updItemMockups={...curItemMockups,[mk]:dedupeMockDupes([...uploaded,...existing])};
             let updArt;
             let newArtFileId=artId;
             if(hasMatch){
@@ -23869,15 +23892,17 @@ export default function App(){
               // Create art file if none exists for this job
               newArtFileId=artId||('af-'+Date.now());
               uploaded.forEach(u=>{u.art_file_id=newArtFileId});
-              const newAf={id:newArtFileId,name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:[],item_mockups:{[mk]:uploaded},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
-              updArt=[...existingArt,newAf];
-              if(!j.art_file_id)j.art_file_id=newArtFileId;
+              const newAf={...(legacyTbd||{}),id:newArtFileId,name:legacyTbd?.name||j.art_name||'Art',deco_type:legacyTbd?.deco_type||j.deco_type||'screen_print',ink_colors:legacyTbd?.ink_colors||'',thread_colors:legacyTbd?.thread_colors||'',art_size:legacyTbd?.art_size||'',art_sizes:legacyTbd?.art_sizes||{},files:legacyTbd?.files||[],mockup_files:legacyTbd?.mockup_files||[],item_mockups:updItemMockups,prod_files:legacyTbd?.prod_files||[],notes:legacyTbd?.notes||'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt.filter(a=>a.id!=='__tbd'),newAf];
             }
-            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
-            const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
-            const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+            const createdJobArtId=!hasMatch&&!artId?newArtFileId:null;
+            const jobArtFileId=j.art_file_id&&j.art_file_id!=='__tbd'?j.art_file_id:createdJobArtId;
+            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:jobArtFileId,...(createdJobArtId?{_art_ids:[...new Set([...(jj._art_ids||[]).filter(id=>id&&id!=='__tbd'),jobArtFileId])]}:{}),art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedItems=createdJobArtId?attachJobArtToUnresolvedDecos(safeItems(liveSO),j,jobArtFileId):safeItems(liveSO);
+            const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs,items:updatedItems});
+            const updatedAf=updArt.find(a=>a.id===jobArtFileId);
             // Only refresh the modal if it's still open on this job — closing it mid-upload must stick.
-            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
+            setArtJobDetailModal(m=>m&&m.id===j.id?{...j,art_file_id:jobArtFileId,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status}:m);
             // Block on the DB write so the success toast only fires after the mockup is actually persisted.
             const ok=await _dbSaveSO(newSO);
             if(ok===false){nf('Mockup file uploaded but failed to save to order. Please retry.','error');return}
@@ -23975,8 +24000,8 @@ export default function App(){
           if(targetArtId){handleItemMockupUpload(files,g,targetArtId,slotKey);return;}
           const skuItem=g&&g.item_idx!=null?g:(j.items||[]).find(gi=>garmentMockKey(gi)===garmentMockKey(g||{}));
           const itIdx=skuItem?.item_idx;
-          const decos=itIdx!=null?safeDecos(safeItems(so)[itIdx]||{}):[];
-          const skuArtIds=[...new Set(decos.filter(d=>d.kind==='art'&&d.art_file_id).map(d=>d.art_file_id))];
+          const item=itIdx!=null?safeItems(so)[itIdx]:null;
+          const skuArtIds=[...new Set(jobItemDecosOfKind(skuItem,item,'art').filter(d=>d.art_file_id&&d.art_file_id!=='__tbd').map(d=>d.art_file_id))];
           const skuArts=skuArtIds.map(aid=>allArtFiles.find(a=>a.id===aid)).filter(Boolean);
           if(skuArts.length<=1||allArtFiles.length<=1){
             // single art — just upload

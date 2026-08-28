@@ -202,7 +202,7 @@ function soGoodsValue(so) {
 // locale form with its full year (the todo builder's old inline regex truncated
 // "12/10/2026" to year 2020). Tiers per the dashboard todo builder:
 // 3-6d follow up · 7-13d going cold · 14d+ stale.
-const QUOTE_FOLLOWUP_DAYS = 3, QUOTE_COLD_DAYS = 7, QUOTE_STALE_DAYS = 14;
+const QUOTE_FOLLOWUP_DAYS = 3, QUOTE_COLD_DAYS = 7, QUOTE_STALE_DAYS = 14, QUOTE_DIGEST_MAX_DAYS = 30;
 const quoteAgeDays = (est, nowMs) => {
   const stamp = est && (est.updated_at || est.created_at); if (!stamp) return null;
   const s = String(stamp);
@@ -213,6 +213,9 @@ const quoteAgeDays = (est, nowMs) => {
 };
 const quoteColdBucket = (days) => (days == null || days < QUOTE_FOLLOWUP_DAYS ? null
   : days < QUOTE_COLD_DAYS ? 'follow_up' : days < QUOTE_STALE_DAYS ? 'going_cold' : 'stale');
+// The email is a current-action recap, not an indefinite quote archive. Keep day 30
+// ("over 30 days" begins at 31) while the in-app My Day view retains its full history.
+const quoteInDigest = (days) => days != null && days >= QUOTE_COLD_DAYS && days <= QUOTE_DIGEST_MAX_DAYS;
 
 // ── Invoice A/R helpers ──
 const invoiceBalance = (inv) => {
@@ -266,5 +269,5 @@ module.exports = {
   NON_SIZE, isSizeKey, sizeUnits, sizeKeys, numericSizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
   isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
   dateYmd, paymentsLatestYmd, isFullyPaidInvoice,
-  quoteAgeDays, quoteColdBucket, QUOTE_FOLLOWUP_DAYS, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS,
+  quoteAgeDays, quoteColdBucket, quoteInDigest, QUOTE_FOLLOWUP_DAYS, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS, QUOTE_DIGEST_MAX_DAYS,
 };

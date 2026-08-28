@@ -1943,10 +1943,11 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
-    // Duplicate-PO guard: drop any newly-introduced po_id whose size signature exactly matches
-    // a clean (un-received/un-billed/un-shipped) PO line already on the same item. Catches the
-    // "two creates raced against a stale open-size view" pattern (SO-1080, SO-1059, SO-1101)
-    // where the counter advanced (so the new po_id differs) but the units were already covered.
+    // Duplicate-PO guard: always collapse identical copies of the same PO, then drop any newly
+    // introduced po_id whose size signature exactly matches a clean (un-received/un-billed/
+    // un-shipped) PO line already on the same item. Catches both the durable-write/full-save race
+    // (SO-2019) and the stale-open-size race where the counter advanced but units were already
+    // covered (SO-1080, SO-1059, SO-1101).
     if(items&&items.length){
       const _dbPoIdSet=new Set((oldItemIds.length?(await(async()=>{try{const r=await supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds);return(r.data||[]).map(x=>x.po_id).filter(Boolean)}catch{return[]}})()):[]));
       const _sizeSig=pl=>{const ks=Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof pl[k]==='number'&&pl[k]>0).sort();return ks.map(k=>k+':'+pl[k]).join('|')};
@@ -1966,18 +1967,18 @@ const _dbSaveSOInner = async (so) => {
         const drop=new Set();
         Object.values(bySig).forEach(group=>{
           if(group.length<2)return;
-          let clean=group.filter(g=>_isClean(g.pl));
-          if(clean.length<2)return;
-          // Exact self-duplicates first: multiple clean copies of the SAME po_id with an identical
+          // Exact self-duplicates first: multiple copies of the SAME po_id with an identical
           // size signature on one item. The create-time race (the durable per-line write vs the full
           // save, before _dbPersistNewPoLine was serialized into the per-SO queue) wrote such pairs,
-          // and neither branch below touches them once both copies are db-known — so they survived
-          // every later save (SO-2121 "PO 58203 FPUA", 2026-08-24). No flow legitimately appends a
-          // second identical line for a po_id (re-applying a PO folds into the existing line), so
-          // keep the first copy and drop the rest.
-          const _byPoId={};clean.forEach(g=>{const k=String(g.pl.po_id||'');(_byPoId[k]=_byPoId[k]||[]).push(g)});
+          // and neither branch below touched received/billed copies because they are not "clean".
+          // The receipt-rollback pass above merges every DB row's durable history into the first
+          // client copy, so keeping that first line preserves received/billed/tracking state while
+          // dropping the doubled quantity/cost display (SO-2019 PO 57240 / PO 57333, 2026-08-28).
+          // No flow legitimately appends a second identical line for a po_id (re-applying a PO folds
+          // into the existing line), so this is safe regardless of fulfillment state.
+          const _byPoId={};group.forEach(g=>{const k=String(g.pl.po_id||'');(_byPoId[k]=_byPoId[k]||[]).push(g)});
           Object.values(_byPoId).forEach(same=>{same.slice(1).forEach(g=>drop.add(g.pi))});
-          clean=clean.filter(g=>!drop.has(g.pi));
+          let clean=group.filter(g=>!drop.has(g.pi)&&_isClean(g.pl));
           if(clean.length<2)return;
           const dbKnown=clean.filter(g=>g.pl.po_id&&_dbPoIdSet.has(g.pl.po_id));
           const newOnes=clean.filter(g=>!g.pl.po_id||!_dbPoIdSet.has(g.pl.po_id));
