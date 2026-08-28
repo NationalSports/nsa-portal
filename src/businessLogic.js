@@ -944,31 +944,6 @@ function calcPromoSizeSells(item, vendors) {
   return entries.length ? Object.fromEntries(entries.map(([size, cost]) => [size, Math.round(safeNum(cost) / PROMO_SANMAR_SS_COST_PCT * 100) / 100])) : null;
 }
 
-// A promo order is an all-lines payment method, not a per-line coupon. Reapply the
-// pricing rule to every line so charges added after promo activation (for example a
-// Topstar digitizing line) inherit promo coverage automatically. Legacy partial-promo
-// bookkeeping is cleared because there is no customer-pay remainder on a promo order.
-function applyFullPromoPricing(item, vendors) {
-  const restoredDecorations = safeDecos(item).map(d => d._pre_promo_sell_override !== undefined
-    ? { ...d, sell_override: d._pre_promo_sell_override, _pre_promo_sell_override: undefined }
-    : d);
-  const baseSell = item._pre_promo_sell != null ? item._pre_promo_sell : item.unit_sell;
-  const baseSizeSells = item._pre_promo_sizeSells || item._sizeSells;
-  const base = { ...item, unit_sell: baseSell, decorations: restoredDecorations };
-  const promoSell = item.is_free_promo ? safeNum(baseSell) : calcPromoItemSell(base, vendors);
-  const promoSizeSells = item.is_free_promo ? baseSizeSells : calcPromoSizeSells(base, vendors);
-  return {
-    ...base,
-    is_promo: true,
-    _pre_promo_sell: baseSell,
-    ...(baseSizeSells ? { _pre_promo_sizeSells: baseSizeSells } : {}),
-    unit_sell: promoSell,
-    _sizeSells: promoSizeSells || undefined,
-    _promo_credit: undefined,
-    _promo_partial_qty: undefined,
-  };
-}
-
 // Calculate promo-adjusted totals for an order
 // Returns { promoRev, promoShip, promoAmount, normalRev, normalShip, normalTax, customerPays }
 function calcPromoTotals(o, cust) {
@@ -1295,7 +1270,7 @@ module.exports = {
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
-  PROMO_DECO_MULT, PROMO_SHIP_MULT, PROMO_SANMAR_SS_COST_PCT, isSanmarSsPromoItem, calcPromoItemSell, calcPromoSizeSells, applyFullPromoPricing, calcPromoTotals, calcPromoSpendAllocation, calcQualifyingSpend, getCurrentPromoPeriod, getPreviousPromoPeriod,
+  PROMO_DECO_MULT, PROMO_SHIP_MULT, PROMO_SANMAR_SS_COST_PCT, isSanmarSsPromoItem, calcPromoItemSell, calcPromoSizeSells, calcPromoTotals, calcPromoSpendAllocation, calcQualifyingSpend, getCurrentPromoPeriod, getPreviousPromoPeriod,
   // QB sync
   buildQBSalesOrder, buildQBInvoice,
   // Inventory

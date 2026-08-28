@@ -20,7 +20,7 @@ import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isIm
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
-const { jobScreenKey, jobGroupKey, artReviewLocked, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep, calcPromoItemSell, applyFullPromoPricing } = require('./businessLogic');
+import { jobScreenKey, jobGroupKey, artReviewLocked, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep, calcPromoItemSell, calcPromoSizeSells } from './businessLogic';
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion } from './lib/syncJobsMatch';
@@ -39,6 +39,21 @@ const nameWithBrand=(name,brand)=>{
   if(!n)return b;
   if(n.toLowerCase().startsWith(b.toLowerCase()))return n;
   return b+' '+n;
+};
+
+// Browser copy of the dependency-free promo helper. businessLogic.js remains CommonJS
+// for Node/Jest callers, so the client keeps the same rule here without adding another
+// named import across that module boundary.
+const applyFullPromoPricing=(item,vendors)=>{
+  const restoredDecorations=safeDecos(item).map(d=>d._pre_promo_sell_override!==undefined
+    ?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d);
+  const baseSell=item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell;
+  const baseSizeSells=item._pre_promo_sizeSells||item._sizeSells;
+  const base={...item,unit_sell:baseSell,decorations:restoredDecorations};
+  const promoSell=item.is_free_promo?safeNum(baseSell):calcPromoItemSell(base,vendors);
+  const promoSizeSells=item.is_free_promo?baseSizeSells:calcPromoSizeSells(base,vendors);
+  return{...base,is_promo:true,_pre_promo_sell:baseSell,...(baseSizeSells?{_pre_promo_sizeSells:baseSizeSells}:{}),unit_sell:promoSell,
+    _sizeSells:promoSizeSells||undefined,_promo_credit:undefined,_promo_partial_qty:undefined};
 };
 
 // Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /

@@ -4,7 +4,7 @@
 // behavior-identical to the old closure call.
 import { useAppData } from './AppContext';
 import { calcSOStatus } from './components';
-const { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } = require('./businessLogic');
+import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
