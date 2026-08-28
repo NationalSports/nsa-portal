@@ -37,6 +37,7 @@ import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
+import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -24182,22 +24183,22 @@ export default function App(){
 
         // Send for approval — sends directly to rep for review, with optional message
         const sendForApproval=()=>{
-          // Re-fetch latest art file from sos state to avoid stale closure data
+          // Re-fetch both the order AND this job before validating. The modal can remain open while
+          // a realtime save splits/reassigns its job, leaving j._art_ids/items stale even though the
+          // rendered art comes from live SO decorations (SO-2199).
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const missing=skusMissingMockups(j,liveSO2);
+          const{currentJob:liveJob,missingImages:_noImg}=approvalArtContext(j,liveSO2,buildJobs(liveSO2));
+          const missing=skusMissingMockups(liveJob,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
           // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
           // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
           // source — a web logo or any mockup the design already carries satisfies the visual requirement.
           // (Mockups are already mandatory via skusMissingMockups above, so designs that get here normally
           // have one; this gate only blocks a design that has no image of any kind at all.)
-          const _hasArtImage=(a)=>!!(a&&(a.preview_url||a.web_logo_url||safeArr(a.web_logos).length||safeArr(a.mockup_files).length||safeArr(a.sample_art).length||Object.values(safeObj(a.item_mockups)).some(v=>safeArr(v).length>0)));
-          const _jobArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-          const _noImg=_jobArtIds.map(id=>safeArt(liveSO2).find(a=>a.id===id)).filter(Boolean).filter(a=>!_hasArtImage(a));
           if(_noImg.length){nf('Add a logo image before sending for approval: '+_noImg.map(a=>a.name||'art').join(', '),'error');return}
-          if(!_confirmResendIfRejected(j))return;
+          if(!_confirmResendIfRejected(liveJob))return;
           // Move to waiting_approval / needs_approval
-          moveArtStatus(j,'waiting_approval');
+          moveArtStatus(liveJob,'waiting_approval');
           const msgs=[...artMessages];
           // Include artist's message if provided
           if(artJobDetailApprovalMsg.trim()){
@@ -24205,8 +24206,8 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
-          const _sendArtIds=jobLiveArtIds(j,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
+          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(liveJob,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
+          const _sendArtIds=jobLiveArtIds(liveJob,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
           nf('Mockup sent to '+(rep?.name||'rep')+' for approval');
