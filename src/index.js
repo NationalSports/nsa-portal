@@ -8,6 +8,7 @@ import {
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
 import { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
+import { isInitializationRuntimeError, runtimeRecoveryStorageKey } from './runtimeRecovery';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -144,6 +145,21 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, errorInfo) {
     this.setState({ errorInfo });
     console.error('[NSA ErrorBoundary]', error, errorInfo);
+    // A tab can survive across a Netlify deploy with an old main/chunk graph. Most
+    // mismatches throw ChunkLoadError, but an already-cached lazy chunk can instead
+    // execute against the new graph and throw a TDZ "before initialization" error.
+    // Reload once per main-bundle hash; a real code bug then falls through to this
+    // error screen on the second attempt instead of looping forever.
+    if (_isChunkErr(error) || isInitializationRuntimeError(error)) {
+      try {
+        const sources = Array.from(document.scripts || []).map(script => script.src).filter(Boolean);
+        const key = runtimeRecoveryStorageKey(sources, window.location.pathname);
+        if (!sessionStorage.getItem(key)) {
+          sessionStorage.setItem(key, String(Date.now()));
+          window.location.reload();
+        }
+      } catch (_) {}
+    }
   }
   render() {
     if (this.state.hasError) {
