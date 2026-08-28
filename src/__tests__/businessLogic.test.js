@@ -939,6 +939,20 @@ describe('Promo Dollars', () => {
     test('handles null/undefined gracefully', () => {
       expect(BL.calcPromoItemSell({})).toBe(0);
     });
+
+    test('keeps the entered retail sell for custom service charges', () => {
+      expect(BL.calcPromoItemSell({ sku: 'DIGITIZING', is_custom: true, nsa_cost: 0, retail_price: 0, unit_sell: 25 })).toBe(25);
+    });
+
+    test('marks every line promo, including a later-added custom service', () => {
+      const item = BL.applyFullPromoPricing({
+        sku: 'DIGITIZING', is_custom: true, is_promo: false,
+        nsa_cost: 0, retail_price: 0, unit_sell: 25, sizes: {}, est_qty: 1, decorations: []
+      });
+      expect(item.is_promo).toBe(true);
+      expect(item.unit_sell).toBe(25);
+      expect(item._pre_promo_sell).toBe(25);
+    });
   });
 
   describe('calcPromoTotals()', () => {
@@ -992,6 +1006,19 @@ describe('Promo Dollars', () => {
       }, { tax_rate: 0.07 });
       expect(result.promoShip).toBe(6.25);
       expect(result.promoAmount).toBe(106.25);
+    });
+
+    test('an all-promo service line leaves nothing for the customer to pay', () => {
+      const service = BL.applyFullPromoPricing({
+        sku: 'DIGITIZING', is_custom: true, unit_sell: 25, nsa_cost: 0,
+        sizes: {}, est_qty: 1, decorations: []
+      });
+      const result = BL.calcPromoTotals({
+        promo_applied: true, items: [service], art_files: [], shipping_type: 'pct', shipping_value: 5
+      }, {});
+      expect(result.promoRev).toBe(25);
+      expect(result.promoShip).toBe(1.5);
+      expect(result.customerPays).toBe(0);
     });
   });
 

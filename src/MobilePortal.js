@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import BarcodeScanner from './BarcodeScanner';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
-import { isJobReady } from './businessLogic';
+import { isJobReady } from './businessLogicClient';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
 import { SZ_ORD } from './constants';
 import { numericSizeKeys } from './lib/opsRecap';
