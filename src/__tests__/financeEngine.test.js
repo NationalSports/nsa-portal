@@ -3,6 +3,8 @@ import {
   parseDate, monthKey, addMonths, billedByMonth, matchedPL, arAging,
   backlogSchedule, forecastRevenue, cashForecast, insights,
   portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
+  receivablesDashboard, staleOrdersReport, arCashForecast,
+  customerExposureReport, buildArSnapshotRows,
 } from '../lib/financeEngine';
 
 // Simple margin stub: rev = order.rev, cost = order.cost, shipRev = order.ship||0.
@@ -94,6 +96,134 @@ describe('arAging', () => {
     expect(buckets.d31_60).toBeCloseTo(300);
     expect(buckets.d90plus).toBeCloseTo(400);
     expect(total).toBeCloseTo(950);
+  });
+});
+
+describe('receivablesDashboard', () => {
+  const asOf = new Date(2026, 7, 29); // Aug 29 2026
+  const reps = [
+    { id: 'R1', name: 'Rep One', email: 'rep1@nsa.test' },
+    { id: 'R2', name: 'Rep Two', email: 'rep2@nsa.test' },
+  ];
+  const customers = [
+    { id: 'P', name: 'Parent', primary_rep_id: 'R2', payment_terms: 'net30', contacts: [{ role: 'Billing', name: 'AP', email: 'ap@parent.test' }] },
+    { id: 'C1', name: 'Alpha', primary_rep_id: 'R1', payment_terms: 'net30', contacts: [{ role: 'Coach', name: 'Coach?', email: 'rep1@nsa.test' }] },
+    { id: 'C2', name: 'Beta', parent_id: 'P', primary_rep_id: 'R2', payment_terms: 'net30', contacts: [{ role: 'Coach', name: 'Real Coach', email: 'coach@beta.test' }] },
+  ];
+  const invs = [
+    // Portal row wins the I1 collision because it carries the live partial payment.
+    { id: 'I1', customer_id: 'C1', date: '2026-06-01', due_date: '2026-06-30', total: 1000, paid: 700, status: 'partial' },
+    { id: 'IP', customer_id: 'C1', date: '2026-07-01', total: 200, paid: 200, status: 'paid', payments: [{ amount: 200, date: '2026-08-10' }] },
+  ];
+  const histInvs = [
+    { id: 'I1', customer_id: 'C1', date: '2026-06-01', total: 1000, status: 'open', raw_customer_name: 'Alpha duplicate' },
+    { id: 'H1', customer_id: 'C2', date: '2026-04-01', total: 500, status: 'open', raw_customer_name: 'Beta' },
+    // Paid NetSuite rows have no paid date and must not pollute days-to-pay.
+    { id: 'HP', customer_id: 'C2', date: '2026-05-01', total: 900, status: 'paid' },
+  ];
+
+  test('dedupes sources, ages from due dates, and totals every rep', () => {
+    const d = receivablesDashboard({ invs, histInvs, customers, reps, asOf });
+    expect(d.openInvoices).toHaveLength(2);
+    expect(d.kpis.total).toBeCloseTo(800); // I1 portal balance 300 + H1 500
+    expect(d.kpis.pastDue).toBeCloseTo(800);
+    expect(d.aging.buckets.d31_60).toBeCloseTo(300); // I1 is exactly 60 days late
+    expect(d.aging.buckets.d90plus).toBeCloseTo(500);
+    expect(d.repRows.find((r) => r.repId === 'R1').total).toBeCloseTo(300);
+    expect(d.repRows.find((r) => r.repId === 'R2').total).toBeCloseTo(500);
+  });
+
+  test('flags rep-address placeholders, honors inherited billing, and reports payment behavior', () => {
+    const d = receivablesDashboard({ invs, histInvs, customers, reps, asOf });
+    const alpha = d.accountsNeedingInfo.find((r) => r.customerId === 'C1');
+    expect(alpha.issues).toContain('Coach email is a staff/rep address');
+    expect(alpha.issues).toContain('No billing email');
+    const betaOpen = d.accountRows.find((r) => r.customerId === 'C2');
+    expect(betaOpen.billingEmail).toBe('ap@parent.test');
+    expect(betaOpen.coachEmail).toBe('coach@beta.test');
+    expect(d.kpis.noBillingExposure).toBeCloseTo(300);
+    const r1Pay = d.repPayRows.find((r) => r.repId === 'R1');
+    expect(r1Pay.count).toBe(1);
+    expect(r1Pay.avgDays).toBe(40);
+    expect(d.kpis.paySampleCount).toBe(1);
+  });
+});
+
+describe('operational AR forecast and exposure', () => {
+  const asOf = new Date(2026, 7, 29);
+  const openInvoices = [
+    { id: 'I-DUE', customer_id: 'C1', repId: 'R1', balance: 1000, invoiceDate: new Date(2026, 6, 15), dueDate: new Date(2026, 7, 31), qb_invoice_id: 'qb1' },
+    { id: 'I-LATE', customer_id: 'C2', repId: 'R2', balance: 2000, invoiceDate: new Date(2026, 3, 1), dueDate: new Date(2026, 4, 1), daysPastDue: 120 },
+  ];
+
+  test('projects 7/30/60 day cash without requiring a bank feed and reports QB coverage', () => {
+    const f = arCashForecast({ openInvoices, accountPayRows: [{ customerId: 'C1', avgDays: 45 }], asOf });
+    expect(f.total).toBe(3000);
+    expect(f.forecast30).toBeGreaterThan(f.next7);
+    expect(f.forecast60).toBeGreaterThan(f.forecast30);
+    expect(f.beyond60).toBeGreaterThan(0);
+    expect(f.qbLinked).toBe(1);
+    expect(f.qbCoveragePct).toBeCloseTo(1 / 3);
+  });
+
+  test('combines open AR, completed uninvoiced work, and other open order value by account', () => {
+    const ar = { accountRows: [{ customerId: 'C1', name: 'Alpha', repId: 'R1', total: 400, pastDue: 100 }] };
+    const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1' }];
+    const sos = [
+      { id: 'SO-DONE', customer_id: 'C1', status: 'complete', _rev: 1000 },
+      { id: 'SO-OPEN', customer_id: 'C1', status: 'in_production', _rev: 500 },
+    ];
+    const rows = customerExposureReport({ ar, sos, invs: [{ id: 'I1', so_id: 'SO-DONE', total: 250, tax: 0, status: 'open' }], customers, calcMargin, calcStatus: (so) => so.status });
+    expect(rows[0]).toMatchObject({ customerId: 'C1', openAR: 400, completedUninvoiced: 750, openOrderValue: 500, totalExposure: 1650 });
+  });
+
+  test('builds team and rep daily snapshots with forecast and exposure values', () => {
+    const ar = {
+      openInvoices,
+      accountPayRows: [],
+    };
+    const rows = buildArSnapshotRows({
+      ar,
+      exposureRows: [
+        { repId: 'R1', completedUninvoiced: 300, openOrderValue: 700 },
+        { repId: 'R2', completedUninvoiced: 50, openOrderValue: 100 },
+      ],
+      reps: [{ id: 'R1', name: 'Rep One' }, { id: 'R2', name: 'Rep Two' }],
+      asOf,
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ as_of_date: '2026-08-29', scope_id: 'team', total_ar: 3000, completed_uninvoiced: 350 });
+    expect(rows.find((r) => r.scope_id === 'R1')).toMatchObject({ total_ar: 1000, completed_uninvoiced: 300, open_order_value: 700 });
+  });
+});
+
+describe('staleOrdersReport', () => {
+  const asOf = new Date(2026, 7, 29);
+  const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1' }];
+  const sos = [
+    { id: 'SO-A', customer_id: 'C1', created_at: '2026-08-10', _rev: 1000, _status: 'ready_to_invoice', items: [] },
+    { id: 'SO-B', customer_id: 'C1', created_at: '2026-07-01', _rev: 500, _status: 'need_order', items: [] },
+    { id: 'SO-C', customer_id: 'C1', created_at: '2026-05-01', order_type: 'booking', _rev: 700, _status: 'booking', items: [] },
+    { id: 'SO-D', customer_id: 'C1', created_at: '2026-08-01', _rev: 800, _status: 'ready_to_invoice',
+      items: [{ sizes: { M: 10 }, pick_lines: [], po_lines: [{ received: { M: 5 } }] }],
+      jobs: [{ id: 'J1', prod_status: 'completed' }] },
+    { id: 'SO-E', customer_id: 'C1', created_at: '2026-06-01', _rev: 300, _status: 'need_order', items: [] },
+  ];
+  const invs = [
+    { id: 'IA', so_id: 'SO-A', date: '2026-08-20', total: 400, tax: 0, paid: 0, status: 'open' },
+    { id: 'IE', so_id: 'SO-E', date: '2026-07-01', total: 300, tax: 0, paid: 0, status: 'open' },
+  ];
+  const calcStatus = (so) => so._status;
+
+  test('finds ready, mismatch, and 30-day non-booking orders while excluding bookings and fully invoiced orders', () => {
+    const d = staleOrdersReport({ sos, invs, customers, calcMargin, calcStatus, asOf });
+    expect(d.rows.map((r) => r.id).sort()).toEqual(['SO-A', 'SO-B', 'SO-D']);
+    expect(d.rows.find((r) => r.id === 'SO-A').openToInvoice).toBeCloseTo(600);
+    expect(d.rows.find((r) => r.id === 'SO-B').category).toBe('old_open');
+    const mismatch = d.rows.find((r) => r.id === 'SO-D');
+    expect(mismatch.category).toBe('system_mismatch');
+    expect(mismatch.reasons.join(' ')).toMatch(/verify a receiving\/shipping mismatch/);
+    expect(d.summary).toMatchObject({ count: 3, readyCount: 1, mismatchCount: 1, oldCount: 1 });
   });
 });
 

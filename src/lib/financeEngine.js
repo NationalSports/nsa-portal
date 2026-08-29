@@ -115,6 +115,490 @@ export function arAging({ invs = [], asOf }) {
   return { buckets, total, count };
 }
 
+// ── Detailed A/R dashboard ────────────────────────────────────────
+// Combines portal invoices with the read-only NetSuite history. Portal rows win
+// a document-number collision because they carry the freshest payment detail;
+// this is especially important after a payment is recorded in the portal but
+// before the next accounting import. Aging is based on DUE date, not invoice
+// date: an invoice inside its terms is current, while daysPastDue measures the
+// actual collections delay.
+const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
+const termsDays = (v) => {
+  const s = String(v || 'net30').toLowerCase();
+  if (s.includes('prepay') || s.includes('due on receipt')) return 0;
+  const m = s.match(/\d+/);
+  return m ? Number(m[0]) : 30;
+};
+const addDays = (d, n) => d ? new Date(d.getFullYear(), d.getMonth(), d.getDate() + n) : null;
+const daysBetween = (a, b) => Math.floor((a - b) / 86400000);
+const emailKey = (v) => String(v || '').trim().toLowerCase();
+
+function contactHealth(customer, customerById, staffEmails) {
+  const own = Array.isArray(customer?.contacts) ? customer.contacts : [];
+  const parent = customer?.parent_id ? customerById.get(customer.parent_id) : null;
+  const inherited = Array.isArray(parent?.contacts)
+    ? parent.contacts.filter((c) => /billing/i.test(String(c?.role || '')))
+    : [];
+  const all = [...own, ...inherited];
+  const billing = all.filter((c) => /billing/i.test(String(c?.role || '')) && validEmail(c?.email));
+  const coachRole = (c, i) => /coach|athletic\s*director|manager|primary/i.test(String(c?.role || ''))
+    || (!String(c?.role || '').trim() && i === 0);
+  const coachCandidates = own.filter(coachRole);
+  const coach = coachCandidates.filter((c) => validEmail(c?.email) && !staffEmails.has(emailKey(c.email)));
+  const coachStaff = coachCandidates.filter((c) => validEmail(c?.email) && staffEmails.has(emailKey(c.email)));
+  const invalid = own.filter((c) => c?.email && !validEmail(c.email));
+  const issues = [];
+  if (!coach.length) issues.push(coachStaff.length ? 'Coach email is a staff/rep address' : 'No coach email');
+  if (!billing.length) issues.push('No billing email');
+  if (!customer?.primary_rep_id) issues.push('No account rep');
+  if (!customer?.payment_terms) issues.push('No payment terms');
+  if (invalid.length) issues.push('Invalid contact email');
+  return {
+    coachEmail: coach[0]?.email || '', billingEmail: billing[0]?.email || '',
+    coachUsesStaffEmail: coachStaff.length > 0, invalidEmails: invalid.length, issues,
+  };
+}
+
+export function receivablesDashboard({
+  invs = [], histInvs = [], sos = [], customers = [], reps = [], asOf,
+}) {
+  const today = asOf || new Date();
+  const customerById = new Map(customers.filter(Boolean).map((c) => [c.id, c]));
+  const soById = new Map(sos.filter(Boolean).map((s) => [s.id, s]));
+  const repById = new Map(reps.filter(Boolean).map((r) => [r.id, r]));
+  const repByName = new Map(reps.filter((r) => r?.name).map((r) => [r.name.trim().toLowerCase(), r]));
+  const staffEmails = new Set(reps.filter((r) => validEmail(r?.email)).map((r) => emailKey(r.email)));
+  const portalIds = new Set(invs.filter(Boolean).map((i) => String(i.id)));
+  const sourceRows = [
+    ...invs.filter(Boolean).map((i) => ({ ...i, _source: 'Portal' })),
+    ...histInvs.filter((i) => i && !portalIds.has(String(i.id))).map((i) => ({ ...i, _source: 'NetSuite' })),
+  ];
+
+  const resolveRepId = (inv, customer, so) => inv.rep_id
+    || customer?.primary_rep_id
+    || repByName.get(String(inv.rep_name || '').trim().toLowerCase())?.id
+    || so?.created_by
+    || null;
+  const openInvoices = [];
+  for (const inv of sourceRows) {
+    if (!liveInv(inv) || inv.status === 'cancelled') continue;
+    if (inv._source === 'NetSuite' && inv.invoice_type && inv.invoice_type !== 'invoice') continue;
+    const total = N(inv.total);
+    const paid = inv._source === 'NetSuite'
+      ? (inv.status === 'paid' ? total : N(inv.paid))
+      : N(inv.paid);
+    const balance = total - paid;
+    if (balance <= 0.005 || inv.status === 'paid') continue;
+    const customer = customerById.get(inv.customer_id);
+    const invoiceDate = parseDate(inv.date || inv.invoice_date);
+    const dueDate = parseDate(inv.due_date) || addDays(invoiceDate, termsDays(customer?.payment_terms));
+    const rawPastDue = dueDate ? daysBetween(today, dueDate) : 0;
+    const daysPastDue = Math.max(0, rawPastDue);
+    const ageDays = invoiceDate ? Math.max(0, daysBetween(today, invoiceDate)) : 0;
+    const so = soById.get(inv.so_id);
+    const repId = resolveRepId(inv, customer, so);
+    openInvoices.push({
+      ...inv, source: inv._source, total, paid, balance, invoiceDate, dueDate,
+      daysPastDue, ageDays, repId, customer,
+      customerName: customer?.name || inv.raw_customer_name || 'Unknown account',
+    });
+  }
+
+  const emptyAging = () => ({ current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90plus: 0 });
+  const addAging = (b, inv) => {
+    if (inv.daysPastDue <= 0) b.current += inv.balance;
+    else if (inv.daysPastDue <= 30) b.d1_30 += inv.balance;
+    else if (inv.daysPastDue <= 60) b.d31_60 += inv.balance;
+    else if (inv.daysPastDue <= 90) b.d61_90 += inv.balance;
+    else b.d90plus += inv.balance;
+  };
+  const buckets = emptyAging();
+  openInvoices.forEach((i) => addAging(buckets, i));
+  const aging = {
+    buckets,
+    total: openInvoices.reduce((a, i) => a + i.balance, 0),
+    count: openInvoices.length,
+  };
+
+  // One row for every sales rep supplied by the caller, including zero-balance
+  // reps, plus Unassigned when an invoice cannot be tied to an account owner.
+  const repMap = new Map(reps.map((r) => [r.id, {
+    repId: r.id, name: r.name || r.id, total: 0, pastDue: 0, dueNext7: 0,
+    invoiceCount: 0, oldestDays: 0, aging: emptyAging(), customerIds: new Set(),
+  }]));
+  for (const inv of openInvoices) {
+    const key = inv.repId || '__unassigned__';
+    const rep = repMap.get(key) || {
+      repId: key, name: key === '__unassigned__' ? 'Unassigned' : (repById.get(key)?.name || key),
+      total: 0, pastDue: 0, dueNext7: 0, invoiceCount: 0, oldestDays: 0,
+      aging: emptyAging(), customerIds: new Set(),
+    };
+    rep.total += inv.balance;
+    if (inv.daysPastDue > 0) rep.pastDue += inv.balance;
+    const untilDue = inv.dueDate ? daysBetween(inv.dueDate, today) : null;
+    if (untilDue != null && untilDue >= 0 && untilDue <= 7) rep.dueNext7 += inv.balance;
+    rep.invoiceCount++;
+    rep.oldestDays = Math.max(rep.oldestDays, inv.daysPastDue);
+    if (inv.customer_id) rep.customerIds.add(inv.customer_id);
+    addAging(rep.aging, inv);
+    repMap.set(key, rep);
+  }
+  const repRows = [...repMap.values()].map((r) => ({
+    ...r, accountCount: r.customerIds.size,
+    current: r.aging.current, d1_30: r.aging.d1_30, d31_60: r.aging.d31_60,
+    d61_90: r.aging.d61_90, d90plus: r.aging.d90plus,
+  })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+
+  const accountMap = new Map();
+  for (const inv of openInvoices) {
+    const key = inv.customer_id || `raw:${inv.customerName}`;
+    const customer = inv.customer;
+    const row = accountMap.get(key) || {
+      customerId: inv.customer_id || null, name: inv.customerName, repId: inv.repId,
+      total: 0, pastDue: 0, d60plus: 0, d90plus: 0, invoiceCount: 0,
+      oldestDays: 0, invoices: [], customer,
+    };
+    row.total += inv.balance;
+    if (inv.daysPastDue > 0) row.pastDue += inv.balance;
+    if (inv.daysPastDue > 60) row.d60plus += inv.balance;
+    if (inv.daysPastDue > 90) row.d90plus += inv.balance;
+    row.invoiceCount++;
+    row.oldestDays = Math.max(row.oldestDays, inv.daysPastDue);
+    row.invoices.push(inv);
+    accountMap.set(key, row);
+  }
+
+  // Payment behavior uses only records with an observable final-payment date.
+  // NetSuite history has no paid date and is deliberately excluded rather than
+  // pretending the invoice date was the payment date (which would bias averages).
+  const paidSamples = [];
+  for (const inv of invs) {
+    if (!liveInv(inv)) continue;
+    const total = N(inv.total), paid = N(inv.paid);
+    if (!(inv.status === 'paid' || (total > 0 && paid >= total - 0.005))) continue;
+    const invoiceDate = parseDate(inv.date);
+    if (!invoiceDate) continue;
+    const paymentDates = (Array.isArray(inv.payments) ? inv.payments : [])
+      .map((p) => parseDate(p?.date || p?.paid_at)).filter(Boolean);
+    const explicit = parseDate(inv.paid_date || inv.paid_at);
+    if (explicit) paymentDates.push(explicit);
+    // updated_at is the established legacy fallback for older portal invoices.
+    const fallback = !paymentDates.length ? parseDate(inv.updated_at) : null;
+    const finalPaid = paymentDates.sort((a, b) => b - a)[0] || fallback;
+    if (!finalPaid || finalPaid < invoiceDate) continue;
+    const customer = customerById.get(inv.customer_id);
+    const so = soById.get(inv.so_id);
+    const repId = resolveRepId(inv, customer, so);
+    paidSamples.push({
+      invoiceId: inv.id, customerId: inv.customer_id, customerName: customer?.name || 'Unknown account',
+      repId, days: Math.max(0, daysBetween(finalPaid, invoiceDate)), total,
+      usedFallbackDate: !paymentDates.length,
+    });
+  }
+  const summarizePayments = (samples, keyOf, seed = []) => {
+    const rows = new Map(seed);
+    for (const s of samples) {
+      const key = keyOf(s);
+      if (!key) continue;
+      const r = rows.get(key) || { key, totalDays: 0, count: 0, maxDays: 0, totalPaid: 0, fallbackCount: 0 };
+      r.totalDays += s.days; r.count++; r.maxDays = Math.max(r.maxDays, s.days);
+      r.totalPaid += s.total; if (s.usedFallbackDate) r.fallbackCount++;
+      rows.set(key, r);
+    }
+    return [...rows.values()].map((r) => ({ ...r, avgDays: r.count ? r.totalDays / r.count : null }));
+  };
+  const accountPayRows = summarizePayments(paidSamples, (s) => s.customerId)
+    .map((r) => {
+      const c = customerById.get(r.key);
+      return { ...r, customerId: r.key, name: c?.name || 'Unknown account', repId: c?.primary_rep_id || null, termsDays: termsDays(c?.payment_terms) };
+    }).sort((a, b) => (b.avgDays || 0) - (a.avgDays || 0));
+  const accountPayById = new Map(accountPayRows.map((r) => [r.customerId, r]));
+  const repPayRows = summarizePayments(paidSamples, (s) => s.repId,
+    reps.map((r) => [r.id, { key: r.id, totalDays: 0, count: 0, maxDays: 0, totalPaid: 0, fallbackCount: 0 }]))
+    .map((r) => {
+      const owned = accountPayRows.filter((a) => a.repId === r.key && a.count > 0);
+      const worst = owned.sort((a, b) => (b.avgDays || 0) - (a.avgDays || 0))[0] || null;
+      return { ...r, repId: r.key, name: repById.get(r.key)?.name || r.key, worstAccount: worst };
+    }).sort((a, b) => (b.avgDays || -1) - (a.avgDays || -1));
+
+  const accountRows = [...accountMap.values()].map((r) => {
+    const health = r.customer
+      ? contactHealth(r.customer, customerById, staffEmails)
+      : { coachEmail: '', billingEmail: '', coachUsesStaffEmail: false, invalidEmails: 0, issues: ['Customer record not linked'] };
+    const pay = accountPayById.get(r.customerId);
+    return { ...r, ...health, avgPayDays: pay?.avgDays ?? null, maxPayDays: pay?.maxDays ?? null };
+  }).sort((a, b) => b.pastDue - a.pastDue || b.total - a.total);
+
+  const activeCustomers = customers.filter((c) => c && c.id !== 'c_deleted' && c.is_active !== false);
+  const accountsNeedingInfo = activeCustomers.map((customer) => {
+    const health = contactHealth(customer, customerById, staffEmails);
+    const open = accountMap.get(customer.id);
+    return {
+      customerId: customer.id, name: customer.name || customer.alpha_tag || customer.id,
+      repId: customer.primary_rep_id || null, exposure: open?.total || 0,
+      pastDue: open?.pastDue || 0, ...health,
+    };
+  }).filter((r) => r.issues.length)
+    .sort((a, b) => b.exposure - a.exposure || b.issues.length - a.issues.length || a.name.localeCompare(b.name));
+
+  const pastDue = buckets.d1_30 + buckets.d31_60 + buckets.d61_90 + buckets.d90plus;
+  const dueNext7 = repRows.reduce((a, r) => a + r.dueNext7, 0);
+  const noBillingExposure = accountRows.filter((r) => !r.billingEmail).reduce((a, r) => a + r.total, 0);
+  const top5 = [...accountRows].sort((a, b) => b.total - a.total).slice(0, 5).reduce((a, r) => a + r.total, 0);
+  return {
+    aging, openInvoices: openInvoices.sort((a, b) => b.daysPastDue - a.daysPastDue || b.balance - a.balance),
+    repRows, accountRows, accountsNeedingInfo, accountPayRows, repPayRows,
+    kpis: {
+      total: aging.total, pastDue, pastDuePct: aging.total ? pastDue / aging.total : 0,
+      d60plus: buckets.d61_90 + buckets.d90plus, d90plus: buckets.d90plus,
+      dueNext7, noBillingExposure, top5Pct: aging.total ? top5 / aging.total : 0,
+      paySampleCount: paidSamples.length,
+      payFallbackCount: paidSamples.filter((s) => s.usedFallbackDate).length,
+    },
+  };
+}
+
+// ── Operational A/R forecast + total customer exposure ─────────────
+// This forecast deliberately does not require a bank feed. It starts with the
+// invoice's contractual due date, adjusts for the account's observed payment
+// speed, and applies a conservative recovery curve when that expected date is
+// already behind us. QB-linked invoices are counted separately so the UI can
+// explain how much of the projection benefits from accounting-side payment sync.
+export function arCashForecast({ openInvoices = [], accountPayRows = [], asOf }) {
+  const today = asOf || new Date();
+  const payByCustomer = new Map(accountPayRows.map((r) => [r.customerId, r]));
+  const out = {
+    next7: 0, days8to30: 0, days31to60: 0, beyond60: 0,
+    contractual7: 0, contractual30: 0, contractual60: 0,
+    total: 0, qbLinked: 0, qbLinkedAmount: 0, rows: [],
+  };
+  for (const inv of openInvoices) {
+    const balance = N(inv.balance);
+    if (balance <= 0.005) continue;
+    const pay = payByCustomer.get(inv.customer_id);
+    const contractualTerms = inv.invoiceDate && inv.dueDate
+      ? Math.max(0, daysBetween(inv.dueDate, inv.invoiceDate)) : 30;
+    const observedDays = pay?.avgDays == null ? contractualTerms : Math.max(0, pay.avgDays);
+    const behaviorLag = Math.max(0, Math.round(observedDays - contractualTerms));
+    const expectedDate = addDays(inv.dueDate || inv.invoiceDate || today, behaviorLag) || today;
+    const expectedIn = daysBetween(expectedDate, today);
+    const dueIn = inv.dueDate ? daysBetween(inv.dueDate, today) : expectedIn;
+    let w7 = 0, w30 = 0, w60 = 0;
+    if (expectedIn >= 0) {
+      if (expectedIn <= 7) w7 = w30 = w60 = 1;
+      else if (expectedIn <= 30) w30 = w60 = 1;
+      else if (expectedIn <= 60) w60 = 1;
+    } else {
+      const late = Math.abs(expectedIn);
+      if (late <= 15) { w7 = 0.75; w30 = 0.95; w60 = 1; }
+      else if (late <= 45) { w7 = 0.35; w30 = 0.75; w60 = 0.90; }
+      else if (late <= 90) { w7 = 0.15; w30 = 0.45; w60 = 0.70; }
+      else { w7 = 0.05; w30 = 0.25; w60 = 0.45; }
+    }
+    out.next7 += balance * w7;
+    out.days8to30 += balance * Math.max(0, w30 - w7);
+    out.days31to60 += balance * Math.max(0, w60 - w30);
+    out.beyond60 += balance * Math.max(0, 1 - w60);
+    if (dueIn <= 7) out.contractual7 += balance;
+    if (dueIn <= 30) out.contractual30 += balance;
+    if (dueIn <= 60) out.contractual60 += balance;
+    out.total += balance;
+    const qbLinked = !!(inv.qb_invoice_id || inv.qb_customer_id
+      || (Array.isArray(inv.payments) && inv.payments.some((p) => p?.method === 'qb_sync')));
+    if (qbLinked) { out.qbLinked++; out.qbLinkedAmount += balance; }
+    out.rows.push({
+      invoiceId: inv.id, customerId: inv.customer_id, repId: inv.repId,
+      balance, expectedDate, expectedIn, dueIn, behaviorLag, qbLinked,
+      expected7: balance * w7, expected30: balance * w30, expected60: balance * w60,
+    });
+  }
+  out.forecast30 = out.next7 + out.days8to30;
+  out.forecast60 = out.forecast30 + out.days31to60;
+  out.qbCoveragePct = out.total ? out.qbLinkedAmount / out.total : 0;
+  out.rows.sort((a, b) => a.expectedIn - b.expectedIn || b.balance - a.balance);
+  return out;
+}
+
+export function customerExposureReport({
+  ar, sos = [], invs = [], histInvs = [], customers = [], calcMargin, calcStatus,
+}) {
+  const portalIds = new Set(invs.filter(Boolean).map((i) => String(i.id)));
+  const allInvs = [...invs.filter(Boolean), ...histInvs.filter((i) => i && !portalIds.has(String(i.id)))];
+  const invoicedBySo = new Map();
+  for (const inv of allInvs) {
+    if (!liveInv(inv) || !inv.so_id) continue;
+    const billed = Math.max(0, N(inv.total) - N(inv.tax));
+    invoicedBySo.set(inv.so_id, (invoicedBySo.get(inv.so_id) || 0) + billed);
+  }
+  const byCustomer = new Map();
+  const customerById = new Map(customers.filter(Boolean).map((c) => [c.id, c]));
+  const seed = (customerId, name, repId) => {
+    const key = customerId || `raw:${name || 'Unknown account'}`;
+    if (!byCustomer.has(key)) byCustomer.set(key, {
+      customerId: customerId || null, name: name || 'Unknown account', repId: repId || null,
+      openAR: 0, pastDue: 0, completedUninvoiced: 0, openOrderValue: 0,
+      totalExposure: 0, completedOrders: 0, openOrders: 0,
+    });
+    return byCustomer.get(key);
+  };
+  for (const r of (ar?.accountRows || [])) {
+    const row = seed(r.customerId, r.name, r.repId);
+    row.openAR += N(r.total); row.pastDue += N(r.pastDue);
+  }
+  for (const so of sos) {
+    if (!liveSO(so)) continue;
+    let margin = null;
+    try { margin = calcMargin ? calcMargin(so) : null; } catch (_) {}
+    const orderValue = Math.max(0, N(margin?.rev) + N(margin?.shipRev));
+    const remaining = Math.max(0, orderValue - N(invoicedBySo.get(so.id)));
+    if (remaining < 1) continue;
+    let status = so.status || '';
+    try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
+    const customer = customerById.get(so.customer_id);
+    const row = seed(so.customer_id, customer?.name, customer?.primary_rep_id || so.created_by);
+    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(status)
+      || ['complete', 'completed', 'shipped'].includes(String(so.status || '').toLowerCase());
+    if (completed) { row.completedUninvoiced += remaining; row.completedOrders++; }
+    else { row.openOrderValue += remaining; row.openOrders++; }
+  }
+  return [...byCustomer.values()].map((r) => ({
+    ...r, totalExposure: r.openAR + r.completedUninvoiced + r.openOrderValue,
+  })).sort((a, b) => b.totalExposure - a.totalExposure || a.name.localeCompare(b.name));
+}
+
+// One idempotent row per day/scope is persisted by the AR workspace. "Daily"
+// therefore means once per report-open day; no bank connection or server-side
+// pricing reimplementation is required.
+export function buildArSnapshotRows({ ar, exposureRows = [], reps = [], asOf }) {
+  const day = monthKey(asOf || new Date()) + '-' + String((asOf || new Date()).getDate()).padStart(2, '0');
+  const make = (scopeId, name) => {
+    const invoices = scopeId === 'team' ? ar.openInvoices : ar.openInvoices.filter((i) => i.repId === scopeId);
+    const payRows = scopeId === 'team' ? ar.accountPayRows : ar.accountPayRows.filter((r) => r.repId === scopeId);
+    const forecast = arCashForecast({ openInvoices: invoices, accountPayRows: payRows, asOf });
+    const exposure = scopeId === 'team' ? exposureRows : exposureRows.filter((r) => r.repId === scopeId);
+    return {
+      as_of_date: day, scope_id: scopeId, scope_name: name,
+      total_ar: invoices.reduce((a, i) => a + N(i.balance), 0),
+      past_due: invoices.filter((i) => i.daysPastDue > 0).reduce((a, i) => a + N(i.balance), 0),
+      d60plus: invoices.filter((i) => i.daysPastDue > 60).reduce((a, i) => a + N(i.balance), 0),
+      d90plus: invoices.filter((i) => i.daysPastDue > 90).reduce((a, i) => a + N(i.balance), 0),
+      completed_uninvoiced: exposure.reduce((a, r) => a + N(r.completedUninvoiced), 0),
+      open_order_value: exposure.reduce((a, r) => a + N(r.openOrderValue), 0),
+      forecast_7: forecast.next7, forecast_30: forecast.forecast30, forecast_60: forecast.forecast60,
+      account_count: new Set(invoices.map((i) => i.customer_id).filter(Boolean)).size,
+      invoice_count: invoices.length,
+    };
+  };
+  return [make('team', 'All reps'), ...reps.map((r) => make(r.id, r.name || r.id))];
+}
+
+// ── Stale / ready-to-invoice sales orders ─────────────────────────────
+// This intentionally has two nets: operational completion signals catch work
+// that looks invoice-ready even when a stored shipment/receiving flag is wrong;
+// the 30-day non-booking rule catches everything else that has simply lingered.
+export function staleOrdersReport({
+  sos = [], invs = [], histInvs = [], customers = [], calcMargin, calcStatus, asOf,
+}) {
+  const today = asOf || new Date();
+  const customerById = new Map(customers.filter(Boolean).map((c) => [c.id, c]));
+  const portalIds = new Set(invs.filter(Boolean).map((i) => String(i.id)));
+  const allInvs = [
+    ...invs.filter(Boolean),
+    ...histInvs.filter((i) => i && !portalIds.has(String(i.id))),
+  ];
+  const invBySo = new Map();
+  for (const inv of allInvs) {
+    if (!liveInv(inv) || !inv.so_id) continue;
+    const arr = invBySo.get(inv.so_id) || [];
+    arr.push(inv); invBySo.set(inv.so_id, arr);
+  }
+  const rows = [];
+  for (const so of sos) {
+    if (!liveSO(so)) continue;
+    const orderDate = parseDate(so.created_at);
+    const ageDays = orderDate ? Math.max(0, daysBetween(today, orderDate)) : 0;
+    const isBooking = so.order_type === 'booking';
+    let status = so.status || 'unknown';
+    try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
+    const margin = calcMargin(so);
+    const orderValue = Math.max(0, N(margin?.rev) + N(margin?.shipRev));
+    const linkedInvs = invBySo.get(so.id) || [];
+    const invoiced = linkedInvs.reduce((a, i) => a + Math.max(0, N(i.total) - N(i.tax)), 0);
+    const openToInvoice = Math.max(0, orderValue - invoiced);
+    if (orderValue <= 0 || openToInvoice < 1) continue;
+
+    const jobs = Array.isArray(so.jobs) ? so.jobs.filter((j) => j && j.prod_status !== 'draft') : [];
+    const doneJobs = jobs.filter((j) => j.prod_status === 'completed' || j.prod_status === 'shipped').length;
+    const shippedJobs = jobs.filter((j) => j.prod_status === 'shipped').length;
+    const allJobsDone = jobs.length > 0 && doneJobs === jobs.length;
+    const allJobsShipped = jobs.length > 0 && shippedJobs === jobs.length;
+    let totalUnits = 0, fulfilledUnits = 0;
+    for (const item of (Array.isArray(so.items) ? so.items : [])) {
+      let entries = Object.entries(item?.sizes || {}).filter(([, q]) => N(q) > 0);
+      if (!entries.length && N(item?.est_qty) > 0) entries = [['QTY', N(item.est_qty)]];
+      const isServiceLine = item?._topstar || item?.sku === 'DIGITIZING' || /^artwork$/i.test(String(item?.sku || '').trim());
+      for (const [size, rawQty] of entries) {
+        const qty = N(rawQty); totalUnits += qty;
+        if (isServiceLine) { fulfilledUnits += qty; continue; }
+        const pulled = (Array.isArray(item.pick_lines) ? item.pick_lines : [])
+          .filter((p) => p?.status === 'pulled').reduce((a, p) => a + N(p[size]), 0);
+        const received = (Array.isArray(item.po_lines) ? item.po_lines : []).reduce((a, p) => {
+          const rec = N(p?.received?.[size]);
+          return a + (p?.drop_ship ? Math.max(rec, N(p?.billed?.[size])) : rec);
+        }, 0);
+        fulfilledUnits += Math.min(qty, pulled + received);
+      }
+    }
+    const expected = parseDate(so.expected_ship_date) || parseDate(so.ship_on_date)
+      || parseDate(so.deliver_on_date) || parseDate(so.expected_date);
+    const daysLate = expected ? Math.max(0, daysBetween(today, expected)) : 0;
+    const storedComplete = so.status === 'complete' || so.status === 'completed' || so.status === 'shipped';
+    const readySignal = status === 'ready_to_invoice' || status === 'complete' || storedComplete || allJobsDone;
+    const oldNonBooking = !isBooking && ageDays > 30;
+    if (!readySignal && !oldNonBooking) continue;
+
+    const reasons = [];
+    if (status === 'ready_to_invoice') reasons.push('System says Ready to Invoice');
+    if (status === 'complete' || storedComplete) reasons.push('Order is complete/shipped but value remains uninvoiced');
+    if (allJobsDone) reasons.push(`All ${jobs.length} production job${jobs.length === 1 ? '' : 's'} finished`);
+    if (allJobsShipped) reasons.push('Every production job is marked shipped');
+    if (allJobsDone && totalUnits > 0 && fulfilledUnits < totalUnits) reasons.push(`Fulfillment data shows ${fulfilledUnits}/${totalUnits} units — verify a receiving/shipping mismatch`);
+    if (oldNonBooking) reasons.push(`Non-booking order still open after ${ageDays} days`);
+    if (daysLate > 0) reasons.push(`Expected date is ${daysLate} day${daysLate === 1 ? '' : 's'} past`);
+    if (invoiced > 0) reasons.push(`${Math.round(invoiced / orderValue * 100)}% already invoiced; remainder is still open`);
+
+    const mismatch = allJobsDone && totalUnits > 0 && fulfilledUnits < totalUnits;
+    const severity = ((status === 'complete' || storedComplete || allJobsShipped) && openToInvoice >= 1) || ageDays > 90
+      ? 'critical' : (status === 'ready_to_invoice' || allJobsDone || ageDays > 60) ? 'high' : 'watch';
+    const category = mismatch ? 'system_mismatch'
+      : (status === 'ready_to_invoice' || status === 'complete' || storedComplete || allJobsDone) ? 'ready'
+        : 'old_open';
+    const customer = customerById.get(so.customer_id);
+    rows.push({
+      so, id: so.id, customerId: so.customer_id, customerName: customer?.name || 'Unknown account',
+      repId: customer?.primary_rep_id || so.created_by || null, status, storedStatus: so.status || '',
+      isBooking, ageDays, expected, daysLate, orderValue, invoiced, openToInvoice,
+      invoiceCount: linkedInvs.length, invoicePct: orderValue ? Math.min(1, invoiced / orderValue) : 0,
+      totalUnits, fulfilledUnits, jobCount: jobs.length, doneJobs, shippedJobs,
+      allJobsDone, allJobsShipped, mismatch, severity, category, reasons,
+    });
+  }
+  const severityRank = { critical: 0, high: 1, watch: 2 };
+  rows.sort((a, b) => severityRank[a.severity] - severityRank[b.severity]
+    || b.openToInvoice - a.openToInvoice || b.ageDays - a.ageDays);
+  return {
+    rows,
+    summary: {
+      count: rows.length,
+      value: rows.reduce((a, r) => a + r.openToInvoice, 0),
+      readyCount: rows.filter((r) => r.category === 'ready').length,
+      mismatchCount: rows.filter((r) => r.category === 'system_mismatch').length,
+      oldCount: rows.filter((r) => r.category === 'old_open').length,
+      criticalCount: rows.filter((r) => r.severity === 'critical').length,
+    },
+  };
+}
+
 // ── Open order book, scheduled ──────────────────────────────────────
 // Each live order's uninvoiced value + expected GP, bucketed into the month
 // it is expected to bill: expected_ship/deliver date when set, else the

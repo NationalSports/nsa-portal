@@ -400,6 +400,7 @@ const MarketingPage = lazyRetry(() => import('./MarketingPage'));
 const QBPage = lazyRetry(() => import('./QBPage'));
 const CommissionsPage = lazyRetry(() => import('./CommissionsPage'));
 const FinancialsPage = lazyRetry(() => import('./FinancialsPage'));
+const ARWorkspace = lazyRetry(() => import('./ARWorkspace'));
 const InvoicesPage = lazyRetry(() => import('./InvoicesPage'));
 const OnboardingAdmin = lazyRetry(() => import('./Onboarding'));
 const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
@@ -15456,9 +15457,9 @@ export default function App(){
       {id:'sales',label:'Sales',icon:_ico.sales,tabs:['overview','pipeline','products','reps']},
       {id:'customers',label:'Customers',icon:_ico.customers,tabs:['customers','csr_tasks']},
       {id:'production',label:'Production',icon:_ico.production,tabs:['production','decorator','time','inventory',...(_isWhOk?['warehouse']:[])]},
-      {id:'finance',label:'Finance',icon:_ico.finance,tabs:['sales_tax']},
+      {id:'finance',label:'Finance',icon:_ico.finance,tabs:['receivables','sales_tax']},
     ];
-    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',sales_tax:'Sales Tax'};
+    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',receivables:'My Receivables',sales_tax:'Sales Tax'};
     const _curGroup=_rGroups.find(g=>g.tabs.includes(rptTab))||_rGroups[0];
     const _curTabs=_curGroup.tabs.map(id=>({id,label:_tabLabels[id]||id}));
     const _salesGroup=_curGroup.id==='sales';
@@ -15757,6 +15758,10 @@ export default function App(){
         {(rptScopeOpen||rptExportOpen)&&<div onClick={()=>{setRptScopeOpen(false);setRptExportOpen(false)}} style={{position:'fixed',inset:0,zIndex:50}}/>}
         {rptToast&&<div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',background:'var(--navy)',color:'#fff',borderRadius:8,padding:'12px 20px',boxShadow:'0 12px 34px rgba(16,26,64,.3)',zIndex:80,fontSize:13.5,fontWeight:600,animation:'nsaRowIn .25s ease'}}>{rptToast}</div>}
       </div>
+
+      {rptTab==='receivables'&&<div style={{maxWidth:1360,margin:'0 auto',padding:'16px 20px 24px'}}>
+        <React.Suspense fallback={<LazyFallback/>}><ARWorkspace mode="report" scopeRepId={rptRep}/></React.Suspense>
+      </div>}
 
       {/* HISTORICAL SALES — NetSuite invoice history (read-only), this year vs last year by month */}
       {false&&rptTab==='overview'&&<div className="card" style={{marginBottom:12}}>
@@ -32802,7 +32807,8 @@ export default function App(){
 
   // MESSAGES PAGE — prominent hub for all entity messages with threading
   function rMsg(){const closedStatuses=new Set(['complete','shipped','closed']);
-    const allMRaw=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
+    const canSeeArMessage=m=>m.entity_type!=='customer'||['admin','super_admin','gm','accounting'].includes(cu.role)||cust.some(c=>c.id===m.entity_id&&c.primary_rep_id===cu.id);
+    const allMRaw=msgs.filter(canSeeArMessage).sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
     // Entity type filter
     const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
@@ -32829,21 +32835,23 @@ export default function App(){
     const topConvos=convos.filter(c=>mF==='unread'?c.unreadCount>0:mF==='mentions'?c.messages.some(_isMentioned):mF==='mine'?c.messages.some(_isMsgForMe):true);
     const threadCount=new Set(allM.map(groupKey)).size;
     // Currently-open conversation — pull the FULL history from msgs so nothing is hidden by filters.
-    const openAnchor=mThread?msgs.find(m=>m.id===mThread):null;
+    const openAnchor=mThread?allMRaw.find(m=>m.id===mThread):null;
     const openKey=openAnchor?groupKey(openAnchor):null;
-    const openMsgs=openKey?[...msgs].filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
+    const openMsgs=openKey?allMRaw.filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
     const openRootMsg=openMsgs[0]||openAnchor;
     // Context for the open thread — who the order is for and its memo, so the reader
     // knows what the conversation is about without opening the order. Jobs carry so_id,
     // so the same lookup covers SO / Job; estimates match on entity_id.
     const openEntity=openRootMsg?(sos.find(s=>s.id===openRootMsg.so_id||s.id===openRootMsg.entity_id)||ests.find(e=>e.id===openRootMsg.entity_id)||null):null;
+    const openCustomer=openRootMsg&&openRootMsg.entity_type==='customer'?cust.find(c=>c.id===openRootMsg.entity_id)||null:null;
     const openWctx=openRootMsg&&openRootMsg.entity_type==='webstore_order'?wsoCtx[String(openRootMsg.entity_id)]:null;
-    const openCustName=openWctx?([openWctx.buyer,openWctx.storeName].filter(Boolean).join(' · ')||null):(openEntity?(cust.find(cc=>cc.id===openEntity.customer_id)?.name||null):null);
+    const openCustName=openWctx?([openWctx.buyer,openWctx.storeName].filter(Boolean).join(' · ')||null):(openCustomer?.name||(openEntity?(cust.find(cc=>cc.id===openEntity.customer_id)?.name||null):null));
     const openMemo=openEntity?.memo||null;
     // Entity type stats
     const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
     const estCount=allM.filter(m=>m.entity_type==='estimate').length;
     const jobCount=allM.filter(m=>m.entity_type==='job').length;
+    const customerCount=allM.filter(m=>m.entity_type==='customer').length;
     const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
     const renderMsgPageText=(text)=>{
       if(!text)return text;
@@ -32860,13 +32868,14 @@ export default function App(){
       if(last<text.length)parts.push({type:'text',value:text.slice(last)});
       return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
     };
-    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t==='webstore_order'?'Customer':t==='issue'?'Issue':t};
-    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':t==='webstore_order'?'#b45309':'#64748b'};
-    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':t==='webstore_order'?'#fef3c7':'#f1f5f9'};
+    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t==='customer'?'AR Account':t==='webstore_order'?'Customer':t==='issue'?'Issue':t};
+    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':t==='customer'?'#962c32':t==='webstore_order'?'#b45309':'#64748b'};
+    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':t==='customer'?'#f6e3e4':t==='webstore_order'?'#fef3c7':'#f1f5f9'};
     const navigateToEntity=(m)=>{
       const eType=m.entity_type||'so';const eId=m.entity_id||m.so_id;
       if(eType==='so'||eType==='job'){const so=sos.find(s=>s.id===eId||s.id===m.so_id);if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setESOTab('messages');setPg('orders')}}
       else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
+      else if(eType==='customer'){const c3=cust.find(c=>c.id===eId);if(c3){setSelC(c3.parent_id?cust.find(x=>x.id===c3.parent_id)||c3:c3);setPg('customers')}}
       // Customer order replies live in the OMG portal (full order context: items,
       // customer, SO, store) where staff reply & re-email the parent. Deep-link
       // straight to that store + order so its expanded row (and thread) opens.
@@ -32930,17 +32939,17 @@ export default function App(){
     </div>
     {/* Entity type filter row */}
     <div style={{display:'flex',gap:4,marginBottom:8}}>
-      {[['all','All',allM.length,'#475569'],['so','Sales Orders',soCount,'#1e40af'],['estimate','Estimates',estCount,'#7c3aed'],['job','Jobs',jobCount,'#166534']].map(([v,l,c,clr])=><button key={v} style={{fontSize:11,padding:'4px 12px',borderRadius:20,border:'1px solid '+(mEntityF===v?clr:'#e2e8f0'),background:mEntityF===v?clr:'white',color:mEntityF===v?'white':clr,cursor:'pointer',fontWeight:600,display:'flex',gap:4,alignItems:'center'}} onClick={()=>setMEntityF(v)}>{l}<span style={{fontSize:9,opacity:0.8}}>{c}</span></button>)}
+      {[['all','All',allM.length,'#475569'],['so','Sales Orders',soCount,'#1e40af'],['estimate','Estimates',estCount,'#7c3aed'],['job','Jobs',jobCount,'#166534'],['customer','AR Accounts',customerCount,'#962c32']].map(([v,l,c,clr])=><button key={v} style={{fontSize:11,padding:'4px 12px',borderRadius:20,border:'1px solid '+(mEntityF===v?clr:'#e2e8f0'),background:mEntityF===v?clr:'white',color:mEntityF===v?'white':clr,cursor:'pointer',fontWeight:600,display:'flex',gap:4,alignItems:'center'}} onClick={()=>setMEntityF(v)}>{l}<span style={{fontSize:9,opacity:0.8}}>{c}</span></button>)}
     </div>
     {/* Status filters */}
     <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My Messages']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className={`btn btn-sm ${mHideClosed?'btn-primary':'btn-secondary'}`} onClick={()=>setMHideClosed(!mHideClosed)}>{mHideClosed?'Active Only':'All Orders'}</button>
-      <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
+      <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{const visibleIds=new Set(allMRaw.map(m=>m.id));setMsgs(msgs.map(m=>visibleIds.has(m.id)?({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}):m));nf('All marked read')}}>Mark All Read</button></div>
     <div style={{display:'flex',gap:16}}>
     {/* Message list */}
     <div className="card" style={{flex:mThread?'0 0 45%':'1',transition:'flex 0.2s'}}><div className="card-body" style={{padding:0}}>
       {topConvos.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
-      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
+      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=m.entity_type==='customer'?cust.find(cc=>cc.id===m.entity_id):cust.find(cc=>cc.id===entity?.customer_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
         return<div key={c.key} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:openKey===c.key?'#e0e7ff':isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
           onClick={()=>{if(m.entity_type==='webstore_order'){openThread(m);navigateToEntity(m)}else openThread(m)}}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
@@ -36880,8 +36889,9 @@ export default function App(){
   const appData={
     // core entity collections + setters
     cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,
+    assignedTodos,setAssignedTodos,
     // session / navigation / notify
-    cu,nf,pg,setPg,setESO,setESOC,setESOTab,
+    cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,
     // QuickBooks page state + handlers
     connectQB,disconnectQB,qbApi,qbConfig,setQBConfig,qbSyncing,setQbSyncing,qbTab,setQbTab,
     qbBillAmount,setQbBillAmount,qbBillDate,setQbBillDate,qbBillFile,setQbBillFile,qbBillMemo,setQbBillMemo,
@@ -36909,7 +36919,7 @@ export default function App(){
         // Page access control: admins see all; others honor per-user access array, falling back to role defaults.
         if(!canAccess(item.id))return null;
         const _closedSt=new Set(['complete','shipped','closed']);
-        const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
+        const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{if(m.entity_type==='customer'&&!['admin','super_admin','gm','accounting'].includes(cu.role)&&!cust.some(c=>c.id===m.entity_id&&c.primary_rep_id===cu.id))return false;const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
         // Notify only for conversations that include me — I'm tagged/@mentioned in the thread
         // or have posted in it. NOT every unread message on every order I happen to own: a
         // thread between two other people on my order isn't a notification for me.
