@@ -7,6 +7,7 @@
 const {
   soFulfillment, isShippedNotInvoiced, isReadyToInvoice, soGoodsValue,
   quoteAgeDays, quoteColdBucket, quoteInDigest, numericSizeKeys, shortOnPull, NON_SIZE,
+  groupOverdueInvoicesByAccount,
 } = require('../lib/opsRecap');
 
 // Minimal SO: one line fully covered, jobs optional.
@@ -127,6 +128,39 @@ describe('shortOnPull', () => {
       }],
     });
     expect(shortOnPull(so)).toEqual({ units: 6, detail: 'NEW-SKU (M:6)' });
+  });
+});
+
+
+describe('groupOverdueInvoicesByAccount', () => {
+  const row = (id, customerId, balance, dpd) => ({
+    inv: { id, customer_id: customerId }, balance, dpd,
+  });
+  const names = { A: 'Alpha School', B: 'Beta Club' };
+
+  test('ranks accounts by combined overdue balance, not individual invoice age', () => {
+    const groups = groupOverdueInvoicesByAccount([
+      row('INV-OLD', 'A', 900, 80),
+      row('INV-B1', 'B', 700, 20),
+      row('INV-B2', 'B', 600, 10),
+    ], (id) => names[id]);
+
+    expect(groups.map((g) => g.customerId)).toEqual(['B', 'A']);
+    expect(groups[0]).toMatchObject({ account: 'Beta Club', total: 1300, oldestDpd: 20 });
+    expect(groups[0].invoices.map((r) => r.inv.id)).toEqual(['INV-B1', 'INV-B2']);
+  });
+
+  test('sorts invoices oldest-first within an account and isolates missing customer ids', () => {
+    const groups = groupOverdueInvoicesByAccount([
+      row('INV-A1', 'A', 100, 15),
+      row('INV-A2', 'A', 100, 45),
+      row('INV-X1', null, 50, 5),
+      row('INV-X2', null, 40, 6),
+    ], (id) => names[id]);
+
+    const alpha = groups.find((g) => g.customerId === 'A');
+    expect(alpha.invoices.map((r) => r.inv.id)).toEqual(['INV-A2', 'INV-A1']);
+    expect(groups.filter((g) => g.customerId == null)).toHaveLength(2);
   });
 });
 
