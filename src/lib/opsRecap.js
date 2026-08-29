@@ -264,10 +264,42 @@ const isFullyPaidInvoice = (inv) => {
 };
 const AGING_BUCKETS = ['1-30', '31-60', '61-90', '90+'];
 const agingBucket = (dpd) => (dpd == null || dpd < 1 ? 'current' : dpd <= 30 ? '1-30' : dpd <= 60 ? '31-60' : dpd <= 90 ? '61-90' : '90+');
+// Group a rep's overdue rows into customer accounts. Accounts rank by combined
+// overdue balance (largest collection opportunity first); invoices inside an
+// account stay worst-first. Invoices without a customer id remain isolated so
+// unrelated data-quality exceptions can never be combined into one fake account.
+const groupOverdueInvoicesByAccount = (rows, accountName) => {
+  const groups = new Map();
+  (rows || []).forEach((row, index) => {
+    if (!row || !row.inv) return;
+    const customerId = row.inv.customer_id;
+    const key = customerId == null || customerId === '' ? `invoice:${row.inv.id || index}` : String(customerId);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        customerId,
+        account: (accountName && accountName(customerId)) || '—',
+        total: 0,
+        oldestDpd: 0,
+        invoices: [],
+      };
+      groups.set(key, group);
+    }
+    group.total += num(row.balance);
+    group.oldestDpd = Math.max(group.oldestDpd, num(row.dpd));
+    group.invoices.push(row);
+  });
+  groups.forEach((group) => group.invoices.sort((a, b) =>
+    num(b.dpd) - num(a.dpd) || num(b.balance) - num(a.balance) ||
+    String(a.inv.id || '').localeCompare(String(b.inv.id || ''))));
+  return Array.from(groups.values()).sort((a, b) =>
+    b.total - a.total || b.oldestDpd - a.oldestDpd || a.account.localeCompare(b.account));
+};
 
 module.exports = {
   NON_SIZE, isSizeKey, sizeUnits, sizeKeys, numericSizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
   isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
-  dateYmd, paymentsLatestYmd, isFullyPaidInvoice,
+  dateYmd, paymentsLatestYmd, isFullyPaidInvoice, groupOverdueInvoicesByAccount,
   quoteAgeDays, quoteColdBucket, quoteInDigest, QUOTE_FOLLOWUP_DAYS, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS, QUOTE_DIGEST_MAX_DAYS,
 };
