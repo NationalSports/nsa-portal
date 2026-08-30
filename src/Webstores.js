@@ -2685,10 +2685,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
     // multi-color card's art changes, push the same decorations to every color row in the
     // group so the storefront and order handoff render the right logo for each color.
-    // Decorations and the inventory-tracking choice are card-level: fan them out to every
-    // color row in the group so all colorways behave the same on the storefront.
+    // Decorations, add-on prompts, and inventory choices are card-level: fan them out to
+    // every color row in the group so changing garment color never changes (or drops) the
+    // shopper questions attached to that storefront card.
     const groupFields = {};
     if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
+    if (Object.prototype.hasOwnProperty.call(fields, 'options')) groupFields.options = fields.options;
     if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
     if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
     if (Object.keys(groupFields).length) {
