@@ -1,5 +1,7 @@
 import { manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel } from '../safeHelpers';
 import { calcOrderMargin } from '../pricing';
+import fs from 'fs';
+import path from 'path';
 
 const BL = require('../businessLogic');
 
@@ -52,5 +54,33 @@ describe('manual PO costs', () => {
     expect(poPaymentMethodLabel('credit_card')).toBe('Credit card');
     expect(poPaymentMethodLabel('wire')).toBe('Wire');
     expect(poPaymentMethodLabel('cash')).toBe('Cash');
+  });
+
+  test('sums separate POs while ignoring zero, negative, and non-numeric costs', () => {
+    const mixed = {
+      items: [{ po_lines: [
+        { po_id: 'PO 1', _manual_cost: 5 },
+        { po_id: 'PO 2', _manual_cost: 7.25 },
+        { po_id: 'PO 3', _manual_cost: 0 },
+        { po_id: 'PO 4', _manual_cost: -4 },
+        { po_id: 'PO 5', _manual_cost: '9.00' },
+      ] }],
+    };
+    expect(manualPoCostRows(mixed).map(row => row.po_id)).toEqual(['PO 1', 'PO 2']);
+    expect(manualPoCostTotal(mixed)).toBe(12.25);
+  });
+
+  test('Costs and Commissions pages retain every required manual-cost hook', () => {
+    const root = path.join(__dirname, '..');
+    const commissions = fs.readFileSync(path.join(root, 'CommissionsPage.js'), 'utf8');
+    const editor = fs.readFileSync(path.join(root, 'OrderEditor.js'), 'utf8');
+
+    // Paid invoice GP, open pipeline GP, and promo deductions are separate calculations.
+    expect(commissions).toContain('cost+=manualPoCost');
+    expect(commissions).toContain('cost+=manualPoCostTotal(so)');
+    expect(commissions).toContain('const manualCost=manualPoCostTotal(so)');
+    // The order Costs tab must surface the same canonical rows and payment labels.
+    expect(editor).toContain("category:'Manual PO Cost'");
+    expect(editor).toContain('paymentLabel:row.payment_label');
   });
 });
