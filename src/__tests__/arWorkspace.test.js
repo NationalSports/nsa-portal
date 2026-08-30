@@ -142,6 +142,31 @@ describe('ARWorkspace',()=>{
     expect(screen.getByText('Slowest-paying accounts')).toBeTruthy();
   });
 
+  test('rolls the collections worklist to parents and drills back to actionable child accounts',()=>{
+    const familyCustomers=[
+      {id:'P1',name:'Alpha District',primary_rep_id:'R1',payment_terms:'net30',contacts:[]},
+      {id:'C1',name:'Alpha North',parent_id:'P1',primary_rep_id:'R1',payment_terms:'net30',contacts:[]},
+      {id:'C2',name:'Alpha South',parent_id:'P1',primary_rep_id:'R1',payment_terms:'net30',contacts:[]},
+    ];
+    renderWorkspace(reps[2],{scopeRepId:'all'},{
+      cust:familyCustomers,
+      invs:[
+        {id:'I-N',customer_id:'C1',date:'2026-06-01',due_date:'2026-07-01',total:1000,paid:0,status:'open'},
+        {id:'I-S',customer_id:'C2',date:'2026-06-01',due_date:'2026-07-01',total:2000,paid:0,status:'open'},
+      ],
+    });
+    const toggle=screen.getByLabelText('Collections account level');
+    fireEvent.click(within(toggle).getByText('Parent accounts'));
+    const parentRow=screen.getAllByText('Alpha District').map(el=>el.closest('tr')).find(row=>row&&within(row).queryByText('Show children'));
+    expect(parentRow.textContent).toContain('$3,000');
+    expect(parentRow.textContent).toContain('2 child accounts');
+    expect(within(parentRow).queryByText('Open workspace')).toBeNull();
+    fireEvent.click(within(parentRow).getByText('Show children'));
+    expect(screen.getByText('Family filtered · Clear')).toBeTruthy();
+    expect(screen.getAllByText('Alpha North').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Alpha South').length).toBeGreaterThan(0);
+  });
+
   test('shows the exact completed order list, links the order, and seeds one rep TODO',()=>{
     const api=renderWorkspace(reps[2],{}, {
       sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',memo:'Championship uniforms',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[]}]}],

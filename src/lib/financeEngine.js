@@ -132,6 +132,88 @@ const termsDays = (v) => {
   const m = s.match(/\d+/);
   return m ? Number(m[0]) : 30;
 };
+
+// Resolve an account to the top of its customer family. Most NSA data has one
+// parent level, but walking the chain also handles imported hierarchies without
+// double-counting. A cycle or a missing parent safely leaves the last known id.
+export function customerFamilyId(customerId, customers = []) {
+  if (!customerId) return customerId;
+  const byId = new Map(customers.map((c) => [c.id, c]));
+  let id = customerId;
+  const seen = new Set();
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const parentId = byId.get(id)?.parent_id;
+    if (!parentId || !byId.has(parentId)) break;
+    id = parentId;
+  }
+  return id;
+}
+
+// Roll operational account totals to parent families. This deliberately does
+// not merge workflow state: chat, email, TODOs, and collection ownership remain
+// attached to a real child account and the UI drills down before acting.
+export function rollupCustomerAccounts({ rows = [], customers = [] }) {
+  const byId = new Map(customers.map((c) => [c.id, c]));
+  const sums = ['openAR', 'pastDue', 'd60plus', 'd90plus', 'completedUninvoiced', 'openOrderValue', 'totalExposure', 'invoiceCount'];
+  const groups = new Map();
+  rows.forEach((row, index) => {
+    const familyId = customerFamilyId(row.customerId, customers) || `unlinked:${row.name || index}`;
+    const parent = byId.get(familyId);
+    let group = groups.get(familyId);
+    if (!group) {
+      group = {
+        customerId: familyId.startsWith?.('unlinked:') ? row.customerId : familyId,
+        name: parent?.name || parent?.alpha_tag || row.name || 'Unknown account',
+        repId: parent?.primary_rep_id || row.repId || null,
+        memberIds: [], memberNames: [], repIds: [], issues: [], oldestDays: 0,
+        workflow: null, isParentRollup: true,
+      };
+      sums.forEach((key) => { group[key] = 0; });
+      groups.set(familyId, group);
+    }
+    sums.forEach((key) => { group[key] += N(row[key]); });
+    group.oldestDays = Math.max(group.oldestDays, N(row.oldestDays));
+    if (row.customerId && !group.memberIds.includes(row.customerId)) group.memberIds.push(row.customerId);
+    if (row.name && !group.memberNames.includes(row.name)) group.memberNames.push(row.name);
+    if (row.repId && !group.repIds.includes(row.repId)) group.repIds.push(row.repId);
+    (row.issues || []).forEach((issue) => { if (!group.issues.includes(issue)) group.issues.push(issue); });
+  });
+  return [...groups.values()].map((row) => ({
+    ...row,
+    childCount: row.memberIds.filter((id) => id !== row.customerId).length,
+    searchText: `${row.name} ${row.customerId || ''} ${row.memberNames.join(' ')}`.toLowerCase(),
+  }));
+}
+
+// Payment speed must be weighted by invoice sample count, not averaged across
+// child-account averages. Summing totalDays/count preserves the exact result.
+export function rollupCustomerPayments({ rows = [], customers = [] }) {
+  const byId = new Map(customers.map((c) => [c.id, c]));
+  const groups = new Map();
+  rows.forEach((row, index) => {
+    const familyId = customerFamilyId(row.customerId, customers) || `unlinked:${row.name || index}`;
+    const parent = byId.get(familyId);
+    const group = groups.get(familyId) || {
+      key: familyId, customerId: familyId.startsWith?.('unlinked:') ? row.customerId : familyId,
+      name: parent?.name || parent?.alpha_tag || row.name || 'Unknown account',
+      repId: parent?.primary_rep_id || row.repId || null,
+      termsDays: termsDays(parent?.payment_terms), totalDays: 0, count: 0,
+      maxDays: 0, totalPaid: 0, fallbackCount: 0, memberIds: [], isParentRollup: true,
+    };
+    group.totalDays += N(row.totalDays);
+    group.count += N(row.count);
+    group.maxDays = Math.max(group.maxDays, N(row.maxDays));
+    group.totalPaid += N(row.totalPaid);
+    group.fallbackCount += N(row.fallbackCount);
+    if (row.customerId && !group.memberIds.includes(row.customerId)) group.memberIds.push(row.customerId);
+    groups.set(familyId, group);
+  });
+  return [...groups.values()].map((row) => ({
+    ...row, avgDays: row.count ? row.totalDays / row.count : null,
+    childCount: row.memberIds.filter((id) => id !== row.customerId).length,
+  })).sort((a, b) => (b.avgDays || 0) - (a.avgDays || 0));
+}
 const addDays = (d, n) => d ? new Date(d.getFullYear(), d.getMonth(), d.getDate() + n) : null;
 // Financial aging is a calendar-date calculation, not an elapsed-hours
 // calculation. Converting local date parts to UTC ordinals keeps "due today"
@@ -898,7 +980,7 @@ export function combineStatement({ legacy, portal }) {
 //
 // Rep attribution mirrors the sales dashboard: the customer's primary rep,
 // falling back to whoever created the order.
-export function profitByEntity({ sos = [], invs = [], calcMargin, customers = [], groupBy = 'customer' }) {
+export function profitByEntity({ sos = [], invs = [], calcMargin, customers = [], groupBy = 'customer', customerLevel = 'child' }) {
   const custById = new Map(customers.map((c) => [c.id, c]));
   const invBySo = new Map();
   for (const inv of invs) {
@@ -912,7 +994,7 @@ export function profitByEntity({ sos = [], invs = [], calcMargin, customers = []
     const cust = custById.get(so.customer_id);
     const key = groupBy === 'rep'
       ? (cust?.primary_rep_id || so.created_by || '—')
-      : (so.customer_id || '—');
+      : (customerLevel === 'parent' ? customerFamilyId(so.customer_id, customers) : so.customer_id) || '—';
     const m = calcMargin(so);
     const ordVal = N(m.rev) + N(m.shipRev);
     if (ordVal <= 0) continue;

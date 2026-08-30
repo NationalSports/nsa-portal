@@ -5,6 +5,7 @@ import {
   portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
   receivablesDashboard, staleOrdersReport, arCashForecast,
   customerExposureReport, completedUninvoicedOrdersReport, buildArSnapshotRows,
+  customerFamilyId, rollupCustomerAccounts, rollupCustomerPayments,
 } from '../lib/financeEngine';
 
 // Simple margin stub: rev = order.rev, cost = order.cost, shipRev = order.ship||0.
@@ -471,6 +472,55 @@ describe('profitByEntity', () => {
     const rows = profitByEntity({ sos, invs, calcMargin, customers, groupBy: 'rep' });
     expect(rows.map((r) => r.key).sort()).toEqual(['R1', 'R2']);
     expect(rows.find((r) => r.key === 'R2').gp).toBeCloseTo(500);
+  });
+
+  test('rolls child and parent orders into one reconciled parent total', () => {
+    const familyCustomers = [
+      { id: 'P1', name: 'Alpha District', primary_rep_id: 'R1' },
+      { id: 'C1', name: 'Alpha HS', parent_id: 'P1', primary_rep_id: 'R1' },
+      { id: 'C2', name: 'Alpha MS', parent_id: 'P1', primary_rep_id: 'R1' },
+    ];
+    const familySos = [
+      { id: 'SO-P', customer_id: 'P1', _rev: 100, _cost: 40 },
+      { id: 'SO-C1', customer_id: 'C1', _rev: 200, _cost: 80 },
+      { id: 'SO-C2', customer_id: 'C2', _rev: 300, _cost: 120 },
+    ];
+    const familyInvs = familySos.map((o) => ({ id: 'I-'+o.id, so_id: o.id, total: o._rev, tax: 0, paid: 0, status: 'open' }));
+    const child = profitByEntity({ sos: familySos, invs: familyInvs, calcMargin, customers: familyCustomers, customerLevel: 'child' });
+    const parent = profitByEntity({ sos: familySos, invs: familyInvs, calcMargin, customers: familyCustomers, customerLevel: 'parent' });
+    expect(parent).toHaveLength(1);
+    expect(parent[0]).toMatchObject({ key: 'P1', revenue: 600, cogs: 240, gp: 360, orders: 3, openBalance: 600 });
+    expect(parent[0].revenue).toBeCloseTo(child.reduce((sum, row) => sum + row.revenue, 0));
+  });
+});
+
+describe('customer family rollups', () => {
+  const customers = [
+    { id: 'P', name: 'Parent Academy', payment_terms: 'Net 30', primary_rep_id: 'R1' },
+    { id: 'C1', name: 'North Campus', parent_id: 'P', primary_rep_id: 'R1' },
+    { id: 'C2', name: 'South Campus', parent_id: 'P', primary_rep_id: 'R2' },
+  ];
+
+  test('resolves families and preserves exact account exposure totals', () => {
+    expect(customerFamilyId('C2', customers)).toBe('P');
+    const [family] = rollupCustomerAccounts({ customers, rows: [
+      { customerId: 'P', name: 'Parent Academy', openAR: 100, pastDue: 50, totalExposure: 120, issues: [] },
+      { customerId: 'C1', name: 'North Campus', repId: 'R1', openAR: 200, pastDue: 80, d60plus: 20, totalExposure: 240, issues: ['No billing email'] },
+      { customerId: 'C2', name: 'South Campus', repId: 'R2', openAR: 300, pastDue: 0, completedUninvoiced: 40, totalExposure: 340, issues: ['No coach email'] },
+    ] });
+    expect(family).toMatchObject({ customerId: 'P', name: 'Parent Academy', openAR: 600, pastDue: 130, d60plus: 20, completedUninvoiced: 40, totalExposure: 700, childCount: 2 });
+    expect(family.memberIds).toEqual(['P', 'C1', 'C2']);
+    expect(family.issues.sort()).toEqual(['No billing email', 'No coach email']);
+    expect(family.workflow).toBeNull();
+  });
+
+  test('weights parent payment speed by invoice samples', () => {
+    const [family] = rollupCustomerPayments({ customers, rows: [
+      { customerId: 'C1', totalDays: 20, count: 1, maxDays: 20, totalPaid: 100, fallbackCount: 0 },
+      { customerId: 'C2', totalDays: 180, count: 3, maxDays: 90, totalPaid: 300, fallbackCount: 1 },
+    ] });
+    expect(family).toMatchObject({ customerId: 'P', count: 4, maxDays: 90, totalPaid: 400, fallbackCount: 1, termsDays: 30, childCount: 2 });
+    expect(family.avgDays).toBeCloseTo(50);
   });
 });
 

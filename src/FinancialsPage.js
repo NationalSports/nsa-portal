@@ -198,6 +198,7 @@ export default function FinancialsPage() {
   const legacyKeys = useMemo(() => Object.keys(LEGACY_STATEMENTS).sort(), []);
   const [stmtKey, setStmtKey] = useState(legacyKeys[legacyKeys.length - 1]);
   const [profitBy, setProfitBy] = useState('customer');
+  const [profitCustomerLevel, setProfitCustomerLevel] = useState('child');
   const [snaps, setSnaps] = useState(null);        // saved forecast snapshots (null = loading)
   const [snapNote, setSnapNote] = useState('');
   const [staleFilter, setStaleFilter] = useState('all');
@@ -239,9 +240,9 @@ export default function FinancialsPage() {
     const legacy = LEGACY_STATEMENTS[stmtKey];
     const stmtPortal = portalStatement({ sos, invs, calcMargin, through: stmtKey });
     const statement = legacy ? combineStatement({ legacy, portal: stmtPortal }) : null;
-    const profit = profitByEntity({ sos, invs, calcMargin, customers: cust || [], groupBy: profitBy });
+    const profit = profitByEntity({ sos, invs, calcMargin, customers: cust || [], groupBy: profitBy, customerLevel: profitCustomerLevel });
     return { billed, pl, aging, ar, stale, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit };
-  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey, cust, profitBy, REPS]);
+  }, [isAdmin, histInvs, invs, sos, calcMargin, today, stmtKey, cust, profitBy, profitCustomerLevel, REPS]);
 
 
   // Forecast snapshots: load the saved history, then record THIS month's forecast
@@ -539,7 +540,7 @@ export default function FinancialsPage() {
         <>
           <div style={card}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
-              <h2 style={S.h2}>Profitability by {profitBy === 'rep' ? 'rep' : 'customer'}</h2>
+              <h2 style={S.h2}>Profitability by {profitBy === 'rep' ? 'rep' : profitCustomerLevel === 'parent' ? 'parent account' : 'child account'}</h2>
               <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 8, padding: 3 }}>
                 {[['customer', 'By customer'], ['rep', 'By rep']].map(([id, label]) => (
                   <button key={id} onClick={() => setProfitBy(id)} style={{
@@ -549,11 +550,23 @@ export default function FinancialsPage() {
                   }}>{label}</button>
                 ))}
               </div>
+              {profitBy === 'customer' && <div aria-label="Customer account level" style={{ display: 'flex', gap: 4, background: '#f8fafc', border: '1px solid ' + HAIR, borderRadius: 8, padding: 3 }}>
+                {[['child', 'Child accounts'], ['parent', 'Parent accounts']].map(([id, label]) => (
+                  <button key={id} onClick={() => setProfitCustomerLevel(id)} style={{
+                    border: 'none', cursor: 'pointer', borderRadius: 6, padding: '4px 11px',
+                    fontSize: 11, fontWeight: 700, background: profitCustomerLevel === id ? C1 : 'transparent',
+                    color: profitCustomerLevel === id ? '#fff' : INK2,
+                  }}>{label}</button>
+                ))}
+              </div>}
             </div>
             <div style={{ fontSize: 11.5, color: INK2, marginBottom: 10 }}>
               Ranked by gross profit earned, not by billings. Revenue is what has actually been invoiced;
               cost is the matching share of each order&rsquo;s cost, so a half-shipped order counts half.
               &ldquo;Open&rdquo; is order value still to invoice &mdash; profit not yet earned.
+              {profitBy === 'customer' && (profitCustomerLevel === 'parent'
+                ? ' Parent accounts include the parent record and every child; the totals reconcile exactly to Child accounts.'
+                : ' Child accounts show the exact customer record used on each order.')}
             </div>
             {profit.length === 0 ? (
               <div style={{ fontSize: 13, color: INK2 }}>No invoiced work yet in this view.</div>
@@ -571,7 +584,7 @@ export default function FinancialsPage() {
                 <div style={{ overflowX: 'auto', marginTop: 10 }}>
                   <table style={{ borderCollapse: 'collapse', minWidth: 660 }}>
                     <thead><tr>
-                      <th style={{ ...th, textAlign: 'left' }}>{profitBy === 'rep' ? 'Rep' : 'Customer'}</th>
+                      <th style={{ ...th, textAlign: 'left' }}>{profitBy === 'rep' ? 'Rep' : profitCustomerLevel === 'parent' ? 'Parent account' : 'Child account'}</th>
                       <th style={th}>Revenue</th><th style={th}>COGS</th><th style={th}>Gross profit</th>
                       <th style={th}>Margin</th><th style={th}>Orders</th>
                       <th style={th}>Open to invoice</th><th style={th}>Unpaid</th>
