@@ -117,7 +117,10 @@ describe('receivablesDashboard', () => {
   ];
   const histInvs = [
     { id: 'I1', customer_id: 'C1', date: '2026-06-01', total: 1000, status: 'open', raw_customer_name: 'Alpha duplicate' },
+    // Status alone is not proof of an outstanding balance; legacy face value is excluded.
     { id: 'H1', customer_id: 'C2', date: '2026-04-01', total: 500, status: 'open', raw_customer_name: 'Beta' },
+    // A current remaining balance from the accounting source is safe to collect.
+    { id: 'H2', customer_id: 'C2', date: '2026-04-15', total: 600, open_balance: 125, status: 'open', raw_customer_name: 'Beta' },
     // Paid NetSuite rows have no paid date and must not pollute days-to-pay.
     { id: 'HP', customer_id: 'C2', date: '2026-05-01', total: 900, status: 'paid' },
   ];
@@ -125,12 +128,15 @@ describe('receivablesDashboard', () => {
   test('dedupes sources, ages from due dates, and totals every rep', () => {
     const d = receivablesDashboard({ invs, histInvs, customers, reps, asOf });
     expect(d.openInvoices).toHaveLength(2);
-    expect(d.kpis.total).toBeCloseTo(800); // I1 portal balance 300 + H1 500
-    expect(d.kpis.pastDue).toBeCloseTo(800);
+    expect(d.kpis.total).toBeCloseTo(425); // I1 portal balance 300 + H2 verified balance 125
+    expect(d.kpis.pastDue).toBeCloseTo(425);
     expect(d.aging.buckets.d31_60).toBeCloseTo(300); // I1 is exactly 60 days late
-    expect(d.aging.buckets.d90plus).toBeCloseTo(500);
+    expect(d.aging.buckets.d90plus).toBeCloseTo(125);
     expect(d.repRows.find((r) => r.repId === 'R1').total).toBeCloseTo(300);
-    expect(d.repRows.find((r) => r.repId === 'R2').total).toBeCloseTo(500);
+    expect(d.repRows.find((r) => r.repId === 'R2').total).toBeCloseTo(125);
+    expect(d.unverifiedHistorical.map((r) => r.id)).toEqual(['H1']);
+    expect(d.kpis.unverifiedHistoryCount).toBe(1);
+    expect(d.kpis.unverifiedHistoryFaceValue).toBeCloseTo(500);
   });
 
   test('flags rep-address placeholders, honors inherited billing, and reports payment behavior', () => {

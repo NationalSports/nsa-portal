@@ -184,24 +184,42 @@ export function receivablesDashboard({
     || so?.created_by
     || null;
   const openInvoices = [];
+  const unverifiedHistorical = [];
   for (const inv of sourceRows) {
     if (!liveInv(inv) || inv.status === 'cancelled') continue;
     const invoiceType = String(inv.invoice_type || inv.type || 'invoice').trim().toLowerCase().replace(/\s+/g, '_');
     if (invoiceType !== 'invoice') continue;
     const total = N(inv.total);
-    const paid = inv._source === 'NetSuite'
-      ? (inv.status === 'paid' ? total : N(inv.paid))
-      : N(inv.paid);
-    const balance = total - paid;
-    if (balance <= 0.005 || inv.status === 'paid') continue;
     const customer = customerById.get(inv.customer_id);
+    const so = soById.get(inv.so_id);
+    const repId = resolveRepId(inv, customer, so);
+
+    // customer_invoices is sales history, not an AR subledger. Its legacy
+    // status can tell us that a transaction was once open, but without an
+    // explicit remaining balance it cannot tell us how much is collectible
+    // today. Treating the original face value as outstanding produced a false
+    // $24.5M AR total in production. Fail closed: retain those rows for a
+    // reconciliation warning, but keep them out of aging, forecasts, snapshots,
+    // exposure, and collection actions until the import supplies a balance.
+    const explicitBalance = [
+      inv.open_balance, inv.balance_remaining, inv.remaining_balance,
+      inv.amount_remaining, inv.balance_due,
+    ].find((v) => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)));
+    if (inv._source === 'NetSuite' && inv.status !== 'paid' && explicitBalance === undefined) {
+      unverifiedHistorical.push({
+        ...inv, source: inv._source, total, faceValue: total, repId, customer,
+        customerName: customer?.name || inv.raw_customer_name || 'Unknown account',
+      });
+      continue;
+    }
+    const balance = inv._source === 'NetSuite' ? N(explicitBalance) : total - N(inv.paid);
+    const paid = inv._source === 'NetSuite' ? Math.max(0, total - balance) : N(inv.paid);
+    if (balance <= 0.005 || inv.status === 'paid') continue;
     const invoiceDate = parseDate(inv.date || inv.invoice_date);
     const dueDate = parseDate(inv.due_date) || addDays(invoiceDate, termsDays(customer?.payment_terms));
     const rawPastDue = dueDate ? daysBetween(today, dueDate) : 0;
     const daysPastDue = Math.max(0, rawPastDue);
     const ageDays = invoiceDate ? Math.max(0, daysBetween(today, invoiceDate)) : 0;
-    const so = soById.get(inv.so_id);
-    const repId = resolveRepId(inv, customer, so);
     openInvoices.push({
       ...inv, source: inv._source, total, paid, balance, invoiceDate, dueDate,
       daysPastDue, ageDays, repId, customer,
@@ -352,13 +370,15 @@ export function receivablesDashboard({
   const top5 = [...accountRows].sort((a, b) => b.total - a.total).slice(0, 5).reduce((a, r) => a + r.total, 0);
   return {
     aging, openInvoices: openInvoices.sort((a, b) => b.daysPastDue - a.daysPastDue || b.balance - a.balance),
-    repRows, accountRows, accountsNeedingInfo, accountPayRows, repPayRows,
+    unverifiedHistorical, repRows, accountRows, accountsNeedingInfo, accountPayRows, repPayRows,
     kpis: {
       total: aging.total, pastDue, pastDuePct: aging.total ? pastDue / aging.total : 0,
       d60plus: buckets.d61_90 + buckets.d90plus, d90plus: buckets.d90plus,
       dueNext7, noBillingExposure, top5Pct: aging.total ? top5 / aging.total : 0,
       paySampleCount: paidSamples.length,
       payFallbackCount: paidSamples.filter((s) => s.usedFallbackDate).length,
+      unverifiedHistoryCount: unverifiedHistorical.length,
+      unverifiedHistoryFaceValue: unverifiedHistorical.reduce((a, i) => a + i.faceValue, 0),
     },
   };
 }

@@ -387,7 +387,7 @@ export default function FinancialsPage() {
           sub={ytdLyNet ? ((ytdNet / ytdLyNet - 1) * 100 >= 0 ? '+' : '') + ((ytdNet / ytdLyNet - 1) * 100).toFixed(0) + '% vs LY $' + Math.round(ytdLyNet / 1000) + 'K' : ''}
           subColor={ytdNet >= ytdLyNet ? GOOD : CRIT} />
         <Tile label="Portal GP margin YTD" value={ytdRev > 0 ? pct1(ytdGp / ytdRev) : '—'} sub={$k(ytdGp) + ' gross profit on ' + $k(ytdRev)} />
-        <Tile label="Open receivables" value={$k(aging.total)}
+        <Tile label="Verified open receivables" value={$k(aging.total)}
           sub={$k(aging.buckets.d61_90 + aging.buckets.d90plus) + ' over 60 days'}
           subColor={(aging.buckets.d61_90 + aging.buckets.d90plus) / Math.max(1, aging.total) > 0.1 ? WARN : INK2} />
         <Tile label="Open order book" value={$k(backlog.totalValue)} sub={backlog.orders + ' orders · ' + $k(backlog.totalGp) + ' GP inside'} />

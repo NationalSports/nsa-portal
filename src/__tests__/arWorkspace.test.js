@@ -59,13 +59,26 @@ describe('ARWorkspace',()=>{
   test('does not auto-open an unlinked account or leak unrelated null-customer tasks',()=>{
     renderWorkspace(reps[2],{}, {
       invs:[],
-      histInvs:[{id:'H-UNLINKED',customer_id:null,date:'2026-01-01',total:900,status:'open',raw_customer_name:'Unlinked Historical Account'}],
+      histInvs:[{id:'H-UNLINKED',customer_id:null,date:'2026-01-01',total:900,open_balance:900,status:'open',raw_customer_name:'Unlinked Historical Account'}],
       assignedTodos:[{id:'T-NULL',customer_id:null,title:'Unrelated system task',status:'open'}],
     });
     expect(screen.getByText('Unlinked Historical Account')).toBeTruthy();
     expect(screen.queryByText('Internal AR conversation')).toBeNull();
     expect(screen.queryByText('Unrelated system task')).toBeNull();
     expect(screen.getByText('Link customer first')).toBeTruthy();
+  });
+
+  test('excludes unverified NetSuite face values from AR and explains the reconciliation gap',()=>{
+    renderWorkspace(reps[2],{}, {
+      invs:[],
+      histInvs:[{id:'H-LEGACY',customer_id:'C1',date:'2022-01-01',total:24500,status:'open',raw_customer_name:'Alpha Athletics'}],
+    });
+    expect(screen.getByText('NetSuite balance reconciliation required.')).toBeTruthy();
+    expect(screen.getByText(/\$24,500 original face value is excluded/)).toBeTruthy();
+    expect(screen.getByText('Verified open AR').parentElement.textContent).toContain('$0');
+    const accountRow=screen.getByText('Alpha Athletics').closest('tr');
+    expect(accountRow.textContent).toContain('$0');
+    expect(accountRow.textContent).not.toContain('$24,500');
   });
 
   test('uses exact cents in customer-facing collection email and shows payment-speed sections',()=>{

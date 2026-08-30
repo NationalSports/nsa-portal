@@ -29,6 +29,8 @@ Usage:
         --include-credit-memos=true
 """
 
+from __future__ import annotations
+
 import argparse
 import csv
 import json
@@ -57,6 +59,8 @@ COLUMN_ALIASES = {
     "subtotal":             ["subtotal"],
     "tax":                  ["tax total", "total tax", "tax"],
     "total":                ["amount", "total", "amount (gross)", "amount (total)"],
+    "open_balance":         ["open balance", "amount remaining", "remaining amount",
+                             "amount due", "balance due"],
     "memo":                 ["memo", "notes"],
 }
 
@@ -79,6 +83,7 @@ COLUMN_SOURCE = {
     "subtotal":             "subtotal",
     "tax":                  "tax",
     "total":                "total",
+    "open_balance":         "open_balance",
     "memo":                 "memo",
 }
 
@@ -307,6 +312,7 @@ def main():
             "subtotal": parse_num(r.get(mapping.get("subtotal", ""), "")),
             "tax": parse_num(r.get(mapping.get("tax", ""), "")),
             "total": total,
+            "open_balance": parse_num(r.get(mapping.get("open_balance", ""), "")),
             "memo": r.get(mapping.get("memo", ""), "") or None,
         })
 
@@ -314,7 +320,7 @@ def main():
     # constraint on netsuite_internal_id.
     cols = ["id", "customer_id", "raw_customer_nsid", "raw_customer_name",
             "netsuite_internal_id", "document_number", "invoice_date", "type",
-            "status", "subsidiary", "rep_name", "subtotal", "tax", "total", "memo"]
+            "status", "subsidiary", "rep_name", "subtotal", "tax", "total", "open_balance", "memo"]
     lines = []
     lines.append("BEGIN;")
     lines.append(f"INSERT INTO customer_invoices ({', '.join(cols)}) VALUES")
