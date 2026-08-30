@@ -42,6 +42,18 @@ describe('ARWorkspace',()=>{
     expect(screen.getAllByText('$1,000').length).toBeGreaterThan(0);
   });
 
+  test('shows a complete past-due aging ladder that reconciles to the total',()=>{
+    renderWorkspace(reps[2],{scopeRepId:'all'});
+    const aging=screen.getByTestId('past-due-aging');
+    expect(within(aging).getByText('1–30 days')).toBeTruthy();
+    expect(within(aging).getByText('31–60 days')).toBeTruthy();
+    expect(within(aging).getByText('61–90 days')).toBeTruthy();
+    expect(within(aging).getByText('90+ days')).toBeTruthy();
+    expect(within(aging).getByText('$2,500')).toBeTruthy();
+    expect(within(aging).getByText('$1,000')).toBeTruthy();
+    expect(within(aging).getByText('$3,500 total')).toBeTruthy();
+  });
+
   test('accounting sees the full portfolio and can open an account conversation',()=>{
     const api=renderWorkspace(reps[2],{scopeRepId:'all'});
     expect(screen.getByText('Alpha Athletics')).toBeTruthy();

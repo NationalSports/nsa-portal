@@ -167,6 +167,12 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
   const previous=orderedSnaps.length>1?{...orderedSnaps[orderedSnaps.length-2],_date:orderedSnaps[orderedSnaps.length-2].as_of_date}:null;
   const currentSnapshot=snapshotRows.find(r=>r.scope_id===scopeId)||snapshotRows[0];
   const totalCompleted=exposure.reduce((a,r)=>a+r.completedUninvoiced,0),totalOrders=exposure.reduce((a,r)=>a+r.openOrderValue,0);
+  const pastDueAging=[
+    {label:'1–30 days',amount:ar.aging.buckets.d1_30,count:ar.openInvoices.filter(i=>i.daysPastDue>0&&i.daysPastDue<=30).length,color:'#d97706'},
+    {label:'31–60 days',amount:ar.aging.buckets.d31_60,count:ar.openInvoices.filter(i=>i.daysPastDue>30&&i.daysPastDue<=60).length,color:'#c2410c'},
+    {label:'61–90 days',amount:ar.aging.buckets.d61_90,count:ar.openInvoices.filter(i=>i.daysPastDue>60&&i.daysPastDue<=90).length,color:'#b91c1c'},
+    {label:'90+ days',amount:ar.aging.buckets.d90plus,count:ar.openInvoices.filter(i=>i.daysPastDue>90).length,color:'#7f1d1d'},
+  ];
   const visibleCompletedOrders=completedOrders.filter(r=>{const q=orderSearch.trim().toLowerCase();return !q||((r.id||'')+' '+r.customerName+' '+(REPS.find(x=>x.id===r.repId)?.name||'')).toLowerCase().includes(q)});
   const completedTodoSources=new Set(assignedTodos.filter(t=>t.status==='open').map(t=>t.source));
   const openOrder=r=>{setESO?.(r.order);setESOC?.(cust.find(c=>c.id===r.customerId)||null);setPg?.('orders')};
@@ -186,6 +192,10 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
       <Metric label="Other open orders" value={money(totalOrders)} sub="future account exposure" color={BLUE}/>
       <Metric label="7-day cash forecast" value={money(forecast.next7)} sub={forecast.qbLinked?forecast.qbLinked+' QB-linked invoices':'invoice behavior model'} color={GOOD}/>
       <Metric label="60-day cash forecast" value={money(forecast.forecast60)} sub={money(forecast.beyond60)+' remains at risk'} color={forecast.beyond60?AMBER:GOOD}/>
+    </div>
+    <div data-testid="past-due-aging" style={{...card,marginBottom:12,padding:14,borderTop:'3px solid '+(ar.kpis.pastDue?RED:GOOD)}}>
+      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}><div><h3 style={{margin:0,fontFamily:FD,fontSize:18,color:NAVY,textTransform:'uppercase'}}>Past-due aging</h3><div style={{fontSize:10.5,color:MUTED}}>Every overdue invoice is assigned to exactly one bucket; together they reconcile to {money(ar.kpis.pastDue)} past due.</div></div><b style={{fontFamily:FD,fontSize:22,color:ar.kpis.pastDue?RED:GOOD}}>{money(ar.kpis.pastDue)} total</b></div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(135px,1fr))',gap:8,marginTop:10}}>{pastDueAging.map(b=><div key={b.label} style={{padding:'10px 12px',borderRadius:8,background:b.color+'0d',border:'1px solid '+b.color+'35'}}><div style={{fontSize:10,fontWeight:900,textTransform:'uppercase',letterSpacing:.4,color:b.color}}>{b.label}</div><div style={{fontFamily:FD,fontSize:24,fontWeight:800,color:b.color,marginTop:2}}>{money(b.amount)}</div><div style={{fontSize:10,color:MUTED}}>{b.count.toLocaleString()} invoice{b.count===1?'':'s'} · {ar.kpis.pastDue?pct(b.amount/ar.kpis.pastDue):'0%'} of past due</div></div>)}</div>
     </div>
     <div id="completed-uninvoiced-orders" style={{...card,padding:0,overflow:'hidden',marginBottom:12,borderTop:'4px solid '+(totalCompleted?AMBER:GOOD)}}>
       <div style={{padding:'13px 14px',borderBottom:'1px solid '+LINE,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:totalCompleted?'#fffaf2':'#f0fdf4'}}><div><h3 style={{margin:0,fontFamily:FD,fontSize:20,color:NAVY,textTransform:'uppercase'}}>Completed, uninvoiced orders</h3><div style={{fontSize:10.5,color:MUTED}}>This is the exact order list behind the {money(totalCompleted)} tile. Each order creates one deduplicated TODO for its assigned rep.</div></div><div style={{marginLeft:'auto',textAlign:'right'}}><div style={{fontFamily:FD,fontSize:24,fontWeight:800,color:totalCompleted?AMBER:GOOD}}>{completedOrders.length} order{completedOrders.length===1?'':'s'} · {money(totalCompleted)}</div><div style={{fontSize:10,color:MUTED}}>{completedOrders.filter(r=>completedTodoSources.has('completed_uninvoiced:'+r.id)).length} open rep TODO{completedOrders.length===1?'':'s'} synced</div></div><input aria-label="Search completed uninvoiced orders" value={orderSearch} onChange={e=>setOrderSearch(e.target.value)} placeholder="Search order, account, or rep…" style={{border:'1px solid '+LINE,borderRadius:7,padding:'7px 9px',fontSize:12,minWidth:230}}/></div>
