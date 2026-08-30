@@ -80,6 +80,18 @@ const _searchPOStatus=(so,poId)=>{
   if(anyDS)return bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting';
   return open<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting';
 };
+// A TODO may mention counts, balances, dates, and invoice numbers. Never treat a
+// loose numeric substring as a PO reference (for example, "295 accounts" must
+// not match "PO 3295 THGS"). Structured po_id wins; free text must contain the
+// full PO id or an explicit "PO 3295" token that exactly matches a PO number.
+export const todoTextReferencesPo=(poId,text)=>{
+  const id=String(poId||'').trim(),hay=String(text||'');
+  if(!id)return false;
+  if(hay.toLowerCase().includes(id.toLowerCase()))return true;
+  const idNums=id.match(/\d{3,}/g)||[];
+  const explicitNums=[...hay.matchAll(/\bP\.?O\.?\s*#?\s*([A-Za-z0-9-]*\d[A-Za-z0-9-]*)/gi)].flatMap(m=>String(m[1]||'').match(/\d{3,}/g)||[]);
+  return explicitNums.some(n=>idNums.includes(n));
+};
 // Charge / fee codes that ride along on an order but were never a thing anyone ordered
 // (shipping, setup, art, embroidery, per-vendor "Misc" buckets). Mirrors txn_item_is_service()
 // in migration 20260811162913 — the archive half of the item search is filtered server-side by
@@ -10806,7 +10818,7 @@ export default function App(){
       const _gatherPOs=(s)=>{const out=[];safeItems(s).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(pl.po_id)out.push({pl,it})})});(s.deco_pos||[]).forEach(dp=>{if(dp.po_id)out.push({pl:dp,it:null})});return out};
       let _poId=td.po_id||'';let _poLines=[];let _poSo=null;
       if(_poId){for(const s of _poSearchSos){const g=_gatherPOs(s).filter(x=>x.pl.po_id===_poId);if(g.length){_poLines=g;_poSo=s;break}}}
-      if(!_poLines.length){for(const s of _poSearchSos){const cand=_gatherPOs(s);let hit=cand.filter(x=>_poText.includes(x.pl.po_id));if(!hit.length){const nums=(_poText.match(/\d{3,}/g)||[]);if(nums.length)hit=cand.filter(x=>nums.some(n=>String(x.pl.po_id).includes(n)))}if(hit.length){_poId=hit[0].pl.po_id;_poLines=hit.filter(x=>x.pl.po_id===_poId);_poSo=s;break}}}
+      if(!_poLines.length){for(const s of _poSearchSos){const cand=_gatherPOs(s);const hit=cand.filter(x=>todoTextReferencesPo(x.pl.po_id,_poText));if(hit.length){_poId=hit[0].pl.po_id;_poLines=hit.filter(x=>x.pl.po_id===_poId);_poSo=s;break}}}
       const _poDisplay=_poId?(/^\s*P\.?O/i.test(_poId)?_poId:'PO '+_poId):'';
       // When the real PO line is shown below, strip a redundant "— PO #### (CODE)" tail from the typed title.
       const _titleClean=(()=>{if(!_poDisplay)return td.title;const t=(td.title||'').replace(/\([^)]*\)/g,'').replace(/\bP\.?O\.?\s*#?\s*\w*\d+\w*/gi,'').replace(/[\s—–\-·,:]+$/,'').trim();return t||td.title})();
@@ -10829,6 +10841,7 @@ export default function App(){
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {(String(td.source||'').startsWith('ar_data_quality:')||String(td.source||'').startsWith('past_due_current:'))&&<button className="btn btn-primary" style={{width:'100%',marginBottom:12}} onClick={()=>{setTodoDetailId(null);setRptRep(td.assigned_to||'all');setRptTab('receivables');setPg('reports')}}>{String(td.source||'').startsWith('ar_data_quality:')?'Open account-information checklist →':'Open current receivables →'}</button>}
           {/* Live bot progress — the worker relays the agent's PROGRESS narration in
               realtime while the run is active; cleared automatically when it finishes. */}
           {td.assigned_to==='bot-claude'&&td.bot_status==='in_progress'&&(()=>{const _p=botProgress(td);const _pct=_p?Math.min(100,Math.round(_p.step/_p.total*100)):5;return<div style={{marginBottom:12,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8}}>
