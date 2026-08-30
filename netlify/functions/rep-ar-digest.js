@@ -55,7 +55,7 @@ exports.handler = async (event) => {
     if (testKey && qs.key !== testKey) return { statusCode: 403, body: 'Missing or bad ?key.' };
   }
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
-  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
+  const portal = (process.env.PORTAL_PUBLIC_URL || 'https://connect.nationalsportsapparel.com').replace(/\/+$/, '');
   if (!brevoKey) { console.error('[ar-digest] BREVO_API_KEY missing'); return { statusCode: 500, body: 'Not configured' }; }
   let admin;
   try { admin = getSupabaseAdmin(); } catch (e) { console.error('[ar-digest]', e.message); return { statusCode: 500, body: 'Not configured' }; }
