@@ -446,8 +446,8 @@ export function arCashForecast({ openInvoices = [], accountPayRows = [], asOf })
   return out;
 }
 
-export function customerExposureReport({
-  ar, sos = [], invs = [], histInvs = [], customers = [], calcMargin, calcStatus,
+function uninvoicedOrderRows({
+  sos = [], invs = [], histInvs = [], customers = [], calcMargin, calcStatus, asOf,
 }) {
   const portalIds = new Set(invs.filter(Boolean).map((i) => String(i.id)));
   const allInvs = [...invs.filter(Boolean), ...histInvs.filter((i) => i && !portalIds.has(String(i.id)))];
@@ -457,8 +457,45 @@ export function customerExposureReport({
     const billed = Math.max(0, N(inv.total) - N(inv.tax));
     invoicedBySo.set(inv.so_id, (invoicedBySo.get(inv.so_id) || 0) + billed);
   }
-  const byCustomer = new Map();
   const customerById = new Map(customers.filter(Boolean).map((c) => [c.id, c]));
+  const today = asOf || new Date();
+  const rows = [];
+  for (const so of sos) {
+    if (!liveSO(so)) continue;
+    let margin = null;
+    try { margin = calcMargin ? calcMargin(so) : null; } catch (_) {}
+    const orderValue = Math.max(0, N(margin?.rev) + N(margin?.shipRev));
+    const invoiced = N(invoicedBySo.get(so.id));
+    const openToInvoice = Math.max(0, orderValue - invoiced);
+    if (openToInvoice < 1) continue;
+    let status = so.status || '';
+    try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
+    const customer = customerById.get(so.customer_id);
+    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(status)
+      || ['complete', 'completed', 'shipped'].includes(String(so.status || '').toLowerCase());
+    const orderDate = parseDate(so.created_at);
+    rows.push({
+      id: so.id, customerId: so.customer_id || null, customerName: customer?.name || 'Unknown account',
+      repId: customer?.primary_rep_id || so.created_by || null, status, storedStatus: so.status || '',
+      orderValue, invoiced, openToInvoice, completed, orderDate,
+      ageDays: orderDate ? Math.max(0, daysBetween(today, orderDate)) : null,
+      memo: so.memo || '', order: so,
+    });
+  }
+  return rows.sort((a, b) => b.openToInvoice - a.openToInvoice || String(a.id).localeCompare(String(b.id)));
+}
+
+// Exact drill-down for the Completed, Uninvoiced KPI. Keeping this and
+// customerExposureReport on the same row builder guarantees that the visible
+// order list reconciles to the account totals and management snapshot.
+export function completedUninvoicedOrdersReport(args) {
+  return uninvoicedOrderRows(args).filter((r) => r.completed);
+}
+
+export function customerExposureReport({
+  ar, sos = [], invs = [], histInvs = [], customers = [], calcMargin, calcStatus, asOf,
+}) {
+  const byCustomer = new Map();
   const seed = (customerId, name, repId) => {
     const key = customerId || `raw:${name || 'Unknown account'}`;
     if (!byCustomer.has(key)) byCustomer.set(key, {
@@ -472,21 +509,10 @@ export function customerExposureReport({
     const row = seed(r.customerId, r.name, r.repId);
     row.openAR += N(r.total); row.pastDue += N(r.pastDue);
   }
-  for (const so of sos) {
-    if (!liveSO(so)) continue;
-    let margin = null;
-    try { margin = calcMargin ? calcMargin(so) : null; } catch (_) {}
-    const orderValue = Math.max(0, N(margin?.rev) + N(margin?.shipRev));
-    const remaining = Math.max(0, orderValue - N(invoicedBySo.get(so.id)));
-    if (remaining < 1) continue;
-    let status = so.status || '';
-    try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
-    const customer = customerById.get(so.customer_id);
-    const row = seed(so.customer_id, customer?.name, customer?.primary_rep_id || so.created_by);
-    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(status)
-      || ['complete', 'completed', 'shipped'].includes(String(so.status || '').toLowerCase());
-    if (completed) { row.completedUninvoiced += remaining; row.completedOrders++; }
-    else { row.openOrderValue += remaining; row.openOrders++; }
+  for (const order of uninvoicedOrderRows({ sos, invs, histInvs, customers, calcMargin, calcStatus, asOf })) {
+    const row = seed(order.customerId, order.customerName, order.repId);
+    if (order.completed) { row.completedUninvoiced += order.openToInvoice; row.completedOrders++; }
+    else { row.openOrderValue += order.openToInvoice; row.openOrders++; }
   }
   return [...byCustomer.values()].map((r) => ({
     ...r, totalExposure: r.openAR + r.completedUninvoiced + r.openOrderValue,

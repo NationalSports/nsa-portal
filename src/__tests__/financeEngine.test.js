@@ -4,7 +4,7 @@ import {
   backlogSchedule, forecastRevenue, cashForecast, insights,
   portalStatement, combineStatement, profitByEntity, forecastAccuracy, buildSnapshotRows,
   receivablesDashboard, staleOrdersReport, arCashForecast,
-  customerExposureReport, buildArSnapshotRows,
+  customerExposureReport, completedUninvoicedOrdersReport, buildArSnapshotRows,
 } from '../lib/financeEngine';
 
 // Simple margin stub: rev = order.rev, cost = order.cost, shipRev = order.ship||0.
@@ -220,6 +220,27 @@ describe('operational AR forecast and exposure', () => {
     ];
     const rows = customerExposureReport({ ar, sos, invs: [{ id: 'I1', so_id: 'SO-DONE', total: 250, tax: 0, status: 'open' }], customers, calcMargin, calcStatus: (so) => so.status });
     expect(rows[0]).toMatchObject({ customerId: 'C1', openAR: 400, completedUninvoiced: 750, openOrderValue: 500, totalExposure: 1650 });
+  });
+
+  test('reconciles the completed-uninvoiced KPI to its exact order drill-down', () => {
+    const ar = { accountRows: [] };
+    const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1' }];
+    const sos = [
+      { id: 'SO-DONE', customer_id: 'C1', created_at: '2026-07-01', status: 'complete', _rev: 1000 },
+      { id: 'SO-READY', customer_id: 'C1', created_at: '2026-08-01', status: 'ready_to_invoice', _rev: 700 },
+      { id: 'SO-OPEN', customer_id: 'C1', status: 'in_production', _rev: 900 },
+      { id: 'SO-BILLED', customer_id: 'C1', status: 'complete', _rev: 400 },
+    ];
+    const invs = [
+      { id: 'I1', so_id: 'SO-DONE', total: 250, tax: 0, status: 'open' },
+      { id: 'I2', so_id: 'SO-BILLED', total: 400, tax: 0, status: 'paid' },
+    ];
+    const args = { sos, invs, customers, calcMargin, calcStatus: (so) => so.status, asOf: new Date(2026, 7, 29) };
+    const orderRows = completedUninvoicedOrdersReport(args);
+    const exposure = customerExposureReport({ ar, ...args });
+    expect(orderRows.map((r) => r.id).sort()).toEqual(['SO-DONE', 'SO-READY']);
+    expect(orderRows.find((r) => r.id === 'SO-DONE')).toMatchObject({ customerName: 'Alpha', repId: 'R1', orderValue: 1000, invoiced: 250, openToInvoice: 750, ageDays: 59 });
+    expect(orderRows.reduce((sum, r) => sum + r.openToInvoice, 0)).toBe(exposure[0].completedUninvoiced);
   });
 
   test('builds team and rep daily snapshots with forecast and exposure values', () => {

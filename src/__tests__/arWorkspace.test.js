@@ -20,15 +20,15 @@ const invoices = [
 ];
 
 function renderWorkspace(user, props={}, overrides={}) {
-  const setMsgs=jest.fn(),setAssignedTodos=jest.fn();
+  const setMsgs=jest.fn(),setAssignedTodos=jest.fn(),setESO=jest.fn(),setESOC=jest.fn(),setPg=jest.fn();
   const value={
     sos:[],invs:invoices,histInvs:[],cust:customers,REPS:reps,cu:user,
     msgs:[],setMsgs,assignedTodos:[],setAssignedTodos,nf:jest.fn(),companyInfo:{name:'NSA'},
-    setSelC:jest.fn(),setPg:jest.fn(),setInvF:jest.fn(),
+    setSelC:jest.fn(),setPg,setInvF:jest.fn(),setESO,setESOC,
     ...overrides,
   };
   render(<AppDataProvider value={value}><ARWorkspace mode="report" {...props}/></AppDataProvider>);
-  return {setMsgs,setAssignedTodos};
+  return {setMsgs,setAssignedTodos,setESO,setESOC,setPg};
 }
 
 afterEach(()=>window.localStorage.clear());
@@ -90,5 +90,26 @@ describe('ARWorkspace',()=>{
     expect(screen.getByDisplayValue(/\$1,234\.49 open balance/)).toBeTruthy();
     expect(screen.getByText('Average days to pay by rep')).toBeTruthy();
     expect(screen.getByText('Slowest-paying accounts')).toBeTruthy();
+  });
+
+  test('shows the exact completed order list, links the order, and seeds one rep TODO',()=>{
+    const api=renderWorkspace(reps[2],{}, {
+      sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',memo:'Championship uniforms',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[]}]}],
+      invs:[{id:'I-PART',so_id:'SO-READY',customer_id:'C1',date:'2026-08-01',due_date:'2026-08-15',total:250,tax:0,paid:0,status:'open'}],
+    });
+    expect(screen.getByText('Completed, uninvoiced orders')).toBeTruthy();
+    const row=screen.getAllByText('SO-READY')[0].closest('tr');
+    expect(row.textContent).toContain('Alpha Athletics');
+    expect(row.textContent).toContain('$1,000');
+    expect(row.textContent).toContain('$250');
+    expect(row.textContent).toContain('$750');
+    fireEvent.click(within(row).getByText('Open order'));
+    expect(api.setESO).toHaveBeenCalledWith(expect.objectContaining({id:'SO-READY'}));
+    expect(api.setPg).toHaveBeenCalledWith('orders');
+    const todoUpdater=api.setAssignedTodos.mock.calls.find(call=>typeof call[0]==='function')[0];
+    const todos=todoUpdater([]);
+    expect(todos).toHaveLength(1);
+    expect(todos[0]).toMatchObject({id:'todo-completed-uninvoiced-SO-READY',source:'completed_uninvoiced:SO-READY',assigned_to:'R1',so_id:'SO-READY',customer_id:'C1',priority:1,status:'open'});
+    expect(todoUpdater(todos)).toBe(todos);
   });
 });

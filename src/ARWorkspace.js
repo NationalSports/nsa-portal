@@ -5,7 +5,7 @@ import { supabase } from './lib/supabase';
 import { calcOrderMargin } from './pricing';
 import { calcSOStatus, isCommissionRep } from './businessLogic';
 import {
-  receivablesDashboard, arCashForecast, customerExposureReport, buildArSnapshotRows,
+  receivablesDashboard, arCashForecast, customerExposureReport, completedUninvoicedOrdersReport, buildArSnapshotRows,
 } from './lib/financeEngine';
 import { buildBrandedEmailHtml, getBillingContacts, sendBrevoEmail } from './utils';
 
@@ -45,8 +45,8 @@ function scopedAr(ar, repId) {
   return {...ar,openInvoices,assumedHistorical,accountRows,accountsNeedingInfo:ar.accountsNeedingInfo.filter(r=>r.repId===repId),accountPayRows:ar.accountPayRows.filter(r=>r.repId===repId),repPayRows:ar.repPayRows.filter(r=>r.repId===repId),repRows:ar.repRows.filter(r=>r.repId===repId),aging:{buckets,total,count:openInvoices.length},kpis:{...ar.kpis,total,pastDue,pastDuePct:total?pastDue/total:0,d60plus:buckets.d61_90+buckets.d90plus,d90plus:buckets.d90plus,dueNext7:openInvoices.filter(i=>i.dueDate&&i.dueDate>=new Date()&&(i.dueDate-new Date())/86400000<=7).reduce((a,i)=>a+i.balance,0),noBillingExposure:accountRows.filter(r=>!r.billingEmail).reduce((a,r)=>a+r.total,0),assumedHistoryCount:assumedHistorical.length,assumedHistoryFaceValue:assumedHistorical.reduce((a,i)=>a+(i.faceValue||0),0)}};
 }
 
-function Metric({label,value,sub,color=NAVY}){
-  return <div style={{...card,flex:'1 1 155px',minWidth:150,padding:'12px 14px',borderTop:'3px solid '+color}}><div style={{fontSize:10,fontWeight:800,color:MUTED,textTransform:'uppercase',letterSpacing:.55}}>{label}</div><div style={{fontFamily:FD,fontSize:28,lineHeight:1.05,fontWeight:800,color,marginTop:5}}>{value}</div><div style={{fontSize:10.5,color:FAINT,marginTop:4}}>{sub}</div></div>;
+function Metric({label,value,sub,color=NAVY,onClick}){
+  return <div role={onClick?'button':undefined} tabIndex={onClick?0:undefined} onClick={onClick} onKeyDown={onClick?e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onClick()}}:undefined} style={{...card,flex:'1 1 155px',minWidth:150,padding:'12px 14px',borderTop:'3px solid '+color,cursor:onClick?'pointer':'default',outline:'none'}}><div style={{fontSize:10,fontWeight:800,color:MUTED,textTransform:'uppercase',letterSpacing:.55}}>{label}</div><div style={{fontFamily:FD,fontSize:28,lineHeight:1.05,fontWeight:800,color,marginTop:5}}>{value}</div><div style={{fontSize:10.5,color:onClick?BLUE:FAINT,marginTop:4,fontWeight:onClick?700:400}}>{sub}</div></div>;
 }
 
 function MiniTrend({label,current,previous,previousDate,color=NAVY}){
@@ -56,7 +56,7 @@ function MiniTrend({label,current,previous,previousDate,color=NAVY}){
 
 export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
   const app=useAppData();
-  const {sos=[],invs=[],histInvs=[],cust=[],REPS=[],cu,msgs=[],setMsgs,assignedTodos=[],setAssignedTodos,nf,companyInfo,setSelC,setPg,setInvF,_truncatedTables=new Set()}=app;
+  const {sos=[],invs=[],histInvs=[],cust=[],REPS=[],cu,msgs=[],setMsgs,assignedTodos=[],setAssignedTodos,nf,companyInfo,setSelC,setPg,setInvF,setESO,setESOC,_truncatedTables=new Set()}=app;
   const manager=isManager(cu);
   const effectiveRep=manager?(scopeRepId&&scopeRepId!=='all'?scopeRepId:null):cu?.id;
   const today=useMemo(()=>new Date(),[]);
@@ -66,6 +66,8 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
   const ar=useMemo(()=>scopedAr(allAr,effectiveRep),[allAr,effectiveRep]);
   const allExposure=useMemo(()=>customerExposureReport({ar:allAr,sos,invs,histInvs,customers:cust,calcMargin,calcStatus:calcSOStatus}),[allAr,sos,invs,histInvs,cust,calcMargin]);
   const exposure=useMemo(()=>effectiveRep?allExposure.filter(r=>r.repId===effectiveRep):allExposure,[allExposure,effectiveRep]);
+  const allCompletedOrders=useMemo(()=>completedUninvoicedOrdersReport({sos,invs,histInvs,customers:cust,calcMargin,calcStatus:calcSOStatus,asOf:today}),[sos,invs,histInvs,cust,calcMargin,today]);
+  const completedOrders=useMemo(()=>effectiveRep?allCompletedOrders.filter(r=>r.repId===effectiveRep):allCompletedOrders,[allCompletedOrders,effectiveRep]);
   const forecast=useMemo(()=>arCashForecast({openInvoices:ar.openInvoices,accountPayRows:ar.accountPayRows,asOf:today}),[ar,today]);
   const [workflows,setWorkflows]=useState(readLocal);
   const [snapshots,setSnapshots]=useState([]);
@@ -82,11 +84,35 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
   const [emailBody,setEmailBody]=useState('');
   const [emailSending,setEmailSending]=useState(false);
   const [inbound,setInbound]=useState([]);
+  const [orderSearch,setOrderSearch]=useState('');
 
   useEffect(()=>{let alive=true;if(!supabase)return;supabase.from('ar_account_workflows').select('*').then(({data})=>{if(!alive||!data)return;setWorkflows(prev=>{const n={...prev};data.forEach(r=>{n[r.customer_id]=r});saveLocal(n);return n})});return()=>{alive=false}},[]);
   const scopeId=effectiveRep||'team';
   const snapshotRows=useMemo(()=>buildArSnapshotRows({ar:allAr,exposureRows:allExposure,reps:salesReps,asOf:today}),[allAr,allExposure,salesReps,today]);
   useEffect(()=>{let alive=true;if(!supabase)return;const rows=manager?snapshotRows:snapshotRows.filter(r=>r.scope_id===cu?.id);(async()=>{try{if(rows.length)await supabase.from('ar_daily_snapshots').upsert(rows,{onConflict:'as_of_date,scope_id'});const{data}=await supabase.from('ar_daily_snapshots').select('*').eq('scope_id',scopeId).order('as_of_date',{ascending:false}).limit(120);if(alive&&data)setSnapshots(data)}catch(_){}})();return()=>{alive=false}},[manager,scopeId,cu?.id,snapshotRows]);
+
+  // A ready-to-bill order is operational work, not just a KPI. Seed one stable
+  // rep TODO per order and let App's normal assigned_todos diff-save persist it.
+  // Managers seed the whole team even while viewing one rep; reps can only seed
+  // (and see) their own orders. Stable source/id values prevent duplicate tasks.
+  useEffect(()=>{
+    if(!setAssignedTodos||!cu?.id)return;
+    const candidates=(manager?allCompletedOrders:completedOrders).filter(r=>r.repId);
+    if(!candidates.length)return;
+    setAssignedTodos(prev=>{
+      const known=new Set((prev||[]).flatMap(t=>[t.source,t.id].filter(Boolean)));
+      const now=new Date().toISOString();
+      const fresh=candidates.filter(r=>!known.has('completed_uninvoiced:'+r.id)&&!known.has('todo-completed-uninvoiced-'+r.id)).map(r=>({
+        id:'todo-completed-uninvoiced-'+r.id,
+        title:'Invoice completed order — '+r.id,
+        description:r.customerName+' has '+moneyExact(r.openToInvoice)+' remaining to invoice on completed sales order '+r.id+'. Open Financials → Receivables → Completed, Uninvoiced, verify the order, and create or correct the invoice.',
+        created_by:cu.id,assigned_to:r.repId,so_id:r.id,customer_id:r.customerId,
+        priority:1,status:'open',due_date:ymd(today),source:'completed_uninvoiced:'+r.id,
+        created_at:now,updated_at:now,comments:[],
+      }));
+      return fresh.length?[...fresh,...prev]:prev;
+    });
+  },[manager,allCompletedOrders,completedOrders,setAssignedTodos,cu?.id,today]);
 
   const infoById=useMemo(()=>new Map(allAr.accountsNeedingInfo.map(r=>[r.customerId,r])),[allAr]);
   const arById=useMemo(()=>new Map(ar.accountRows.map(r=>[r.customerId,r])),[ar]);
@@ -141,6 +167,9 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
   const previous=orderedSnaps.length>1?{...orderedSnaps[orderedSnaps.length-2],_date:orderedSnaps[orderedSnaps.length-2].as_of_date}:null;
   const currentSnapshot=snapshotRows.find(r=>r.scope_id===scopeId)||snapshotRows[0];
   const totalCompleted=exposure.reduce((a,r)=>a+r.completedUninvoiced,0),totalOrders=exposure.reduce((a,r)=>a+r.openOrderValue,0);
+  const visibleCompletedOrders=completedOrders.filter(r=>{const q=orderSearch.trim().toLowerCase();return !q||((r.id||'')+' '+r.customerName+' '+(REPS.find(x=>x.id===r.repId)?.name||'')).toLowerCase().includes(q)});
+  const completedTodoSources=new Set(assignedTodos.filter(t=>t.status==='open').map(t=>t.source));
+  const openOrder=r=>{setESO?.(r.order);setESOC?.(cust.find(c=>c.id===r.customerId)||null);setPg?.('orders')};
   const incompleteSources=[['invoices','portal invoices'],['customer_invoices','NetSuite invoice history'],['sales_orders','sales orders'],['customers','customers']].filter(([key])=>_truncatedTables?.has?.(key)).map(([,label])=>label);
 
   return <div className="ar-workspace" style={{color:INK}}>
@@ -153,10 +182,14 @@ export default function ARWorkspace({ mode='admin', scopeRepId=null }) {
     <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:12}}>
       <Metric label="Open AR" value={money(ar.kpis.total)} sub={ar.openInvoices.length+' invoices · '+ar.kpis.assumedHistoryCount.toLocaleString()+' assumed full'} color={NAVY}/>
       <Metric label="Past due" value={money(ar.kpis.pastDue)} sub={pct(ar.kpis.pastDuePct)+' of AR'} color={ar.kpis.pastDue?RED:GOOD}/>
-      <Metric label="Completed, uninvoiced" value={money(totalCompleted)} sub="ready-to-bill exposure" color={totalCompleted?AMBER:GOOD}/>
+      <Metric label="Completed, uninvoiced" value={money(totalCompleted)} sub={completedOrders.length+' orders · view list ↓'} color={totalCompleted?AMBER:GOOD} onClick={()=>document.getElementById('completed-uninvoiced-orders')?.scrollIntoView({behavior:'smooth',block:'start'})}/>
       <Metric label="Other open orders" value={money(totalOrders)} sub="future account exposure" color={BLUE}/>
       <Metric label="7-day cash forecast" value={money(forecast.next7)} sub={forecast.qbLinked?forecast.qbLinked+' QB-linked invoices':'invoice behavior model'} color={GOOD}/>
       <Metric label="60-day cash forecast" value={money(forecast.forecast60)} sub={money(forecast.beyond60)+' remains at risk'} color={forecast.beyond60?AMBER:GOOD}/>
+    </div>
+    <div id="completed-uninvoiced-orders" style={{...card,padding:0,overflow:'hidden',marginBottom:12,borderTop:'4px solid '+(totalCompleted?AMBER:GOOD)}}>
+      <div style={{padding:'13px 14px',borderBottom:'1px solid '+LINE,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:totalCompleted?'#fffaf2':'#f0fdf4'}}><div><h3 style={{margin:0,fontFamily:FD,fontSize:20,color:NAVY,textTransform:'uppercase'}}>Completed, uninvoiced orders</h3><div style={{fontSize:10.5,color:MUTED}}>This is the exact order list behind the {money(totalCompleted)} tile. Each order creates one deduplicated TODO for its assigned rep.</div></div><div style={{marginLeft:'auto',textAlign:'right'}}><div style={{fontFamily:FD,fontSize:24,fontWeight:800,color:totalCompleted?AMBER:GOOD}}>{completedOrders.length} order{completedOrders.length===1?'':'s'} · {money(totalCompleted)}</div><div style={{fontSize:10,color:MUTED}}>{completedOrders.filter(r=>completedTodoSources.has('completed_uninvoiced:'+r.id)).length} open rep TODO{completedOrders.length===1?'':'s'} synced</div></div><input aria-label="Search completed uninvoiced orders" value={orderSearch} onChange={e=>setOrderSearch(e.target.value)} placeholder="Search order, account, or rep…" style={{border:'1px solid '+LINE,borderRadius:7,padding:'7px 9px',fontSize:12,minWidth:230}}/></div>
+      <div style={{overflowX:'auto',maxHeight:480}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:1040}}><thead style={{position:'sticky',top:0,background:'#fff',zIndex:2}}><tr><th style={{...th,textAlign:'left'}}>Sales order</th><th style={{...th,textAlign:'left'}}>Account / rep</th><th style={{...th,textAlign:'left'}}>Completion status</th><th style={th}>Age</th><th style={th}>Order value</th><th style={th}>Already invoiced</th><th style={th}>Remaining to invoice</th><th style={{...th,textAlign:'left'}}>Rep TODO</th><th style={th}>Actions</th></tr></thead><tbody>{visibleCompletedOrders.map(r=>{const todoOpen=completedTodoSources.has('completed_uninvoiced:'+r.id);return <tr key={r.id} style={{background:r.ageDays>30?'#fffaf2':'#fff'}}><td style={{...td,textAlign:'left'}}><button onClick={()=>openOrder(r)} style={{border:0,background:'transparent',padding:0,color:BLUE,fontWeight:800,cursor:'pointer',fontSize:12}}>{r.id}</button>{r.memo&&<div title={r.memo} style={{fontSize:9.5,color:FAINT,maxWidth:190,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',marginTop:2}}>{r.memo}</div>}</td><td style={{...td,textAlign:'left'}}><b>{r.customerName}</b><div style={{fontSize:10,color:FAINT}}>{REPS.find(x=>x.id===r.repId)?.name||'Unassigned'}</div></td><td style={{...td,textAlign:'left'}}><span style={{display:'inline-block',padding:'2px 7px',borderRadius:9,background:'#fff7ed',color:AMBER,fontSize:10,fontWeight:800}}>{String(r.status||'complete').replaceAll('_',' ')}</span>{r.status!==r.storedStatus&&<div style={{fontSize:9,color:FAINT,marginTop:3}}>Stored: {String(r.storedStatus||'—').replaceAll('_',' ')}</div>}</td><td style={{...td,color:r.ageDays>30?RED:INK,fontWeight:r.ageDays>30?800:400}}>{r.ageDays==null?'—':r.ageDays+'d'}</td><td style={td}>{money(r.orderValue)}</td><td style={td}>{money(r.invoiced)}</td><td style={{...td,color:AMBER,fontWeight:900,fontSize:13}}>{money(r.openToInvoice)}</td><td style={{...td,textAlign:'left'}}>{r.repId?(todoOpen?<span style={{color:GOOD,fontWeight:800,fontSize:10.5}}>✓ Open on rep list</span>:<span style={{color:AMBER,fontWeight:800,fontSize:10.5}}>Syncing to rep…</span>):<span style={{color:RED,fontWeight:800,fontSize:10.5}}>Assign a rep</span>}</td><td style={td}><div style={{display:'flex',justifyContent:'flex-end',gap:5}}><button style={btn(true)} onClick={()=>openOrder(r)}>Open order</button>{r.customerId&&<button style={btn()} onClick={()=>{setSelectedId(r.customerId);setDrawerTab('timeline')}}>Account AR</button>}</div></td></tr>})}</tbody></table>{!visibleCompletedOrders.length&&<div style={{padding:26,textAlign:'center',color:MUTED}}>{completedOrders.length?'No completed orders match that search.':'No completed, uninvoiced orders in this scope.'}</div>}</div>
     </div>
     <div style={{...card,marginBottom:12}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:12,flexWrap:'wrap'}}><div><h3 style={{margin:0,fontFamily:FD,fontSize:18,color:NAVY,textTransform:'uppercase'}}>Cash collection outlook</h3><div style={{fontSize:11,color:MUTED}}>Portal balances plus full-face-value fallback for NetSuite invoices marked open, adjusted by due date and observed payment speed. QB sync improves freshness; no bank connection is required.</div></div><div style={{fontSize:10.5,color:MUTED}}>QB-linked coverage: <b>{pct(forecast.qbCoveragePct)}</b></div></div>
