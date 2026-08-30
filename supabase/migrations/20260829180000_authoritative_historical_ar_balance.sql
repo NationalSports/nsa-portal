@@ -1,7 +1,7 @@
 -- Historical NetSuite transactions are useful sales history, but status + original
 -- invoice total is not an AR subledger. Store an explicit remaining balance when an
--- accounting export provides it, and never generate collection work from legacy
--- rows that lack that field.
+-- accounting export provides it. Until it is supplied, the owner-directed fallback
+-- is the original total for rows explicitly marked open.
 
 begin;
 
@@ -15,7 +15,7 @@ alter table public.customer_invoices
   check (open_balance is null or open_balance >= 0);
 
 comment on column public.customer_invoices.open_balance is
-  'Authoritative current amount remaining from NetSuite/QB. NULL means unknown and must not be treated as collectible AR.';
+  'Authoritative current amount remaining from NetSuite/QB. When NULL, AR temporarily falls back to original total only for rows explicitly marked open.';
 
 create or replace function public.create_past_due_invoice_todos()
 returns int
@@ -57,7 +57,7 @@ begin
         ci.customer_id,
         c.primary_rep_id as rep_id,
         coalesce(c.name, ci.raw_customer_name) as customer_name,
-        ci.open_balance as balance,
+        coalesce(ci.open_balance, ci.total) as balance,
         (ci.invoice_date + (
           case coalesce(c.payment_terms, 'net30')
             when 'prepay' then 0 when 'net15' then 15
@@ -68,8 +68,8 @@ begin
       left join public.customers c on c.id = ci.customer_id
       where ci.invoice_date is not null
         and coalesce(ci.type, 'invoice') = 'invoice'
-        and coalesce(ci.status, 'open') not in ('paid', 'void', 'cancelled')
-        and ci.open_balance > 0
+        and lower(coalesce(ci.status, '')) in ('open', 'partial', 'partially_paid')
+        and coalesce(ci.open_balance, ci.total) > 0
         and (ci.invoice_date + (
           case coalesce(c.payment_terms, 'net30')
             when 'prepay' then 0 when 'net15' then 15

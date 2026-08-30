@@ -68,17 +68,16 @@ describe('ARWorkspace',()=>{
     expect(screen.getByText('Link customer first')).toBeTruthy();
   });
 
-  test('excludes unverified NetSuite face values from AR and explains the reconciliation gap',()=>{
+  test('includes status-only NetSuite invoices at full value and clearly discloses the assumption',()=>{
     renderWorkspace(reps[2],{}, {
       invs:[],
       histInvs:[{id:'H-LEGACY',customer_id:'C1',date:'2022-01-01',total:24500,status:'open',raw_customer_name:'Alpha Athletics'}],
     });
-    expect(screen.getByText('NetSuite balance reconciliation required.')).toBeTruthy();
-    expect(screen.getByText(/\$24,500 original face value is excluded/)).toBeTruthy();
-    expect(screen.getByText('Verified open AR').parentElement.textContent).toContain('$0');
+    expect(screen.getByText('NetSuite full-balance assumption is active.')).toBeTruthy();
+    expect(screen.getByText(/full \$24,500 original face value is included/)).toBeTruthy();
+    expect(screen.getAllByText('Open AR')[0].parentElement.textContent).toContain('$24,500');
     const accountRow=screen.getByText('Alpha Athletics').closest('tr');
-    expect(accountRow.textContent).toContain('$0');
-    expect(accountRow.textContent).not.toContain('$24,500');
+    expect(accountRow.textContent).toContain('$24,500');
   });
 
   test('uses exact cents in customer-facing collection email and shows payment-speed sections',()=>{

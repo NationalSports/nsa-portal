@@ -12,6 +12,7 @@ one row per invoice (Main Line = True) containing at minimum:
   - Name                   (customer display name)
   - Status
   - Amount                 (total — required)
+  - Amount Remaining       (current open balance — strongly recommended for AR)
   - Subtotal               (optional)
   - Tax Total              (optional)
   - Subsidiary             (optional)
