@@ -190,6 +190,7 @@ const LEVEL_META = {
 export default function FinancialsPage() {
   const {
     sos, invs, histInvs, cu, cust, REPS,
+    msgs = [], setMsgs, assignedTodos = [], setAssignedTodos, nf,
     setESO, setESOC, setPg, setSelC, setInvF,
   } = useAppData();
   const [tab, setTab] = useState('overview');
@@ -201,6 +202,11 @@ export default function FinancialsPage() {
   const [staleFilter, setStaleFilter] = useState('all');
   const [staleRep, setStaleRep] = useState('all');
   const [staleSearch, setStaleSearch] = useState('');
+  const [staleSelectedId, setStaleSelectedId] = useState(null);
+  const [staleChat, setStaleChat] = useState('');
+  const [staleTaskTitle, setStaleTaskTitle] = useState('');
+  const [staleTaskOwner, setStaleTaskOwner] = useState('');
+  const [staleTaskDue, setStaleTaskDue] = useState('');
   const [arAccountFilter, setArAccountFilter] = useState('all');
   const isAdmin = cu?.role === 'admin' || cu?.role === 'super_admin';
 
@@ -320,6 +326,25 @@ export default function FinancialsPage() {
   const openAccountInvoices = (row) => {
     setInvF?.((f) => ({ ...f, search: row?.name || '', status: 'open', group: 'list', aging: 'all', rep: 'all' }));
     setPg?.('invoices');
+  };
+  const staleSelected = staleSelectedId ? stale.rows.find((r) => r.id === staleSelectedId) || null : null;
+  const staleMessages = staleSelected ? msgs.filter((m) => (m.entity_type || 'so') === 'so' && (m.entity_id === staleSelected.id || m.so_id === staleSelected.id)).sort((a, b) => new Date(b.ts) - new Date(a.ts)) : [];
+  const staleTasks = staleSelected ? assignedTodos.filter((t) => t.so_id === staleSelected.id).sort((a, b) => String(a.due_date || '9999').localeCompare(String(b.due_date || '9999'))) : [];
+  const openStaleWorkspace = (row) => {
+    setStaleSelectedId(row.id); setStaleChat(''); setStaleTaskTitle(''); setStaleTaskOwner(row.repId || ''); setStaleTaskDue('');
+    if (setMsgs && cu?.id) setMsgs((prev) => prev.map((m) => ((m.entity_type || 'so') === 'so' && (m.entity_id === row.id || m.so_id === row.id) && !(m.read_by || []).includes(cu.id)) ? { ...m, read_by: [...(m.read_by || []), cu.id] } : m));
+  };
+  const postStaleChat = () => {
+    const text = staleChat.trim(); if (!text || !staleSelected) return;
+    const tagged = [staleSelected.repId].filter((id) => id && id !== cu?.id);
+    const msg = { id: 'm' + Date.now(), so_id: staleSelected.id, author_id: cu?.id, text, ts: new Date().toLocaleString(), read_by: [cu?.id].filter(Boolean), dept: 'accounting', tagged_members: tagged, entity_type: 'so', entity_id: staleSelected.id };
+    setMsgs?.((prev) => [...prev, msg]); setStaleChat(''); nf?.('Message posted and the assigned rep was notified.', 'success');
+  };
+  const addStaleTask = () => {
+    if (!staleTaskTitle.trim() || !staleTaskOwner || !staleSelected) { nf?.('Add a task and choose an owner.', 'error'); return; }
+    const now = new Date().toISOString();
+    const todo = { id: 'todo-stale-' + Date.now(), title: staleTaskTitle.trim(), description: 'Stale-order follow-up for ' + staleSelected.id + ' · ' + staleSelected.customerName, created_by: cu?.id, assigned_to: staleTaskOwner, so_id: staleSelected.id, customer_id: staleSelected.customerId || null, priority: staleSelected.severity === 'critical' ? 2 : 1, status: 'open', due_date: staleTaskDue || null, created_at: now, updated_at: now, comments: [] };
+    setAssignedTodos?.((prev) => [todo, ...prev]); setStaleTaskTitle(''); setStaleTaskDue(''); nf?.('Stale-order action item assigned.', 'success');
   };
 
   const tabs = [
@@ -678,7 +703,7 @@ export default function FinancialsPage() {
                           <span style={{ color: i === 0 ? color : INK3, marginRight: 5 }}>&bull;</span>{reason}
                         </div>)}
                       </td>
-                      <td style={td}><button onClick={() => openSO(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Review SO</button></td>
+                      <td style={td}><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 5 }}><button onClick={() => openStaleWorkspace(r)} style={{ border: '1px solid ' + NAVY, borderRadius: 6, background: NAVY, color: '#fff', fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Chat / TODO</button><button onClick={() => openSO(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Review SO</button></div></td>
                     </tr>;
                   })}
                 </tbody>
@@ -686,6 +711,15 @@ export default function FinancialsPage() {
               {!staleRows.length && <div style={{ padding: 24, textAlign: 'center', color: INK2 }}>No stale orders match these filters.</div>}
             </div>
           </div>
+          {staleSelected && <div style={{ position: 'fixed', inset: 0, zIndex: 125, background: 'rgba(15,23,42,.38)' }} onMouseDown={(e) => { if (e.target === e.currentTarget) setStaleSelectedId(null); }}><aside style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 'min(720px,96vw)', background: '#fff', boxShadow: '-16px 0 44px rgba(15,23,42,.22)', overflowY: 'auto' }}>
+            <div style={{ position: 'sticky', top: 0, zIndex: 2, background: NAVY, color: '#fff', padding: '15px 18px' }}><div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}><div style={{ flex: 1 }}><div style={{ fontFamily: FD, fontSize: 23, fontWeight: 800, textTransform: 'uppercase' }}>{staleSelected.id} · {staleSelected.customerName}</div><div style={{ color: '#cbd5e1', fontSize: 11 }}>{repName(staleSelected.repId)} · {staleSelected.ageDays}d open · {$0(staleSelected.openToInvoice)} potentially billable</div></div><button onClick={() => setStaleSelectedId(null)} aria-label="Close stale-order workspace" style={{ border: 0, borderRadius: 7, width: 30, height: 30, background: 'rgba(255,255,255,.13)', color: '#fff', cursor: 'pointer', fontSize: 18 }}>&times;</button></div></div>
+            <div style={{ padding: 16 }}>
+              <div style={{ ...card, marginBottom: 12 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}><div><b style={{ color: NAVY }}>Why this order needs attention</b>{staleSelected.reasons.map((reason, i) => <div key={i} style={{ fontSize: 11.5, color: INK2, marginTop: 5 }}>&bull; {reason}</div>)}</div><button onClick={() => openSO(staleSelected)} style={{ border: '1px solid ' + NAVY, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '5px 9px', cursor: 'pointer', whiteSpace: 'nowrap' }}>Open sales order</button></div></div>
+              <div style={{ ...card, marginBottom: 12 }}><h2 style={S.h2}>Chat with the assigned rep</h2><textarea value={staleChat} onChange={(e) => setStaleChat(e.target.value)} placeholder={'Message ' + repName(staleSelected.repId) + ' about ' + staleSelected.id + '…'} rows={4} style={{ width: '100%', boxSizing: 'border-box', border: '1px solid ' + HAIR, borderRadius: 7, padding: 9, font: 'inherit', fontSize: 12 }} /><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 7 }}><span style={{ fontSize: 10.5, color: INK3 }}>Saved in the sales-order conversation and notifies the rep.</span><button onClick={postStaleChat} disabled={!staleChat.trim()} style={{ border: 0, borderRadius: 6, background: NAVY, color: '#fff', fontWeight: 700, fontSize: 11, padding: '6px 10px', cursor: staleChat.trim() ? 'pointer' : 'default', opacity: staleChat.trim() ? 1 : .5 }}>Post message</button></div></div>
+              <div style={{ ...card, marginBottom: 12 }}><h2 style={S.h2}>Assign a follow-up</h2><input value={staleTaskTitle} onChange={(e) => setStaleTaskTitle(e.target.value)} placeholder="What needs to happen before invoicing?" style={{ width: '100%', boxSizing: 'border-box', border: '1px solid ' + HAIR, borderRadius: 7, padding: 8, fontSize: 12, marginBottom: 8 }} /><div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px,1fr) minmax(130px,.7fr) auto', gap: 8 }}><select value={staleTaskOwner} onChange={(e) => setStaleTaskOwner(e.target.value)} style={{ border: '1px solid ' + HAIR, borderRadius: 7, padding: 8, background: '#fff' }}><option value="">Assign to…</option>{(REPS || []).filter((r) => r.is_active !== false).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select><input type="date" value={staleTaskDue} onChange={(e) => setStaleTaskDue(e.target.value)} style={{ border: '1px solid ' + HAIR, borderRadius: 7, padding: 8 }} /><button onClick={addStaleTask} style={{ border: 0, borderRadius: 6, background: C1, color: '#fff', fontWeight: 700, fontSize: 11, padding: '6px 10px', cursor: 'pointer' }}>Assign TODO</button></div></div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 12 }}><div style={card}><h2 style={S.h2}>Order conversation</h2>{staleMessages.length ? staleMessages.map((m) => <div key={m.id} style={{ borderLeft: '3px solid ' + C1, padding: '7px 9px', marginBottom: 8, background: '#f8fafc' }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, color: INK3 }}><b style={{ color: NAVY }}>{repName(m.author_id)}</b><span>{m.ts ? new Date(m.ts).toLocaleDateString() : ''}</span></div><div style={{ fontSize: 11.5, whiteSpace: 'pre-wrap', marginTop: 3 }}>{m.text}</div></div>) : <div style={{ color: INK3, fontSize: 11.5 }}>No conversation yet.</div>}</div><div style={card}><h2 style={S.h2}>Open action items</h2>{staleTasks.length ? staleTasks.map((t) => <div key={t.id} style={{ padding: '7px 0', borderBottom: '1px solid ' + GRID }}><div style={{ fontSize: 11.5, fontWeight: 700, textDecoration: ['complete', 'completed'].includes(t.status) ? 'line-through' : 'none' }}>{t.title}</div><div style={{ color: INK3, fontSize: 10 }}>{repName(t.assigned_to)}{t.due_date ? ' · due ' + new Date(t.due_date + 'T00:00:00').toLocaleDateString() : ''} · {t.status || 'open'}</div></div>) : <div style={{ color: INK3, fontSize: 11.5 }}>No order-linked action items.</div>}</div></div>
+            </div>
+          </aside></div>}
         </>
       )}
 

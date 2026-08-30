@@ -130,7 +130,11 @@ const termsDays = (v) => {
   return m ? Number(m[0]) : 30;
 };
 const addDays = (d, n) => d ? new Date(d.getFullYear(), d.getMonth(), d.getDate() + n) : null;
-const daysBetween = (a, b) => Math.floor((a - b) / 86400000);
+// Financial aging is a calendar-date calculation, not an elapsed-hours
+// calculation. Converting local date parts to UTC ordinals keeps "due today"
+// at zero all day and avoids one-day errors across daylight-saving changes.
+const dayOrdinal = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000;
+const daysBetween = (a, b) => dayOrdinal(a) - dayOrdinal(b);
 const emailKey = (v) => String(v || '').trim().toLowerCase();
 
 function contactHealth(customer, customerById, staffEmails) {
@@ -160,14 +164,14 @@ function contactHealth(customer, customerById, staffEmails) {
 }
 
 export function receivablesDashboard({
-  invs = [], histInvs = [], sos = [], customers = [], reps = [], asOf,
+  invs = [], histInvs = [], sos = [], customers = [], reps = [], staffReps = reps, asOf,
 }) {
   const today = asOf || new Date();
   const customerById = new Map(customers.filter(Boolean).map((c) => [c.id, c]));
   const soById = new Map(sos.filter(Boolean).map((s) => [s.id, s]));
   const repById = new Map(reps.filter(Boolean).map((r) => [r.id, r]));
   const repByName = new Map(reps.filter((r) => r?.name).map((r) => [r.name.trim().toLowerCase(), r]));
-  const staffEmails = new Set(reps.filter((r) => validEmail(r?.email)).map((r) => emailKey(r.email)));
+  const staffEmails = new Set(staffReps.filter((r) => validEmail(r?.email)).map((r) => emailKey(r.email)));
   const portalIds = new Set(invs.filter(Boolean).map((i) => String(i.id)));
   const sourceRows = [
     ...invs.filter(Boolean).map((i) => ({ ...i, _source: 'Portal' })),
@@ -182,7 +186,8 @@ export function receivablesDashboard({
   const openInvoices = [];
   for (const inv of sourceRows) {
     if (!liveInv(inv) || inv.status === 'cancelled') continue;
-    if (inv._source === 'NetSuite' && inv.invoice_type && inv.invoice_type !== 'invoice') continue;
+    const invoiceType = String(inv.invoice_type || inv.type || 'invoice').trim().toLowerCase().replace(/\s+/g, '_');
+    if (invoiceType !== 'invoice') continue;
     const total = N(inv.total);
     const paid = inv._source === 'NetSuite'
       ? (inv.status === 'paid' ? total : N(inv.paid))

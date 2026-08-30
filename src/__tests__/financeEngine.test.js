@@ -147,6 +147,30 @@ describe('receivablesDashboard', () => {
     expect(r1Pay.avgDays).toBe(40);
     expect(d.kpis.paySampleCount).toBe(1);
   });
+
+  test('excludes portal credit memos and recognizes non-sales staff email placeholders', () => {
+    const staffReps = [...reps, { id: 'A1', name: 'Accounting', email: 'accounting@nsa.test', role: 'accounting' }];
+    const specialCustomers = [{ id: 'C3', name: 'Gamma', primary_rep_id: 'R1', payment_terms: 'net30', contacts: [{ role: 'Coach', email: 'accounting@nsa.test' }] }];
+    const d = receivablesDashboard({
+      invs: [
+        { id: 'CM1', customer_id: 'C3', date: '2026-08-01', total: 250, paid: 0, status: 'open', type: 'credit_memo' },
+        { id: 'I3', customer_id: 'C3', date: '2026-08-01', total: 100, paid: 0, status: 'open', type: 'invoice' },
+      ],
+      customers: specialCustomers, reps, staffReps, asOf,
+    });
+    expect(d.kpis.total).toBe(100);
+    expect(d.openInvoices.map((i) => i.id)).toEqual(['I3']);
+    expect(d.accountsNeedingInfo[0].issues).toContain('Coach email is a staff/rep address');
+  });
+
+  test('ages by calendar date across daylight-saving boundaries', () => {
+    const d = receivablesDashboard({
+      invs: [{ id: 'DST', customer_id: 'C1', date: '2026-02-01', due_date: '2026-03-08', total: 100, paid: 0, status: 'open' }],
+      customers, reps, asOf: new Date(2026, 2, 9, 0, 0, 0),
+    });
+    expect(d.openInvoices[0].daysPastDue).toBe(1);
+    expect(d.aging.buckets.d1_30).toBe(100);
+  });
 });
 
 describe('operational AR forecast and exposure', () => {
@@ -164,6 +188,17 @@ describe('operational AR forecast and exposure', () => {
     expect(f.beyond60).toBeGreaterThan(0);
     expect(f.qbLinked).toBe(1);
     expect(f.qbCoveragePct).toBeCloseTo(1 / 3);
+  });
+
+  test('keeps an invoice due today in the full seven-day forecast all day', () => {
+    const midday = new Date(2026, 7, 29, 15, 30, 0);
+    const f = arCashForecast({
+      openInvoices: [{ id: 'TODAY', customer_id: 'C1', balance: 1234.49, invoiceDate: new Date(2026, 6, 30), dueDate: new Date(2026, 7, 29) }],
+      accountPayRows: [], asOf: midday,
+    });
+    expect(f.rows[0].expectedIn).toBe(0);
+    expect(f.next7).toBeCloseTo(1234.49);
+    expect(f.forecast30).toBeCloseTo(1234.49);
   });
 
   test('combines open AR, completed uninvoiced work, and other open order value by account', () => {

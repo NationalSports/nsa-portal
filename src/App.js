@@ -36888,7 +36888,7 @@ export default function App(){
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
   const appData={
     // core entity collections + setters
-    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,
+    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,_truncatedTables,
     assignedTodos,setAssignedTodos,
     // session / navigation / notify
     cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,
