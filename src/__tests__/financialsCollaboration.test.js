@@ -6,13 +6,13 @@ import { AppDataProvider } from '../AppContext';
 jest.mock('../lib/supabase', () => ({ supabase: null }));
 
 describe('Financials stale-order collaboration', () => {
-  test('an admin can chat with the rep and assign an order-linked TODO', () => {
+  test('an approved owner can chat with the rep and assign an order-linked TODO', () => {
     const setMsgs = jest.fn();
     const setAssignedTodos = jest.fn();
     const value = {
-      cu: { id: 'A1', name: 'Andrea Accounting', role: 'admin' },
+      cu: { id: '00000000-0000-0000-0000-000000000001', name: 'Steve Peterson', role: 'admin' },
       REPS: [
-        { id: 'A1', name: 'Andrea Accounting', role: 'admin', is_active: true },
+        { id: '00000000-0000-0000-0000-000000000001', name: 'Steve Peterson', role: 'admin', is_active: true },
         { id: 'R1', name: 'Rep One', role: 'rep', is_active: true },
       ],
       cust: [{ id: 'C1', name: 'Alpha Athletics', primary_rep_id: 'R1', payment_terms: 'net30', contacts: [] }],
@@ -38,5 +38,14 @@ describe('Financials stale-order collaboration', () => {
     fireEvent.click(screen.getByText('Assign TODO'));
     const todoUpdater = setAssignedTodos.mock.calls[0][0];
     expect(todoUpdater([])[0]).toMatchObject({ so_id: 'SO-STALE', customer_id: 'C1', assigned_to: 'R1', status: 'open' });
+  });
+
+  test('another admin cannot render the financial suite directly', () => {
+    render(<AppDataProvider value={{
+      cu:{id:'A1',name:'Andrea Accounting',role:'admin'},sos:[],invs:[],histInvs:[],cust:[],REPS:[],
+    }}><FinancialsPage /></AppDataProvider>);
+    expect(screen.getByText('Restricted financials')).toBeTruthy();
+    expect(screen.queryByText('Stale Orders')).toBeNull();
+    expect(screen.queryByText('Receivables')).toBeNull();
   });
 });

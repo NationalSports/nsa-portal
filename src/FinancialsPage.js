@@ -21,6 +21,7 @@ import {
 } from './lib/financeEngine';
 import { LEGACY_STATEMENTS } from './data/legacyStatements';
 import ARWorkspace from './ARWorkspace';
+import { canViewFinancials } from './lib/financialAccess';
 // Mounted in `adminReports` mode: the SAME component the Commissions page uses, showing
 // only its admin-only report tabs. Reusing it (rather than moving the tabs' code here)
 // keeps one copy of the commission math — rep pay and these reports can never disagree.
@@ -208,7 +209,7 @@ export default function FinancialsPage() {
   const [staleTaskOwner, setStaleTaskOwner] = useState('');
   const [staleTaskDue, setStaleTaskDue] = useState('');
   const [arAccountFilter, setArAccountFilter] = useState('all');
-  const isAdmin = cu?.role === 'admin' || cu?.role === 'super_admin';
+  const isAdmin = canViewFinancials(cu);
 
   const today = useMemo(() => new Date(), []);
   const thisKey = monthKey(today);
@@ -278,7 +279,7 @@ export default function FinancialsPage() {
   }, [isAdmin]);
 
   if (!isAdmin) {
-    return <div className="card"><div className="card-body"><h2>Admins only</h2><p>The Financials suite is limited to admin accounts.</p></div></div>;
+    return <div className="card"><div className="card-body"><h2>Restricted financials</h2><p>This page is limited to its approved owners.</p></div></div>;
   }
   if (!model) return null;
   const { billed, pl, aging, ar, stale, backlog, rev, cash, notes, statement, stmtPortal, legacy, profit } = model;

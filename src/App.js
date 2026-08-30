@@ -41,6 +41,7 @@ import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificati
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
+import { canViewFinancials } from './lib/financialAccess';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -6275,6 +6276,9 @@ export default function App(){
   },[cu,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
   const canAccess=useCallback((pageId)=>{
     if(!cu)return false;
+    // Financials is identity-restricted even among admins. Never let an admin
+    // role or editable access array override the owner allowlist.
+    if(pageId==='financials')return canViewFinancials(cu);
     if(cu.role==='admin'||cu.role==='super_admin')return true;
     // Import is always on for reps and CSRs regardless of their stored access array
     if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
