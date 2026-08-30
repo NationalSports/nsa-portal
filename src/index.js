@@ -243,7 +243,13 @@ function MainApp() {
   // Mirror App.handleLogin: persist the user, then reveal the portal. App's own
   // `cu` state reads nsa_user on mount, so the session carries across the swap.
   const handleLogin = (user) => {
-    try { localStorage.setItem('nsa_user', JSON.stringify(user)); } catch {}
+    try {
+      localStorage.setItem('nsa_user', JSON.stringify(user));
+      // App's idle-session guard mounts after this lightweight gate unmounts.
+      // Treat a successful sign-in/user selection as fresh activity so a stale
+      // timestamp from an earlier visit cannot immediately bounce the user out.
+      localStorage.setItem('nsa_last_activity', String(Date.now()));
+    } catch {}
     setAuthed(true);
   };
 

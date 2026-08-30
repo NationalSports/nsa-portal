@@ -41,6 +41,7 @@ import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificati
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
+import { canViewFinancials } from './lib/financialAccess';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -78,6 +79,18 @@ const _searchPOStatus=(so,poId)=>{
   safeItems(so).forEach(it=>safePOs(it).forEach(p=>{if(p.po_id!==poId)return;if(p.drop_ship)anyDS=true;Object.keys(p).filter(k=>!k.startsWith('_')&&!NON.includes(k)&&typeof p[k]==='number').forEach(sz=>{ord+=p[sz]||0;rcvd+=(p.received||{})[sz]||0;bld+=(p.billed||{})[sz]||0;open+=Math.max(0,(p[sz]||0)-((p.received||{})[sz]||0)-((p.cancelled||{})[sz]||0))})}));
   if(anyDS)return bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting';
   return open<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting';
+};
+// A TODO may mention counts, balances, dates, and invoice numbers. Never treat a
+// loose numeric substring as a PO reference (for example, "295 accounts" must
+// not match "PO 3295 THGS"). Structured po_id wins; free text must contain the
+// full PO id or an explicit "PO 3295" token that exactly matches a PO number.
+export const todoTextReferencesPo=(poId,text)=>{
+  const id=String(poId||'').trim(),hay=String(text||'');
+  if(!id)return false;
+  if(hay.toLowerCase().includes(id.toLowerCase()))return true;
+  const idNums=id.match(/\d{3,}/g)||[];
+  const explicitNums=[...hay.matchAll(/\bP\.?O\.?\s*#?\s*([A-Za-z0-9-]*\d[A-Za-z0-9-]*)/gi)].flatMap(m=>String(m[1]||'').match(/\d{3,}/g)||[]);
+  return explicitNums.some(n=>idNums.includes(n));
 };
 // Charge / fee codes that ride along on an order but were never a thing anyone ordered
 // (shipping, setup, art, embroidery, per-vendor "Misc" buckets). Mirrors txn_item_is_service()
@@ -400,6 +413,7 @@ const MarketingPage = lazyRetry(() => import('./MarketingPage'));
 const QBPage = lazyRetry(() => import('./QBPage'));
 const CommissionsPage = lazyRetry(() => import('./CommissionsPage'));
 const FinancialsPage = lazyRetry(() => import('./FinancialsPage'));
+const ARWorkspace = lazyRetry(() => import('./ARWorkspace'));
 const InvoicesPage = lazyRetry(() => import('./InvoicesPage'));
 const OnboardingAdmin = lazyRetry(() => import('./Onboarding'));
 const OnboardingWizard = lazyRetry(() => import('./OnboardingWizard'));
@@ -6274,6 +6288,9 @@ export default function App(){
   },[cu,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
   const canAccess=useCallback((pageId)=>{
     if(!cu)return false;
+    // Financials is identity-restricted even among admins. Never let an admin
+    // role or editable access array override the owner allowlist.
+    if(pageId==='financials')return canViewFinancials(cu);
     if(cu.role==='admin'||cu.role==='super_admin')return true;
     // Import is always on for reps and CSRs regardless of their stored access array
     if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
@@ -10239,10 +10256,10 @@ export default function App(){
         </select>}</div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const arCust=m.entity_type==='customer'?cust.find(cc=>cc.id===m.entity_id):null;const isTagged=(m.tagged_members||[]).includes(cu?.id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(m.entity_type==='customer'&&arCust){setRptArCustomerId(arCust.id);setRptTab('receivables');setPg('reports')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':''))}</span>
+                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(arCust?('💰 AR · '+arCust.name):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':'')))}</span>
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
@@ -10801,7 +10818,7 @@ export default function App(){
       const _gatherPOs=(s)=>{const out=[];safeItems(s).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(pl.po_id)out.push({pl,it})})});(s.deco_pos||[]).forEach(dp=>{if(dp.po_id)out.push({pl:dp,it:null})});return out};
       let _poId=td.po_id||'';let _poLines=[];let _poSo=null;
       if(_poId){for(const s of _poSearchSos){const g=_gatherPOs(s).filter(x=>x.pl.po_id===_poId);if(g.length){_poLines=g;_poSo=s;break}}}
-      if(!_poLines.length){for(const s of _poSearchSos){const cand=_gatherPOs(s);let hit=cand.filter(x=>_poText.includes(x.pl.po_id));if(!hit.length){const nums=(_poText.match(/\d{3,}/g)||[]);if(nums.length)hit=cand.filter(x=>nums.some(n=>String(x.pl.po_id).includes(n)))}if(hit.length){_poId=hit[0].pl.po_id;_poLines=hit.filter(x=>x.pl.po_id===_poId);_poSo=s;break}}}
+      if(!_poLines.length){for(const s of _poSearchSos){const cand=_gatherPOs(s);const hit=cand.filter(x=>todoTextReferencesPo(x.pl.po_id,_poText));if(hit.length){_poId=hit[0].pl.po_id;_poLines=hit.filter(x=>x.pl.po_id===_poId);_poSo=s;break}}}
       const _poDisplay=_poId?(/^\s*P\.?O/i.test(_poId)?_poId:'PO '+_poId):'';
       // When the real PO line is shown below, strip a redundant "— PO #### (CODE)" tail from the typed title.
       const _titleClean=(()=>{if(!_poDisplay)return td.title;const t=(td.title||'').replace(/\([^)]*\)/g,'').replace(/\bP\.?O\.?\s*#?\s*\w*\d+\w*/gi,'').replace(/[\s—–\-·,:]+$/,'').trim();return t||td.title})();
@@ -10816,7 +10833,7 @@ export default function App(){
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12,fontSize:12}}>
             <div><span style={{color:'#64748b'}}>Created by:</span> <strong>{creator?.name}</strong></div>
             <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{assignee?.name}</strong></div>
-            {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> {custRef.alpha_tag||custRef.name}</div>}
+            {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> <button style={{border:0,background:'transparent',padding:0,color:'#1e40af',fontWeight:700,cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setRptArCustomerId(custRef.id);setRptTab('receivables');setPg('reports')}}>{custRef.alpha_tag||custRef.name} · Open AR</button></div>}
             {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
             {ifId&&<div><span style={{color:'#64748b'}}>IF:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{const ifSo=soRef||sos.find(s=>safeItems(s).some(it=>safePicks(it).some(pk=>pk.pick_id===ifId)));if(ifSo){setTodoDetailId(null);setESO(ifSo);setESOC(cust.find(c=>c.id===ifSo.customer_id));setESOTab('items');setPg('orders')}else{nf('Item Fulfillment '+ifId+' not found','warn')}}}>{ifId}</span></div>}
             <div><span style={{color:'#64748b'}}>Priority:</span> <span style={{color:td.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][td.priority]||'Normal'}</span></div>
@@ -10824,6 +10841,7 @@ export default function App(){
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {(String(td.source||'').startsWith('ar_data_quality:')||String(td.source||'').startsWith('past_due_current:'))&&<button className="btn btn-primary" style={{width:'100%',marginBottom:12}} onClick={()=>{setTodoDetailId(null);setRptRep(td.assigned_to||'all');setRptTab('receivables');setPg('reports')}}>{String(td.source||'').startsWith('ar_data_quality:')?'Open account-information checklist →':'Open current receivables →'}</button>}
           {/* Live bot progress — the worker relays the agent's PROGRESS narration in
               realtime while the run is active; cleared automatically when it finishes. */}
           {td.assigned_to==='bot-claude'&&td.bot_status==='in_progress'&&(()=>{const _p=botProgress(td);const _pct=_p?Math.min(100,Math.round(_p.step/_p.total*100)):5;return<div style={{marginBottom:12,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8}}>
@@ -15129,6 +15147,7 @@ export default function App(){
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
+  const[rptArCustomerId,setRptArCustomerId]=useState(null);
   const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'&&cu?.id?cu.id:'all');// reps land on (and are locked to) their own numbers; admins/GM default to the full team and can switch reps
@@ -15456,9 +15475,9 @@ export default function App(){
       {id:'sales',label:'Sales',icon:_ico.sales,tabs:['overview','pipeline','products','reps']},
       {id:'customers',label:'Customers',icon:_ico.customers,tabs:['customers','csr_tasks']},
       {id:'production',label:'Production',icon:_ico.production,tabs:['production','decorator','time','inventory',...(_isWhOk?['warehouse']:[])]},
-      {id:'finance',label:'Finance',icon:_ico.finance,tabs:['sales_tax']},
+      {id:'finance',label:'Finance',icon:_ico.finance,tabs:['receivables','sales_tax']},
     ];
-    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',sales_tax:'Sales Tax'};
+    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',receivables:'My Receivables',sales_tax:'Sales Tax'};
     const _curGroup=_rGroups.find(g=>g.tabs.includes(rptTab))||_rGroups[0];
     const _curTabs=_curGroup.tabs.map(id=>({id,label:_tabLabels[id]||id}));
     const _salesGroup=_curGroup.id==='sales';
@@ -15757,6 +15776,10 @@ export default function App(){
         {(rptScopeOpen||rptExportOpen)&&<div onClick={()=>{setRptScopeOpen(false);setRptExportOpen(false)}} style={{position:'fixed',inset:0,zIndex:50}}/>}
         {rptToast&&<div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',background:'var(--navy)',color:'#fff',borderRadius:8,padding:'12px 20px',boxShadow:'0 12px 34px rgba(16,26,64,.3)',zIndex:80,fontSize:13.5,fontWeight:600,animation:'nsaRowIn .25s ease'}}>{rptToast}</div>}
       </div>
+
+      {rptTab==='receivables'&&<div style={{maxWidth:1360,margin:'0 auto',padding:'16px 20px 24px'}}>
+        <React.Suspense fallback={<LazyFallback/>}><ARWorkspace mode="report" scopeRepId={rptRep} initialCustomerId={rptArCustomerId} onInitialCustomerHandled={()=>setRptArCustomerId(null)}/></React.Suspense>
+      </div>}
 
       {/* HISTORICAL SALES — NetSuite invoice history (read-only), this year vs last year by month */}
       {false&&rptTab==='overview'&&<div className="card" style={{marginBottom:12}}>
@@ -32802,7 +32825,8 @@ export default function App(){
 
   // MESSAGES PAGE — prominent hub for all entity messages with threading
   function rMsg(){const closedStatuses=new Set(['complete','shipped','closed']);
-    const allMRaw=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
+    const canSeeArMessage=m=>m.entity_type!=='customer'||['admin','super_admin','gm','accounting'].includes(cu.role)||cust.some(c=>c.id===m.entity_id&&c.primary_rep_id===cu.id);
+    const allMRaw=msgs.filter(canSeeArMessage).sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
     // Entity type filter
     const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
@@ -32829,21 +32853,23 @@ export default function App(){
     const topConvos=convos.filter(c=>mF==='unread'?c.unreadCount>0:mF==='mentions'?c.messages.some(_isMentioned):mF==='mine'?c.messages.some(_isMsgForMe):true);
     const threadCount=new Set(allM.map(groupKey)).size;
     // Currently-open conversation — pull the FULL history from msgs so nothing is hidden by filters.
-    const openAnchor=mThread?msgs.find(m=>m.id===mThread):null;
+    const openAnchor=mThread?allMRaw.find(m=>m.id===mThread):null;
     const openKey=openAnchor?groupKey(openAnchor):null;
-    const openMsgs=openKey?[...msgs].filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
+    const openMsgs=openKey?allMRaw.filter(m=>groupKey(m)===openKey).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
     const openRootMsg=openMsgs[0]||openAnchor;
     // Context for the open thread — who the order is for and its memo, so the reader
     // knows what the conversation is about without opening the order. Jobs carry so_id,
     // so the same lookup covers SO / Job; estimates match on entity_id.
     const openEntity=openRootMsg?(sos.find(s=>s.id===openRootMsg.so_id||s.id===openRootMsg.entity_id)||ests.find(e=>e.id===openRootMsg.entity_id)||null):null;
+    const openCustomer=openRootMsg&&openRootMsg.entity_type==='customer'?cust.find(c=>c.id===openRootMsg.entity_id)||null:null;
     const openWctx=openRootMsg&&openRootMsg.entity_type==='webstore_order'?wsoCtx[String(openRootMsg.entity_id)]:null;
-    const openCustName=openWctx?([openWctx.buyer,openWctx.storeName].filter(Boolean).join(' · ')||null):(openEntity?(cust.find(cc=>cc.id===openEntity.customer_id)?.name||null):null);
+    const openCustName=openWctx?([openWctx.buyer,openWctx.storeName].filter(Boolean).join(' · ')||null):(openCustomer?.name||(openEntity?(cust.find(cc=>cc.id===openEntity.customer_id)?.name||null):null));
     const openMemo=openEntity?.memo||null;
     // Entity type stats
     const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
     const estCount=allM.filter(m=>m.entity_type==='estimate').length;
     const jobCount=allM.filter(m=>m.entity_type==='job').length;
+    const customerCount=allM.filter(m=>m.entity_type==='customer').length;
     const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
     const renderMsgPageText=(text)=>{
       if(!text)return text;
@@ -32860,13 +32886,14 @@ export default function App(){
       if(last<text.length)parts.push({type:'text',value:text.slice(last)});
       return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
     };
-    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t==='webstore_order'?'Customer':t==='issue'?'Issue':t};
-    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':t==='webstore_order'?'#b45309':'#64748b'};
-    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':t==='webstore_order'?'#fef3c7':'#f1f5f9'};
+    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t==='customer'?'AR Account':t==='webstore_order'?'Customer':t==='issue'?'Issue':t};
+    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':t==='customer'?'#962c32':t==='webstore_order'?'#b45309':'#64748b'};
+    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':t==='customer'?'#f6e3e4':t==='webstore_order'?'#fef3c7':'#f1f5f9'};
     const navigateToEntity=(m)=>{
       const eType=m.entity_type||'so';const eId=m.entity_id||m.so_id;
       if(eType==='so'||eType==='job'){const so=sos.find(s=>s.id===eId||s.id===m.so_id);if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setESOTab('messages');setPg('orders')}}
       else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
+      else if(eType==='customer'){const c3=cust.find(c=>c.id===eId);if(c3){setRptArCustomerId(c3.id);setRptTab('receivables');setPg('reports')}}
       // Customer order replies live in the OMG portal (full order context: items,
       // customer, SO, store) where staff reply & re-email the parent. Deep-link
       // straight to that store + order so its expanded row (and thread) opens.
@@ -32930,17 +32957,17 @@ export default function App(){
     </div>
     {/* Entity type filter row */}
     <div style={{display:'flex',gap:4,marginBottom:8}}>
-      {[['all','All',allM.length,'#475569'],['so','Sales Orders',soCount,'#1e40af'],['estimate','Estimates',estCount,'#7c3aed'],['job','Jobs',jobCount,'#166534']].map(([v,l,c,clr])=><button key={v} style={{fontSize:11,padding:'4px 12px',borderRadius:20,border:'1px solid '+(mEntityF===v?clr:'#e2e8f0'),background:mEntityF===v?clr:'white',color:mEntityF===v?'white':clr,cursor:'pointer',fontWeight:600,display:'flex',gap:4,alignItems:'center'}} onClick={()=>setMEntityF(v)}>{l}<span style={{fontSize:9,opacity:0.8}}>{c}</span></button>)}
+      {[['all','All',allM.length,'#475569'],['so','Sales Orders',soCount,'#1e40af'],['estimate','Estimates',estCount,'#7c3aed'],['job','Jobs',jobCount,'#166534'],['customer','AR Accounts',customerCount,'#962c32']].map(([v,l,c,clr])=><button key={v} style={{fontSize:11,padding:'4px 12px',borderRadius:20,border:'1px solid '+(mEntityF===v?clr:'#e2e8f0'),background:mEntityF===v?clr:'white',color:mEntityF===v?'white':clr,cursor:'pointer',fontWeight:600,display:'flex',gap:4,alignItems:'center'}} onClick={()=>setMEntityF(v)}>{l}<span style={{fontSize:9,opacity:0.8}}>{c}</span></button>)}
     </div>
     {/* Status filters */}
     <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My Messages']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className={`btn btn-sm ${mHideClosed?'btn-primary':'btn-secondary'}`} onClick={()=>setMHideClosed(!mHideClosed)}>{mHideClosed?'Active Only':'All Orders'}</button>
-      <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
+      <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{const visibleIds=new Set(allMRaw.map(m=>m.id));setMsgs(msgs.map(m=>visibleIds.has(m.id)?({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]}):m));nf('All marked read')}}>Mark All Read</button></div>
     <div style={{display:'flex',gap:16}}>
     {/* Message list */}
     <div className="card" style={{flex:mThread?'0 0 45%':'1',transition:'flex 0.2s'}}><div className="card-body" style={{padding:0}}>
       {topConvos.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
-      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
+      topConvos.map(c=>{const m=c.root,lastAuthor=REPS.find(r=>r.id===c.last.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=m.entity_type==='customer'?cust.find(cc=>cc.id===m.entity_id):cust.find(cc=>cc.id===entity?.customer_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const isUnread=c.unreadCount>0;const isTagged=c.isTagged;const count=c.messages.length;
         return<div key={c.key} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:openKey===c.key?'#e0e7ff':isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
           onClick={()=>{if(m.entity_type==='webstore_order'){openThread(m);navigateToEntity(m)}else openThread(m)}}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
@@ -36879,9 +36906,10 @@ export default function App(){
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
   const appData={
     // core entity collections + setters
-    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,
+    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,_truncatedTables,
+    assignedTodos,setAssignedTodos,
     // session / navigation / notify
-    cu,nf,pg,setPg,setESO,setESOC,setESOTab,
+    cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,
     // QuickBooks page state + handlers
     connectQB,disconnectQB,qbApi,qbConfig,setQBConfig,qbSyncing,setQbSyncing,qbTab,setQbTab,
     qbBillAmount,setQbBillAmount,qbBillDate,setQbBillDate,qbBillFile,setQbBillFile,qbBillMemo,setQbBillMemo,
@@ -36909,7 +36937,7 @@ export default function App(){
         // Page access control: admins see all; others honor per-user access array, falling back to role defaults.
         if(!canAccess(item.id))return null;
         const _closedSt=new Set(['complete','shipped','closed']);
-        const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
+        const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{if(m.entity_type==='customer'&&!['admin','super_admin','gm','accounting'].includes(cu.role)&&!cust.some(c=>c.id===m.entity_id&&c.primary_rep_id===cu.id))return false;const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
         // Notify only for conversations that include me — I'm tagged/@mentioned in the thread
         // or have posted in it. NOT every unread message on every order I happen to own: a
         // thread between two other people on my order isn't a notification for me.

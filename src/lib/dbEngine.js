@@ -340,6 +340,9 @@ const _mapHistInvoice=hi=>({
   customer_id:hi.customer_id,
   date:hi.invoice_date,
   total:hi.total!=null?Number(hi.total):null,
+  // Optional authoritative AR balance. Legacy imports do not have this field;
+  // those rows remain useful sales history but are excluded from collectible AR.
+  open_balance:hi.open_balance!=null?Number(hi.open_balance):null,
   memo:hi.memo||'',
   status:hi.status||'paid',
   type:'invoice',
