@@ -14,6 +14,8 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
+import MethodicOrderPanel from './methodic/MethodicOrderPanel';
+import MethodicOrderStatusStrip from './methodic/MethodicOrderStatusStrip';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
@@ -170,7 +172,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText,ui='new'}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -5160,6 +5162,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
+    {isSO&&<MethodicOrderStatusStrip orderId={o.id} onOpen={()=>setTab('methodic')}/>}
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
       <button data-tour-id="oe-tab-items" className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
@@ -5167,6 +5170,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
+      {isSO&&<button className={`tab ${tab==='methodic'?'active':''}`} onClick={()=>setTab('methodic')} style={tab==='methodic'?{background:'#312e81',color:'white'}:{}}>Methodic</button>}
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
@@ -7747,6 +7751,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>})()}
 
     {/* HISTORY TAB */}
+    {isSO&&tab==='methodic'&&<div className="card" style={{marginBottom:16}}><div className="card-body"><MethodicOrderPanel order={o} customer={ic} teamMembers={REPS||[]} notify={nf} onOpenDashboard={onOpenMethodicDashboard}/></div></div>}
+
     {tab==='history'&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Document History</h2></div>
       <div className="card-body" style={{padding:'16px 20px'}}>
