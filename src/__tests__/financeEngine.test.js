@@ -13,6 +13,7 @@ const calcMargin = (o) => ({ rev: o._rev || 0, cost: o._cost || 0, shipRev: o._s
 describe('date helpers', () => {
   test('parses M/D/YYYY with time, M/D/YY, and ISO', () => {
     expect(monthKey(parseDate('6/1/2026 10:22:00'))).toBe('2026-06');
+    expect(monthKey(parseDate('5/5/2026, 2:47:17 PM'))).toBe('2026-05');
     expect(monthKey(parseDate('6/1/26'))).toBe('2026-06');
     expect(monthKey(parseDate('2026-07-31'))).toBe('2026-07');
     expect(parseDate('')).toBeNull();

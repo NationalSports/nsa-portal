@@ -16,7 +16,10 @@ export function parseDate(s) {
   const str = String(s);
   let m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
-  m = str.split(' ')[0].match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  // App-created rows use toLocaleString(), which places a comma between the
+  // date and time ("5/5/2026, 2:47:17 PM"). Match the leading calendar date
+  // directly so those real sales-order dates do not render as unknown.
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\D|$)/);
   if (m) { let y = +m[3]; if (y < 100) y += 2000; return new Date(y, +m[1] - 1, +m[2]); }
   return null;
 }
