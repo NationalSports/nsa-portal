@@ -59,14 +59,14 @@ const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JS
 const playerKey = (slug) => 'nsa_player_' + slug;
 const loadPlayerToken = (slug) => { try { return localStorage.getItem(playerKey(slug)) || ''; } catch { return ''; } };
 const savePlayerToken = (slug, tok) => { try { if (tok) localStorage.setItem(playerKey(slug), tok); else localStorage.removeItem(playerKey(slug)); } catch {} };
-const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0);
+const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0) + (Number(l.option_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
 const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
-// Processing fee: a percent of the item subtotal only — base price + size upcharge,
-// excluding fundraising and name upcharge (mirrors the server's priceCart subtotal).
+// Processing fee: a percent of the item subtotal only — base price + size/add-on
+// upcharges, excluding fundraising and name personalization (mirrors priceCart).
 const procPct = (store) => Math.max(0, Number(store && store.processing_pct) || 0);
-const cartProcBase = (items) => items.reduce((a, l) => a + ((Number(l.unit_price) || 0) + (Number(l.size_extra) || 0)) * (l.qty || 1), 0);
+const cartProcBase = (items) => items.reduce((a, l) => a + ((Number(l.unit_price) || 0) + (Number(l.size_extra) || 0) + (Number(l.option_extra) || 0)) * (l.qty || 1), 0);
 const procFeeAmt = (store, items) => Math.round(procPct(store) / 100 * cartProcBase(items) * 100) / 100;
 const grandTotal = (store, items) => cartTotal(items) + shipFee(store) + procFeeAmt(store, items);
 
@@ -166,6 +166,19 @@ function darken(hex, amount) {
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (j) => Object.values(j || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_price);
+const optionDefsOf = (p) => Array.isArray(p && p.options) ? p.options.filter((o) => o && String(o.label || '').trim()) : [];
+const optionKey = (o, i) => String(o.id || `option-${i}`);
+const optionHasValue = (o, value) => o.kind === 'addon' ? value === true : String(value == null ? '' : value).trim() !== '';
+const optionSelections = (defs, values) => defs.reduce((out, o, i) => {
+  const key = optionKey(o, i); const value = values[key];
+  if (!optionHasValue(o, value)) return out;
+  const choice = o.kind === 'choice' ? (o.choices || []).find((c) => c.label === value) : null;
+  const upcharge = o.kind === 'choice' ? Number(choice && choice.upcharge) || 0 : Number(o.upcharge) || 0;
+  out.push({ id: key, label: String(o.label).trim(), kind: o.kind || 'text', value: o.kind === 'addon' ? true : String(value).trim(), upcharge });
+  return out;
+}, []);
+const optionsExtra = (defs, values) => optionSelections(defs, values).reduce((sum, s) => sum + (Number(s.upcharge) || 0), 0);
+const optionDetailLabels = (selections) => (Array.isArray(selections) ? selections : []).map((s) => `${s.label}: ${s.kind === 'addon' ? 'Yes' : s.value}`);
 // Per-size upcharge — bigger sizes (2XL/3XL+) cost the vendor more, so the view
 // publishes a size→extra-dollars map. 0 when the store has it off or the size is standard.
 const sizeUp = (p, sz) => (sz ? Number((p.size_upcharges || {})[sz]) || 0 : 0);
@@ -1129,6 +1142,34 @@ function Placeholder({ theme, label, kind = 'top', store }) {
   return <GarmentTile theme={theme} store={store || { name: label }} kind={kind} />;
 }
 
+function AddOnFields({ options, values, onChange, theme }) {
+  const defs = optionDefsOf({ options });
+  if (!defs.length) return null;
+  const set = (key, value) => onChange({ ...values, [key]: value });
+  const labelStyle = { fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 };
+  return (
+    <div style={{ margin: '4px 0 18px', padding: '16px', border: `1px solid ${theme.line}`, borderRadius: 6, background: theme.paper }}>
+      <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', color: theme.ink, marginBottom: 12 }}>Player details &amp; add-ons</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
+        {defs.map((o, i) => {
+          const key = optionKey(o, i); const value = values[key] == null ? '' : values[key];
+          const suffix = o.kind === 'choice' ? '' : (Number(o.upcharge) > 0 ? ` (+${money(o.upcharge)})` : '');
+          return <div key={key}>
+            <div style={labelStyle}>{o.label}{o.required ? ' *' : ''}{suffix}</div>
+            {o.kind === 'number' && <input aria-label={o.label} className="sf-input" inputMode="numeric" value={value} onChange={(e) => set(key, e.target.value.replace(/[^0-9]/g, '').slice(0, 12))} placeholder="Enter number" style={fieldStyle(theme, '100%')} />}
+            {(o.kind === 'text' || !['number', 'choice', 'addon'].includes(o.kind)) && <input aria-label={o.label} className="sf-input" value={value} onChange={(e) => set(key, e.target.value.slice(0, 120))} placeholder="Enter text" style={fieldStyle(theme, '100%')} />}
+            {o.kind === 'choice' && <select aria-label={o.label} className="sf-input" value={value} onChange={(e) => set(key, e.target.value)} style={fieldStyle(theme, '100%')}>
+              <option value="">Select one…</option>
+              {(o.choices || []).map((c) => <option key={c.label} value={c.label}>{c.label}{Number(c.upcharge) > 0 ? ` (+${money(c.upcharge)})` : ''}</option>)}
+            </select>}
+            {o.kind === 'addon' && <label style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 9, border: `1px solid ${theme.line}`, borderRadius: 4, padding: '9px 12px', cursor: 'pointer', background: value === true ? theme.cream : '#fff' }}><input type="checkbox" checked={value === true} onChange={(e) => set(key, e.target.checked)} /> <span style={{ fontSize: 14, fontWeight: 600 }}>Yes, add this</span></label>}
+          </div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Rough color-name → swatch hex for the small color dots.
 function swatchColor(name) {
   const n = String(name || '').trim().toLowerCase();
@@ -1144,10 +1185,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
   const [pname, setPname] = useState('');
+  const [addOnValues, setAddOnValues] = useState({});
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   // Reset the picked color / size when navigating to a different product.
-  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); }, [rep ? rep.webstore_product_id : null]);
+  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); setAddOnValues({}); }, [rep ? rep.webstore_product_id : null]);
   // Prefill personalization from the player's roster link — jersey number is the
   // high-value bit; name is prefilled too but stays editable.
   useEffect(() => {
@@ -1212,7 +1254,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   });
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
-  const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
+  const addOnDefs = optionDefsOf(p);
+  const addOnExtra = optionsExtra(addOnDefs, addOnValues);
+  const selectedAddOns = optionSelections(addOnDefs, addOnValues);
+  const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
+  const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0) + addOnExtra;
   const needSize = isFitGroup ? true : sizesArr.length > 0;
   // A product that inherently has sizes (a real size scale, or a rep-added
   // sizes_offered list) but yields ZERO sellable sizes is sold out in every size and
@@ -1222,8 +1268,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const inherentlySized = !isFitGroup && (scaleOf(p).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
   const soldOutNoSize = inherentlySized && sizesArr.length === 0;
   const needNumber = !!p.takes_number;
-  const isPersonalized = needNumber || !!p.takes_name;
-  const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim());
+  const isPersonalized = needNumber || !!p.takes_name || selectedAddOns.length > 0;
+  const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim()) && !missingAddOn;
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
@@ -1231,6 +1277,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
       size_extra: upNow,
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
+      option_extra: addOnExtra,
+      option_selections: selectedAddOns,
       player_number: needNumber ? num.trim() : null,
       player_name: p.takes_name && pname.trim() ? pname.trim() : null,
       qty: isPersonalized ? 1 : qty,
@@ -1322,7 +1370,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             </div>
           )}
 
-          {(upNow > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
+          <AddOnFields options={addOnDefs} values={addOnValues} onChange={setAddOnValues} theme={theme} />
+
+          {(upNow > 0 || addOnExtra > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
             {!isPersonalized && (
               <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${theme.line}`, borderRadius: 4, overflow: 'hidden', height: 50 }}>
@@ -1332,7 +1382,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
               </div>
             )}
             <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), flex: 1, minWidth: 220, opacity: canAdd ? 1 : 0.55, cursor: canAdd ? 'pointer' : 'not-allowed' }}>
-              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
+              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : missingAddOn ? `Complete ${missingAddOn.label}` : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
             </button>
           </div>
           {added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}
@@ -1351,6 +1401,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
+  const [addOnValues, setAddOnValues] = useState({});
   const [added, setAdded] = useState(false);
   // Prefill every numbered/named component from the player's roster link.
   useEffect(() => {
@@ -1364,14 +1415,18 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   if (!p) return <Splash>Package not found.</Splash>;
   const compSizesArr = (c) => foldScale(meta(c).sizes);
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
+  const addOnDefs = optionDefsOf(p);
+  const addOnExtra = optionsExtra(addOnDefs, addOnValues);
+  const selectedAddOns = optionSelections(addOnDefs, addOnValues);
+  const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
   const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
   const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
-  const canAdd = isOpen && !missingSize && !missingNum;
+  const canAdd = isOpen && !missingSize && !missingNum && !missingAddOn;
   const addToCart = () => {
     onAdd({
       kind: 'bundle', webstore_product_id: p.webstore_product_id, product_id: null, sku: null,
       name: p.name, image: p.image_front_url || (components.map((c) => meta(c).image).find(Boolean)) || null,
-      unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra,
+      unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra, option_extra: addOnExtra, option_selections: selectedAddOns,
       components: components.map((c) => { const m = meta(c); return {
         bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: m.name, image: m.image || null,
         size: picks[c.id] || null,
@@ -1477,16 +1532,18 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
         </div>
       )}
 
+      {addOnDefs.length > 0 && <div style={{ margin: '0 0 96px' }}><AddOnFields options={addOnDefs} values={addOnValues} onChange={setAddOnValues} theme={theme} /></div>}
+
       {/* Sticky action bar */}
       <div style={{ position: 'sticky', bottom: 0, zIndex: 10, background: theme.ink, borderRadius: '8px 8px 0 0', boxShadow: '0 -4px 24px rgba(0,0,0,0.18)', padding: '16px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 180 }}>
           <div style={{ width: 170, maxWidth: '60vw', height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.18)', overflow: 'hidden', marginBottom: 8 }}>
             <div style={{ width: `${Math.round(pct * 100)}%`, height: '100%', background: theme.accent, borderRadius: 999, transition: 'width .3s ease' }} />
           </div>
-          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>{!isOpen ? 'Store not open yet' : canAdd ? 'Pack complete — ready to add' : `${selCount} of ${total} selected`}</div>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>{!isOpen ? 'Store not open yet' : missingAddOn ? `Complete ${missingAddOn.label}` : canAdd ? 'Pack complete — ready to add' : `${selCount} of ${total} selected`}</div>
         </div>
         <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ border: 'none', borderRadius: 4, padding: '15px 28px', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: 1.2, textTransform: 'uppercase', cursor: canAdd ? 'pointer' : 'not-allowed', background: canAdd ? theme.accent : 'rgba(255,255,255,0.16)', color: canAdd ? theme.ink : 'rgba(255,255,255,0.5)' }}>
-          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added' : `Add Player Pack · ${money(pack + nameExtra)}`}</span>
+          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added' : `Add Player Pack · ${money(pack + nameExtra + addOnExtra)}`}</span>
         </button>
       </div>
     </div>
@@ -1495,9 +1552,10 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
 
 // ── Cart ─────────────────────────────────────────────────────────────
 function lineDetail(l) {
-  if (l.kind === 'bundle') return (l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`);
+  if (l.kind === 'bundle') return [...optionDetailLabels(l.option_selections), ...(l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`)];
   return [
     [l.variant_label, l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · '),
+    ...optionDetailLabels(l.option_selections),
     Number(l.size_extra) > 0 ? `Includes +${money(l.size_extra)} for ${l.size}` : null,
   ].filter(Boolean);
 }
@@ -1505,7 +1563,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
   const remove = (key) => onUpdate(cart.filter((l) => l.key !== key));
   const setQty = (key, q) => onUpdate(cart.map((l) => (l.key === key ? { ...l, qty: Math.max(1, q) } : l)));
   // Personalized items (a specific jersey number/name) and packs are 1-of-a-kind.
-  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name;
+  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name || (Array.isArray(l.option_selections) && l.option_selections.length > 0);
   const heading = <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Your Cart<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>;
   if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Start with the Player Pack</SkewBtn></div></div>;
 
@@ -1522,7 +1580,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
             // Grouped Player Pack card — one priced unit, child items show "incl."
             <div key={l.key} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderLeft: `4px solid ${theme.accent}`, borderRadius: 6, marginBottom: 16, overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${theme.line}` }}>
-                <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink }}>{l.name} · {money(lineUnit(l))}</div>
+                <div><div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink }}>{l.name} · {money(lineUnit(l))}</div>{optionDetailLabels(l.option_selections).map((x) => <div key={x} style={{ fontSize: 12.5, color: theme.subText }}>{x}</div>)}</div>
                 <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase' }}>Remove pack</button>
               </div>
               {(l.components || []).map((c, i) => (
@@ -1542,6 +1600,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink }}>{l.name}</div>
                 <div style={{ fontSize: 13, color: theme.subText }}>{optLabel([l.variant_label, l.size, l.player_number && '#' + l.player_number, l.player_name])}</div>
+                {optionDetailLabels(l.option_selections).map((x) => <div key={x} style={{ fontSize: 12.5, color: theme.subText }}>{x}</div>)}
                 {fixedQty(l)
                   ? <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase', padding: '6px 0 0' }}>Remove</button>
                   : <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
@@ -1614,7 +1673,7 @@ async function repriceCart(store, cart) {
     if (!ids.length) return cart;
     const [{ data: prods }, { data: bitems }] = await Promise.all([
       supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge')
+        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge,options')
         .eq('store_id', store.id).in('webstore_product_id', ids),
       supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
     ]);
@@ -1625,6 +1684,9 @@ async function repriceCart(store, cart) {
       if (!p) return l; // product gone/deactivated — leave as-is; the server surfaces its own error
       const unit_price = Number(p.retail_price) || 0;
       const fundraise = Number(p.fundraise_amount) || 0;
+      const selectedValues = Object.fromEntries((l.option_selections || []).map((s) => [s.id, s.value]));
+      const option_selections = optionSelections(optionDefsOf(p), selectedValues);
+      const option_extra = option_selections.reduce((a, s) => a + (Number(s.upcharge) || 0), 0);
       if (l.kind === 'bundle') {
         // Bundle name upcharge = sum over selected components that take a name and have one.
         const name_extra = (l.components || []).reduce((a, c) => {
@@ -1632,11 +1694,11 @@ async function repriceCart(store, cart) {
           const hasName = c.player_name && String(c.player_name).trim();
           return a + ((bi && bi.takes_name && hasName) ? (Number(bi.name_upcharge) || 0) : 0);
         }, 0);
-        return { ...l, unit_price, fundraise, name_extra };
+        return { ...l, unit_price, fundraise, name_extra, option_extra, option_selections };
       }
       const size_extra = l.size ? (Number((p.size_upcharges || {})[l.size]) || 0) : 0;
       const name_extra = (l.player_name && String(l.player_name).trim()) ? (Number(p.name_upcharge) || 0) : 0;
-      return { ...l, unit_price, fundraise, size_extra, name_extra };
+      return { ...l, unit_price, fundraise, size_extra, name_extra, option_extra, option_selections };
     });
   } catch (e) { return cart; }
 }
@@ -1725,7 +1787,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
   const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
   const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ('pickup|' + (buyer.zip || ''));
-  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty]));
+  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.option_selections || null]));
   useEffect(() => {
     if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
     if (!needAddr && (buyer.zip || '').length < 5) { setTaxInfo(null); return; }
@@ -1745,7 +1807,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const _orderRefState = useRef({ key: '', ref: '' });
   const orderRefFor = (payMode) => {
     const key = JSON.stringify([store.slug, payMode, buyer.email, coupon ? coupon.code : null,
-      cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.components || null])]);
+      cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.option_selections || null, l.components || null])]);
     if (_orderRefState.current.key !== key) {
       const uuid = (window.crypto && window.crypto.randomUUID)
         ? window.crypto.randomUUID()
@@ -2183,6 +2245,7 @@ function OrderStatusPage({ store, theme, orderId }) {
                     <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Bundle · {bundleChildren.length} items</span>
                   </span>
                 </div>
+                {optionDetailLabels(item.add_on_selections).map((x) => <div key={x} style={{ fontSize: 13, color: SUB, marginTop: 2 }}>{x}</div>)}
                 <div style={{ marginTop: 5 }}>{chipForLines(bundleChildren)}</div>
               </div>
               <div style={{ flexShrink: 0, fontFamily: DISPLAY, fontWeight: 800, fontSize: 21, color: P }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>
@@ -2211,7 +2274,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
           {soloItems.map((item) => {
             const label = item.name || item.sku || 'Item';
-            const sub = [item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name].filter(Boolean).join(' · ');
+            const sub = [item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name, ...optionDetailLabels(item.add_on_selections)].filter(Boolean).join(' · ');
             return (
               <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 16, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: '14px 18px' }}>
                 <div style={{ flexShrink: 0 }}>{imgThumb(item, 60)}</div>
