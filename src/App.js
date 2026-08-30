@@ -10244,10 +10244,10 @@ export default function App(){
         </select>}</div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const arCust=m.entity_type==='customer'?cust.find(cc=>cc.id===m.entity_id):null;const isTagged=(m.tagged_members||[]).includes(cu?.id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(m.entity_type==='customer'&&arCust){setRptArCustomerId(arCust.id);setRptTab('receivables');setPg('reports')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':''))}</span>
+                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(arCust?('💰 AR · '+arCust.name):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':'')))}</span>
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
@@ -10821,7 +10821,7 @@ export default function App(){
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12,fontSize:12}}>
             <div><span style={{color:'#64748b'}}>Created by:</span> <strong>{creator?.name}</strong></div>
             <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{assignee?.name}</strong></div>
-            {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> {custRef.alpha_tag||custRef.name}</div>}
+            {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> <button style={{border:0,background:'transparent',padding:0,color:'#1e40af',fontWeight:700,cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setRptArCustomerId(custRef.id);setRptTab('receivables');setPg('reports')}}>{custRef.alpha_tag||custRef.name} · Open AR</button></div>}
             {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
             {ifId&&<div><span style={{color:'#64748b'}}>IF:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{const ifSo=soRef||sos.find(s=>safeItems(s).some(it=>safePicks(it).some(pk=>pk.pick_id===ifId)));if(ifSo){setTodoDetailId(null);setESO(ifSo);setESOC(cust.find(c=>c.id===ifSo.customer_id));setESOTab('items');setPg('orders')}else{nf('Item Fulfillment '+ifId+' not found','warn')}}}>{ifId}</span></div>}
             <div><span style={{color:'#64748b'}}>Priority:</span> <span style={{color:td.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][td.priority]||'Normal'}</span></div>
@@ -15134,6 +15134,7 @@ export default function App(){
 
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
+  const[rptArCustomerId,setRptArCustomerId]=useState(null);
   const[whRptRange,setWhRptRange]=useState('30');// warehouse productivity report time window (days, or 'all')
   const[invDrill,setInvDrill]=useState(null);// {kind:'vendor'|'category',key:string}
   const[rptRep,setRptRep]=useState(()=>cu?.role==='rep'&&cu?.id?cu.id:'all');// reps land on (and are locked to) their own numbers; admins/GM default to the full team and can switch reps
@@ -15764,7 +15765,7 @@ export default function App(){
       </div>
 
       {rptTab==='receivables'&&<div style={{maxWidth:1360,margin:'0 auto',padding:'16px 20px 24px'}}>
-        <React.Suspense fallback={<LazyFallback/>}><ARWorkspace mode="report" scopeRepId={rptRep}/></React.Suspense>
+        <React.Suspense fallback={<LazyFallback/>}><ARWorkspace mode="report" scopeRepId={rptRep} initialCustomerId={rptArCustomerId} onInitialCustomerHandled={()=>setRptArCustomerId(null)}/></React.Suspense>
       </div>}
 
       {/* HISTORICAL SALES — NetSuite invoice history (read-only), this year vs last year by month */}
@@ -32879,7 +32880,7 @@ export default function App(){
       const eType=m.entity_type||'so';const eId=m.entity_id||m.so_id;
       if(eType==='so'||eType==='job'){const so=sos.find(s=>s.id===eId||s.id===m.so_id);if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setESOTab('messages');setPg('orders')}}
       else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
-      else if(eType==='customer'){const c3=cust.find(c=>c.id===eId);if(c3){setSelC(c3.parent_id?cust.find(x=>x.id===c3.parent_id)||c3:c3);setPg('customers')}}
+      else if(eType==='customer'){const c3=cust.find(c=>c.id===eId);if(c3){setRptArCustomerId(c3.id);setRptTab('receivables');setPg('reports')}}
       // Customer order replies live in the OMG portal (full order context: items,
       // customer, SO, store) where staff reply & re-email the parent. Deep-link
       // straight to that store + order so its expanded row (and thread) opens.

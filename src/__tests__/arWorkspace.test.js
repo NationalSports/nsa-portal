@@ -31,13 +31,17 @@ function renderWorkspace(user, props={}, overrides={}) {
   return {setMsgs,setAssignedTodos,setESO,setESOC,setPg};
 }
 
+function applyTodoUpdates(mock, start=[]) {
+  return mock.mock.calls.reduce((rows,[update])=>typeof update==='function'?update(rows):update,start);
+}
+
 afterEach(()=>window.localStorage.clear());
 
 describe('ARWorkspace',()=>{
   test('a rep is locked to their own accounts even if another rep scope is requested',()=>{
     renderWorkspace(reps[0],{scopeRepId:'R2'});
     expect(screen.getByText('My Receivables')).toBeTruthy();
-    expect(screen.getByText('Alpha Athletics')).toBeTruthy();
+    expect(screen.getAllByText('Alpha Athletics').length).toBeGreaterThan(0);
     expect(screen.queryByText('Beta Athletics')).toBeNull();
     expect(screen.getAllByText('$1,000').length).toBeGreaterThan(0);
   });
@@ -56,8 +60,8 @@ describe('ARWorkspace',()=>{
 
   test('accounting sees the full portfolio and can open an account conversation',()=>{
     const api=renderWorkspace(reps[2],{scopeRepId:'all'});
-    expect(screen.getByText('Alpha Athletics')).toBeTruthy();
-    expect(screen.getByText('Beta Athletics')).toBeTruthy();
+    expect(screen.getAllByText('Alpha Athletics').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Beta Athletics').length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByText('Open workspace')[1]);
     expect(screen.getByText('Internal AR conversation')).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText(/Message Rep One/),{target:{value:'Can you confirm the billing contact?'}});
@@ -66,6 +70,40 @@ describe('ARWorkspace',()=>{
     const updater=api.setMsgs.mock.calls[api.setMsgs.mock.calls.length-1][0];
     const rows=updater([]);
     expect(rows[0]).toMatchObject({entity_type:'customer',entity_id:'C1',dept:'accounting',tagged_members:['R1']});
+  });
+
+  test('opens a linked account workspace from a message or TODO deep link',()=>{
+    const handled=jest.fn();
+    renderWorkspace(reps[0],{scopeRepId:'R1',initialCustomerId:'C1',onInitialCustomerHandled:handled});
+    expect(screen.getByText('Internal AR conversation')).toBeTruthy();
+    expect(screen.getAllByText('Alpha Athletics').length).toBeGreaterThan(0);
+    expect(handled).toHaveBeenCalled();
+  });
+
+  test('replaces obsolete weekly totals and creates one current past-due and data-quality TODO per rep',()=>{
+    const legacy={id:'OLD-WEEK',source:'past_due_weekly:R1:2026-W34',title:'Past-due invoices — $4,000,000',status:'open',assigned_to:'R1',created_by:'R1',comments:[]};
+    const api=renderWorkspace(reps[2],{scopeRepId:'all'},{assignedTodos:[legacy]});
+    const todos=applyTodoUpdates(api.setAssignedTodos,[legacy]);
+    expect(todos.find(t=>t.id==='OLD-WEEK')).toMatchObject({status:'completed',completion_note:'Superseded by the current live Receivables summary.'});
+    const current=todos.filter(t=>t.source==='past_due_current:R1');
+    expect(current).toHaveLength(1);
+    expect(current[0].title).toContain('$1,000.00');
+    expect(current[0].description).toContain('Reports → Finance → My Receivables');
+    expect(todos.filter(t=>t.source==='ar_data_quality:R1')).toHaveLength(1);
+    expect(todos.find(t=>t.source==='ar_data_quality:R1').description).toContain('Account information TODOs');
+  });
+
+  test('shows one focused account-information work list and prior invoice communication',()=>{
+    renderWorkspace(reps[2],{scopeRepId:'all'}, {
+      invs:[{id:'I-HISTORY',customer_id:'C1',so_id:'SO-HISTORY',date:'2026-06-01',due_date:'2026-07-01',total:1000,paid:0,status:'open',sent_history:[{sent_at:'2026-07-02T10:00:00Z',sent_by:'Andrea Accounting',to:'billing@alpha.test',type:'past_due',delivery:'opened'}]}],
+      sos:[{id:'SO-HISTORY',customer_id:'C1',created_by:'R1',status:'waiting_receive',items:[]}],
+    });
+    const list=screen.getByTestId('account-info-todos');
+    expect(within(list).getByText('Alpha Athletics')).toBeTruthy();
+    expect(within(list).getAllByText('No coach email').length).toBeGreaterThan(0);
+    const infoRow=within(list).getByText('Alpha Athletics').closest('tr');
+    fireEvent.click(within(infoRow).getByText('Account AR'));
+    expect(screen.getByText('Past-due reminder I-HISTORY sent to billing@alpha.test · opened')).toBeTruthy();
   });
 
   test('does not auto-open an unlinked account or leak unrelated null-customer tasks',()=>{
@@ -88,7 +126,7 @@ describe('ARWorkspace',()=>{
     expect(screen.getByText('NetSuite full-balance assumption is active.')).toBeTruthy();
     expect(screen.getByText(/full \$24,500 original face value is included/)).toBeTruthy();
     expect(screen.getAllByText('Open AR')[0].parentElement.textContent).toContain('$24,500');
-    const accountRow=screen.getByText('Alpha Athletics').closest('tr');
+    const accountRow=screen.getAllByText('Alpha Athletics').map(el=>el.closest('tr')).find(row=>row&&within(row).queryByText('Open workspace'));
     expect(accountRow.textContent).toContain('$24,500');
   });
 
@@ -96,7 +134,7 @@ describe('ARWorkspace',()=>{
     renderWorkspace(reps[2],{}, {
       invs:[{id:'I-CENTS',customer_id:'C1',date:'2026-07-01',due_date:'2026-08-01',total:1234.49,paid:0,status:'open'}],
     });
-    const row=screen.getByText('Alpha Athletics').closest('tr');
+    const row=screen.getAllByText('Alpha Athletics').map(el=>el.closest('tr')).find(accountRow=>accountRow&&within(accountRow).queryByText('Open workspace'));
     fireEvent.click(within(row).getByText('Open workspace'));
     fireEvent.click(screen.getByText('Email account'));
     expect(screen.getByDisplayValue(/\$1,234\.49 open balance/)).toBeTruthy();
@@ -122,6 +160,7 @@ describe('ARWorkspace',()=>{
     const todos=todoUpdater([]);
     expect(todos).toHaveLength(1);
     expect(todos[0]).toMatchObject({id:'todo-completed-uninvoiced-SO-READY',source:'completed_uninvoiced:SO-READY',assigned_to:'R1',so_id:'SO-READY',customer_id:'C1',priority:1,status:'open'});
+    expect(todos[0].description).toContain('Reports → Finance → My Receivables');
     expect(todoUpdater(todos)).toBe(todos);
   });
 });
