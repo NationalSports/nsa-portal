@@ -23,7 +23,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
@@ -10848,7 +10848,7 @@ export default function App(){
             </div>
             {(_poShipAddr||_poShipName)&&<div style={{padding:'6px 12px',fontSize:11,color:'#475569',borderBottom:'1px solid #f1f5f9'}}><span style={{color:'#64748b',fontWeight:600}}>📦 Ship to:</span> {_poShipName?<strong style={{color:'#334155'}}>{_poShipName}</strong>:''}{_poShipName&&_poShipAddr?' — ':''}{_poShipAddr}</div>}
             <div style={{maxHeight:200,overflow:'auto'}}>
-              {_poLines.map((x,i)=>{const pl=x.pl;const it=x.it;const sizes=Object.entries(pl).filter(([k,v])=>!_poMetaKeys.has(k)&&typeof v==='number'&&v>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia===-1?999:ia)-(ib===-1?999:ib)});const tot=sizes.reduce((a,[,v])=>a+v,0);
+              {_poLines.map((x,i)=>{const pl=x.pl;const it=x.it;const sizes=Object.entries(pl).filter(([k,v])=>!k.startsWith('_')&&!_poMetaKeys.has(k)&&typeof v==='number'&&v>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia===-1?999:ia)-(ib===-1?999:ib)});const tot=sizes.reduce((a,[,v])=>a+v,0);
                 return<div key={i} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',fontSize:12}}>
                   <div style={{display:'flex',justifyContent:'space-between',gap:8}}>
                     <span style={{fontWeight:700,color:'#1e293b'}}>{it?.sku||pl.deco_type||'—'}</span>
@@ -14222,6 +14222,18 @@ export default function App(){
     const byVendor={};
     batchPOs.forEach(bp=>{const _gk=bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:'');if(!byVendor[_gk]){const _dv=bp.ship_to_deco_id?decoVendors.find(dv=>dv.id===bp.ship_to_deco_id):null;byVendor[_gk]={name:bp.vendor_name+(_dv?' → '+_dv.name:''),vendor_key:bp.vendor_key,ship_to_deco_id:bp.ship_to_deco_id||null,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold??200,pos:[]}}byVendor[_gk].pos.push(bp)});
     const vendorGroups=Object.entries(byVendor);
+    // Payment method and manual cost are PO-level metadata stored on one source
+    // po_line. If a batch edit removes it, move the metadata to a remaining line.
+    const _carryBatchPoMetadata=(items,bp)=>{
+      const amount=safeNum(bp?.manual_cost);const paymentMethod=bp?.payment_method||'';
+      if(!(amount>0)&&!paymentMethod)return items;
+      let stored=false;
+      return(items||[]).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>{
+        if(pl.batch_queue_id!==bp.id)return pl;
+        if(!stored){stored=true;return{...pl,...(paymentMethod?{_payment_method:paymentMethod}:{}),...(amount>0?{_manual_cost:amount,...(bp.manual_cost_note?{_manual_cost_note:bp.manual_cost_note}:{})}:{})}}
+        const{_payment_method,_manual_cost,_manual_cost_note,...rest}=pl;return rest;
+      })}));
+    };
     // Ship-to for an API order, resolved the same way the bot-cart flow resolves it
     // (write-in address > decorator > drop-ship program address > NSA warehouse).
     // A batch whose lines belong at different addresses can't be one API order — an
@@ -14632,6 +14644,7 @@ export default function App(){
                 <div style={{minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                     {bp.po_id&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12,background:'#f5f3ff',padding:'1px 7px',borderRadius:4}}>{bp.po_id}</span>}
+                    {bp.payment_method&&<span style={{fontSize:10,fontWeight:700,color:'#0f766e',background:'#ccfbf1',padding:'2px 7px',borderRadius:4}}>Paid by {bp.payment_method==='wire'?'Wire':bp.payment_method==='cash'?'Cash':'Credit card'}</span>}
                     <span onClick={()=>{const so=sos.find(s=>s.id===bp.so_id);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf(bp.so_id+' not found','error')}}} title={'Open '+bp.so_id} style={{fontWeight:800,color:'#1e40af',fontSize:15,cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}}>{bp.so_id}</span>
                   </div>
                   <div style={{fontSize:12,color:'#64748b',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{bp.customer}{bp.so_memo?' — '+bp.so_memo:''}</div>
@@ -14647,7 +14660,7 @@ export default function App(){
               </div>
               {!isEditing&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {bp.items.map((it,i)=>{const _sw=_bSwatch(it.color);const _img=(prod.find(p=>p.sku===it.sku)||{}).image_url;return<div key={i} style={{display:'flex',gap:10,fontSize:13,padding:'8px 11px',paddingRight:28,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0',position:'relative'}}>
-                  <button title={'Remove '+it.sku+' from batch'} onClick={()=>{if(!window.confirm('Remove '+it.sku+' from this batch?'))return;const newItems=bp.items.filter((_,ii)=>ii!==i);const so=sos.find(s=>s.id===bp.so_id);if(newItems.length===0){if(so){const ui=safeItems(so).map(soIt=>({...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:ui,updated_at:new Date().toLocaleString()})}setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id));nf('Batch entry removed');}else{if(so&&it.item_idx!=null){const ui=safeItems(so).map((soIt,soIdx)=>{if(soIdx!==it.item_idx)return soIt;return{...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}});savSO({...so,items:ui,updated_at:new Date().toLocaleString()})}const newTotal=newItems.reduce((a,it2)=>a+it2.qty*(it2.unit_cost||0),0);setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:newItems,total_cost:newTotal}:b));nf('Removed '+it.sku+' from batch');}}} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
+                  <button title={'Remove '+it.sku+' from batch'} onClick={()=>{if(!window.confirm('Remove '+it.sku+' from this batch?'))return;const newItems=bp.items.filter((_,ii)=>ii!==i);const so=sos.find(s=>s.id===bp.so_id);if(newItems.length===0){if(so){const ui=safeItems(so).map(soIt=>({...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:ui,updated_at:new Date().toLocaleString()})}setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id));nf('Batch entry removed');}else{if(so&&it.item_idx!=null){const ui=safeItems(so).map((soIt,soIdx)=>{if(soIdx!==it.item_idx)return soIt;return{...soIt,po_lines:(soIt.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}});savSO({...so,items:_carryBatchPoMetadata(ui,bp),updated_at:new Date().toLocaleString()})}const newTotal=newItems.reduce((a,it2)=>a+it2.qty*(it2.unit_cost||0),0)+safeNum(bp.manual_cost);setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:newItems,total_cost:newTotal}:b));nf('Removed '+it.sku+' from batch');}}} style={{position:'absolute',top:5,right:5,background:'none',border:'none',cursor:'pointer',color:'#cbd5e1',fontSize:13,lineHeight:1,padding:'1px 3px',borderRadius:3}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button>
                   {_img?<img src={_img} alt="" style={{width:42,height:42,objectFit:'contain',background:'white',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>:<div style={{width:42,height:42,borderRadius:4,background:'#eef2f7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>}
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap',marginBottom:6}}>
@@ -14688,20 +14701,20 @@ export default function App(){
                     if(updatedItems.length===0){
                       if(so){const items2=safeItems(so).map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl.batch_queue_id!==bp.id)}));savSO({...so,items:items2,updated_at:new Date().toLocaleString()})}
                       setBatchPOs(prev=>prev.filter(b=>b.id!==bp.id));setEditingBatchId(null);nf('Batch PO removed (all quantities zeroed)');return}
-                    const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0);
+                    const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0)+safeNum(bp.manual_cost);
                     // Sync the SO po_line sizes AND unit cost so the source PO on the sales order matches the queue edits.
                     if(so){
                       const sizeMapByIdx={};const costByIdx={};
                       updatedItems.forEach(it=>{if(it.item_idx!=null){sizeMapByIdx[it.item_idx]=it.sizes;costByIdx[it.item_idx]=it.unit_cost}});
                       const items2=safeItems(so).map((it,idx)=>{const pls=(it.po_lines||[]).map(pl=>{
                         if(pl.batch_queue_id!==bp.id)return pl;
-                        const cleared={...pl};Object.keys(cleared).forEach(k=>{if(typeof cleared[k]==='number'&&!['unit_cost'].includes(k))delete cleared[k]});
+                        const cleared={...pl};Object.keys(cleared).forEach(k=>{if(typeof cleared[k]==='number'&&!['unit_cost','_manual_cost'].includes(k))delete cleared[k]});
                         const newSz=sizeMapByIdx[idx]||{};Object.entries(newSz).forEach(([sz,v])=>{if(v>0)cleared[sz]=v});
                         if(costByIdx[idx]!=null)cleared.unit_cost=costByIdx[idx];
                         return cleared;
-                      }).filter(pl=>{if(pl.batch_queue_id!==bp.id)return true;return Object.entries(pl).some(([k,v])=>typeof v==='number'&&v>0&&k!=='unit_cost')});
+                      }).filter(pl=>{if(pl.batch_queue_id!==bp.id)return true;return Object.entries(pl).some(([k,v])=>typeof v==='number'&&v>0&&k!=='unit_cost'&&!k.startsWith('_'))});
                       return{...it,po_lines:pls}});
-                      savSO({...so,items:items2,updated_at:new Date().toLocaleString()});
+                      savSO({...so,items:_carryBatchPoMetadata(items2,bp),updated_at:new Date().toLocaleString()});
                     }
                     setBatchPOs(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
                     setEditingBatchId(null);nf('Batch PO updated');
@@ -15209,7 +15222,7 @@ export default function App(){
     // quote or unbilled freight. `rev` stays product+deco — reports sum it as sales — so the
     // charge is returned as shipRev and applied to margin/pct only.
     const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
-    cost+=shipCost+safeNum(so._inbound_freight||0);
+    cost+=shipCost+safeNum(so._inbound_freight||0)+manualPoCostTotal(so);
     const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
     const mBase=rev+shipRev;
     return{rev,cost,shipRev,margin:mBase-cost,pct:mBase>0?Math.round((mBase-cost)/mBase*100):0,units}};

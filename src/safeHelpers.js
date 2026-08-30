@@ -26,6 +26,40 @@ export const poLineFulfilledQty = (pk, sz) => {
   return pk?.drop_ship ? Math.max(rcvd, safeNum((pk?.billed || {})[sz])) : rcvd;
 };
 
+export const normalizePoPaymentMethod = (value) => {
+  const method = String(value || '').trim().toLowerCase();
+  return method === 'wire' || method === 'cash' ? method : 'credit_card';
+};
+export const poPaymentMethodLabel = (value) => ({ credit_card: 'Credit card', wire: 'Wire', cash: 'Cash' })[normalizePoPaymentMethod(value)];
+
+// One-off costs entered while creating a garment PO (card fee, rush charge, etc.).
+// A PO can span several SO item rows, but the cost belongs to the PO as a whole. The
+// creator stores it on one canonical po_line; deduping by PO number also protects the
+// money path if an older edit/copy ever mirrors the metadata onto every line.
+export const manualPoCostRows = (o) => {
+  const rows = []; const seen = new Set(); const methods = new Map();
+  const keyFor = (po, itemIdx, poIdx) => {
+    const poId = String(po?.po_id || '').trim();
+    return poId ? poId.replace(/\s+/g, ' ').toLowerCase() : ('line:' + itemIdx + ':' + poIdx);
+  };
+  safeItems(o).forEach((it, itemIdx) => safePOs(it).forEach((po, poIdx) => {
+    const key = keyFor(po, itemIdx, poIdx);
+    if (po?._payment_method && !methods.has(key)) methods.set(key, normalizePoPaymentMethod(po._payment_method));
+  }));
+  safeItems(o).forEach((it, itemIdx) => safePOs(it).forEach((po, poIdx) => {
+    const amount = safeNum(po?._manual_cost);
+    if (!(amount > 0)) return;
+    const poId = String(po?.po_id || '').trim();
+    const key = keyFor(po, itemIdx, poIdx);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const paymentMethod = methods.get(key) || (po?._payment_method ? normalizePoPaymentMethod(po._payment_method) : '');
+    rows.push({ po_id: poId, amount, note: String(po?._manual_cost_note || '').trim(), vendor: po?.vendor || '', payment_method: paymentMethod, payment_label: paymentMethod ? poPaymentMethodLabel(paymentMethod) : '' });
+  }));
+  return rows;
+};
+export const manualPoCostTotal = (o) => manualPoCostRows(o).reduce((sum, row) => sum + row.amount, 0);
+
 // ── Roster scoping ──
 // A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
 // "copy numbers from another item" brings the source's whole size curve, and a line's

@@ -1,6 +1,6 @@
 /* eslint-disable */
 import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
-import { safeNum, safeJobs } from './safeHelpers';
+import { safeNum, safeJobs, manualPoCostTotal } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
 import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } from './businessLogic';
@@ -288,7 +288,7 @@ export const calcOrderMargin=(o,allOrders,decoVendors,decoVendorPricing)=>{
   (o.deco_pos||[]).forEach(dp=>{const bc=_sNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=_sNum(dp.qty||0)*_sNum(dp.unit_cost||0)});
   // Actual shipping spend (outbound from ShipStation + inbound freight) rolls into cost so margin is real
   const actualShipCost=_sNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+_sNum(s.shipping_cost||0),0));
-  cost+=actualShipCost+_sNum(o._inbound_freight||0);
+  cost+=actualShipCost+_sNum(o._inbound_freight||0)+manualPoCostTotal(o);
   // Shipping billed to the customer is revenue that offsets the shipping cost — mirrors calcGP in
   // CommissionsPage so margin treats shipping as a wash (only an over/under-quote moves it), not
   // pure cost drag. `rev` stays product+deco (dashboards sum it as sales), so the shipping charge

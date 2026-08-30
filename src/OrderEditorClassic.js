@@ -23,7 +23,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { CustModal } from './modals';
@@ -854,6 +854,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poAlphaSuffix,setPoAlphaSuffix]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
+    const[poManualCost,setPoManualCost]=useState('');const[poManualCostNote,setPoManualCostNote]=useState('');const[poPaymentMethod,setPoPaymentMethod]=useState('credit_card');
     // Record every PO number the form DISPLAYS as a claim (owner report 2026-07-22): reps
     // quote the shown number to the vendor before clicking Create; abandoning the form
     // orphans it and the vendor's bill later arrives with a PO the portal never owned
@@ -3538,13 +3539,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Actual outbound shipping (from ShipStation) + inbound freight roll into cost so margin reflects real spend
     const actualShipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0));
     const inboundFreight=safeNum(o._inbound_freight||0);
-    cost+=actualShipCost+inboundFreight;
+    const manualPoCost=manualPoCostTotal(o);
+    cost+=actualShipCost+inboundFreight+manualPoCost;
     // Shipping charged to the customer (`ship`) is revenue that offsets the shipping cost now in
     // `cost` — mirrors calcGP (commissions) so margin treats shipping as a wash, leaving only an
     // over/under-quote to move it. `rev` stays product+deco (tax, grand, and the REV tile use it),
     // so shipping is applied to margin/pct only. priorShip is excluded (its cost isn't in `cost`).
     const marginRev=rev+ship+fundraiseRev;
-    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,actualShipCost,inboundFreight,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
+    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,actualShipCost,inboundFreight,manualPoCost,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty,outsourcedByItemCost]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -7014,7 +7016,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {/* LINKED TRANSACTIONS TAB */}
     {isSO&&tab==='transactions'&&(()=>{
       const _poSkip=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','deco_vendor','deco_type','notes','billed','tracking_numbers'];
-      const _poMap={};safeItems(o).forEach(it=>{safePOs(it).forEach(po=>{if(!po.po_id)return;const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!_poSkip.includes(k)&&typeof po[k]==='number');const ord=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const rcvd=po.received||{};const rec=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);const uc=safeNum(po.unit_cost);let e=_poMap[po.po_id];if(!e){e=_poMap[po.po_id]={po_id:po.po_id,vendor:po.vendor||po.deco_vendor||'',memo:po.memo||po.notes||'',totalOrd:0,totalRcvd:0,cost:0,skus:[],created_at:po.created_at||'',api_order_id:'',api_ordered_at:''}}e.totalOrd+=ord;e.totalRcvd+=rec;e.cost+=ord*uc;if(!e.vendor)e.vendor=po.vendor||po.deco_vendor||'';if(!e.memo)e.memo=po.memo||po.notes||'';if(po.api_order_id&&!e.api_order_id){e.api_order_id=po.api_order_id;e.api_ordered_at=po.api_ordered_at||''}if(it.sku&&!e.skus.includes(it.sku))e.skus.push(it.sku)})});
+      const _poMap={};safeItems(o).forEach(it=>{safePOs(it).forEach(po=>{if(!po.po_id)return;const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!_poSkip.includes(k)&&typeof po[k]==='number');const ord=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const rcvd=po.received||{};const rec=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);const uc=safeNum(po.unit_cost);let e=_poMap[po.po_id];if(!e){e=_poMap[po.po_id]={po_id:po.po_id,vendor:po.vendor||po.deco_vendor||'',memo:po.memo||po.notes||'',totalOrd:0,totalRcvd:0,cost:0,manualCost:0,manualCostNote:'',paymentMethod:'',skus:[],created_at:po.created_at||'',api_order_id:'',api_ordered_at:''}}e.totalOrd+=ord;e.totalRcvd+=rec;e.cost+=ord*uc;if(!e.manualCost&&safeNum(po._manual_cost)>0){e.manualCost=safeNum(po._manual_cost);e.manualCostNote=po._manual_cost_note||'';e.cost+=e.manualCost}if(!e.paymentMethod&&po._payment_method)e.paymentMethod=normalizePoPaymentMethod(po._payment_method);if(!e.vendor)e.vendor=po.vendor||po.deco_vendor||'';if(!e.memo)e.memo=po.memo||po.notes||'';if(po.api_order_id&&!e.api_order_id){e.api_order_id=po.api_order_id;e.api_ordered_at=po.api_ordered_at||''}if(it.sku&&!e.skus.includes(it.sku))e.skus.push(it.sku)})});
       const linkedPOs=Object.values(_poMap).map(e=>({...e,itemCount:e.skus.length,status:e.totalRcvd>=e.totalOrd&&e.totalOrd>0?'received':e.totalRcvd>0?'partial':'waiting'}));
       const linkedIFs=[];safeItems(o).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&!linkedIFs.find(x=>x.pick_id===pk.pick_id)){const szKeys=Object.keys(pk).filter(k=>!['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'].includes(k)&&typeof pk[k]==='number');const totalQty=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);linkedIFs.push({pick_id:pk.pick_id,status:pk.status||'pick',totalQty,created_at:pk.created_at||'',memo:pk.memo||''})}})});
       const linkedInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
@@ -7086,6 +7088,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <ApiOrderBadge po={po}/>
               <span style={{fontSize:11,color:'#64748b'}}>{po.totalRcvd}/{po.totalOrd} received</span>
               {po.cost>0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>${po.cost.toFixed(2)}</span>}
+              {po.manualCost>0&&<span title={po.manualCostNote||'One-off cost entered when this PO was created'} style={{fontSize:9,fontWeight:700,color:'#92400e',background:'#fef3c7',borderRadius:4,padding:'1px 6px'}}>+ ${po.manualCost.toFixed(2)} manual</span>}
+              {po.paymentMethod&&<span style={{fontSize:9,fontWeight:700,color:'#0f766e',background:'#ccfbf1',borderRadius:4,padding:'1px 6px'}}>Paid by {poPaymentMethodLabel(po.paymentMethod)}</span>}
             </div>
             <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontSize:11,color:'#64748b'}}>{po.itemCount} item{po.itemCount!==1?'s':''}</span>
@@ -7565,6 +7569,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             _decoItems:decoItemRows,
             allReceived:dp.status==='received'});
         });
+        manualPoCostRows(o).forEach(row=>costLines.push({category:'Manual PO Cost',sku:'—',name:row.note||'One-off cost entered on PO',vendor:row.vendor||'—',paymentMethod:row.payment_method,paymentLabel:row.payment_label,qty:1,expected:row.amount,actual:row.amount,poCount:1,poIds:row.po_id,allReceived:true}));
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
         const hasActuals=costLines.some(l=>l.actual>0);
         // Shipping & freight costs for GP calculation — fallback to summing shipment records
@@ -7638,7 +7643,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                   background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':l.category==='Shipping'?'#dcfce7':'#fef3c7',
                   color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':l.category==='Shipping'?'#166534':'#92400e'}}>{l.category}</span></td>
-                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}{l._combQty>0&&<span title={"Priced once across manually-linked jobs that share this screen — combined run of "+l._combQty+" units. Customer sale price is unaffected."} style={{marginLeft:6,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534',whiteSpace:'nowrap'}}>🔗 combined · {l._combQty} u run</span>}
+                <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}{l.paymentMethod&&<span style={{marginLeft:7,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:5,background:'#ccfbf1',color:'#0f766e',whiteSpace:'nowrap'}}>Paid by {l.paymentLabel||poPaymentMethodLabel(l.paymentMethod)}</span>}{l._combQty>0&&<span title={"Priced once across manually-linked jobs that share this screen — combined run of "+l._combQty+" units. Customer sale price is unaffected."} style={{marginLeft:6,fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#dcfce7',color:'#166534',whiteSpace:'nowrap'}}>🔗 combined · {l._combQty} u run</span>}
                   {l._decoItems&&l._decoItems.length>0&&<span className="nsa-tip" style={{marginLeft:8,fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',border:'1px solid #ede9fe',borderRadius:10,padding:'1px 8px'}}>{l._decoItems.length} item{l._decoItems.length!==1?'s':''} ⓘ
                     <span className="nsa-tip-body"><strong style={{display:'block',marginBottom:4,color:'#c4b5fd'}}>Items on this PO</strong>{l._decoItems.map((di,k)=><span key={k} style={{display:'block',marginBottom:2}}><strong style={{color:'#fff'}}>{di.sku}</strong> {di.name}{di.color?' · '+di.color:''} <span style={{color:'#a5b4fc'}}>({di.sizes||di.qty})</span></span>)}</span>
                   </span>}</td>
@@ -8962,7 +8967,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Drop ship never goes to the NSA warehouse: decorator address if we resolved one,
             // else the customer's shipping address (matches the Drop Ship toggle below).
             const _dsShipTo=_decoShip?'deco':(addrs[0]?.id||'warehouse');
-            setShowPO(vk);setPOExcluded({});setPoDropShip(_hasOutside?true:null);setPoShipTo(_hasOutside?_dsShipTo:'warehouse');setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoAlphaSuffix(cust?.alpha_tag||'')}}>
+            setShowPO(vk);setPOExcluded({});setPoDropShip(_hasOutside?true:null);setPoShipTo(_hasOutside?_dsShipTo:'warehouse');setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setPoAlphaSuffix(cust?.alpha_tag||'')}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
@@ -9573,7 +9578,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _poQtyVal=(vi,sz,fallback)=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);if(!el)return fallback;const raw=String(el.value).trim();if(raw==='')return 0;const n=parseInt(raw,10);return isNaN(n)?0:n};
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
       const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
-      const poOrderTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
+      const poManualCostValue=Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0);
+      const poMerchandiseTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
+      const poOrderTotal=poMerchandiseTotal+poManualCostValue;
       // Split a collapsed group's entered per-size qtys back across its member SO lines, filling each
       // member up to its own open qty (in line order); any surplus beyond total open lands on the first
       // member so nothing entered is dropped. Returns [{member,sizes}]. Single-line groups pass through.
@@ -10005,12 +10012,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',justifyContent:'flex-end',marginTop:8,paddingTop:8,borderTop:'1px dashed #e2e8f0',fontSize:13}}>
                 <span style={{color:'#64748b'}}>Line total:&nbsp;</span><strong style={{color:'#0f172a'}}>${poLineTotal(it,vi).toFixed(2)}</strong></div>
             </div>})}
+          {poItems.filter((_,vi)=>!poExcluded[vi]).length>0&&<div style={{padding:'10px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,marginTop:4,marginBottom:8}}>
+            <div style={{display:'flex',gap:10,alignItems:'end',flexWrap:'wrap'}}>
+              <div style={{width:150}}><label className="form-label" style={{fontSize:10,color:'#92400e'}}>Paid by</label><select className="form-input" value={poPaymentMethod} onChange={e=>setPoPaymentMethod(normalizePoPaymentMethod(e.target.value))} style={{fontWeight:700,color:'#92400e'}}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></div>
+              <div style={{width:150}}><label className="form-label" style={{fontSize:10,color:'#92400e'}}>Manual added cost</label><div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:12,color:'#92400e'}}>$</span><input className="form-input" type="number" min="0" step="0.01" value={poManualCost} onChange={e=>setPoManualCost(e.target.value)} placeholder="0.00" style={{fontWeight:800,color:'#92400e'}}/></div></div>
+              <div style={{flex:1,minWidth:220}}><label className="form-label" style={{fontSize:10,color:'#92400e'}}>What was this cost for? (optional)</label><input className="form-input" value={poManualCostNote} onChange={e=>setPoManualCostNote(e.target.value)} placeholder="Credit-card fee, rush charge, or other one-off expense"/></div>
+            </div>
+            <div style={{fontSize:10,color:'#92400e',marginTop:5}}>Payment method is recorded on the PO. The manual cost is internal only and counted once on this sales order.</div>
+          </div>}
           {poItems.filter((_,vi)=>!poExcluded[vi]).length>0&&<div style={{display:'flex',justifyContent:'flex-end',alignItems:'baseline',gap:8,padding:'10px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,marginTop:4}}>
-            <span style={{fontSize:13,fontWeight:600,color:'#475569'}}>PO Total ({poItems.filter((_,vi)=>!poExcluded[vi]).length} item{poItems.filter((_,vi)=>!poExcluded[vi]).length!==1?'s':''}):</span>
+            <span style={{fontSize:13,fontWeight:600,color:'#475569'}}>PO Total ({poItems.filter((_,vi)=>!poExcluded[vi]).length} item{poItems.filter((_,vi)=>!poExcluded[vi]).length!==1?'s':''}{poManualCostValue>0?' + manual cost':''}):</span>
             <strong style={{fontSize:18,fontWeight:800,color:'#0f172a'}}>${poOrderTotal.toFixed(2)}</strong></div>}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('')}}>Cancel</button>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>{setShowPO('select');setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card')}}>← Back</button><button className="btn btn-secondary" onClick={()=>{setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card')}}>Cancel</button>
           {poItems.length>0&&<button className="btn btn-secondary" onClick={()=>{const skus=poItems.filter((_,vi)=>!poExcluded[vi]).map(it=>it.sku).join(' ');navigator.clipboard.writeText(skus).then(()=>nf('Copied SKUs: '+skus))}}><Icon name="copy" size={14}/> Copy SKUs</button>}
           {poItems.length>0&&isBatchEligible&&!preexistingPO&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={poItems.every((_,vi)=>poExcluded[vi])||o._posHydrated===false} onClick={async()=>{
             if(_poCreatingRef.current)return;
@@ -10065,12 +10080,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 batchItems.push(bItem);
               });
             });
+            totalCost+=poManualCostValue;
             const bpId='BPO '+Date.now();
             const bp={id:bpId,vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',po_id:finalPoId,
-              items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString(),...(batchDecoId?{ship_to_deco_id:batchDecoId}:{})};
+              items:batchItems,total_cost:totalCost,payment_method:poPaymentMethod,manual_cost:poManualCostValue||undefined,manual_cost_note:poManualCostNote.trim()||undefined,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString(),...(batchDecoId?{ship_to_deco_id:batchDecoId}:{})};
             // Also persist a source PO line on the order so the SO shows its own PO# (e.g. PO-3005-DHF),
             // not just the eventual bulk batch PO. The line stays in "queued" status until the batch is submitted.
             const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
+            let poMetadataStored=false;
             batchItems.forEach(bit=>{
               const idx=bit.item_idx;if(idx==null||!updatedItems[idx])return;
               const poLine={po_id:finalPoId,vendor:vn,status:'queued',created_at:new Date().toLocaleDateString(),memo:'Batch queue — '+batchConfig.name,received:{},shipments:[],unit_cost:bit.unit_cost,batch_queue_id:bpId};
@@ -10079,6 +10096,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(bit.ship_to)poLine.ship_to=bit.ship_to;
               if(bit.ship_to_deco_id)poLine.ship_to_deco_id=bit.ship_to_deco_id;
               if(bit.attention)poLine.attention=bit.attention;
+              if(!poMetadataStored){poLine._payment_method=poPaymentMethod;if(poManualCostValue>0){poLine._manual_cost=poManualCostValue;if(poManualCostNote.trim())poLine._manual_cost_note=poManualCostNote.trim()}poMetadataStored=true}
               Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
               if(hasQty)updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
@@ -10092,7 +10110,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // second held number.
             const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);_consumeHeldPoNumber(true,!!podRes&&!podRes.isMerge);
-            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf('Added to '+batchConfig.name+' batch queue as '+finalPoId+' ($'+totalCost.toFixed(2)+')'+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+            setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');nf('Added to '+batchConfig.name+' batch queue as '+finalPoId+' ($'+totalCost.toFixed(2)+')'+(poManualCostValue>0?' including $'+poManualCostValue.toFixed(2)+' manual cost':'')+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
             // If this addition pushes the vendor's batch queue over the free-ship threshold
             // (Momentec / SanMar / S&S), pop a "batch ready" prompt so the rep knows the
             // threshold was crossed and which batch PO# the order goes under.
@@ -10193,6 +10211,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               }
             });
           });
+          if(newPoLines.length>0){
+            let stored=false;
+            updatedItems.forEach((it,ii)=>{updatedItems[ii]={...it,po_lines:(it.po_lines||[]).map(pl=>{
+              if(_poNorm(pl.po_id)!==_poNorm(effectivePoId))return pl;
+              if(!stored){stored=true;return{...pl,_payment_method:poPaymentMethod,...(poManualCostValue>0?{_manual_cost:poManualCostValue,...(poManualCostNote.trim()?{_manual_cost_note:poManualCostNote.trim()}:{})}:{})}}
+              const{_payment_method,...rest}=pl;
+              if(poManualCostValue>0){const{_manual_cost,_manual_cost_note,...withoutManual}=rest;return withoutManual}
+              return rest;
+            })}});
+          }
           // Single save carries both the product PO lines and the inline deco PO (no modal-hop, no race)
           // podRes.decoPos is the whole array — a new deco PO appended, or the joined one merged in place.
           const updated={...o,items:updatedItems,...(podRes?{deco_pos:podRes.decoPos}:{}),updated_at:new Date().toLocaleString()};
@@ -10207,7 +10235,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // the second. Joining an existing DPO consumes nothing — the second hold stays held.
           _consumeHeldPoNumber(!preexistingPO,!!podRes&&!podRes.isMerge);
           const selCount=poItems.filter((_,vi)=>!poExcluded[vi]).length;
-          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
+          setShowPO(null);setPreexistingPO(false);setPreexistingPOId('');setPOExcluded({});setPoShipTo('warehouse');setPoDropShip(null);setPoDecoInline(null);setPodLinkId(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');nf(effectivePoId+' '+(preexistingPO?'applied':'created')+' for '+vn+' ('+selCount+' item'+(selCount!==1?'s':'')+')'+(poManualCostValue>0?' · $'+poManualCostValue.toFixed(2)+' manual cost applied to '+o.id:'')+(podRes?' + 🎨 '+(podRes.isMerge?(podRes.added>0?podRes.added+' item'+(podRes.added!==1?'s':'')+' added to '+podRes.po.po_id:'shipping tied to '+podRes.po.po_id+' (already covers these items)'):podRes.po.po_id+' for '+podRes.po.vendor)+' ($'+podRes.po.expected_cost.toFixed(2)+')':''));
           // Follow-on modal for the just-created product PO (vendor API order box, else Edit-PO).
           const _afterPo=()=>{
             if(newPoLines.length>0&&!preexistingPO){
@@ -10327,7 +10355,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(onBatchPO)onBatchPO(prev=>(prev||[]).map(bp=>{
             if(bp.id!==bpId)return bp;
             const items=(bp.items||[]).map((it,i)=>i===itemIdx?{...it,unit_cost:c}:it);
-            const total_cost=items.reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0);
+            const total_cost=items.reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0)+safeNum(bp.manual_cost);
             return{...bp,items,total_cost};
           }));
           // Sync the matching source PO line on this SO so the order's per-line cost
@@ -10364,7 +10392,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Batch contents · {liveBatches.length} PO{liveBatches.length!==1?'s':''} <span style={{fontWeight:500,textTransform:'none',color:'#94a3b8'}}>(unit costs are editable — changes sync to the SO)</span></div>
           <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>
             {liveBatches.map((bp,bi)=>{
-              const bpTotal=(bp.items||[]).reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0);
+              const bpTotal=(bp.items||[]).reduce((a,it)=>a+(it.qty||0)*(it.unit_cost||0),0)+safeNum(bp.manual_cost);
               return<div key={bp.id||bi} style={{borderTop:bi>0?'1px solid #f1f5f9':'none',background:bi%2?'#fafbfc':'white'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f8fafc',borderBottom:'1px solid #f1f5f9'}}>
                   <div style={{fontSize:12,fontWeight:700}}>
@@ -14061,6 +14089,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           // at the bottom reflects the entire purchase order. Falls back to active-line totals when
           // there is only one item on the PO.
           const _grand=allLines.reduce((acc,ln)=>{const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];if(!it||!pl)return acc;const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='batch_queue_id'&&k!=='batch_po_number'&&k!=='preexisting'&&k!=='email_history'&&k!=='shipping'&&k!=='api_order_id'&&k!=='vendor_keys'&&typeof pl[k]==='number');const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);const ord=sk.reduce((a,sz)=>a+(pl[sz]||0),0);const rcvd=sk.reduce((a,sz)=>a+((pl.received||{})[sz]||0),0);const opn=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-((pl.received||{})[sz]||0)-((pl.cancelled||{})[sz]||0)),0);acc.ord+=ord*u;acc.rcvd+=rcvd*u;acc.open+=opn*u;return acc},{ord:0,rcvd:0,open:0});
+          const _manualLine=allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]).find(pl=>safeNum(pl?._manual_cost)>0);
+          const _manualCost=safeNum(_manualLine?._manual_cost);const _manualNote=_manualLine?(_manualLine._manual_cost_note||''):'';
+          const _paymentLine=allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]).find(pl=>pl?._payment_method);
+          const _paymentMethod=normalizePoPaymentMethod(_paymentLine?._payment_method);
           return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
@@ -14082,12 +14114,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 setEditPO(prev=>({...prev,po:{...prev.po,shipping:val}}));
                 nf('Shipping updated to $'+val.toFixed(2));
               }}/></span>
+              <span style={{color:'#92400e',display:'flex',alignItems:'center',gap:4}} title={_manualNote||'One-off internal cost applied once to the sales order'}>Manual Cost: $<input key={'manual-'+_manualCost} defaultValue={_manualCost.toFixed(2)} placeholder="0.00" style={{width:70,fontWeight:800,color:'#92400e',border:'1px solid #fcd34d',borderRadius:4,padding:'2px 4px',fontSize:12,textAlign:'right',background:'#fffbeb'}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}} onBlur={e=>{const val=Math.max(0,parseFloat(String(e.target.value).replace(/[$,\s]/g,''))||0);if(val===_manualCost)return;let stored=false;const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{if(p.po_id!==po.po_id)return p;if(!stored&&val>0){stored=true;return{...p,_manual_cost:val}}const{_manual_cost,_manual_cost_note,...rest}=p;return rest})}));const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:stored?{...prev.po,_manual_cost:val}:(()=>{const{_manual_cost,...rest}=prev.po;return rest})()}));nf(val>0?'Manual PO cost updated to $'+val.toFixed(2):'Manual PO cost removed')}}/></span>
+              <label style={{color:'#0f766e',display:'flex',alignItems:'center',gap:4}}>Paid by: <select value={_paymentMethod} onChange={e=>{const method=normalizePoPaymentMethod(e.target.value);let stored=false;const updatedItems=o.items.map(it=>({...it,po_lines:(it.po_lines||[]).map(p=>{if(p.po_id!==po.po_id)return p;if(!stored){stored=true;return{...p,_payment_method:method}}const{_payment_method,...rest}=p;return rest})}));const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(prev=>({...prev,po:{...prev.po,_payment_method:method}}));nf('PO payment method updated to '+poPaymentMethodLabel(method))}} style={{border:'1px solid #99f6e4',borderRadius:4,padding:'2px 5px',fontSize:12,fontWeight:700,color:'#0f766e',background:'#f0fdfa'}}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></label>
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               {allLines.length>1&&<span style={{color:'#64748b',fontSize:11}}>Line Total: <strong style={{color:'#0f172a'}}>${poTotal.toFixed(2)}</strong></span>}
             </div>
             <div style={{textAlign:'right'}}>
-              {safeNum(po.shipping)>0&&<div style={{fontSize:11,color:'#64748b'}}>Subtotal: ${_grand.ord.toFixed(2)} · Shipping: ${safeNum(po.shipping).toFixed(2)}</div>}
-              <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total{allLines.length>1?' ('+allLines.length+' items)':''}: ${(_grand.ord+safeNum(po.shipping)).toFixed(2)}</div>
+              {(safeNum(po.shipping)>0||_manualCost>0)&&<div style={{fontSize:11,color:'#64748b'}}>Merchandise: ${_grand.ord.toFixed(2)}{safeNum(po.shipping)>0?' · Shipping: $'+safeNum(po.shipping).toFixed(2):''}{_manualCost>0?' · Manual: $'+_manualCost.toFixed(2):''}</div>}
+              <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total{allLines.length>1?' ('+allLines.length+' items)':''}: ${(_grand.ord+safeNum(po.shipping)+_manualCost).toFixed(2)}</div>
             </div>
           </div></>})()}
 
@@ -15238,9 +15272,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       // API placement — any line on this PO carrying api_order_id means it was submitted
       // electronically to the vendor (SanMar / S&S / Momentec). Surface it on the PO page.
       const apiPo=poItems.map(x=>x.po).find(p=>p&&p.api_order_id)||(po&&po.api_order_id?po:null);
-      const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
+      const merchandiseTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
+      const manualLine=poItems.map(x=>x.po).find(p=>safeNum(p?._manual_cost)>0);
+      const manualCost=safeNum(manualLine?._manual_cost);const manualCostNote=manualLine?(manualLine._manual_cost_note||''):'';
+      const paymentLine=poItems.map(x=>x.po).find(p=>p?._payment_method);
+      const paymentMethod=paymentLine?normalizePoPaymentMethod(paymentLine._payment_method):'';
+      const grandTotal=merchandiseTotal+manualCost;
       // Decoration PO (service, not per-size goods): sum _bill_cost across po_lines for the
       // deco total; sum _bill_details[].freight for the shipping attributed to this PO.
       const isDecoPO=po.po_type==='outside_deco';
@@ -15291,6 +15330,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setPoFullPage(null)} title="Back to Sales Order">{soId}</span></div>
               <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{vendorName}</strong></div>
+              {paymentMethod&&<div style={{fontSize:11,color:'#0f766e'}}>Paid by: <strong>{poPaymentMethodLabel(paymentMethod)}</strong></div>}
               {apiPo&&<div style={{fontSize:11,color:'#0f766e',fontWeight:700}} title={'Submitted electronically to the vendor'+(apiPo.api_ordered_at?' on '+apiPo.api_ordered_at:'')}>🚀 Placed via API · vendor order <span style={{fontFamily:'monospace'}}>{apiPo.api_order_id}</span></div>}
               {apiPo&&apiPo.api_ordered_at&&<div style={{fontSize:10,color:'#94a3b8'}}>API ordered: {apiPo.api_ordered_at}</div>}
               {po.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {po.created_at}</div>}
@@ -15315,6 +15355,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 :<div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{grandReceived}</div></div>}
                 {!isDropShipFP&&<div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:grandOpen>0?'#fbbf24':'#4ade80'}}>{grandOpen}</div></div>}
                 <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
+                {manualCost>0&&<div title={manualCostNote||'One-off internal cost applied to the sales order'}><div style={{fontSize:11,opacity:0.7}}>Manual Cost</div><div style={{fontSize:24,fontWeight:800,color:'#fbbf24'}}>${manualCost.toFixed(2)}</div></div>}
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
               </>}
             </div>
@@ -15345,6 +15386,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>
                     </tr>})}
+                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #fde68a'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
                   <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
                     <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
                     <td style={{padding:'6px 8px',textAlign:'center'}}>{grandOrdered}</td>
@@ -15720,7 +15762,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 itSzs.forEach(([sz])=>{const el=document.getElementById('bpo-edit-'+bp.id+'-'+ii+'-'+sz);const v=el?Math.max(0,parseInt(el.value)||0):0;if(v>0){newSizes[sz]=v;newQty+=v}});
                 return{...it,sizes:newSizes,qty:newQty}}).filter(it=>it.qty>0);
               if(updatedItems.length===0){if(onBatchPO)onBatchPO(prev=>prev.filter(b=>b.id!==bp.id));setEditBatchPO(null);nf('Batch PO removed (all quantities zeroed)');return}
-              const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0);
+              const newTotal=updatedItems.reduce((a,it)=>a+it.qty*it.unit_cost,0)+safeNum(bp.manual_cost);
               if(onBatchPO)onBatchPO(prev=>prev.map(b=>b.id===bp.id?{...b,items:updatedItems,total_cost:newTotal}:b));
               setEditBatchPO(null);nf('Batch PO updated');
             }}>Save Changes</button>

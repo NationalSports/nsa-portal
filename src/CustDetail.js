@@ -546,7 +546,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           });
           safePOs(it).forEach(po=>{
             if(!po.po_id)return;
-            const qty=Object.entries(po).filter(([k,v])=>k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
+            const qty=Object.entries(po).filter(([k,v])=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
             const cost=qty*(it.unit_cost||0);
             txns.push({id:po.po_id,type:'po',date:po.created_at||'',memo:it.name+' ('+it.sku+')'+' — '+(po.vendor||'Vendor'),customer_id:so.customer_id,total:cost>0?cost:null,status:po.status,so_id:so.id,_src:'po'});
           });
