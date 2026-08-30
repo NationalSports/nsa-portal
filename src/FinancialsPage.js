@@ -663,7 +663,7 @@ export default function FinancialsPage() {
                   <th style={{ ...th, textAlign: 'left' }}>Account / rep</th>
                   <th style={th}>Age / expected</th><th style={{ ...th, textAlign: 'left' }}>System state</th>
                   <th style={th}>Fulfillment</th><th style={th}>Invoice coverage</th>
-                  <th style={th}>Open to invoice</th><th style={{ ...th, textAlign: 'left' }}>Why it is here</th><th style={th}>Action</th>
+                  <th style={th}>Open to invoice</th><th style={{ ...th, textAlign: 'left' }}>Why it is here</th>
                 </tr></thead>
                 <tbody>
                   {staleRows.map((r) => {
@@ -676,6 +676,7 @@ export default function FinancialsPage() {
                           <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color }}>{r.severity}</span>
                         </div>
                         <div title={r.so?.memo || ''} style={{ color: INK3, fontSize: 10.5, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.so?.memo || 'No memo'}</div>
+                        <div style={{ display: 'flex', gap: 5, marginTop: 5 }}><button onClick={() => openStaleWorkspace(r)} style={{ border: '1px solid ' + NAVY, borderRadius: 6, background: NAVY, color: '#fff', fontWeight: 700, fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Chat / TODO</button><button onClick={() => openSO(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 10, padding: '3px 7px', cursor: 'pointer' }}>Review SO</button></div>
                       </td>
                       <td style={tdL}>
                         <button onClick={() => openAccount(r)} style={{ border: 0, background: 'none', color: INK, fontWeight: 700, cursor: 'pointer', padding: 0 }}>{r.customerName}</button>
@@ -703,7 +704,6 @@ export default function FinancialsPage() {
                           <span style={{ color: i === 0 ? color : INK3, marginRight: 5 }}>&bull;</span>{reason}
                         </div>)}
                       </td>
-                      <td style={td}><div style={{ display: 'flex', justifyContent: 'flex-end', gap: 5 }}><button onClick={() => openStaleWorkspace(r)} style={{ border: '1px solid ' + NAVY, borderRadius: 6, background: NAVY, color: '#fff', fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Chat / TODO</button><button onClick={() => openSO(r)} style={{ border: '1px solid ' + HAIR, borderRadius: 6, background: '#fff', color: NAVY, fontWeight: 700, fontSize: 11, padding: '4px 8px', cursor: 'pointer' }}>Review SO</button></div></td>
                     </tr>;
                   })}
                 </tbody>
