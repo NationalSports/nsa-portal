@@ -727,7 +727,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
       sku: i._effSku || i.sku || '', name: [i._effSku || i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
       imageUrl: imageByPid[i.product_id] || undefined,
-      options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
+      options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }, ...(Array.isArray(i.add_on_selections) ? i.add_on_selections.map((o) => ({ name: o.label || 'Add-on', value: o.kind === 'addon' ? 'Yes' : String(o.value || '') })) : [])].filter(Boolean),
     })),
     amountPaid: order.payment_mode === 'paid' ? orderNetCollected(order) : 0,
     carrierCode: null, serviceCode: null, packageCode: null, confirmation: 'none',
@@ -2685,10 +2685,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
     // multi-color card's art changes, push the same decorations to every color row in the
     // group so the storefront and order handoff render the right logo for each color.
-    // Decorations and the inventory-tracking choice are card-level: fan them out to every
-    // color row in the group so all colorways behave the same on the storefront.
+    // Decorations, add-on prompts, and inventory choices are card-level: fan them out to
+    // every color row in the group so changing garment color never changes (or drops) the
+    // shopper questions attached to that storefront card.
     const groupFields = {};
     if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
+    if (Object.prototype.hasOwnProperty.call(fields, 'options')) groupFields.options = fields.options;
     if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
     if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
     if (Object.keys(groupFields).length) {
@@ -7490,13 +7492,13 @@ function ItemSection({ title, hint, right, children, pad = 14, subtle = false })
   );
 }
 
-// Shopper-facing add-on options for an item — either a yes/no add-on with one
-// upcharge (e.g. "Embroidered name +$5") or a "pick one" choice list (e.g. collar
-// color, each choice with its own upcharge). Stored on webstore_products.options.
+// Shopper-facing add-on fields for an item. Each prompt declares HOW the player
+// answers it (number, text, multiple choice, or yes/no) plus an optional upcharge.
+// Stored on webstore_products.options; legacy `addon` / `choice` rows remain valid.
 function OptionsEditor({ value, onChange }) {
   const opts = Array.isArray(value) ? value : [];
   const set = (i, patch) => onChange(opts.map((o, j) => j === i ? { ...o, ...patch } : o));
-  const add = () => onChange([...opts, { id: Math.random().toString(36).slice(2, 8), label: '', kind: 'addon', upcharge: 0, required: false, choices: [] }]);
+  const add = () => onChange([...opts, { id: Math.random().toString(36).slice(2, 8), label: '', kind: 'text', upcharge: 0, required: false, choices: [] }]);
   const remove = (i) => onChange(opts.filter((_, j) => j !== i));
   const setChoice = (i, ci, patch) => set(i, { choices: (opts[i].choices || []).map((c, j) => j === ci ? { ...c, ...patch } : c) });
   const addChoice = (i) => set(i, { choices: [...(opts[i].choices || []), { label: '', upcharge: 0 }] });
@@ -7507,17 +7509,18 @@ function OptionsEditor({ value, onChange }) {
       {opts.map((o, i) => (
         <div key={o.id || i} style={{ border: '1px solid #e8ebf0', borderRadius: 10, padding: 10, marginBottom: 8, background: '#fff' }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input className="form-input" style={{ flex: 1, minWidth: 150 }} placeholder="Option label (e.g. Embroidered name)" value={o.label} onChange={(e) => set(i, { label: e.target.value })} />
-            <select className="form-input" style={{ width: 150 }} value={o.kind} onChange={(e) => set(i, { kind: e.target.value })}>
-              <option value="addon">Yes / No add-on</option>
-              <option value="choice">Pick one</option>
+            <input className="form-input" style={{ flex: 1, minWidth: 190 }} placeholder="What should the player fill in?" value={o.label} onChange={(e) => set(i, { label: e.target.value })} />
+            <select aria-label={`Answer type for ${o.label || `option ${i + 1}`}`} className="form-input" style={{ width: 170 }} value={o.kind || 'text'} onChange={(e) => set(i, { kind: e.target.value })}>
+              <option value="number">Number</option>
+              <option value="text">Text</option>
+              <option value="choice">Multiple choice</option>
+              <option value="addon">Yes / No</option>
             </select>
             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={!!o.required} onChange={(e) => set(i, { required: e.target.checked })} />required</label>
             <button type="button" onClick={() => remove(i)} title="Remove option" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 18, lineHeight: 1, cursor: 'pointer' }}>×</button>
           </div>
-          {o.kind === 'addon'
-            ? <div style={{ marginTop: 8, fontSize: 13 }}>Upcharge +$<input className="form-input" style={{ width: 90, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={o.upcharge || 0} onChange={(e) => set(i, { upcharge: Number(e.target.value) || 0 })} /></div>
-            : <div style={{ marginTop: 8 }}>
+          {o.kind === 'choice'
+            ? <div style={{ marginTop: 8 }}>
                 {(o.choices || []).map((c, ci) => (
                   <div key={ci} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 5 }}>
                     <input className="form-input" style={{ flex: 1, minWidth: 120 }} placeholder="Choice (e.g. Royal)" value={c.label} onChange={(e) => setChoice(i, ci, { label: e.target.value })} />
@@ -7526,7 +7529,8 @@ function OptionsEditor({ value, onChange }) {
                   </div>
                 ))}
                 <button type="button" onClick={() => addChoice(i)} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>+ add choice</button>
-              </div>}
+              </div>
+            : <div style={{ marginTop: 8, fontSize: 13 }}>{o.kind === 'addon' ? 'Upcharge when selected' : 'Upcharge when filled'} +$<input className="form-input" style={{ width: 90, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={o.upcharge || 0} onChange={(e) => set(i, { upcharge: Number(e.target.value) || 0 })} /></div>}
         </div>
       ))}
       <button type="button" onClick={add} className="btn btn-sm btn-secondary">+ Add an option</button>
@@ -7536,8 +7540,11 @@ function OptionsEditor({ value, onChange }) {
 
 // Drop blank options / empty choices so we never store half-filled add-ons.
 const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
-  .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
-  .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
+  .map((o) => {
+    const kind = ['addon', 'number', 'text', 'choice'].includes(o.kind) ? o.kind : 'text';
+    return { ...o, kind, label: (o.label || '').trim(), upcharge: Number(o.upcharge) || 0, choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) };
+  })
+  .filter((o) => o.label && (o.kind !== 'choice' || o.choices.length));
 
 // Per-color web-logo override on a placed deco. cw_by_color maps a lowercased garment
 // color name -> the web-logo URL to use for that color (e.g. a white logo on a black tee,
@@ -13671,7 +13678,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                           const sub = [i.color, nm ? i.sku : null].filter(Boolean).join(' · ');
                           return (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}{(i.add_on_selections || []).map((o) => <div key={o.id || o.label} style={{ fontSize: 11, color: '#475569' }}>{o.label}: {o.kind === 'addon' ? 'Yes' : o.value}</div>)}</td>
                             <td style={td}>{i.size || '—'}</td>
                             {showPlayer && <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>}
                             <td style={td}>{i.qty}</td>

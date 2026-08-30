@@ -49,6 +49,48 @@ function getSb() {
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
+// Validate shopper-entered add-ons against the product's server-side definition.
+// The browser sends only option ids + answers; labels and dollars are rebuilt here.
+function priceAddOnSelections(definitions, submitted) {
+  const defs = Array.isArray(definitions) ? definitions.filter((o) => o && String(o.label || '').trim()) : [];
+  const picks = Array.isArray(submitted) ? submitted : [];
+  if (!defs.length) return picks.length ? { error: 'This item no longer has those add-on options — please re-add it.' } : { selections: [], extra: 0 };
+  const byId = new Map();
+  for (const p of picks) {
+    const id = String((p && p.id) || '');
+    if (!id || byId.has(id)) return { error: 'An add-on answer is invalid — please re-add the item.' };
+    byId.set(id, p && p.value);
+  }
+  const known = new Set(); const selections = []; let extra = 0;
+  for (let i = 0; i < defs.length; i += 1) {
+    const o = defs[i]; const id = String(o.id || `option-${i}`); known.add(id);
+    const kind = ['number', 'text', 'choice', 'addon'].includes(o.kind) ? o.kind : 'text';
+    const label = String(o.label).trim().slice(0, 120); const raw = byId.get(id);
+    let value = null; let upcharge = 0;
+    if (kind === 'addon') {
+      if (raw === true) { value = true; upcharge = r2(o.upcharge); }
+    } else if (kind === 'number') {
+      const v = String(raw == null ? '' : raw).trim();
+      if (v && !/^\d{1,12}$/.test(v)) return { error: `${label} must be a number.` };
+      if (v) { value = v; upcharge = r2(o.upcharge); }
+    } else if (kind === 'choice') {
+      const v = String(raw == null ? '' : raw).trim();
+      if (v) {
+        const choice = (Array.isArray(o.choices) ? o.choices : []).find((c) => c && String(c.label || '').trim() === v);
+        if (!choice) return { error: `${label} has an invalid selection — please choose it again.` };
+        value = String(choice.label).trim().slice(0, 120); upcharge = r2(choice.upcharge);
+      }
+    } else {
+      const v = String(raw == null ? '' : raw).trim();
+      if (v) { value = v.slice(0, 120); upcharge = r2(o.upcharge); }
+    }
+    if (o.required && value == null) return { error: `Please complete ${label}.` };
+    if (value != null) { extra = r2(extra + upcharge); selections.push({ id, label, kind, value, upcharge }); }
+  }
+  if ([...byId.keys()].some((id) => !known.has(id))) return { error: 'An add-on option changed — please re-add the item.' };
+  return { selections, extra };
+}
+
 // ── Server-side cart pricing ─────────────────────────────────────────
 // Client lines carry only identity + personalization; every dollar figure is
 // looked up fresh. Returns { lines, subtotal, fundraise, feeBase } or { error }.
@@ -95,6 +137,8 @@ async function priceCart(sb, store, cart) {
     if (!wp || wp.active === false) return { error: 'An item in your cart is no longer available — please refresh the store.' };
     const unitPrice = r2(wp.retail_price);
     const fundAmt = effFund(store, wp);
+    const addOns = priceAddOnSelections(wp.options, l && l.option_selections);
+    if (addOns.error) return { error: addOns.error };
 
     if (wp.kind === 'bundle') {
       const comps = bundleItems.filter((b) => b.bundle_id === wp.id);
@@ -121,11 +165,11 @@ async function priceCart(sb, store, cart) {
       });
       if (outComps.some((c) => c === null)) return { error: 'Package contents changed — please re-add it to your cart.' };
       if (outComps.some((c) => c === undefined)) return { error: 'A package in your cart is missing a size or number — please re-add it.' };
-      const lineUnit = r2(unitPrice + fundAmt + nameExtra);
-      subtotal += r2(unitPrice + nameExtra);
+      const lineUnit = r2(unitPrice + fundAmt + nameExtra + addOns.extra);
+      subtotal += r2(unitPrice + nameExtra + addOns.extra);
       fundraise += fundAmt;
-      feeBase += unitPrice;
-      lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url });
+      feeBase += r2(unitPrice + addOns.extra);
+      lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), option_extra: addOns.extra, option_selections: addOns.selections, line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url });
     } else {
       const qty = Math.min(100, Math.max(1, parseInt(l.qty, 10) || 1));
       const pname = wp.takes_name ? String(l.player_name || '').trim().slice(0, 40) : '';
@@ -134,11 +178,11 @@ async function priceCart(sb, store, cart) {
       const nameExtra = pname ? r2(wp.name_upcharge) : 0;
       const size = (l.size || '').trim() || null;
       const sizeExtra = size ? r2(Number((upMap[wp.id] || {})[size]) || 0) : 0;
-      const unit = r2(unitPrice + sizeExtra);
+      const unit = r2(unitPrice + sizeExtra + addOns.extra);
       subtotal += r2((unit + nameExtra) * qty);
       fundraise += r2(fundAmt * qty);
       feeBase += r2(unit * qty);
-      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url });
+      lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, option_extra: addOns.extra, option_selections: addOns.selections, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url });
     }
   }
   return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise), feeBase: r2(feeBase) };
@@ -572,10 +616,10 @@ async function placeOrder(sb, body) {
       const bref = require('crypto').randomUUID();
       // Name fee rides on unit_price (NSA revenue); unit_fundraise is club raise only —
       // batching/conversion sum unit_price + unit_fundraise, so the SO total is unchanged.
-      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
+      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
       l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
     } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
     }
   }
 
@@ -1022,6 +1066,7 @@ async function updateShip(sb, body) {
 // Exported only so the unit tests can exercise the pricing/stock math in
 // isolation. Netlify invokes `handler`; these extra exports are inert in prod.
 module.exports.priceCart = priceCart;
+module.exports.priceAddOnSelections = priceAddOnSelections;
 module.exports.placeOrder = placeOrder;
 module.exports.finalize = finalize;
 module.exports.checkStock = checkStock;
