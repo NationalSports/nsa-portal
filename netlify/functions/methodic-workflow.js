@@ -10,7 +10,6 @@ const PRICING = new Set(['not_requested', 'requested', 'working', 'quoted', 'app
 const MOCKUP = new Set(['not_requested', 'requested', 'in_art', 'ready_for_rep', 'revisions_requested', 'approved', 'cancelled']);
 const SAMPLE = new Set(['not_requested', 'requested', 'confirmed', 'in_production', 'shipped', 'received', 'approved', 'changes_requested', 'waived', 'cancelled']);
 const ORDER = new Set(['not_ordered', 'po_needed', 'po_ready', 'ordered', 'confirmed', 'in_production', 'quality_check', 'shipped', 'delivered', 'on_hold', 'cancelled']);
-const BILLING = new Set(['not_ready', 'ready', 'queued', 'posted', 'verified', 'error', 'void']);
 const PRIORITY = new Set(['low', 'normal', 'high', 'rush']);
 const DATE_FIELDS = new Set(['expected_pricing_date', 'quote_expires_on', 'expected_mockup_date', 'expected_sample_date', 'expected_ship_date', 'expected_arrival_date']);
 const MONEY_FIELDS = new Set(['quoted_unit_cost_cents', 'quoted_setup_cost_cents']);
@@ -20,11 +19,10 @@ const TEXT_LIMITS = {
   sample_tracking_number: 200, sample_tracking_url: 1000,
   purchase_order_number: 120, methodic_order_number: 120,
   carrier: 120, tracking_number: 200, tracking_url: 1000,
-  methodic_invoice_number: 120, billing_error: 1000,
 };
 const UPDATE_FIELDS = new Set([
   ...Object.keys(TEXT_LIMITS), 'art_job_id', 'owner_id', 'priority', 'quantity', 'size_breakdown', 'reference_files',
-  'pricing_status', 'mockup_status', 'sample_status', 'order_status', 'billing_status',
+  'pricing_status', 'mockup_status', 'sample_status', 'order_status',
   ...DATE_FIELDS, ...MONEY_FIELDS,
 ]);
 
@@ -98,9 +96,6 @@ function validatePatch(input, { create = false } = {}) {
     } else if (key === 'order_status') {
       if (!ORDER.has(value)) throw new Error('Invalid order status.');
       patch.order_status = value;
-    } else if (key === 'billing_status') {
-      if (!BILLING.has(value)) throw new Error('Invalid billing status.');
-      patch.billing_status = value;
     } else if (key === 'art_job_id' || key === 'owner_id') patch[key] = cleanText(value, 120);
   }
   if (create && !patch.title) throw new Error('A request title is required.');

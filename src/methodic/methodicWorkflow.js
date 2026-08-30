@@ -17,6 +17,11 @@ export const METHODIC_STATUS = {
     confirmed: 'Order confirmed', in_production: 'In production', quality_check: 'Quality check',
     shipped: 'Shipped', delivered: 'Delivered', on_hold: 'On hold', cancelled: 'Cancelled',
   },
+  billing: {
+    not_ready: 'Not ready', ready: 'Ready to sync', queued: 'Queued', syncing: 'Syncing',
+    partial: 'Partial sync', posted: 'Posted', verified: 'Verified', open: 'Open balance',
+    paid: 'Paid', error: 'Sync error', void: 'Void',
+  },
 };
 
 export const METHODIC_COLORS = {
@@ -30,7 +35,8 @@ export const METHODIC_COLORS = {
 export function statusTone(group, status) {
   if (!status || status === 'not_requested' || status === 'not_ordered') return 'muted';
   if (['cancelled', 'declined', 'expired', 'changes_requested', 'revisions_requested', 'on_hold'].includes(status)) return 'blocked';
-  if (['approved', 'quoted', 'ready_for_rep', 'received', 'waived', 'delivered', 'shipped'].includes(status)) return 'ready';
+  if (['approved', 'quoted', 'ready_for_rep', 'received', 'waived', 'delivered', 'shipped', 'posted', 'verified', 'paid'].includes(status)) return 'ready';
+  if (['partial', 'error'].includes(status)) return 'blocked';
   if (['requested', 'po_needed'].includes(status)) return 'waiting';
   return 'active';
 }
@@ -79,7 +85,15 @@ export function nextAction(request) {
   if (request.order_status === 'po_ready') return 'Place Methodic order';
   if (['ordered', 'confirmed', 'in_production', 'quality_check'].includes(request.order_status)) return 'Methodic production';
   if (request.order_status === 'shipped') return 'Delivery';
+  if (request.billing_status === 'ready') return 'Sync Methodic invoice and National bill';
+  if (request.billing_status === 'syncing' || request.billing_status === 'queued') return 'Complete accounting sync';
+  if (request.billing_status === 'partial' || request.billing_status === 'error') return 'Resolve accounting sync';
+  if (request.billing_status === 'open') return 'Record National payment';
   return 'No open action';
+}
+
+export function billingBalanceCents(request) {
+  return Math.max(0, Number(request?.billing_amount_cents || 0) - Number(request?.amount_paid_cents || 0));
 }
 
 export function isRequestOverdue(request, now = new Date()) {

@@ -4577,12 +4577,13 @@ export default function App(){
     try{
       const params=new URLSearchParams(window.location.search);
       if(params.get('qb_connected')==='true'){
+        const companyKey=params.get('qb_company_key')||'national';
         const company=params.get('qb_company')||'';
         const realm=params.get('qb_realm')||'';
-        setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
-        nf('Connected to QuickBooks Online'+(company?' — '+company:''));
+        if(companyKey==='national')setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
+        nf((companyKey==='methodic'?'Methodic':'National')+' connected to QuickBooks Online'+(company?' — '+company:''));
         // Clean URL
-        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
+        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_company_key');u.searchParams.delete('qb_realm');
         window.history.replaceState({},'',u);
         sessionStorage.removeItem('qb_oauth_state');
       }else if(params.get('qb_error')){

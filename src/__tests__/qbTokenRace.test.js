@@ -71,6 +71,26 @@ beforeEach(() => {
 });
 
 describe('getValidAccessToken', () => {
+  test('scopes token reads to the requested QuickBooks company', async () => {
+    const filters = [];
+    const row = { company_key: 'methodic', realm_id: 'methodic-realm', access_token: 'at', refresh_token: 'rt', token_created_at: Date.now() };
+    const admin = {
+      from: () => ({
+        select: () => {
+          const chain = {
+            eq: (field, value) => { filters.push([field, value]); return chain; },
+            order: () => chain,
+            limit: () => chain,
+            maybeSingle: () => Promise.resolve({ data: row, error: null }),
+          };
+          return chain;
+        },
+      }),
+    };
+    await expect(qb.getStoredTokens(admin, 'methodic')).resolves.toMatchObject({ realm_id: 'methodic-realm' });
+    expect(filters).toEqual([['company_key', 'methodic']]);
+  });
+
   test('NOT_CONNECTED when no row is stored', async () => {
     const admin = fakeAdmin([null]);
     await expect(qb.getValidAccessToken(admin)).rejects.toMatchObject({ code: 'NOT_CONNECTED' });

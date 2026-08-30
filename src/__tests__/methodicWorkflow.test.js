@@ -35,12 +35,15 @@ describe('Methodic workflow helpers', () => {
     const patch = _test.validatePatch({
       title: ' New basketball set ', priority: 'rush', quantity: 22,
       pricing_status: 'requested', mockup_status: 'requested',
+      billing_status: 'paid', methodic_invoice_number: 'should-not-be-client-owned',
       reference_files: [{ url: 'https://cdn.example.com/ref.png', name: 'ref.png' }, { url: 'javascript:bad' }],
       size_breakdown: { S: 4, M: 8, L: -1 }, ignored_admin_field: 'nope',
     }, { create: true });
     expect(patch).toMatchObject({ title: 'New basketball set', priority: 'rush', quantity: 22, pricing_status: 'requested', mockup_status: 'requested', size_breakdown: { S: 4, M: 8 } });
     expect(patch.reference_files).toHaveLength(1);
     expect(patch.ignored_admin_field).toBeUndefined();
+    expect(patch.billing_status).toBeUndefined();
+    expect(patch.methodic_invoice_number).toBeUndefined();
     expect(() => _test.validatePatch({ title: 'Test', expected_mockup_date: 'tomorrow' }, { create: true })).toThrow(/invalid expected mockup date/i);
     expect(() => _test.validatePatch({ title: 'Test', expected_mockup_date: '2026-02-30' }, { create: true })).toThrow(/invalid expected mockup date/i);
   });

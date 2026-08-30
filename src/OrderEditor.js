@@ -7751,7 +7751,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>})()}
 
     {/* HISTORY TAB */}
-    {isSO&&tab==='methodic'&&<div className="card" style={{marginBottom:16}}><div className="card-body"><MethodicOrderPanel order={o} customer={ic} teamMembers={REPS||[]} notify={nf} onOpenDashboard={onOpenMethodicDashboard}/></div></div>}
+    {isSO&&tab==='methodic'&&<div className="card" style={{marginBottom:16}}><div className="card-body"><MethodicOrderPanel order={o} customer={ic} teamMembers={REPS||[]} currentUser={cu} notify={nf} onOpenDashboard={onOpenMethodicDashboard}/></div></div>}
 
     {tab==='history'&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Document History</h2></div>

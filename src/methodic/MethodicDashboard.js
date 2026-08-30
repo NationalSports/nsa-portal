@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import MethodicRequestForm from './MethodicRequestForm';
+import MethodicAccountingSetup from './MethodicAccountingSetup';
 import { methodicApi } from './methodicApi';
-import { METHODIC_COLORS, METHODIC_STATUS, isRequestOverdue, nextAction, nextDue, requestStage, statusTone } from './methodicWorkflow';
+import { METHODIC_COLORS, METHODIC_STATUS, billingBalanceCents, isRequestOverdue, nextAction, nextDue, requestStage, statusTone } from './methodicWorkflow';
 
 const fmtDate = (value) => value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString() : '—';
 const age = (value) => value ? Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 86400000)) : 0;
@@ -12,7 +13,7 @@ function Pill({ group, value }) {
   return <span style={{ display: 'inline-flex', whiteSpace: 'nowrap', padding: '3px 7px', borderRadius: 999, background: tone.bg, color: tone.fg, fontSize: 10, fontWeight: 850 }}>{METHODIC_STATUS[group]?.[value] || value || '—'}</span>;
 }
 
-const TABS = ['All', 'Requests', 'Pricing', 'Art', 'Samples', 'Orders', 'Tracking', 'Blocked', 'Overdue', 'Mine'];
+const TABS = ['All', 'Requests', 'Pricing', 'Art', 'Samples', 'Orders', 'Tracking', 'Billing', 'Blocked', 'Overdue', 'Mine'];
 
 export default function MethodicDashboard({ orders = [], customers = [], teamMembers = [], currentUser, notify, onOpenOrder }) {
   const [requests, setRequests] = useState([]);
@@ -52,9 +53,14 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
     if (tab === 'Mine' && request.rep_id !== currentUser?.id && request.owner_id !== currentUser?.id) return false;
     if (tab === 'Blocked' && !request.blocker) return false;
     if (tab === 'Overdue' && !request.overdue) return false;
+    if (tab === 'Billing' && ['not_ready', 'void'].includes(request.billing_status || 'not_ready')) return false;
     if (!['All', 'Mine', 'Blocked', 'Overdue'].includes(tab)) {
-      const match = { Requests: 'Request', Pricing: 'Pricing', Art: 'Art', Samples: 'Sample', Orders: 'Order', Tracking: 'Tracking' }[tab];
-      if (request.stage !== match && !(tab === 'Orders' && request.stage === 'Purchasing')) return false;
+      if (tab === 'Billing') {
+        // Billing is a parallel accounting lifecycle, not a production stage.
+      } else {
+        const match = { Requests: 'Request', Pricing: 'Pricing', Art: 'Art', Samples: 'Sample', Orders: 'Order', Tracking: 'Tracking' }[tab];
+        if (request.stage !== match && !(tab === 'Orders' && request.stage === 'Purchasing')) return false;
+      }
     }
     if (search) {
       const hay = [request.request_number, request.sales_order_id, request.title, request.style_number, request.garment_description, request.customer?.name, request.customer?.alpha_tag, request.rep?.name, request.methodic_order_number, request.purchase_order_number, request.tracking_number].join(' ').toLowerCase();
@@ -72,6 +78,7 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
     art: enriched.filter((row) => ['requested', 'in_art', 'ready_for_rep', 'revisions_requested'].includes(row.mockup_status)).length,
     samples: enriched.filter((row) => !['not_requested', 'approved', 'waived', 'cancelled'].includes(row.sample_status)).length,
     production: enriched.filter((row) => ['ordered', 'confirmed', 'in_production', 'quality_check', 'shipped'].includes(row.order_status)).length,
+    billing: enriched.filter((row) => !['not_ready', 'paid', 'void'].includes(row.billing_status || 'not_ready')).length,
     overdue: enriched.filter((row) => row.overdue).length,
     blocked: enriched.filter((row) => row.blocker).length,
   };
@@ -88,9 +95,11 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
 
   return <div>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-      <div><h2 style={{ margin: 0, color: '#0f172a' }}>Methodic Operations</h2><div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>One queue for pricing, art mockups, samples, purchasing, production, and delivery.</div></div>
+      <div><h2 style={{ margin: 0, color: '#0f172a' }}>Methodic Operations</h2><div style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>One queue for pricing, art mockups, samples, purchasing, production, delivery, and intercompany billing.</div></div>
       <button className="btn btn-primary" onClick={() => { setEditing({}); setNewOrderId(''); }}>+ New Methodic request</button>
     </div>
+
+    <MethodicAccountingSetup currentUser={currentUser} notify={notify} />
 
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 10, marginBottom: 14 }}>
       {Object.entries(counts).map(([key, value]) => <div key={key} style={{ background: key === 'blocked' && value ? '#fef2f2' : key === 'overdue' && value ? '#fff7ed' : 'white', border: '1px solid #dbe3ef', borderRadius: 10, padding: 12 }}><div style={{ fontSize: 24, fontWeight: 900, color: key === 'blocked' && value ? '#b91c1c' : '#0f172a' }}>{value}</div><div style={{ fontSize: 10, fontWeight: 800, color: '#64748b', textTransform: 'uppercase' }}>{key}</div></div>)}
@@ -104,7 +113,7 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
 
     {error && <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, background: '#fef2f2', color: '#b91c1c' }}>{error}</div>}
     {!loading && !visible.length && !error && <div className="card"><div className="card-body" style={{ padding: 36, textAlign: 'center', color: '#64748b' }}>No Methodic requests match this view.</div></div>}
-    {!!visible.length && <div className="card" style={{ overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1120 }}><thead><tr style={{ background: '#f8fafc', color: '#64748b', textAlign: 'left', fontSize: 10, textTransform: 'uppercase' }}>{['Request / customer', 'Rep / owner', 'Stage', 'Pricing', 'Art mock', 'Sample', 'Order / tracking', 'Next action', 'Updated', ''].map((heading) => <th key={heading} style={{ padding: '9px 10px', borderBottom: '1px solid #e2e8f0' }}>{heading}</th>)}</tr></thead><tbody>{visible.map((row) => {
+    {!!visible.length && <div className="card" style={{ overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1260 }}><thead><tr style={{ background: '#f8fafc', color: '#64748b', textAlign: 'left', fontSize: 10, textTransform: 'uppercase' }}>{['Request / customer', 'Rep / owner', 'Stage', 'Pricing', 'Art mock', 'Sample', 'Order / tracking', 'Billing', 'Next action', 'Updated', ''].map((heading) => <th key={heading} style={{ padding: '9px 10px', borderBottom: '1px solid #e2e8f0' }}>{heading}</th>)}</tr></thead><tbody>{visible.map((row) => {
       const latest = (eventByRequest[row.id] || [])[0];
       return <tr key={row.id} style={{ borderBottom: '1px solid #eef2f7', background: row.blocker ? '#fffafa' : row.overdue ? '#fffdf7' : 'white' }}>
         <td style={{ padding: 10 }}><div style={{ fontFamily: 'monospace', color: '#4338ca', fontWeight: 900 }}>{row.request_number}</div><button onClick={() => onOpenOrder?.(row.sales_order_id)} style={{ border: 0, background: 'none', color: '#2563eb', padding: 0, cursor: 'pointer', fontWeight: 800 }}>{row.sales_order_id}</button><div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginTop: 3 }}>{row.customer?.name || 'Unknown customer'}</div><div style={{ fontSize: 11, color: '#64748b' }}>{row.title}{row.style_number ? ` · ${row.style_number}` : ''}</div></td>
@@ -114,6 +123,7 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
         <td style={{ padding: 10 }}><Pill group="mockup" value={row.mockup_status} /><div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>{row.art_job_id || 'No linked job'} · {fmtDate(row.expected_mockup_date)}</div></td>
         <td style={{ padding: 10 }}><Pill group="sample" value={row.sample_status} /><div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>{fmtDate(row.expected_sample_date)}</div></td>
         <td style={{ padding: 10 }}><Pill group="order" value={row.order_status} /><div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>{row.methodic_order_number || row.purchase_order_number || row.tracking_number || '—'}</div>{row.tracking_url && <a href={row.tracking_url} target="_blank" rel="noreferrer" style={{ fontSize: 10 }}>Track shipment</a>}</td>
+        <td style={{ padding: 10 }}><Pill group="billing" value={row.billing_status || 'not_ready'} /><div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>{row.billing_amount_cents != null ? `${cash(row.billing_amount_cents)} · ${cash(billingBalanceCents(row))} due` : 'Not prepared'}</div></td>
         <td style={{ padding: 10, maxWidth: 210 }}><div style={{ fontSize: 11, fontWeight: 800, color: row.blocker ? '#b91c1c' : '#334155' }}>{nextAction(row)}</div><div style={{ fontSize: 10, color: row.overdue ? '#b91c1c' : '#64748b', marginTop: 3 }}>{row.due ? `${row.due.label} ${fmtDate(row.due.date)}${row.overdue ? ` · ${Math.abs(row.due.days)}d late` : ''}` : 'No due date'}</div>{latest && <div title={latest.message} style={{ fontSize: 9, color: '#94a3b8', marginTop: 4, maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{latest.message}</div>}</td>
         <td style={{ padding: 10, fontSize: 10, color: '#64748b' }}>{age(row.updated_at)}d ago</td>
         <td style={{ padding: 10 }}><button className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>Open</button></td>

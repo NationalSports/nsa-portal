@@ -45,6 +45,19 @@ A database trigger maps later art-job moves back into Methodic:
 - All mutations require a verified staff JWT and run through the server function.
 - The function derives the customer and assigned rep from the sales order rather than trusting browser-supplied ownership fields.
 
-## Accounting continuation
+## Intercompany accounting
 
-The schema reserves National PO, Methodic order, billing status, invoice number, and the two QuickBooks transaction IDs. Intercompany automation should be activated only after the separate Methodic QuickBooks company exists and National/Methodic account, item, and tax mappings are approved.
+Methodic and National use two named QuickBooks connections:
+
+1. Methodic issues an invoice to National in the Methodic QuickBooks company.
+2. National receives the same document number and amount as a Methodic vendor bill in the National QuickBooks company.
+3. Accounting records a payment as a National `BillPayment` and the matching Methodic customer `Payment`.
+4. The portal shows the invoice amount, open balance, due date, both QuickBooks IDs, payment history, partial failures, and retry state on the sales order.
+
+Posting is fail-closed. It remains disabled until accounting approves the Methodic customer, income item, and tax code plus the National vendor and expense/COGS account. Payment recording additionally requires the National bank account and Methodic deposit account.
+
+Each side is idempotent by Methodic invoice/payment number. The server saves a successful external ID immediately; if the second company fails, the request is marked partial and retrying resumes only the missing side. Concurrent payments are reserved under a database row lock so they cannot exceed the open invoice balance.
+
+The payment action records completed ledger activity in both QuickBooks companies. It does not initiate ACH, print a check, or move funds; the bank transfer/check happens through the approved treasury process and its reference is then recorded here.
+
+This accounting layer is designed to inherit PR #2041's fail-closed National account routing when that PR merges. No live transaction should be posted until both companies are connected, the included migrations/functions are deployed, and accounting has approved the mappings.

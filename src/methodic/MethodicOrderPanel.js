@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { methodicApi } from './methodicApi';
 import MethodicRequestForm from './MethodicRequestForm';
+import MethodicAccountingPanel from './MethodicAccountingPanel';
 import { METHODIC_COLORS, METHODIC_STATUS, nextAction, nextDue, requestStage, statusTone } from './methodicWorkflow';
 
 const fmtDate = (value) => value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString() : '—';
@@ -11,7 +12,7 @@ function Badge({ group, value }) {
   return <span style={{ display: 'inline-flex', padding: '3px 7px', borderRadius: 999, background: tone.bg, color: tone.fg, fontSize: 10, fontWeight: 800 }}>{METHODIC_STATUS[group]?.[value] || value || '—'}</span>;
 }
 
-export default function MethodicOrderPanel({ order, customer, teamMembers = [], notify, onOpenDashboard }) {
+export default function MethodicOrderPanel({ order, customer, teamMembers = [], currentUser, notify, onOpenDashboard }) {
   const [rows, setRows] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -69,6 +70,7 @@ export default function MethodicOrderPanel({ order, customer, teamMembers = [], 
             <div><div className="oe-label">Next action</div><div style={{ fontSize: 12, fontWeight: 800, color: row.blocker ? '#b91c1c' : '#334155' }}>{nextAction(row)}</div><div style={{ fontSize: 11, color: due?.days < 0 ? '#b91c1c' : '#64748b' }}>{due ? `${due.label}: ${fmtDate(due.date)}${due.days < 0 ? ` · ${Math.abs(due.days)}d late` : ''}` : 'No due date'}</div></div>
           </div>
           {(row.tracking_number || row.sample_tracking_number) && <div style={{ marginTop: 10, padding: 8, background: '#ecfdf5', borderRadius: 7, fontSize: 12 }}><strong>Tracking:</strong> {row.tracking_url ? <a href={row.tracking_url} target="_blank" rel="noreferrer">{row.tracking_number}</a> : row.tracking_number || row.sample_tracking_number} · expected {fmtDate(row.expected_arrival_date || row.expected_sample_date)}</div>}
+          <MethodicAccountingPanel request={row} currentUser={currentUser} notify={notify} onUpdated={load} />
           {recent && <div style={{ marginTop: 9, color: '#64748b', fontSize: 11 }}>Latest: {recent.message} · {new Date(recent.created_at).toLocaleString()}</div>}
         </div>
       </div>;
