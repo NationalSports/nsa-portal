@@ -41,6 +41,7 @@ import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificati
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
+import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
 import { canViewFinancials } from './lib/financialAccess';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -2291,6 +2292,8 @@ export default function App(){
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncing]=useState(false);
   const _qbSyncCtxRef=React.useRef(null);// fresh state snapshot for the QB auto-sync engine, refreshed every render
+  const _qbReconnectNoticeRef=React.useRef(0);// collapse a failed sync batch into one reconnect notice
+  const _toastTimerRef=React.useRef(null);// an older toast must never clear a newer toast
   const[qbBillFile,setQbBillFile]=useState(null);
   const[qbBillVendor,setQbBillVendor]=useState('');
   const[qbBillAmount,setQbBillAmount]=useState('');
@@ -3655,7 +3658,7 @@ export default function App(){
   },[]);
 
   // Notification helper — defined early so callbacks below can reference it
-  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_setDbNotify(nf);
+  const nf=(m,t='success')=>{setToast({msg:m,type:t});if(_toastTimerRef.current)clearTimeout(_toastTimerRef.current);_toastTimerRef.current=setTimeout(()=>{setToast(null);_toastTimerRef.current=null},3500)};_setDbNotify(nf);
   // Warehouse alert — fired by receive/pull flows the moment a job crosses into items_received
   // with art already complete, so the person checking in knows it can move to decoration now.
   const notifyDecoReady=(readyJobs)=>{if(readyJobs&&readyJobs.length)nf('🎽 Ready for decoration: '+readyJobs.map(j=>j.art_name||j.id).join(', ')+' — all items in & art complete!')};
@@ -4486,19 +4489,19 @@ export default function App(){
       }
     }
   },[ests,estHistory]);
-  React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
   // so hourly/daily auto-sync silently did nothing until someone opened the QB page
   // that session — and afterwards synced the stale snapshot from the last render.
-  React.useEffect(()=>{_qbSyncCtxRef.current={cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}});
+  React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
-    if(!qbConfig.connected||qbConfig.autoSync==='manual')return;
+    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual')return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
     const ms=intervals[qbConfig.autoSync];
     if(!ms)return;
     const id=setInterval(()=>{
-      if(qbSyncing||!_qbSyncCtxRef.current)return;
+      if(!storedUserCanManageQuickBooks()||qbSyncing||!_qbSyncCtxRef.current)return;
       const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
       if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
     },60000);// check every 60s
@@ -4587,6 +4590,7 @@ export default function App(){
   },[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
+    if(!storedUserCanManageQuickBooks())return;
     try{
       const params=new URLSearchParams(window.location.search);
       if(params.get('qb_connected')==='true'){
@@ -4610,6 +4614,7 @@ export default function App(){
   // only returns a connected flag + realm id in the hash — no credentials reach the browser.
   // Step 1: capture the connected signal before the Supabase load can overwrite qbConfig.
   React.useEffect(()=>{
+    if(!storedUserCanManageQuickBooks())return;
     const hash=window.location.hash;
     if(hash.includes('qb_connected=')){
       try{
@@ -4627,7 +4632,7 @@ export default function App(){
   },[]);
   // Step 2: apply AFTER Supabase load so the persisted qb_config doesn't overwrite it.
   React.useEffect(()=>{
-    if(dbLoading||!_pendingQBTokens.current)return;
+    if(!storedUserCanManageQuickBooks()||dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
     setQBConfig(prev=>({...prev,connected:true,sandbox:false,realm_id:t.realm_id||prev.realm_id}));
     // Company name comes from the proxy; the access token is read server-side, not passed here.
@@ -4642,7 +4647,7 @@ export default function App(){
   // On load, reconcile connection state with the server-side token store (source of truth).
   // qb-api refreshes the token server-side, so the client no longer manages tokens at all.
   React.useEffect(()=>{
-    if(dbLoading||_pendingQBTokens.current)return;
+    if(!storedUserCanManageQuickBooks()||dbLoading||_pendingQBTokens.current)return;
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'connection_status'})})
       .then(r=>r.ok?r.json():null).then(d=>{
@@ -6291,6 +6296,7 @@ export default function App(){
     // Financials is identity-restricted even among admins. Never let an admin
     // role or editable access array override the owner allowlist.
     if(pageId==='financials')return canViewFinancials(cu);
+    if(pageId==='qb')return canManageQuickBooksRole(cu.role);
     if(cu.role==='admin'||cu.role==='super_admin')return true;
     // Import is always on for reps and CSRs regardless of their stored access array
     if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
@@ -25455,19 +25461,27 @@ export default function App(){
   // ── QB API helper (shared by rImport and QBPage, via context) ──
   // Tokens are held + refreshed server-side; the client sends only the action + payload.
   const qbApi=async(action,payload={})=>{
+    if(!storedUserCanManageQuickBooks())return null;
     if(!qbConfig.connected){nf('QB not connected','error');return null}
     try{
       const r=await authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action,sandbox:qbConfig.sandbox,...payload})});
+      if(r.status===403)return null;
       if(!r.ok&&r.status!==401&&r.status!==409){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
-      if(r.status===401||r.status===409){setQBConfig(prev=>({...prev,connected:false}));nf('QB not connected — please reconnect','error');return null}
+      if(r.status===401||r.status===409){
+        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual'}));
+        const now=Date.now();
+        if(now-_qbReconnectNoticeRef.current>30000){_qbReconnectNoticeRef.current=now;nf('QB not connected — please reconnect','error')}
+        return null;
+      }
       return d;
     }catch(e){nf('QB API error: '+e.message,'error');return null}
   };
 
   // ── Connect to QB via OAuth (shared by rImport & QBPage, via context) ──
   const connectQB=async()=>{
+    if(!storedUserCanManageQuickBooks())return;
     try{
       const r=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'connect'})});
@@ -25479,6 +25493,7 @@ export default function App(){
 
   // ── Disconnect from QB (shared by rImport & QBPage, via context) ──
   const disconnectQB=async()=>{
+    if(!storedUserCanManageQuickBooks())return;
     if(!window.confirm('Disconnect from QuickBooks? You can reconnect anytime.'))return;
     // authFetch sends the staff JWT — disconnect is staff-only and revokes the token server-side.
     try{await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -36795,7 +36810,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'financials',label:'Financials',icon:'dollar',roles:['admin']},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true},{id:'move_checkin',label:'Move Check-In',icon:'box',href:'/move-checkin',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',financials:'Financials',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';
