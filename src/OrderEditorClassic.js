@@ -854,7 +854,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poAlphaSuffix,setPoAlphaSuffix]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
-    const[poManualCost,setPoManualCost]=useState('');const[poManualCostNote,setPoManualCostNote]=useState('');const[poPaymentMethod,setPoPaymentMethod]=useState('credit_card');
+    const[poManualCost,setPoManualCost]=useState('');const[poManualCostNote,setPoManualCostNote]=useState('');const[poManualVendor,setPoManualVendor]=useState('');const[poPaymentMethod,setPoPaymentMethod]=useState('credit_card');
     // Record every PO number the form DISPLAYS as a claim (owner report 2026-07-22): reps
     // quote the shown number to the vendor before clicking Create; abandoning the form
     // orphans it and the vendor's bill later arrives with a PO the portal never owned
@@ -7016,8 +7016,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {/* LINKED TRANSACTIONS TAB */}
     {isSO&&tab==='transactions'&&(()=>{
       const _poSkip=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','deco_vendor','deco_type','notes','billed','tracking_numbers'];
-      const _poMap={};safeItems(o).forEach(it=>{safePOs(it).forEach(po=>{if(!po.po_id)return;const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!_poSkip.includes(k)&&typeof po[k]==='number');const ord=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const rcvd=po.received||{};const rec=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);const uc=safeNum(po.unit_cost);let e=_poMap[po.po_id];if(!e){e=_poMap[po.po_id]={po_id:po.po_id,vendor:po.vendor||po.deco_vendor||'',memo:po.memo||po.notes||'',totalOrd:0,totalRcvd:0,cost:0,manualCost:0,manualCostNote:'',paymentMethod:'',skus:[],created_at:po.created_at||'',api_order_id:'',api_ordered_at:''}}e.totalOrd+=ord;e.totalRcvd+=rec;e.cost+=ord*uc;if(!e.manualCost&&safeNum(po._manual_cost)>0){e.manualCost=safeNum(po._manual_cost);e.manualCostNote=po._manual_cost_note||'';e.cost+=e.manualCost}if(!e.paymentMethod&&po._payment_method)e.paymentMethod=normalizePoPaymentMethod(po._payment_method);if(!e.vendor)e.vendor=po.vendor||po.deco_vendor||'';if(!e.memo)e.memo=po.memo||po.notes||'';if(po.api_order_id&&!e.api_order_id){e.api_order_id=po.api_order_id;e.api_ordered_at=po.api_ordered_at||''}if(it.sku&&!e.skus.includes(it.sku))e.skus.push(it.sku)})});
-      const linkedPOs=Object.values(_poMap).map(e=>({...e,itemCount:e.skus.length,status:e.totalRcvd>=e.totalOrd&&e.totalOrd>0?'received':e.totalRcvd>0?'partial':'waiting'}));
+      const _poMap={};safeItems(o).forEach(it=>{safePOs(it).forEach(po=>{if(!po.po_id)return;const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!_poSkip.includes(k)&&typeof po[k]==='number');const ord=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const rcvd=po.received||{};const rec=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);const uc=safeNum(po.unit_cost);let e=_poMap[po.po_id];if(!e){e=_poMap[po.po_id]={po_id:po.po_id,vendor:po.vendor||po.deco_vendor||'',poType:po.po_type||'',memo:po.memo||po.notes||'',totalOrd:0,totalRcvd:0,cost:0,manualCost:0,manualCostNote:'',paymentMethod:'',skus:[],created_at:po.created_at||'',api_order_id:'',api_ordered_at:''}}e.totalOrd+=ord;e.totalRcvd+=rec;e.cost+=ord*uc;if(!e.manualCost&&safeNum(po._manual_cost)>0){e.manualCost=safeNum(po._manual_cost);e.manualCostNote=po._manual_cost_note||'';e.cost+=e.manualCost}if(!e.paymentMethod&&po._payment_method)e.paymentMethod=normalizePoPaymentMethod(po._payment_method);if(!e.vendor)e.vendor=po.vendor||po.deco_vendor||'';if(!e.memo)e.memo=po.memo||po.notes||'';if(po.api_order_id&&!e.api_order_id){e.api_order_id=po.api_order_id;e.api_ordered_at=po.api_ordered_at||''}if(po.po_type!=='manual_cost'&&it.sku&&!e.skus.includes(it.sku))e.skus.push(it.sku)})});
+      const linkedPOs=Object.values(_poMap).map(e=>({...e,itemCount:e.skus.length,status:e.poType==='manual_cost'?'recorded':e.totalRcvd>=e.totalOrd&&e.totalOrd>0?'received':e.totalRcvd>0?'partial':'waiting'}));
       const linkedIFs=[];safeItems(o).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&!linkedIFs.find(x=>x.pick_id===pk.pick_id)){const szKeys=Object.keys(pk).filter(k=>!['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'].includes(k)&&typeof pk[k]==='number');const totalQty=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);linkedIFs.push({pick_id:pk.pick_id,status:pk.status||'pick',totalQty,created_at:pk.created_at||'',memo:pk.memo||''})}})});
       const linkedInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
       // Shared-screen jobs — jobs on OTHER sales orders in this parent family that carry the
@@ -7084,15 +7084,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{po.po_id}</span>
               <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{po.vendor||'—'}</span>
-              <span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span>
+              <span className={`badge ${po.status==='received'||po.status==='recorded'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{po.status==='recorded'?'Cost recorded':po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span>
               <ApiOrderBadge po={po}/>
-              <span style={{fontSize:11,color:'#64748b'}}>{po.totalRcvd}/{po.totalOrd} received</span>
+              {po.status!=='recorded'&&<span style={{fontSize:11,color:'#64748b'}}>{po.totalRcvd}/{po.totalOrd} received</span>}
               {po.cost>0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>${po.cost.toFixed(2)}</span>}
               {po.manualCost>0&&<span title={po.manualCostNote||'One-off cost entered when this PO was created'} style={{fontSize:9,fontWeight:700,color:'#92400e',background:'#fef3c7',borderRadius:4,padding:'1px 6px'}}>+ ${po.manualCost.toFixed(2)} manual</span>}
               {po.paymentMethod&&<span style={{fontSize:9,fontWeight:700,color:'#0f766e',background:'#ccfbf1',borderRadius:4,padding:'1px 6px'}}>Paid by {poPaymentMethodLabel(po.paymentMethod)}</span>}
             </div>
             <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontSize:11,color:'#64748b'}}>{po.itemCount} item{po.itemCount!==1?'s':''}</span>
+              {po.status!=='recorded'&&<span style={{fontSize:11,color:'#64748b'}}>{po.itemCount} item{po.itemCount!==1?'s':''}</span>}
               {po.skus.length>0&&<span style={{fontSize:11,color:'#94a3b8',fontFamily:'monospace'}}>{po.skus.slice(0,6).join(', ')}{po.skus.length>6?` +${po.skus.length-6}`:''}</span>}
               {po.memo&&<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>"{po.memo}"</span>}
             </div>
@@ -8947,7 +8947,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       };
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
-        <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
+        <div className="modal-body">
+          <div style={{padding:'11px 12px',border:'2px solid #f59e0b',borderRadius:9,background:'#fffbeb',marginBottom:10}}>
+            <div style={{display:'flex',alignItems:'center',gap:10}}><span style={{fontSize:22}}>💳</span><div style={{flex:1}}><div style={{fontWeight:800,color:'#92400e',fontSize:14}}>Manual Cost / Purchase</div><div style={{fontSize:11,color:'#78716c',marginTop:1}}>Record a card, wire, or cash purchase without ordering more units.</div></div><button className="btn btn-sm" style={{background:'#d97706',color:'#fff',border:'none',fontWeight:800,whiteSpace:'nowrap'}} onClick={()=>{setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setPoAlphaSuffix(cust?.alpha_tag||'');setShowPO('manual')}}>+ Add Manual Cost</button></div>
+          </div>
+          {Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
@@ -9029,6 +9033,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}}>{(o.deco_pos||[]).some(dp=>dp.topstar_service)?'Order Another Digitizing / Vector File':'Order Digitizing / Vector File'}</button>
           </div>
         </div></div></div>;
+      if(showPO==='manual'){
+        const amount=Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0);
+        const saveManualCost=async()=>{
+          if(_poCreatingRef.current)return;
+          if(!(amount>0)){nf('Enter a manual cost greater than $0','error');return}
+          const targetIdx=safeItems(o).findIndex(Boolean);
+          if(targetIdx<0){nf('Add at least one sales-order item before recording a manual cost','error');return}
+          _poCreatingRef.current=true;
+          const poN=await _awaitHeldPoNumber();
+          if(!poN){_poCreatingRef.current=false;nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
+          const finalPoId='PO '+poN+(poAlphaSuffix?' '+poAlphaSuffix:'');
+          const note=poManualCostNote.trim();
+          const poLine={po_id:finalPoId,vendor:poManualVendor.trim()||'Manual purchase',po_type:'manual_cost',status:'received',unit_cost:0,received:{},shipments:[],created_at:new Date().toLocaleDateString(),_manual_cost:amount,_payment_method:normalizePoPaymentMethod(poPaymentMethod),...(note?{memo:note,_manual_cost_note:note}:{})};
+          const updatedItems=safeItems(o).map((it,i)=>i===targetIdx?{...it,po_lines:[...safePOs(it),poLine]}:it);
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+          setO(updated);onSave(updated);_consumeHeldPoNumber(true,false);
+          setShowPO(null);setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setTab('costs');
+          _poCreatingRef.current=false;
+          nf(finalPoId+' recorded · $'+amount.toFixed(2)+' paid by '+poPaymentMethodLabel(poPaymentMethod)+' · added to '+o.id+' costs and commission COGS');
+        };
+        return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+          <div className="modal-header"><h2>Manual Cost / Purchase</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+          <div className="modal-body">
+            <div style={{padding:'9px 11px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:7,marginBottom:12,fontSize:12,color:'#1e40af'}}>A PO reference will be assigned when you record the cost. No additional garment units will be ordered.</div>
+            <div className="form-grid cols-2">
+              <div className="form-group"><label className="form-label">Vendor / payee (optional)</label><input className="form-input" value={poManualVendor} onChange={e=>setPoManualVendor(e.target.value)} placeholder="Vendor, store, or payee"/></div>
+              <div className="form-group"><label className="form-label">Amount</label><div style={{display:'flex',alignItems:'center',gap:5}}><span style={{fontWeight:800}}>$</span><input className="form-input" aria-label="Manual cost amount" type="number" min="0" step="0.01" value={poManualCost} onChange={e=>setPoManualCost(e.target.value)} placeholder="0.00" autoFocus style={{fontWeight:800}}/></div></div>
+              <div className="form-group"><label className="form-label">Paid by</label><select className="form-input" value={poPaymentMethod} onChange={e=>setPoPaymentMethod(normalizePoPaymentMethod(e.target.value))} style={{fontWeight:700}}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></div>
+              <div className="form-group"><label className="form-label">What was this cost for? (optional)</label><input className="form-input" value={poManualCostNote} onChange={e=>setPoManualCostNote(e.target.value)} placeholder="Rush fee, samples, supplies, or other expense"/></div>
+            </div>
+            <div style={{padding:'9px 11px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:7,fontSize:11,color:'#166534'}}>This cost appears on the sales order Costs tab and is deducted once from commission gross profit.</div>
+          </div>
+          <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button><button className="btn btn-primary" disabled={!(amount>0)||_poCreatingRef.current} onClick={saveManualCost}>Record ${amount.toFixed(2)} Cost</button></div>
+        </div></div>;
+      }
       // OUTSIDE DECORATION PO FORM
       if(typeof showPO==='string'&&showPO.startsWith('deco:')){
         const decoVendor=showPO.replace('deco:','');
@@ -13942,13 +13981,14 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const totalInTransit=Math.max(0,totalBilled-totalReceived);
       const hasOpen=szKeys.some(sz=>getOpen(sz)>0);
       const isDropShip=!!po.drop_ship;
-      const poStatus=isDropShip?(totalBilled>=totalOrdered&&totalOrdered>0?'shipped':totalBilled>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
+      const isManualCostPO=po.po_type==='manual_cost';
+      const poStatus=isManualCostPO?'recorded':isDropShip?(totalBilled>=totalOrdered&&totalOrdered>0?'shipped':totalBilled>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
       // PO-wide totals across every line on this PO. The active tab is a single item, but a PO can
       // span multiple SKUs/colors — the header status and the receive gate must reflect the whole
       // PO, otherwise it shows "Fully Received" (and hides receiving) when only one line is done.
       const NON_SZ_PO_KEYS=['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes','shipping'];
       const _poWide=allLines.reduce((acc,ln)=>{const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];if(!it||!pl)return acc;Object.keys(pl).filter(k=>!k.startsWith('_')&&!NON_SZ_PO_KEYS.includes(k)&&typeof pl[k]==='number').forEach(sz=>{acc.ord+=pl[sz]||0;acc.rcvd+=(pl.received||{})[sz]||0;acc.bld+=(pl.billed||{})[sz]||0;acc.open+=Math.max(0,(pl[sz]||0)-((pl.received||{})[sz]||0)-((pl.cancelled||{})[sz]||0))});return acc},{ord:0,rcvd:0,bld:0,open:0});
-      const poWideStatus=isDropShip?(_poWide.bld>=_poWide.ord&&_poWide.ord>0?'shipped':_poWide.bld>0?'partial':'waiting'):(_poWide.open<=0&&_poWide.rcvd>0?'received':_poWide.rcvd>0?'partial':'waiting');
+      const poWideStatus=isManualCostPO?'recorded':isDropShip?(_poWide.bld>=_poWide.ord&&_poWide.ord>0?'shipped':_poWide.bld>0?'partial':'waiting'):(_poWide.open<=0&&_poWide.rcvd>0?'received':_poWide.rcvd>0?'partial':'waiting');
       const hasOpenAnywhere=_poWide.open>0;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
@@ -13960,14 +14000,15 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <ApiOrderBadge po={po} showId style={{fontSize:10,padding:'2px 8px'}}/>
             {isDropShip&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
             {po.po_type==='customer_supplied'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ecfeff',color:'#0e7490'}} title="Customer-delivered goods — no vendor, no cost, no bill">🎁 Customer-Delivered</span>}
-            <span className={`badge ${poWideStatus==='received'||poWideStatus==='shipped'?'badge-green':poWideStatus==='partial'?'badge-amber':'badge-gray'}`}>{poWideStatus==='shipped'?'Shipped':poWideStatus==='received'?'Fully Received':poWideStatus==='partial'?(isDropShip?_poWide.bld+'/'+_poWide.ord+' Billed':'Partial — '+_poWide.open+' open'):'Waiting'}</span>
+            {isManualCostPO&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fffbeb',color:'#92400e'}}>💳 Manual Cost</span>}
+            <span className={`badge ${poWideStatus==='received'||poWideStatus==='shipped'||poWideStatus==='recorded'?'badge-green':poWideStatus==='partial'?'badge-amber':'badge-gray'}`}>{poWideStatus==='recorded'?'Cost Recorded':poWideStatus==='shipped'?'Shipped':poWideStatus==='received'?'Fully Received':poWideStatus==='partial'?(isDropShip?_poWide.bld+'/'+_poWide.ord+' Billed':'Partial — '+_poWide.open+' open'):'Waiting'}</span>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({po,item,allLines,soId:o.id,soItems:o.items});setEditPO(null)}}>View Full Page</button>
             <button className="modal-close" onClick={()=>setEditPO(null)}>x</button>
           </div>
         </div>
         <div className="modal-body">
           {/* Ready-for-deco hand-off — persists after the receive toast fades */}
-          {po.po_type!=='outside_deco'&&decoReadyBanner(allLines.map(ln=>ln.lineIdx))}
+          {po.po_type!=='outside_deco'&&!isManualCostPO&&decoReadyBanner(allLines.map(ln=>ln.lineIdx))}
           {/* Vendor — who this PO is written to */}
           {(()=>{
             const _poVendorRec=po.po_type==='outside_deco'?null:vendorList.find(v=>v.id===po.vendor);
@@ -13990,7 +14031,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               (like Shipping does) and recomputes each line's status under the new mode. Hidden for
               decoration POs (always drop ship — a service, not received goods) and customer-supplied
               goods (no vendor to receive from). */}
-          {po.po_type!=='outside_deco'&&po.po_type!=='customer_supplied'&&<div style={{padding:'8px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
+          {po.po_type!=='outside_deco'&&po.po_type!=='customer_supplied'&&!isManualCostPO&&<div style={{padding:'8px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>Fulfillment method <span style={{fontWeight:600,textTransform:'none',letterSpacing:0,color:'#94a3b8'}}>— switch between in-house and drop ship</span></div>
             <DropShipToggle isDropShip={isDropShip} onSelect={target=>{
               if(!!target===isDropShip)return;// already in this mode — nothing to change
@@ -14041,7 +14082,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
               Clicking a chip views its size table AND queues it for the shipment built in the
               green "Receive Shipment" box below (click again to remove it). Two-column grid;
               long product names truncate with an ellipsis (full name in the hover title). */}
-          {allLines.length>1&&<div style={{marginBottom:12}}>
+          {!isManualCostPO&&allLines.length>1&&<div style={{marginBottom:12}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,gap:8,flexWrap:'wrap'}}>
               <span style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Items on this PO ({allLines.length})</span>
               {!isDropShip&&hasOpenAnywhere&&<span style={{fontSize:10,fontWeight:600,color:'#16a34a'}}>click items to receive</span>}
@@ -14068,7 +14109,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             </div>
           </div>}
           {/* Product info */}
-          {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          {!isManualCostPO&&item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
             {_itemSwatch(item,26)}
             <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
             <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
@@ -15263,10 +15304,11 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
       const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
       const isDropShipFP=!!po.drop_ship;const totalBilledFP=szKeys.reduce((a,sz)=>a+((po.billed||{})[sz]||0),0);const trackNumsFP=po.tracking_numbers||[];
-      const poStatus=isDropShipFP?(totalBilledFP>=totalOrdered&&totalOrdered>0?'shipped':totalBilledFP>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
+      const isManualCostPO=po.po_type==='manual_cost';
+      const poStatus=isManualCostPO?'recorded':isDropShipFP?(totalBilledFP>=totalOrdered&&totalOrdered>0?'shipped':totalBilledFP>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
       const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
       const poTotal=totalOrdered*unitCost;
-      const vendorName=po.deco_vendor||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
+      const vendorName=po.deco_vendor||(isManualCostPO?po.vendor:'')||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
       // API placement — any line on this PO carrying api_order_id means it was submitted
@@ -15307,19 +15349,20 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const grandOpen=allLineSz.reduce((a,x)=>a+x.open,0);
       // Status across the whole PO (all lines), not just the active line, so the header badge
       // doesn't read "Fully Received" when only one of several lines is done.
-      const poStatusWide=isDropShipFP?(grandBilled>=grandOrdered&&grandOrdered>0?'shipped':grandBilled>0?'partial':'waiting'):(grandOpen<=0&&grandReceived>0?'received':grandReceived>0?'partial':'waiting');
+      const poStatusWide=isManualCostPO?'recorded':isDropShipFP?(grandBilled>=grandOrdered&&grandOrdered>0?'shipped':grandBilled>0?'partial':'waiting'):(grandOpen<=0&&grandReceived>0?'received':grandReceived>0?'partial':'waiting');
       return<div className="po-fullpage">
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
               <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
               <h1 style={{margin:0,fontSize:22}}>{po.po_id} {poFullPage.customerTag||''}</h1>
-              <span className={`badge ${poStatusWide==='received'||poStatusWide==='shipped'?'badge-green':poStatusWide==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatusWide==='shipped'?'Shipped':poStatusWide==='received'?'Fully Received':poStatusWide==='partial'?'Partial':'Waiting'}</span>
+              <span className={`badge ${poStatusWide==='received'||poStatusWide==='shipped'||poStatusWide==='recorded'?'badge-green':poStatusWide==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatusWide==='recorded'?'Cost Recorded':poStatusWide==='shipped'?'Shipped':poStatusWide==='received'?'Fully Received':poStatusWide==='partial'?'Partial':'Waiting'}</span>
               {po.status==='queued'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#b45309'}}>Queued in batch</span>}
               {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
               {apiPo&&<ApiOrderBadge po={apiPo} showId style={{fontSize:10,padding:'2px 8px'}}/>}
               {isDropShipFP&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+              {isManualCostPO&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#fffbeb',color:'#92400e'}}>💳 Manual Cost</span>}
               <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:11}} onClick={()=>{setEditPO({lineIdx:allLines?.[0]?.lineIdx||0,poIdx:soItems?.[allLines?.[0]?.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0,po,allLines:allLines||[{lineIdx:0,poIdx:0}]});setPoFullPage(null)}}>Edit PO</button>
               {/* Order via API — surface the same submit path that lives in the Edit PO modal directly on
                   the PO page. Hidden once the PO carries an api_order_id (apiPo) so an already-placed order
@@ -15339,7 +15382,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           </div>
 
           {/* Ready-for-deco hand-off — persists after the receive toast fades */}
-          {!isDecoPO&&decoReadyBanner((allLines||[]).map(ln=>ln.lineIdx))}
+          {!isDecoPO&&!isManualCostPO&&decoReadyBanner((allLines||[]).map(ln=>ln.lineIdx))}
 
           {/* PO Total Summary */}
           <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
@@ -15349,6 +15392,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                 <div><div style={{fontSize:11,opacity:0.7}}>Shipping</div><div style={{fontSize:24,fontWeight:800,color:'#fbbf24'}}>${decoShipTotal.toFixed(2)}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>Bills Applied</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{decoBillDetails.length}</div></div>
                 <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${decoGrand.toFixed(2)}</div></div>
+              </>:isManualCostPO?<>
+                <div><div style={{fontSize:11,opacity:0.7}}>Type</div><div style={{fontSize:20,fontWeight:800}}>Manual Purchase</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Paid By</div><div style={{fontSize:20,fontWeight:800,color:'#4ade80'}}>{poPaymentMethodLabel(paymentMethod||'credit_card')}</div></div>
+                <div><div style={{fontSize:11,opacity:0.7}}>Cost Applied to {soId}</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${manualCost.toFixed(2)}</div></div>
               </>:<>
                 <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{grandOrdered}</div></div>
                 {isDropShipFP?<div><div style={{fontSize:11,opacity:0.7}}>Billed</div><div style={{fontSize:24,fontWeight:800,color:grandBilled>=grandOrdered?'#4ade80':'#fbbf24'}}>{grandBilled}</div></div>
@@ -15362,7 +15409,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           </div>
 
           {/* Items on this PO — hidden for decoration POs (they're a service, not per-size goods) */}
-          {!isDecoPO&&<div className="card" style={{marginBottom:16}}>
+          {!isDecoPO&&!isManualCostPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Line Items</h2></div>
             <div className="card-body">
               <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>

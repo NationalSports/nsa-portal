@@ -92,19 +92,21 @@ describe('manual PO costs', () => {
   test('Costs and Commissions pages retain every required manual-cost hook', () => {
     const root = path.join(__dirname, '..');
     const commissions = fs.readFileSync(path.join(root, 'CommissionsPage.js'), 'utf8');
-    const editor = fs.readFileSync(path.join(root, 'OrderEditor.js'), 'utf8');
+    const editors = ['OrderEditor.js', 'OrderEditorClassic.js'].map(file => fs.readFileSync(path.join(root, file), 'utf8'));
 
     // Paid invoice GP, open pipeline GP, and promo deductions are separate calculations.
     expect(commissions).toContain('cost+=manualPoCost');
     expect(commissions).toContain('cost+=manualPoCostTotal(so)');
     expect(commissions).toContain('const manualCost=manualPoCostTotal(so)');
     // The order Costs tab must surface the same canonical rows and payment labels.
-    expect(editor).toContain("category:'Manual PO Cost'");
-    expect(editor).toContain('paymentLabel:row.payment_label');
-    // Manual purchases remain available even when every garment is already covered by a PO.
-    expect(editor).toContain('Manual Cost / Purchase');
-    expect(editor).toContain("setShowPO('manual')");
-    expect(editor).toContain("po_type:'manual_cost'");
-    expect(editor).toContain("setTab('costs')");
+    editors.forEach(editor => {
+      expect(editor).toContain("category:'Manual PO Cost'");
+      expect(editor).toContain('paymentLabel:row.payment_label');
+      // Manual purchases remain available even when every garment is already covered by a PO.
+      expect(editor).toContain('Manual Cost / Purchase');
+      expect(editor).toContain("setShowPO('manual')");
+      expect(editor).toContain("po_type:'manual_cost'");
+      expect(editor).toContain("setTab('costs')");
+    });
   });
 });
