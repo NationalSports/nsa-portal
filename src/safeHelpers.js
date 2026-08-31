@@ -26,6 +26,40 @@ export const poLineFulfilledQty = (pk, sz) => {
   return pk?.drop_ship ? Math.max(rcvd, safeNum((pk?.billed || {})[sz])) : rcvd;
 };
 
+export const normalizePoPaymentMethod = (value) => {
+  const method = String(value || '').trim().toLowerCase();
+  return method === 'wire' || method === 'cash' ? method : 'credit_card';
+};
+export const poPaymentMethodLabel = (value) => ({ credit_card: 'Credit card', wire: 'Wire', cash: 'Cash' })[normalizePoPaymentMethod(value)];
+
+// One-off costs entered while creating a garment PO (card fee, rush charge, etc.).
+// A PO can span several SO item rows, but the cost belongs to the PO as a whole. The
+// creator stores it on one canonical po_line; deduping by PO number also protects the
+// money path if an older edit/copy ever mirrors the metadata onto every line.
+export const manualPoCostRows = (o) => {
+  const rows = []; const seen = new Set(); const methods = new Map();
+  const keyFor = (po, itemIdx, poIdx) => {
+    const poId = String(po?.po_id || '').trim();
+    return poId ? poId.replace(/\s+/g, ' ').toLowerCase() : ('line:' + itemIdx + ':' + poIdx);
+  };
+  safeItems(o).forEach((it, itemIdx) => safePOs(it).forEach((po, poIdx) => {
+    const key = keyFor(po, itemIdx, poIdx);
+    if (po?._payment_method && !methods.has(key)) methods.set(key, normalizePoPaymentMethod(po._payment_method));
+  }));
+  safeItems(o).forEach((it, itemIdx) => safePOs(it).forEach((po, poIdx) => {
+    const amount = safeNum(po?._manual_cost);
+    if (!(amount > 0)) return;
+    const poId = String(po?.po_id || '').trim();
+    const key = keyFor(po, itemIdx, poIdx);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const paymentMethod = methods.get(key) || (po?._payment_method ? normalizePoPaymentMethod(po._payment_method) : '');
+    rows.push({ po_id: poId, amount, note: String(po?._manual_cost_note || '').trim(), vendor: po?.vendor || '', payment_method: paymentMethod, payment_label: paymentMethod ? poPaymentMethodLabel(paymentMethod) : '' });
+  }));
+  return rows;
+};
+export const manualPoCostTotal = (o) => manualPoCostRows(o).reduce((sum, row) => sum + row.amount, 0);
+
 // ── Roster scoping ──
 // A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
 // "copy numbers from another item" brings the source's whole size curve, and a line's
@@ -56,6 +90,31 @@ export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_i
 export const jobItemDecosOfKind = (gi, it, kind) => {
   const dis = jobItemDecoIdxs(gi);
   return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
+};
+// Promote an unresolved art slot owned by a job to a real art-file id. Art Dashboard uploads
+// can begin on the reserved `__tbd` placeholder; once the first proof exists, both the job and
+// its decoration must point at a normal id or the line-item picker/approval guard will continue
+// to read it as Art TBD. Scope by the job's deco indexes so sibling designs are untouched.
+export const attachJobArtToUnresolvedDecos = (items, job, artFileId) => {
+  if (!artFileId || artFileId === '__tbd') return safeArr(items);
+  const owned = new Map();
+  safeArr(job?.items).forEach(gi => {
+    if (gi?.item_idx == null) return;
+    const dis = jobItemDecoIdxs(gi);
+    const cur = owned.get(gi.item_idx);
+    if (cur === null || dis === null) owned.set(gi.item_idx, null);
+    else owned.set(gi.item_idx, new Set([...(cur || []), ...dis]));
+  });
+  return safeArr(items).map((it, ii) => {
+    if (!owned.has(ii)) return it;
+    const dis = owned.get(ii); let changed = false;
+    const decorations = safeDecos(it).map((d, di) => {
+      if (d?.kind !== 'art' || (dis && !dis.has(di)) || (d.art_file_id && d.art_file_id !== '__tbd')) return d;
+      changed = true;
+      return {...d, art_file_id: artFileId, art_tbd_type: null, tbd_colors: null, tbd_stitches: null, tbd_dtf_size: null};
+    });
+    return changed ? {...it, decorations} : it;
+  });
 };
 // The set of art files a job owns across its garments. Seeded from the job's declared art
 // (_art_ids / art_file_id) and augmented with the art files referenced by the decorations the
@@ -178,13 +237,45 @@ export const jobsShareGarments = (a, b) => {
 // because art-split slices own only a size subset of their line.
 export const shippedSizesByLine = (shipments) => {
   const m = {};
-  safeArr(shipments).forEach(shp => safeArr(shp?.items).forEach(it => {
+  safeArr(shipments).forEach(shp => {
+    // Warehouse -> decorator transfers are real outbound packages (and real freight cost),
+    // but they are not customer fulfillment. Counting them here would make the later decorated
+    // job look shipped before the decorator has even started it.
+    if (shp?.fulfillment === false || shp?.shipment_scope === 'deco_transfer') return;
+    safeArr(shp?.items).forEach(it => {
     if (!it) return;
     const key = (it.sku || '') + '|' + (it.color || '');
     const tgt = m[key] || (m[key] = {});
     Object.entries(it.sizes || {}).forEach(([sz, v]) => { tgt[sz] = (tgt[sz] || 0) + safeNum(v); });
-  }));
+    });
+  });
   return m;
+};
+
+// Remaining customer-fulfillment quantities on an SO, one row per order line. Uses a running
+// per-size claim so duplicate sku/color lines cannot both consume the same shipment. This is the
+// source for the warehouse's manual/override shipment picker, including closed orders that never
+// entered Ready to Ship because their workflow state drifted.
+export const unshippedOrderItems = (so) => {
+  const shipped = shippedSizesByLine(so?._shipments);
+  const claimed = {};
+  const rows = [];
+  safeItems(so).forEach((it, itemIdx) => {
+    const key = safeStr(it?.sku) + '|' + safeStr(it?.color);
+    const used = claimed[key] || (claimed[key] = {});
+    const sizes = {};
+    Object.entries(safeSizes(it)).forEach(([sz, v]) => {
+      const ordered = safeNum(v);
+      if (ordered <= 0) return;
+      const credit = Math.min(ordered, Math.max(0, safeNum(shipped[key]?.[sz]) - safeNum(used[sz])));
+      used[sz] = safeNum(used[sz]) + credit;
+      const remaining = ordered - credit;
+      if (remaining > 0) sizes[sz] = remaining;
+    });
+    const qty = Object.values(sizes).reduce((a, v) => a + safeNum(v), 0);
+    if (qty > 0) rows.push({ sku: it?.sku || '', name: it?.name || '', color: it?.color || '', sizes, itemIdx, qty });
+  });
+  return rows;
 };
 
 // ── Units pulled from the warehouse but not yet shipped ──
@@ -261,6 +352,30 @@ export const jobShippedSizes = (job, allJobs, shippedSizes) => {
 export const jobShippedUnits = (job, allJobs, shippedSizes) =>
   Object.values(jobShippedSizes(job, allJobs, shippedSizes))
     .reduce((a, row) => a + Object.values(row).reduce((b, v) => b + safeNum(v), 0), 0);
+
+// Advance production jobs after an override shipment without letting an internal/decorator
+// transfer masquerade as delivery to the customer. Explicit job selections are the warehouse's
+// override; otherwise a completed job advances only when this order's customer-fulfillment
+// shipments cover every one of its units.
+export const jobsAfterShipment = (so, shipments, explicitlyShippedJobIds = [], customerFulfillment = true) => {
+  const jobs = safeJobs(so);
+  if (!customerFulfillment) return jobs;
+  const explicit = new Set(safeArr(explicitlyShippedJobIds).filter(Boolean));
+  const coverage = shippedSizesByLine(shipments);
+  return jobs.map(job => {
+    if (explicit.has(job?.id)) return { ...job, prod_status: 'shipped' };
+    if (job?.prod_status !== 'completed') return job;
+    return jobShippedUnits(job, jobs, coverage) >= safeNum(job?.total_units)
+      ? { ...job, prod_status: 'shipped' }
+      : job;
+  });
+};
+
+// Freight is stored under both names for compatibility with older warehouse/reporting code.
+// Use the larger existing value when a legacy order's mirrors drifted so recording a new label
+// can never reduce an already-accounted shipping cost.
+export const nextShippingCost = (so, addedCost) =>
+  Math.max(safeNum(so?._shipping_cost), safeNum(so?._shipstation_cost)) + safeNum(addedCost);
 
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
@@ -1039,7 +1154,8 @@ export const artProofFallback = (a) => {
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
-// falling back to the job's primary art), then check item_mockups[sku] on those
+// falling back to the job's primary art only when the item owns an art decoration),
+// then check item_mockups[sku] on those
 // art files. If none of the relevant art files carry an entry for the SKU, we
 // also accept any general mockup_files/files bucket on those art files as a
 // fallback (same logic as the renderer at OrderEditor.js:5480-5482).
@@ -1068,8 +1184,14 @@ export const skusMissingMockups = (job, so) => {
     // gating on a garment that can't be shown or mocked would deadlock approval.
     if (!it) return;
     const dis = jobItemDecoIdxs(gi);
-    const decoArtIds = [...new Set(safeDecos(it)
-      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+    const ownedArtDecos = safeDecos(it)
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art');
+    // A combined job can own only numbers/names on this garment while its primary art belongs
+    // to other garments in the same job. Such an item has no art mock to approve and must never
+    // inherit that primary art's old garment mocks (SO-1777: JZ2525 numbers vs yellow logo).
+    if (ownedArtDecos.length === 0) return;
+    const decoArtIds = [...new Set(ownedArtDecos
+      .filter(d => d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds
@@ -1221,8 +1343,14 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
     const it = soItems[gi?.item_idx];
     if (!it) return; // live SO line gone (deleted/reindexed) — nothing to mock
     const dis = jobItemDecoIdxs(gi);
-    const decoArtIds = [...new Set(safeDecos(it)
-      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
+    const ownedArtDecos = safeDecos(it)
+      .filter((d, di) => (!dis || dis.includes(di)) && d?.kind === 'art');
+    // Do not fall back to the job's primary design for a numbers/names-only slice. The job may
+    // legitimately combine that slice with art on other garments, but there is no art mock to
+    // confirm on this one (SO-1777).
+    if (ownedArtDecos.length === 0) return;
+    const decoArtIds = [...new Set(ownedArtDecos
+      .filter(d => d?.art_file_id && d.art_file_id !== '__tbd' && jobArtIds.has(d.art_file_id))
       .map(d => d.art_file_id))];
     const useIds = decoArtIds.length > 0
       ? decoArtIds

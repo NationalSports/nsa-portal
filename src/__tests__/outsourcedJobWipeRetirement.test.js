@@ -93,7 +93,7 @@ const baseRules = ({ jobsInDb, liveDecos, poLines }) => [
   { table: 'so_art_files', sel: 'id,deco_type', resp: { data: [{ id: 'af1', deco_type: 'screen_print' }], error: null } },
   { table: 'so_items', sel: 'id,item_index', resp: DB_ITEMS },
   { table: 'so_item_decorations', sel: 'so_item_id,deco_index,kind,fulfillment,deco_po_id,deco_type,art_file_id,num_method,name_method', resp: liveDecos },
-  { table: 'so_item_po_lines', sel: 'so_item_id,po_type,deco_type', resp: poLines || { data: [], error: null } },
+  { table: 'so_item_po_lines', sel: 'so_item_id,sizes', resp: poLines || { data: [], error: null } },
   { table: 'sales_orders', sel: 'deco_pos', resp: { data: { deco_pos: null }, error: null } },
   { table: 'so_items', method: 'insert', sel: 'id', resp: { data: [{ id: 'new-1' }], error: null } },
 ];
@@ -122,6 +122,16 @@ describe('_dbSaveSOInner — outsourced protected jobs retire via DB-side routin
 
   test('deco_po_id routing counts the same as the fulfillment flag', async () => {
     const state = await run(baseRules({ jobsInDb: [STUCK], liveDecos: outsideDeco({ fulfillment: null, deco_po_id: 'DPO-7801' }) }));
+    expect(jobDeletes(state).length).toBe(1);
+  });
+
+  test('PO routing metadata is read from the surviving sizes JSONB column', async () => {
+    const state = await run(baseRules({
+      jobsInDb: [STUCK],
+      liveDecos: outsideDeco({ fulfillment: null }),
+      poLines: { data: [{ so_item_id: 'it-0', sizes: { po_type: 'outside_deco', deco_type: 'screen_print' } }], error: null },
+    }));
+    expect(state.calls.some((c) => c.table === 'so_item_po_lines' && c.sel === 'so_item_id,sizes')).toBe(true);
     expect(jobDeletes(state).length).toBe(1);
   });
 

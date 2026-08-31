@@ -340,6 +340,9 @@ const _mapHistInvoice=hi=>({
   customer_id:hi.customer_id,
   date:hi.invoice_date,
   total:hi.total!=null?Number(hi.total):null,
+  // Optional authoritative AR balance. Legacy imports do not have this field;
+  // those rows remain useful sales history but are excluded from collectible AR.
+  open_balance:hi.open_balance!=null?Number(hi.open_balance):null,
   memo:hi.memo||'',
   status:hi.status||'paid',
   type:'invoice',
@@ -600,7 +603,9 @@ const _dbLoad = async (opts={}) => {
       _soItemsRaw.forEach(it=>{const cur=_itemByIdx.get(it.item_index);if(!cur){_itemByIdx.set(it.item_index,it);return}const a=_itemChildCount(it),b=_itemChildCount(cur);if(a>b||(a===b&&it.id>cur.id))_itemByIdx.set(it.item_index,it)});
       const items=[..._itemByIdx.values()].sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
-        const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
+        // Snapshot the SKU into legacy pick lines at hydration time. The snapshot travels with the
+        // line on the next save, allowing a later SKU replacement to resolve its old short-pull alert.
+        const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{_sku:item.sku,...rest,...sizes}});
         const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
           // Recover billed/tracking_numbers from sizes JSONB if they were stored as fallback
           const recovered={...rest,...sizes};
@@ -1941,10 +1946,11 @@ const _dbSaveSOInner = async (so) => {
         }
       }
     }
-    // Duplicate-PO guard: drop any newly-introduced po_id whose size signature exactly matches
-    // a clean (un-received/un-billed/un-shipped) PO line already on the same item. Catches the
-    // "two creates raced against a stale open-size view" pattern (SO-1080, SO-1059, SO-1101)
-    // where the counter advanced (so the new po_id differs) but the units were already covered.
+    // Duplicate-PO guard: always collapse identical copies of the same PO, then drop any newly
+    // introduced po_id whose size signature exactly matches a clean (un-received/un-billed/
+    // un-shipped) PO line already on the same item. Catches both the durable-write/full-save race
+    // (SO-2019) and the stale-open-size race where the counter advanced but units were already
+    // covered (SO-1080, SO-1059, SO-1101).
     if(items&&items.length){
       const _dbPoIdSet=new Set((oldItemIds.length?(await(async()=>{try{const r=await supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds);return(r.data||[]).map(x=>x.po_id).filter(Boolean)}catch{return[]}})()):[]));
       const _sizeSig=pl=>{const ks=Object.keys(pl||{}).filter(k=>!k.startsWith('_')&&!_poMeta.has(k)&&typeof pl[k]==='number'&&pl[k]>0).sort();return ks.map(k=>k+':'+pl[k]).join('|')};
@@ -1964,7 +1970,18 @@ const _dbSaveSOInner = async (so) => {
         const drop=new Set();
         Object.values(bySig).forEach(group=>{
           if(group.length<2)return;
-          const clean=group.filter(g=>_isClean(g.pl));
+          // Exact self-duplicates first: multiple copies of the SAME po_id with an identical
+          // size signature on one item. The create-time race (the durable per-line write vs the full
+          // save, before _dbPersistNewPoLine was serialized into the per-SO queue) wrote such pairs,
+          // and neither branch below touched received/billed copies because they are not "clean".
+          // The receipt-rollback pass above merges every DB row's durable history into the first
+          // client copy, so keeping that first line preserves received/billed/tracking state while
+          // dropping the doubled quantity/cost display (SO-2019 PO 57240 / PO 57333, 2026-08-28).
+          // No flow legitimately appends a second identical line for a po_id (re-applying a PO folds
+          // into the existing line), so this is safe regardless of fulfillment state.
+          const _byPoId={};group.forEach(g=>{const k=String(g.pl.po_id||'');(_byPoId[k]=_byPoId[k]||[]).push(g)});
+          Object.values(_byPoId).forEach(same=>{same.slice(1).forEach(g=>drop.add(g.pi))});
+          let clean=group.filter(g=>!drop.has(g.pi)&&_isClean(g.pl));
           if(clean.length<2)return;
           const dbKnown=clean.filter(g=>g.pl.po_id&&_dbPoIdSet.has(g.pl.po_id));
           const newOnes=clean.filter(g=>!g.pl.po_id||!_dbPoIdSet.has(g.pl.po_id));
@@ -2322,7 +2339,10 @@ const _dbSaveSOInner = async (so) => {
             // retire a protected job only when the DB itself proves every remaining claim vendor-routed.
             // A stale/short-loaded client payload can't fake that. Any read error keeps the protection.
             if(_blocked.length&&(_itRows||[]).length){
-              const{data:_poRows,error:_pe}=await supabase.from('so_item_po_lines').select('so_item_id,po_type,deco_type').in('so_item_id',(_itRows||[]).map(r=>r.id));
+              // po_type/deco_type were migrated into the sizes JSONB payload; the
+              // physical columns no longer exist. Selecting the retired columns made
+              // this safety check fail closed on every save (seen on SO-1995).
+              const{data:_poRows,error:_pe}=await supabase.from('so_item_po_lines').select('so_item_id,sizes').in('so_item_id',(_itRows||[]).map(r=>r.id));
               if(_pe)throw _pe;
               const{data:_dpRow,error:_dpe}=await supabase.from('sales_orders').select('deco_pos').eq('id',so.id).maybeSingle();
               if(_dpe)throw _dpe;
@@ -2330,7 +2350,7 @@ const _dbSaveSOInner = async (so) => {
               const _dbO={id:so.id,deco_pos:_dpRow?.deco_pos||null,art_files:_artRows||[],items:[]};
               (_itRows||[]).forEach(r=>{if(r.item_index!=null)_dbO.items[r.item_index]={decorations:[],po_lines:[]}});
               _decoRows.forEach(d=>{const it=_dbO.items[_idxById[d.so_item_id]];if(it&&d.deco_index!=null)it.decorations[d.deco_index]=d});
-              (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];if(it)it.po_lines.push(p)});
+              (_poRows||[]).forEach(p=>{const it=_dbO.items[_idxById[p.so_item_id]];const meta=p?.sizes&&typeof p.sizes==='object'?p.sizes:{};if(it)it.po_lines.push({...p,po_type:meta.po_type,deco_type:meta.deco_type})});
               const _routed=_blocked.filter(r=>jobAllRoutedOutside(_dbO,{items:Array.isArray(r.items)?r.items:[]}));
               if(_routed.length){
                 const _routedIds=new Set(_routed.map(r=>r.id));
@@ -2406,7 +2426,11 @@ const _dbSaveSOInner = async (so) => {
         const itemId=insertedItems[idx]?.id;if(!itemId)return;
         const{decorations,pick_lines,po_lines}=item;
         if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
-        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes})});
+        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,pulled_at,...sizes}=pk;
+          // pulled_at predates the dedicated IF destination columns and lives inside sizes JSONB;
+          // preserve that convention while keeping routing metadata in real columns.
+          if(pulled_at)sizes.pulled_at=pulled_at;
+          allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,deco_po_id,deco_vendor_id,attention,sizes})});
         if(po_lines?.length)po_lines.forEach(po=>{allPoRows.push(_poLineToRow(itemId,po))});
       });
       // Batch insert decorations
@@ -3416,6 +3440,13 @@ const _dbDeleteSO = async (id) => {
     await supabase.from('so_art_files').delete().eq('so_id',id);
     await supabase.from('so_firm_dates').delete().eq('so_id',id);
     await supabase.from('so_jobs').delete().eq('so_id',id);
+    // webstore_orders.so_id is the ONLY foreign key into sales_orders declared NO ACTION —
+    // every other one is CASCADE or SET NULL — so while a webstore batch's parent orders
+    // still point at this SO, Postgres refuses the delete below. deleteSO has already
+    // dropped the SO from React state by then and the catch here only logs, so the order
+    // silently reappears on the next poll. Unlink first: the parent order rows are the
+    // customer's record of what they bought and must outlive the SO either way.
+    await supabase.from('webstore_orders').update({so_id:null}).eq('so_id',id);
     await supabase.from('sales_orders').delete().eq('id',id);
   }catch(e){console.error('[DB] delete SO:',e)}});
 };
@@ -3495,6 +3526,17 @@ const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
 // Fire-and-forget from the editor, exactly like the po_number_claims breadcrumb write.
 const _dbPersistNewPoLine=async(soId,itemIndex,poLine)=>{
   if(!supabase||!soId||itemIndex==null||!poLine||!poLine.po_id)return;
+  // Serialized through the per-SO save queue (_queuedEntitySave), NOT run free alongside it: this
+  // write used to race the queued full-SO save that the same Create-PO click triggers, and its
+  // check-then-insert interleaved with the save's own PO-line insert — both landed and every line
+  // on the new PO doubled on its item (SO-2121 "PO 58203 FPUA" / SO-2105 / SO-1248, 2026-08-24).
+  // In the queue it runs strictly before or after the full save: before → the save's snapshot and
+  // restore passes see its row and the item swap supersedes it; after → the existence check below
+  // sees the save's row and no-ops. Each call passes a fresh saveFn identity so the queue's
+  // latest-wins coalescing (same-saveFn only) can never collapse two different lines' writes.
+  return _queuedEntitySave(soId,null,()=>_dbPersistNewPoLineInner(soId,itemIndex,poLine)).catch(e=>{console.error('[DB] persist new PO line queue error for',soId,':',e?.message||e)});
+};
+const _dbPersistNewPoLineInner=async(soId,itemIndex,poLine)=>{
   return _dbSavingGuard(async()=>{try{
     const{data:itemRow,error:selErr}=await supabase.from('so_items').select('id').eq('so_id',soId).eq('item_index',itemIndex).maybeSingle();
     if(selErr||!itemRow||!itemRow.id)return;// item not in DB yet — the full SO save will persist it
@@ -3552,6 +3594,81 @@ const _queuedEntitySave=(id,data,saveFn)=>new Promise((resolve,reject)=>{
 const _recentlyPulledSOs=new Map();// soId → timestamp
 const _markRecentlyPulled=(soId)=>{_recentlyPulledSOs.set(soId,Date.now())};
 const _isRecentlyPulled=(soId)=>{const t=_recentlyPulledSOs.get(soId);if(!t)return false;if(Date.now()-t>30000){_recentlyPulledSOs.delete(soId);return false}return true};
+// ─── Fast receipt persistence (NSA 4568 follow-up, 2026-08-25) ───
+// The #2002 truth-check gated check-in labels on the FULL SO save — correct, but that save is
+// ~30 sequential round trips (guard reads + delete-and-reinsert of every item/deco/pick/PO line),
+// which stretched each package check-in to minutes on the warehouse iPad. This is the targeted
+// alternative the label gate now waits on instead: write ONLY the received/shipments/status of the
+// exact so_item_po_lines rows just checked in (~4 round trips regardless of order size), verified
+// row-by-row so the caller still gets a truthful result. The full SO save still runs right behind
+// it (jobs recalc, received_at/by metadata, outbox/retry machinery) — it just no longer blocks the
+// printer. A trailing stale full save cannot undo these writes: its receiving-rollback merge
+// re-injects DB received/shipments per-size-max before re-serializing lines.
+//
+// Semantics are DELTA-ADD on the DB row (received[sz] += rcv[sz]), not an absolute overwrite of the
+// client's copy: physical units were counted into the warehouse, so if another session's receipt
+// landed since this tab loaded, both must survive. Status is re-derived cancel-aware from the
+// merged units, mirroring the receiving-rollback merge in _dbSaveSOInner.
+//
+// Returns true only when EVERY targeted row was found and its update confirmed; false on any miss
+// (item/line not in DB yet, e.g. a never-saved order) or error — callers then fall back to gating
+// on the full SO save's result, so the truth-check never weakens, it only gets faster.
+// Non-size numeric keys that can appear on a po_line row's sizes jsonb — everything else numeric
+// and positive is an ordered size qty. Superset of _dbSaveSOInner's _poMeta (kept in sync by hand;
+// extra members are harmless — they only exclude keys from the "ordered sizes" sum).
+const _poLineSizeMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes','shipping','api_order_id','api_ordered_at','vendor_keys','received_at','received_by']);
+const _dbSaveReceiptLinesInner=async(soId,updates)=>{
+  if(!supabase||!soId||!Array.isArray(updates)||!updates.length)return false;
+  await _ensureFreshSession();
+  return _dbSavingGuard(async()=>{try{
+    const{data:itemRows,error:itErr}=await _retryNet(()=>supabase.from('so_items').select('id,item_index').eq('so_id',soId));
+    if(itErr){console.warn('[DB] fast receipt save: so_items read failed for',soId,'—',itErr.message,'(falling back to full save)');return false}
+    const _idByIdx=new Map((itemRows||[]).map(r=>[r.item_index,r.id]));
+    let _targets=updates.map(u=>({...u,soItemId:_idByIdx.get(u.itemIdx)}));
+    if(_targets.some(t=>!t.soItemId||!t.poId))return false;// item not in DB yet — full save carries it
+    // Merge entries that hit the same (item, po) pair — each write below is computed from the ORIGINAL
+    // DB row, so two unmerged entries for one pair would overwrite each other and drop a delta.
+    {const _byPair=new Map();
+    _targets.forEach(t=>{const k=t.soItemId+'|'+t.poId;const ex=_byPair.get(k);
+      if(!ex){_byPair.set(k,{...t,shipments:t.shipment?[t.shipment]:[]});return}
+      Object.entries(t.rcv||{}).forEach(([sz,q])=>{if(typeof q==='number'&&q>0)ex.rcv={...(ex.rcv||{}),[sz]:((ex.rcv||{})[sz]||0)+q}});
+      if(t.shipment)ex.shipments.push(t.shipment)});
+    _targets=[..._byPair.values()]}
+    const{data:poRows,error:poErr}=await _retryNet(()=>supabase.from('so_item_po_lines').select('id,so_item_id,po_id,received,shipments,cancelled,status,sizes').in('so_item_id',[...new Set(_targets.map(t=>t.soItemId))]).in('po_id',[...new Set(_targets.map(t=>t.poId))]));
+    if(poErr){console.warn('[DB] fast receipt save: po_lines read failed for',soId,'—',poErr.message,'(falling back to full save)');return false}
+    const _writes=[];
+    for(const t of _targets){
+      // An interrupted full save can leave duplicate rows for the same (item, po) — apply the delta
+      // to every copy so whichever survives the loader's dedup carries the receipt.
+      const rows=(poRows||[]).filter(r=>r.so_item_id===t.soItemId&&r.po_id===t.poId);
+      if(!rows.length)return false;// line not in DB — full save carries it
+      for(const row of rows){
+        const received={...(row.received||{})};
+        Object.entries(t.rcv||{}).forEach(([sz,q])=>{if(typeof q==='number'&&q>0)received[sz]=(received[sz]||0)+q});
+        const shipments=[...(Array.isArray(row.shipments)?row.shipments:[]),...(Array.isArray(t.shipments)?t.shipments:t.shipment?[t.shipment]:[])];
+        const cancelled=row.cancelled||{};
+        const _anyRcv=Object.values(received).some(v=>typeof v==='number'&&v>0);
+        const _open=Object.entries(row.sizes||{}).filter(([k,v])=>typeof v==='number'&&v>0&&!k.startsWith('_')&&!_poLineSizeMeta.has(k)).reduce((a,[sz,q])=>a+Math.max(0,q-(received[sz]||0)-(cancelled[sz]||0)),0);
+        const status=_open<=0&&_anyRcv?'received':_anyRcv?'partial':(row.status||'waiting');
+        _writes.push({id:row.id,received,shipments,status});
+      }
+    }
+    const results=await Promise.all(_writes.map(w=>_retryNet(()=>supabase.from('so_item_po_lines').update({received:w.received,shipments:w.shipments,status:w.status}).eq('id',w.id).select('id'))));
+    const _bad=results.find(r=>r.error||!Array.isArray(r.data)||r.data.length===0);
+    if(_bad){console.warn('[DB] fast receipt save: row update failed/missed for',soId,_bad.error?('— '+_bad.error.message):'(0 rows matched)','(falling back to full save)');return false}
+    _markRecentlyPulled(soId);// poll/realtime must not revert the receipt while the full save trails
+    // Bump the SO stamp so other tabs' polls pick the change up (same as _dbUpdatePickLineStatus).
+    // The receipt rows are already committed — a failed bump must not fail the check-in.
+    try{await supabase.from('sales_orders').update({updated_at:new Date().toLocaleString()}).eq('id',soId)}catch(_){/* full save re-bumps moments later */}
+    console.log('[DB] Fast receipt save:',_writes.length,'PO line(s) confirmed on',soId);
+    return true;
+  }catch(e){console.warn('[DB] fast receipt save error for',soId,':',e?.message||e,'(falling back to full save)');return false}});
+};
+// Serialized through the same per-SO queue as full SO saves so a receipt write can never interleave
+// with a full save's delete-and-reinsert swap. The saveFn closure is deliberately FRESH per call:
+// _queuedEntitySave coalesces same-fn tails latest-wins, and receipt updates are deltas — coalescing
+// two queued check-ins would silently drop the earlier package's units.
+const _dbSaveReceiptLines=(soId,updates)=>_queuedEntitySave(soId,updates,(u)=>_dbSaveReceiptLinesInner(soId,u));
 // Track recent local approval-status changes on estimates — protects status/approved_by/approved_at in the
 // poll/realtime merge for 60s so a reload that read the DB before the change landed can't snap the status
 // back (EST-1227: clicking Unapprove reverted to approved shortly after saving). The estimate merge's only
@@ -3857,6 +3974,7 @@ export {
   _batchPosDirtyUntil,
   _dbUpdatePickLineStatus,
   _dbPersistNewPoLine,
+  _dbSaveReceiptLines,
   _dbSaveInFlight,
   _dbSavePending,
   _queuedEntitySave,

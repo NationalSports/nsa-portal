@@ -5,12 +5,19 @@
 // ordered by ORDER NUMBER, and the shipping address repeated on EVERY row so a single
 // filtered line still says where the box goes.
 
+jest.mock('xlsx', () => {
+  const actual = jest.requireActual('xlsx');
+  return { ...actual, writeFile: jest.fn() };
+});
+
+const XLSX = require('xlsx');
 const { downloadSoPlayerReport } = require('../lib/soPlayerReport');
 
 // Capture what downloadCsv would have written, without a DOM download.
 let captured = null;
 beforeEach(() => {
   captured = null;
+  XLSX.writeFile.mockClear();
   global.Blob = function Blob(parts) { this.parts = parts; captured = String(parts.join('')); };
   global.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
   const a = { click: () => {}, set href(v) {}, set download(v) { this._name = v; } };
@@ -29,19 +36,21 @@ const ORDERS = [
 ];
 const LINES = [
   { order_id: 'o-club', sku: '1203.080', name: 'Girls Racerback Tank', size: 'S', qty: 1, player_name: 'Abbie Garcia', player_number: 7 },
-  { order_id: 'o-home', sku: 'KA4117', name: 'Adidas MATCH SKIRT', size: '2XS', qty: 2, player_name: 'Alexandra "Alex" Spitzer', player_number: null },
+  { order_id: 'o-home', sku: 'AT310-50', name: 'Adidas Techfit VB Shorts W', size: '2XS', qty: 2, player_name: 'Alexandra "Alex" Spitzer', player_number: null },
 ];
-// soItems: what the SO currently carries. KA4117 is unchanged; the tank was swapped.
+// soItems: what the SO currently carries. AT310-50 is unchanged; the tank was swapped.
 const SO_ITEMS = [
-  { sku: 'KA4117', name: 'Adidas MATCH SKIRT', color: 'Black', sizes: { '2XS': 2 } },
+  { sku: 'AT310-50', name: 'Adidas Techfit VB Shorts W', color: 'Black', sizes: { '2XS': 2 } },
   { sku: '1203.005', name: 'Girls Racerback Tank', color: 'White', sizes: { S: 1 } },
 ];
 
 function supabaseStub() {
   const tables = {
-    webstores: [{ id: 'ws-1', name: 'St. Francis Tennis', omg_sale_code: 'V7ESK' }],
+    webstores: [{ id: 'ws-1', name: 'St. Francis Tennis', omg_sale_code: 'V7ESK', customer_id: 'c-1', delivery_mode: 'deliver_club', shipstation_carrier: 'ups' }],
     webstore_orders: ORDERS.map((o) => ({ ...o, store_id: 'ws-1', so_id: 'SO-2035', status: 'paid' })),
     webstore_order_items: LINES,
+    adidas_ss_sku_xref: [{ ss_sku: 'AT310-50', adidas_article: 'JL5410', rank: 1 }],
+    customers: [{ id: 'c-1', name: 'St. Francis', shipping_attention: 'Athletics', shipping_address_line1: '5900 College Rd', shipping_city: 'Reno', shipping_state: 'NV', shipping_zip: '89503' }],
   };
   return {
     from: (t) => {
@@ -58,9 +67,9 @@ function supabaseStub() {
   };
 }
 
-const run = () => downloadSoPlayerReport({
+const run = (format = 'csv') => downloadSoPlayerReport({
   so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '' },
-  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format: 'csv',
+  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format,
 });
 
 describe('player report CSV', () => {
@@ -105,5 +114,44 @@ describe('player report CSV', () => {
     expect(rows[2]).toContain('1203.005');
     expect(rows[2]).toContain('1203.080');
     expect(rows[2]).toMatch(/substituted/);
+  });
+
+  test('keeps the S&S ordering SKU and adds the adidas garment-tag SKU', async () => {
+    await run();
+    const rows = captured.replace(/^﻿/, '').split('\r\n');
+    expect(rows[0]).toContain('SKU,Adidas Tag SKU,Color');
+    expect(rows[1]).toContain('AT310-50,JL5410');
+  });
+
+  test('PDF report prints both numbers for the S&S item', async () => {
+    let html = '';
+    const popup = {
+      document: { write: (value) => { html += value; }, close: () => {} },
+      focus: () => {}, print: () => {},
+    };
+    jest.spyOn(window, 'open').mockReturnValue(popup);
+    jest.spyOn(global, 'setTimeout').mockImplementation(() => 0);
+    expect(await run('pdf')).toBe(true);
+    expect(html).toContain('<b>S&amp;S:</b> AT310-50 · <b>Adidas tag:</b> JL5410');
+  });
+
+  test('product report downloads the exact Silver Screen Domestic columns', async () => {
+    expect(await run('product')).toBe(true);
+    expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
+    const [workbook, filename] = XLSX.writeFile.mock.calls[0];
+    expect(workbook.SheetNames).toEqual(['Domestic']);
+    expect(filename).toMatch(/^SO-2035_Fulfillment_Template_\d+\.\d+\.\d+\.xlsx$/);
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets.Domestic, { header: 1, defval: '' });
+    expect(rows[0]).toEqual([
+      'REFERENCE # (if applicable)', 'SHIP TO ATTENTION (required)', 'COMPANY NAME (if applicable)',
+      'QUANTITY (required)', 'SIZE (required)', 'COLOR (required)', 'STYLE # (required)',
+      'ITEM DESCRIPTION (required)', 'SHIP TO ADDRESS LINE 1 (required)',
+      'SHIP TO ADDRESS LINE 2 (if applicable)', 'CITY (required)', 'STATE (required)',
+      'POSTAL CODE (required)', 'SHIP METHOD (required)',
+      'BILLING - 3RD PARTY SHIPPING ACCOUNT # (if applicable)',
+      'BILLING - 3RD PARTY POSTAL CODE (if applicable)',
+    ]);
+    expect(rows.slice(1).reduce((sum, row) => sum + Number(row[3]), 0)).toBe(3);
+    expect(rows.slice(1).some((row) => row[6] === 'AT310-50' && /Adidas tag JL5410/.test(row[7]))).toBe(true);
   });
 });

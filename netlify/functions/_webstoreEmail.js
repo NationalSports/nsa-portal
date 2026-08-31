@@ -59,7 +59,7 @@ async function sendOrderConfirmation(sb, order) {
   const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
   const store = stores && stores[0];
   if (!store) return;
-  const { data: items } = await sb.from('webstore_order_items').select('sku,name,size,qty,unit_price,player_name,player_number,is_bundle_parent,bundle_product_id,product_id,image_url').eq('order_id', order.id);
+  const { data: items } = await sb.from('webstore_order_items').select('sku,name,size,qty,unit_price,player_name,player_number,add_on_selections,is_bundle_parent,bundle_ref,bundle_product_id,product_id,image_url').eq('order_id', order.id);
   // product_id -> image (catalog override, else the product's own image).
   const imgByPid = {};
   const { data: cat } = await sb.from('webstore_products').select('id,product_id,image_url').eq('store_id', order.store_id);
@@ -67,7 +67,8 @@ async function sendOrderConfirmation(sb, order) {
   const pids = [...new Set((items || []).map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
   if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
   const lines = (items || []).filter((i) => !i.bundle_product_id || i.is_bundle_parent).map((i) => {
-    const det = [i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ');
+    const addOns = (Array.isArray(i.add_on_selections) ? i.add_on_selections : []).map((o) => `${o.label}: ${o.kind === 'addon' ? 'Yes' : o.value}`);
+    const det = [i.size && 'Size ' + i.size, i.player_number && '#' + i.player_number, i.player_name, ...addOns].filter(Boolean).map(esc).join(' · ');
     const im = i.image_url || imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null);
     const label = i.name || i.sku || (i.is_bundle_parent ? 'Player Pack' : 'Item');
     // For a package, list the included pieces with their sizes/numbers so the buyer

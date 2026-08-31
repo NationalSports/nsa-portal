@@ -42,6 +42,16 @@ describe('bulk open-invoice email',()=>{
     expect(result[1]).toBe(original[1]);
   });
 
+  test('shows programs only for parent-account invoice emails',()=>{
+    const invoice={id:'INV-1',memo:'Jerseys',program:'Women\'s Volleyball',date:'2026-08-23',total:1500,paid:0};
+    const parentHtml=buildBulkInvoiceEmailHtml({invoices:[invoice],showProgram:true});
+    const subHtml=buildBulkInvoiceEmailHtml({invoices:[invoice],showProgram:false});
+    expect(parentHtml).toContain('<th style="padding:7px 9px;text-align:left">Program</th>');
+    expect(parentHtml).toContain('Women&#39;s Volleyball');
+    expect(subHtml).not.toContain('>Program</th>');
+    expect(subHtml).not.toContain('Women&#39;s Volleyball');
+  });
+
   test('creates an SO activity note for every attached invoice with an SO',()=>{
     const result=buildBulkInvoiceMessages({
       invoices:[{id:'INV-1',so_id:'SO-1'},{id:'INV-2'},{id:'INV-3',so_id:'SO-3'}],
@@ -62,6 +72,8 @@ describe('bulk open-invoice email',()=>{
     const source=fs.readFileSync(path.join(__dirname,'..','CustDetail.js'),'utf8');
     expect(source).toContain('await sendBrevoEmail');
     expect(source).toContain('await buildPdfAttachment');
+    expect(source).toContain('invEmailAttachPdfs');
+    expect(source).toContain('...(invEmailAttachPdfs?{attachment:attachments}:{})');
     expect(source).toContain('sendOpenInvoiceBatch(displayInvs)');
     expect(source).not.toContain('invoice(s) (demo)');
   });

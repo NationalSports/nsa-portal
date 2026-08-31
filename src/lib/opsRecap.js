@@ -100,13 +100,24 @@ function isCheckedIn(so, ff) {
 
 // ── Short on pull (the exact if_short rule from the dashboard todo builder) ──
 // Only fires when the warehouse is DONE (every IF pulled), stock came up short,
-// and no covering PO exists. A size the order asks for that no pulled pick ever
-// carried was added after the pull — new demand, not a shortfall — so skip it.
+// and no PO has been created for the affected line. A replacement SKU or a size
+// the original IF never carried is new demand, not the old stock shortfall.
 function shortOnPull(so) {
   let units = 0; const parts = [];
   itemsOf(so).forEach((it) => {
-    const picks = picksOf(it);
+    // Ignore IFs belonging to a previous SKU, but keep evaluating any newer IF
+    // created for the replacement SKU so a second real shortage is not hidden.
+    const picks = picksOf(it).filter((pk) => pk && (!pk._sku || !it.sku || pk._sku === it.sku));
     if (picks.length === 0 || picks.some((pk) => pk.status !== 'pulled')) return;
+    const pullDays = picks.map((pk) => parseDate(pk.pulled_at)).filter(Boolean)
+      .map((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime());
+    const shortDay = pullDays.length ? Math.max(...pullDays) : null;
+    const eligiblePos = posOf(it).filter((po) => po && po.po_id && po.status !== 'cancelled');
+    const hasResponsePo = shortDay == null ? eligiblePos.length > 0 : eligiblePos.some((po) => {
+      const d = parseDate(po.created_at); if (!d) return false;
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() >= shortDay;
+    });
+    if (hasResponsePo) return;
     const pulledKeys = new Set(); picks.forEach((pk) => sizeKeys(pk).forEach((k) => pulledKeys.add(k)));
     const szKeys = sizeKeys(it.sizes).filter((k) => num((it.sizes || {})[k]) > 0);
     if (szKeys.some((sz) => !pulledKeys.has(sz))) return; // line edited after its pull → not a short
@@ -191,7 +202,7 @@ function soGoodsValue(so) {
 // locale form with its full year (the todo builder's old inline regex truncated
 // "12/10/2026" to year 2020). Tiers per the dashboard todo builder:
 // 3-6d follow up · 7-13d going cold · 14d+ stale.
-const QUOTE_FOLLOWUP_DAYS = 3, QUOTE_COLD_DAYS = 7, QUOTE_STALE_DAYS = 14;
+const QUOTE_FOLLOWUP_DAYS = 3, QUOTE_COLD_DAYS = 7, QUOTE_STALE_DAYS = 14, QUOTE_DIGEST_MAX_DAYS = 30;
 const quoteAgeDays = (est, nowMs) => {
   const stamp = est && (est.updated_at || est.created_at); if (!stamp) return null;
   const s = String(stamp);
@@ -202,6 +213,9 @@ const quoteAgeDays = (est, nowMs) => {
 };
 const quoteColdBucket = (days) => (days == null || days < QUOTE_FOLLOWUP_DAYS ? null
   : days < QUOTE_COLD_DAYS ? 'follow_up' : days < QUOTE_STALE_DAYS ? 'going_cold' : 'stale');
+// The email is a current-action recap, not an indefinite quote archive. Keep day 30
+// ("over 30 days" begins at 31) while the in-app My Day view retains its full history.
+const quoteInDigest = (days) => days != null && days >= QUOTE_COLD_DAYS && days <= QUOTE_DIGEST_MAX_DAYS;
 
 // ── Invoice A/R helpers ──
 const invoiceBalance = (inv) => {
@@ -250,10 +264,42 @@ const isFullyPaidInvoice = (inv) => {
 };
 const AGING_BUCKETS = ['1-30', '31-60', '61-90', '90+'];
 const agingBucket = (dpd) => (dpd == null || dpd < 1 ? 'current' : dpd <= 30 ? '1-30' : dpd <= 60 ? '31-60' : dpd <= 90 ? '61-90' : '90+');
+// Group a rep's overdue rows into customer accounts. Accounts rank by combined
+// overdue balance (largest collection opportunity first); invoices inside an
+// account stay worst-first. Invoices without a customer id remain isolated so
+// unrelated data-quality exceptions can never be combined into one fake account.
+const groupOverdueInvoicesByAccount = (rows, accountName) => {
+  const groups = new Map();
+  (rows || []).forEach((row, index) => {
+    if (!row || !row.inv) return;
+    const customerId = row.inv.customer_id;
+    const key = customerId == null || customerId === '' ? `invoice:${row.inv.id || index}` : String(customerId);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        customerId,
+        account: (accountName && accountName(customerId)) || '—',
+        total: 0,
+        oldestDpd: 0,
+        invoices: [],
+      };
+      groups.set(key, group);
+    }
+    group.total += num(row.balance);
+    group.oldestDpd = Math.max(group.oldestDpd, num(row.dpd));
+    group.invoices.push(row);
+  });
+  groups.forEach((group) => group.invoices.sort((a, b) =>
+    num(b.dpd) - num(a.dpd) || num(b.balance) - num(a.balance) ||
+    String(a.inv.id || '').localeCompare(String(b.inv.id || ''))));
+  return Array.from(groups.values()).sort((a, b) =>
+    b.total - a.total || b.oldestDpd - a.oldestDpd || a.account.localeCompare(b.account));
+};
 
 module.exports = {
   NON_SIZE, isSizeKey, sizeUnits, sizeKeys, numericSizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
   isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
-  dateYmd, paymentsLatestYmd, isFullyPaidInvoice,
-  quoteAgeDays, quoteColdBucket, QUOTE_FOLLOWUP_DAYS, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS,
+  dateYmd, paymentsLatestYmd, isFullyPaidInvoice, groupOverdueInvoicesByAccount,
+  quoteAgeDays, quoteColdBucket, quoteInDigest, QUOTE_FOLLOWUP_DAYS, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS, QUOTE_DIGEST_MAX_DAYS,
 };

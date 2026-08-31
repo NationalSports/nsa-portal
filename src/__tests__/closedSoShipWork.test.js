@@ -7,7 +7,7 @@
 // that still owes a shipment used to lose its cost entirely. The old carve-out only asked "is any
 // job unshipped?", which a blanks/no-deco order can never answer: it has no jobs at all.
 // ═══════════════════════════════════════════════
-const { unshippedPulledUnits, soHasOpenShipWork } = require('../safeHelpers');
+const { jobsAfterShipment, nextShippingCost, shippedSizesByLine, unshippedOrderItems, unshippedPulledUnits, soHasOpenShipWork } = require('../safeHelpers');
 
 const line = (sku, color, sizes, over = {}) => ({ sku, color, sizes, ...over });
 const pulled = (sizes) => ({ status: 'pulled', ...sizes });
@@ -94,5 +94,55 @@ describe('soHasOpenShipWork — what keeps a closed order visible to the warehou
       _shipments: [box([{ sku: 'TEE', color: 'Navy', sizes: { M: 10 } }])] };
     expect(soHasOpenShipWork(so)).toBe(true);
     expect(unshippedPulledUnits(so)).toBe(10);
+  });
+});
+
+describe('manual shipment override quantities', () => {
+  test('decorator-transfer packages carry cost/tracking but do not fulfill the customer order', () => {
+    const transfer = { fulfillment: false, shipment_scope: 'deco_transfer', shipping_cost: 18.42,
+      items: [{ sku: 'A', color: 'Black', sizes: { M: 6 } }] };
+    const so = { items: [line('A', 'Black', { M: 6 })], _shipments: [transfer] };
+    expect(shippedSizesByLine(so._shipments)).toEqual({});
+    expect(unshippedOrderItems(so)).toEqual([expect.objectContaining({ sku: 'A', itemIdx: 0, qty: 6, sizes: { M: 6 } })]);
+  });
+
+  test('duplicate sku/color lines share shipped credit only once', () => {
+    const so = { items: [line('A', 'Black', { M: 5 }), line('A', 'Black', { M: 5 })],
+      _shipments: [box([{ sku: 'A', color: 'Black', sizes: { M: 6 } }])] };
+    expect(unshippedOrderItems(so)).toEqual([
+      expect.objectContaining({ itemIdx: 1, qty: 4, sizes: { M: 4 } }),
+    ]);
+  });
+
+  test('a fully fulfilled order offers no override items', () => {
+    const so = { items: [line('A', 'Black', { S: 2, M: 3 })],
+      _shipments: [box([{ sku: 'A', color: 'Black', sizes: { S: 2, M: 3 } }])] };
+    expect(unshippedOrderItems(so)).toEqual([]);
+  });
+
+  test('a completed job advances when a customer shipment covers all of its units', () => {
+    const job = { id: 'J1', prod_status: 'completed', total_units: 6, items: [{ item_idx: 0, sku: 'A', color: 'Black' }] };
+    const so = { jobs: [job] };
+    const shipments = [box([{ sku: 'A', color: 'Black', sizes: { M: 6 } }])];
+    expect(jobsAfterShipment(so, shipments)[0].prod_status).toBe('shipped');
+  });
+
+  test('partial coverage leaves a completed job open', () => {
+    const job = { id: 'J1', prod_status: 'completed', total_units: 6, items: [{ item_idx: 0, sku: 'A', color: 'Black' }] };
+    const so = { jobs: [job] };
+    const shipments = [box([{ sku: 'A', color: 'Black', sizes: { M: 5 } }])];
+    expect(jobsAfterShipment(so, shipments)[0].prod_status).toBe('completed');
+  });
+
+  test('a decorator transfer never advances the production job', () => {
+    const job = { id: 'J1', prod_status: 'completed', total_units: 6, items: [{ item_idx: 0, sku: 'A', color: 'Black' }] };
+    const so = { jobs: [job] };
+    const shipments = [{ fulfillment: false, shipment_scope: 'deco_transfer', items: [{ sku: 'A', color: 'Black', sizes: { M: 6 } }] }];
+    expect(jobsAfterShipment(so, shipments, ['J1'], false)[0].prod_status).toBe('completed');
+  });
+
+  test('a new label cost is added without reducing a larger legacy cost mirror', () => {
+    expect(nextShippingCost({ _shipping_cost: 10, _shipstation_cost: 12.5 }, 7.25)).toBe(19.75);
+    expect(nextShippingCost({ _shipstation_cost: 12.5 }, 7.25)).toBe(19.75);
   });
 });

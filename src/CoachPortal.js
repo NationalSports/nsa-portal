@@ -4,7 +4,7 @@ import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdF
 import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { ptDateLabel } from './lib/storeClock';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, scopeSoItemsToInvoice, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
-import { calcSOStatus } from './components';
+import { calcSOStatus, resolveOrderShipTo, orderShipToSub, custShipAddrSub, resolveOrderBillTo, orderBillToSub } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
@@ -1301,12 +1301,19 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           rows.push({cells:[{value:eq2,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+label+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
         });
       });
-      const eBillAddr=customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':'');
+      // Bill To / Ship To resolve through the same helpers the rep-side estimate PDF uses, so the
+      // copy a coach downloads here matches the copy their rep printed or emailed — an estimate
+      // billed to the district office and shipped to a school site says so on both.
+      const eBillSel=resolveOrderBillTo(est,customer,allCustomers);
+      const eBillAddr=orderBillToSub(est,customer,allCustomers)||(customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':''));
+      const eShipSel=resolveOrderShipTo(est,customer);
+      const eShipAddr=orderShipToSub(est,customer)||custShipAddrSub(customer);
       printDoc({
         title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
         headerRight:'<div class="ta">'+_$(estTotal)+'</div>',
         infoBoxes:[
-          {label:'Bill To',value:customer?.name||'—',sub:eBillAddr||''},
+          {label:'Bill To',value:(eBillSel&&eBillSel.name)||customer?.name||'—',sub:eBillAddr||''},
+          ...(eShipAddr?[{label:'Ship To',value:(eShipSel&&eShipSel.name)||customer?.name||'—',sub:eShipAddr}]:[]),
           {label:'Sales Rep',value:rep?.name||'—'},
           {label:'Estimate',value:est.id},
           {label:'Memo',value:est.memo||'—',flex:2},
@@ -2390,7 +2397,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div className="cp-col">
         {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
         {page==='home'&&<div>
-          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}
+          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}/* Tablet/phone: the logo panel used to be display:none here, which dropped the
+             school logo out of the hero entirely below 881px — the team (or, for a sub-team,
+             its parent department's) identity vanished on exactly the devices coaches use
+             most. Stack it above the copy at a fixed height instead of hiding it. */
+          @media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-heroleft{max-width:100%!important;padding:24px 24px 32px!important}.nsa-herologo{position:relative!important;width:100%!important;bottom:auto!important;justify-content:flex-start!important;padding:24px 24px 0!important}.nsa-herologobox{width:100%!important;max-width:260px;height:104px!important;padding:10px 20px;box-sizing:border-box}.nsa-heromono{font-size:38px!important}}
           /* ── Dashboard-only restyle tokens (flat/rounded, teamshop-aligned). Scoped to this
              home-page block only — NOT touching the shared .nsa-tile/.nsa-skew/.nsa-card rules
              above, which other pages (Orders/Billing/Art Locker/Shop) still rely on. ── */
@@ -2401,8 +2412,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Pennant hero ── */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:16,minHeight:320,boxShadow:'0 10px 32px rgba(15,26,56,.18)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
             <div className="nsa-herologo" style={{position:'absolute',top:0,right:0,bottom:0,width:'42%',display:'flex',alignItems:'center',justifyContent:'center',padding:'34px 40px'}}>
-              <div style={{width:'100%',height:'100%',borderRadius:16,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
+              <div className="nsa-herologobox" style={{width:'100%',height:'100%',borderRadius:16,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp nsa-heromono" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
               </div>
             </div>
             <div className="nsa-heroleft" style={{position:'relative',maxWidth:'56%',padding:'40px',color:'#fff'}}>

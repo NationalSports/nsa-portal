@@ -16,7 +16,7 @@
  * SAFE: pure function from safeHelpers.js only. No DB, no UI, no network.
  */
 
-const { jobArtFileIds } = require('../safeHelpers');
+const { jobArtFileIds, attachJobArtToUnresolvedDecos } = require('../safeHelpers');
 
 // The SO-1023 shape: JX4452 (item_idx 11) carries three art decorations, one per sibling design.
 const soItems = () => {
@@ -76,5 +76,35 @@ describe('jobArtFileIds — scoped to the decorations a job owns', () => {
     items[0] = { sku: 'A', decorations: [{ kind: 'numbers' }, { kind: 'art', art_file_id: 'af-a' }] };
     const ids = jobArtFileIds({ _art_ids: [], art_file_id: 'af-a', items: [{ item_idx: 0, deco_idxs: [0, 1] }] }, items);
     expect([...ids].sort()).toEqual(['af-a']);
+  });
+
+  test('a names-only job does not borrow a sibling logo art file from the same garment', () => {
+    const items = [{ decorations: [
+      { kind: 'art', art_file_id: 'af-logo' },
+      { kind: 'names', position: 'Back Center' },
+    ] }];
+    const namesJob = { items: [{ item_idx: 0, deco_idxs: [1] }] };
+    expect([...jobArtFileIds(namesJob, items)]).toEqual([]);
+  });
+});
+
+describe('attachJobArtToUnresolvedDecos — promote Art TBD uploads', () => {
+  test('links only the unresolved art decoration owned by the job', () => {
+    const items = [{ decorations: [
+      { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', tbd_colors: 1 },
+      { kind: 'art', art_file_id: 'af-sibling' },
+      { kind: 'names', art_file_id: null },
+    ] }];
+    const job = { items: [{ item_idx: 0, deco_idxs: [0] }] };
+    const updated = attachJobArtToUnresolvedDecos(items, job, 'af-vamos');
+    expect(updated[0].decorations[0]).toMatchObject({ art_file_id: 'af-vamos', art_tbd_type: null, tbd_colors: null });
+    expect(updated[0].decorations[1].art_file_id).toBe('af-sibling');
+    expect(updated[0].decorations[2].art_file_id).toBeNull();
+    expect(items[0].decorations[0].art_file_id).toBe('__tbd'); // input is not mutated
+  });
+
+  test('refuses to attach the reserved sentinel as a real art id', () => {
+    const items = [{ decorations: [{ kind: 'art', art_file_id: null, art_tbd_type: 'dtf' }] }];
+    expect(attachJobArtToUnresolvedDecos(items, { items: [{ item_idx: 0 }] }, '__tbd')).toBe(items);
   });
 });

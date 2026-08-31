@@ -1,0 +1,296 @@
+// ── MOVE CHECK-IN (September building move) — pure helpers ────────────────────
+// Companion to src/boxTracking.js: every physical box entering the new building
+// gets scanned (existing BX QR labels) or hand-entered (legacy boxes, which then
+// get a printed BX label so they're scannable from that point on). Check-in and
+// shelf placement live on the existing `boxes` table (checked_in_at/checked_in_by
+// + the bin column reserved by BOX_TRACKING_PLAN.md's bin phase).
+// Pure (no supabase, no window) so it unit-tests directly; MoveCheckIn.js owns
+// persistence and UI.
+import { isBoxCode, makeBoxRow } from '../boxTracking';
+
+// Classify a camera read / manual entry. Printed labels encode a ?scan= URL,
+// bare plates come from hand-typing; anything that isn't a BX plate is a
+// reference off an old pre-plate label (IF-1071, NSA-4501, SO-…) or free text.
+//   → {type:'box', id:'BX-2001'} | {type:'ref', id:'IF-1071'} | {type:'empty'}
+export const classifyMoveScan = (raw) => {
+  let v = String(raw == null ? '' : raw).trim();
+  if (!v) return { type: 'empty' };
+  if (/^https?:\/\//i.test(v)) {
+    const m = v.match(/[?&]scan=([^&#]+)/i);
+    if (m) { try { v = decodeURIComponent(m[1]); } catch (e) { v = m[1]; } }
+  }
+  v = v.trim();
+  if (!v) return { type: 'empty' };
+  // location labels (printed from the Place tab): LOC:A3 → lock that location
+  const loc = v.match(/^LOC:(.+)$/i);
+  if (loc) return { type: 'loc', code: normShelf(loc[1]) };
+  // tolerate "bx2001" / "bx 2001" hand-typing
+  const bare = v.replace(/^bx[\s-]*/i, '');
+  if (/^bx/i.test(v) && /^[A-Z0-9]+$/i.test(bare)) v = 'BX-' + bare.toUpperCase();
+  if (isBoxCode(v)) return { type: 'box', id: v.toUpperCase() };
+  return { type: 'ref', id: v };
+};
+
+// Boxes matching a non-plate reference from an old (pre-BX) label: IF#, PO#, or
+// SO# — checked against the convenience refs and source_refs. Case-insensitive.
+export const boxesForRef = (boxes, ref) => {
+  const r = String(ref || '').trim().toUpperCase();
+  if (!r) return [];
+  return (boxes || []).filter((b) => {
+    if (!b || b.status === 'combined') return false;
+    if ([b.if_id, b.po_id, b.so_id].some((x) => String(x || '').toUpperCase() === r)) return true;
+    return (b.source_refs || []).some((s) => String((s && s.id) || '').toUpperCase() === r);
+  });
+};
+
+// Contents lines for a hand-entered legacy box. One item per line, quantity
+// optional in either "3 x navy hoodies" / "3 navy hoodies" / "navy hoodies x3"
+// form; no sizes are known, so quantity rides in sizes.EA (boxUnits and the
+// label's unit count then come out right).
+export const parseLegacyItems = (text) => {
+  return String(text || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      let qty = 1; let name = l;
+      let m = l.match(/^(\d+)\s*[xX×]?\s+(.+)$/);
+      if (m) { qty = +m[1]; name = m[2]; }
+      else if ((m = l.match(/^(.+?)\s*[xX×]\s*(\d+)$/))) { name = m[1]; qty = +m[2]; }
+      return { sku: '', name: name.trim(), color: '', sizes: { EA: qty > 0 ? qty : 1 } };
+    })
+    .filter((e) => e.name);
+};
+
+// Row for a hand-entered legacy box: a real boxes-table row (same shape as
+// makeBoxRow) that is already checked in, with the move-specific columns set.
+// assign: 'job' (soId required) | 'inventory'.
+export const makeLegacyMoveBox = ({ plate, assign, soId = null, items = [], bin = null, createdBy = null, now = new Date().toISOString() }) => ({
+  ...makeBoxRow({ id: plate, kind: 'legacy', contents: items, soId: assign === 'job' ? soId : null, createdBy, now }),
+  assigned_to: assign === 'job' ? 'job' : 'inventory',
+  bin: bin || null,
+  checked_in_at: now,
+  checked_in_by: createdBy,
+});
+
+// Shelf / staging codes are free text ("A3", "RACK 12", "STAGE 1", or a scanned
+// location barcode) — trimmed + uppercased so "a3" and "A3 " land the same.
+export const normShelf = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, ' ');
+
+// Parse a hand-typed list of location codes ("A1, A2\nSTAGE 1") into 4×6 label
+// objects for printQrLabels. QR encodes LOC:<code> — a station-only token the
+// camera router locks onto; it deliberately isn't a portal ?scan= URL.
+export const buildLocationLabels = (text) =>
+  [...new Set(String(text || '').split(/[\n,]/).map(normShelf).filter(Boolean))].map((code) => ({
+    code,
+    qrData: 'LOC:' + code,
+    program: code,
+    note: 'LOCATION',
+    codeSub: 'scan to lock this location',
+  }));
+
+// ── the three-stage move flow: checked in → staging → on shelf ───────────────
+// A box's stage is derived, not stored: bin (final shelf) wins over
+// staging_area (temporary drop zone), which wins over bare check-in.
+export const boxStage = (b) => {
+  if (!b) return 'not_in';
+  // A box marked shipped has physically left the building — it is never part of
+  // the on-hand picture, whatever shelf it last sat on. (Status is set by hand
+  // on the desktop box modal today; the ship flow does not set it yet.)
+  if (b.status === 'shipped') return 'shipped';
+  if (!b.checked_in_at) return 'not_in';
+  if (b.bin) return 'shelved';
+  if (b.staging_area) return 'staged';
+  return 'checked_in';
+};
+
+export const STAGE_META = {
+  not_in: { label: 'Not in yet', color: '#f59e0b' },
+  shipped: { label: 'Shipped out', color: '#64748b' },
+  checked_in: { label: 'Checked in', color: '#38bdf8' },
+  staged: { label: 'Staging', color: '#a78bfa' },
+  shelved: { label: 'On shelf', color: '#22c55e' },
+};
+
+// Patch for placing a box: a shelf is final (clears staging), staging is a
+// drop zone (clears any shelf — physically the box left it).
+export const placePatch = (kind, code) =>
+  kind === 'shelf' ? { bin: code, staging_area: null } : { staging_area: code, bin: null };
+
+
+// ── splitting a mixed carton at check-in ─────────────────────────────────────
+// Batch orders arrive with embroidery, DTF, and screen-print goods (often for
+// several jobs) in ONE carton. Splitting re-boxes those lines into new BX
+// plates right at check-in. assignment[i] says where contents line i goes:
+// 0 = stays in this box, 1..N = the Nth new box.
+export const splitGroups = (contents, assignment) => {
+  const keep = []; const map = {};
+  (contents || []).forEach((e, i) => {
+    if (!e) return;
+    const t = Math.max(0, Math.floor(+((assignment || [])[i]) || 0));
+    if (t === 0) { keep.push(e); return; }
+    (map[t] = map[t] || []).push(e);
+  });
+  return { keep, newBoxes: Object.keys(map).map(Number).sort((a, b) => a - b).map((t) => map[t]) };
+};
+
+// One tap "split by job": group lines by their SO — the first SO's lines stay
+// in the scanned carton, every other SO gets its own new box.
+export const assignBySo = (contents) => {
+  const idx = {}; let next = 0;
+  return (contents || []).map((e) => {
+    const k = String((e && e.so_id) || '').toUpperCase();
+    if (!(k in idx)) idx[k] = next++;
+    return idx[k];
+  });
+};
+
+// "Each line its own box": line 0 stays, every other line becomes a new box.
+export const assignEachLine = (contents) => (contents || []).map((_, i) => i);
+
+// Row for a split-off box: inherits the source box's check-in stamp, location,
+// and inventory assignment (the goods never moved — only the carton changed);
+// so_id/SO refs are recomputed from what actually landed in this box.
+export const makeSplitBoxRow = (src, plate, contents, now = new Date().toISOString()) => {
+  const soIds = [...new Set((contents || []).map((e) => e && e.so_id).filter(Boolean))];
+  return {
+    id: plate,
+    kind: (src && src.kind) || 'fulfillment',
+    contents: contents || [],
+    source_refs: [
+      ...soIds.map((id) => ({ type: 'SO', id })),
+      ...(((src && src.source_refs) || []).filter((r) => r && r.type !== 'SO')),
+    ],
+    so_id: soIds.length === 1 ? soIds[0] : ((src && src.so_id) || null),
+    if_id: (src && src.if_id) || null,
+    po_id: (src && src.po_id) || null,
+    status: 'staged',
+    merged_into: null,
+    bin: (src && src.bin) || null,
+    staging_area: (src && src.staging_area) || null,
+    assigned_to: (src && src.assigned_to) || null,
+    created_by: (src && (src.checked_in_by || src.created_by)) || null,
+    created_at: now,
+    updated_at: now,
+    checked_in_at: (src && src.checked_in_at) || now,
+    checked_in_by: (src && src.checked_in_by) || null,
+  };
+};
+
+// ── inventory count → submit (the move IS the new stocktake) ─────────────────
+// Only boxes assigned to INVENTORY count — SO/IF fulfillment boxes are customer
+// goods, not house stock. A box counts once it's checked in and not combined.
+export const isCountedInventoryBox = (b) =>
+  !!(b && b.checked_in_at && b.status !== 'combined' && b.status !== 'shipped' && b.assigned_to === 'inventory');
+
+// Tally SKU×size across all counted inventory boxes.
+//   → { 'SKU123': { sku, product_id (when any entry carried one), sizes:{S:4,M:2} } }
+// Keyed by uppercased SKU; entries with no SKU land under '' (surfaced by
+// buildSubmitPlan as unmatched so they're never silently dropped).
+export const inventoryTally = (boxes) => {
+  const out = {};
+  (boxes || []).filter(isCountedInventoryBox).forEach((b) => {
+    (b.contents || []).forEach((e) => {
+      if (!e) return;
+      const key = String(e.sku || '').trim().toUpperCase();
+      const t = out[key] || (out[key] = { sku: key, product_id: null, name: e.name || '', sizes: {} });
+      if (e.product_id && !t.product_id) t.product_id = e.product_id;
+      if (!t.name && e.name) t.name = e.name;
+      Object.entries(e.sizes || {}).forEach(([sz, v]) => {
+        const n = +v || 0;
+        if (n > 0) t.sizes[sz] = (t.sizes[sz] || 0) + n;
+      });
+    });
+  });
+  return out;
+};
+
+// Build the submit review: what gets set to the counted numbers, what has
+// portal stock today but was never scanned over (zero-out candidates — the
+// user confirms each list before anything writes), and counted SKUs that don't
+// match any product (must be fixed, never silently dropped).
+//   tally    — from inventoryTally
+//   invRows  — product_inventory rows [{product_id,size,quantity}]
+//   products — [{id,sku,name,color}] covering at least the involved products
+// For a counted product, sizes it has in product_inventory but NOT in the
+// count are included at 0 (merge_product_inventory leaves unsent sizes
+// untouched, and a stocktake must not).
+export const buildSubmitPlan = (tally, invRows, products) => {
+  const bySku = {}; const byId = {};
+  (products || []).forEach((p) => { if (!p) return; bySku[String(p.sku || '').trim().toUpperCase()] = p; byId[p.id] = p; });
+  const invByProduct = {};
+  (invRows || []).forEach((r) => {
+    if (!r) return;
+    const m = invByProduct[r.product_id] || (invByProduct[r.product_id] = {});
+    m[r.size] = +r.quantity || 0;
+  });
+  const counted = []; const unmatched = [];
+  const countedIds = new Set();
+  Object.values(tally || {}).forEach((t) => {
+    const p = (t.product_id && byId[t.product_id]) || bySku[t.sku];
+    if (!p) { unmatched.push(t); return; }
+    countedIds.add(p.id);
+    const existing = invByProduct[p.id] || {};
+    const sizes = { ...t.sizes };
+    Object.keys(existing).forEach((sz) => { if (!(sz in sizes)) sizes[sz] = 0; });
+    const rows = Object.entries(sizes).map(([size, q]) => ({ size, quantity: q, oldQty: existing[size] || 0 }));
+    counted.push({ product_id: p.id, sku: p.sku, name: p.name, color: p.color || '', rows, units: rows.reduce((a, r) => a + r.quantity, 0) });
+  });
+  const zeroCandidates = Object.entries(invByProduct)
+    .filter(([pid, m]) => !countedIds.has(pid) && Object.values(m).some((q) => q > 0))
+    .map(([pid, m]) => {
+      const p = byId[pid] || {};
+      return { product_id: pid, sku: p.sku || pid, name: p.name || '', color: p.color || '', rows: Object.entries(m).map(([size, q]) => ({ size, quantity: 0, oldQty: q })), oldUnits: Object.values(m).reduce((a, q) => a + q, 0) };
+    });
+  const sortSku = (a, b) => String(a.sku).localeCompare(String(b.sku));
+  counted.sort(sortSku); zeroCandidates.sort(sortSku); unmatched.sort(sortSku);
+  return { counted, zeroCandidates, unmatched };
+};
+
+// CSV snapshot of the submit review — the paper trail downloaded before the
+// numbers are written. One row per SKU×size; zero-candidates say whether the
+// zero-out was confirmed, unmatched lines are flagged for follow-up.
+export const submitPlanCsv = (plan, zeroChecked) => {
+  const esc = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const rows = [['type', 'sku', 'name', 'color', 'size', 'current_qty', 'new_qty']];
+  (plan?.counted || []).forEach((c) => c.rows.forEach((r) => rows.push(['counted', c.sku, c.name, c.color, r.size, r.oldQty, r.quantity])));
+  (plan?.zeroCandidates || []).forEach((z) => z.rows.forEach((r) => rows.push([zeroChecked && zeroChecked[z.product_id] ? 'zero_out_confirmed' : 'never_came_over_kept', z.sku, z.name, z.color, r.size, r.oldQty, zeroChecked && zeroChecked[z.product_id] ? 0 : r.oldQty])));
+  (plan?.unmatched || []).forEach((t) => Object.entries(t.sizes || {}).forEach(([sz, q]) => rows.push(['unmatched_sku', t.sku, t.name, '', sz, '', q])));
+  return rows.map((r) => r.map(esc).join(',')).join('\n');
+};
+
+// Contents ⇄ editor lines for the box detail "edit contents" mode. Editor
+// lines mirror the No QR SKU editor: per-size qty inputs. Sizes come from the
+// entry itself (a scanned box's real sizes) plus the product's available_sizes
+// when a line is added fresh.
+export const contentsToLines = (contents) =>
+  (contents || []).filter(Boolean).map((e) => ({
+    sku: e.sku || '', product_id: e.product_id || null, name: e.name || '', color: e.color || '',
+    so_id: e.so_id, if_id: e.if_id, // preserved verbatim on save — reconciliation refs
+    available_sizes: Object.keys(e.sizes || {}).length ? Object.keys(e.sizes) : ['EA'],
+    sizes: { ...(e.sizes || {}) },
+  }));
+
+export const linesToContents = (lines) =>
+  (lines || []).map((l) => {
+    const sizes = Object.fromEntries(Object.entries(l.sizes || {}).map(([s, v]) => [s, +v || 0]).filter(([, v]) => v > 0));
+    const e = { sku: l.sku, name: l.name, color: l.color || '', sizes };
+    if (l.product_id) e.product_id = l.product_id;
+    if (l.so_id) e.so_id = l.so_id;
+    if (l.if_id) e.if_id = l.if_id;
+    return e;
+  }).filter((e) => Object.keys(e.sizes).length > 0);
+
+// Move-progress rollup for the header + Boxes tab, per stage.
+export const moveStats = (boxes, todayStart) => {
+  const live = (boxes || []).filter((b) => b && b.status !== 'combined' && b.status !== 'shipped');
+  const checked = live.filter((b) => b.checked_in_at);
+  return {
+    checkedIn: checked.length,
+    today: todayStart ? checked.filter((b) => b.checked_in_at >= todayStart).length : 0,
+    checkedInOnly: checked.filter((b) => boxStage(b) === 'checked_in').length,
+    staged: checked.filter((b) => boxStage(b) === 'staged').length,
+    shelved: checked.filter((b) => boxStage(b) === 'shelved').length,
+    notCheckedIn: live.filter((b) => !b.checked_in_at && b.status !== 'shipped').length,
+  };
+};

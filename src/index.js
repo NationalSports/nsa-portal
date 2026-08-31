@@ -7,7 +7,7 @@ import {
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
-import { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
+import { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isMoveCheckinPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -97,10 +97,16 @@ const BaggingStation = React.lazy(() => import('./baggingstation/BaggingStation'
 // auth (netlify/functions/vendor-digitizing.js), no staff sign-in involved. Matched
 // by path like /vendor-digitizing, predicate in src/lib/hostRouting.js.
 const VendorDigitizing = React.lazy(() => import('./vendorportal/VendorDigitizing'));
+
+// Move Check-In station — September building-move box scanning on a phone
+// (staff sign-in, src/movecheckin/MoveCheckIn.js). Matched by path, predicate
+// in src/lib/hostRouting.js.
+const MoveCheckIn = React.lazy(() => import('./movecheckin/MoveCheckIn'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
 const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/' || isProductionHQPath(_path);
 const isFloorStation = isFloorStationPath(_path);
 const isBaggingStation = isBaggingStationPath(_path);
+const isMoveCheckin = isMoveCheckinPath(_path);
 const isVendorDigitizing = isVendorDigitizingPath(_path);
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
@@ -237,7 +243,13 @@ function MainApp() {
   // Mirror App.handleLogin: persist the user, then reveal the portal. App's own
   // `cu` state reads nsa_user on mount, so the session carries across the swap.
   const handleLogin = (user) => {
-    try { localStorage.setItem('nsa_user', JSON.stringify(user)); } catch {}
+    try {
+      localStorage.setItem('nsa_user', JSON.stringify(user));
+      // App's idle-session guard mounts after this lightweight gate unmounts.
+      // Treat a successful sign-in/user selection as fresh activity so a stale
+      // timestamp from an earlier visit cannot immediately bounce the user out.
+      localStorage.setItem('nsa_last_activity', String(Date.now()));
+    } catch {}
     setAuthed(true);
   };
 
@@ -274,6 +286,8 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><FloorStation /></React.Suspense>
         : isBaggingStation
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><BaggingStation /></React.Suspense>
+        : isMoveCheckin
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><MoveCheckIn /></React.Suspense>
         : isVendorDigitizing
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><VendorDigitizing /></React.Suspense>
         : isTeamShop

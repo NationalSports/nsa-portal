@@ -6,9 +6,13 @@
 // specs the CLIENT executes over its own in-memory data (search, briefs,
 // reports, vendor stock, estimate co-pilot). This function itself is stateless
 // and reads no DB: it only emits typed actions. Writes it can propose
-// (start_estimate / add_line / set_reminder / add_note) never happen here — the
-// client resolves and persists them, and every write lands behind an explicit
-// user confirm/Save gate, keeping the model clear of the money/persistence path.
+// (start_estimate / add_line / update_line / remove_line / po_remove_line /
+// adjust_inventory / set_reminder / add_note) never happen here — the client
+// resolves and persists them through its own existing save paths, and every
+// write lands behind an explicit in-chat ConfirmCard, keeping the model clear
+// of the money/persistence path. adjust_inventory is only offered when the
+// client says the signed-in user is an admin (the client re-checks on commit —
+// the role here is a UX gate, not the security boundary).
 //
 // Pattern copied from netlify/functions/teamshop-assistant.js (owner's chosen
 // Claude config): official @anthropic-ai/sdk, model 'claude-sonnet-5', thinking
@@ -137,7 +141,7 @@ function sanitizeGuide(input, screenIds, targetIds) {
 // not get ephemeral-cache prefix hits across different screens — that's fine;
 // the catalogs are small and the win is grounding the model in exactly what
 // exists right now.
-function buildSystemPrompt({ screen, screens, tours, targets, openRecord }) {
+function buildSystemPrompt({ screen, screens, tours, targets, openRecord, isAdmin }) {
   const _today = (() => { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } })();
   const screenLines = screens.length
     ? screens.map((s) => `- ${s.id} — ${s.label}${s.desc ? `: ${s.desc}` : ''}`).join('\n')
@@ -164,7 +168,12 @@ function buildSystemPrompt({ screen, screens, tours, targets, openRecord }) {
     '',
     'Hard rules:',
     '- Keep answers short, friendly and plain — a sentence or three, everyday language, no markdown headings or bullet dumps.',
-    '- You are READ-ONLY and can only guide. You cannot click buttons, open records, submit forms, create estimates/orders, or change any data. You also cannot see any specific customer, order, invoice, or number. Never claim to have done any of those — always guide the user to do it themselves.',
+    '- You cannot click buttons, submit forms, or touch the database yourself, and you never see actual record data or numbers. But you CAN propose data changes through your tools: the app resolves each proposal, shows the user a confirmation card with the exact before/after, and only saves through its own save paths after they confirm. NEVER claim something is saved, added, changed, or removed — say you have drafted it for their confirmation; the app reports the real result in the chat.',
+    '- Never invent SKUs, quantities, sizes, prices, or line names in a write. Ground every write in what the user said, the open record, or a search/vendor_stock result they just saw. If you cannot pin down the product, line, or record, ask or search first — a question beats a wrong write.',
+    '- Refuse (in words, no tool call) writes that are too dangerous or ambiguous for chat: splitting shipments, converting or reverting orders, editing a paid/invoiced order\'s money, bulk changes across many records, or wholesale catalog edits. Say why and point to where in the portal to do it.',
+    isAdmin
+      ? '- The signed-in user IS an admin, so the adjust_inventory tool is available to them.'
+      : '- Warehouse inventory adjustments are ADMIN-ONLY and this user is not an admin — if they ask to change on-hand stock, say it needs an admin (Steve, Gayle, or Mike Peterson). Checking/searching stock is fine for everyone.',
     '- Ground every factual claim in the screen list, tutorial list, or a tutorial you launch. Do NOT invent specific button names, menu locations, prices, policies, keyboard shortcuts, or step-by-step instructions you were not given. If you do not know a specific detail, say so plainly and suggest where they might look or that they ask a teammate or manager.',
     '- When the user asks only WHERE something is (a single place — "where is X", "show me the Y link"), call the `highlight` tool with the matching target id and say one short sentence. Use highlight ONLY for a single location — never to answer a multi-step "how do I" question.',
     '- When the user wants a walkthrough or asks "how do I …" and an available tutorial matches EXACTLY, call the `start_tutorial` tool with that tour id. Do not also type out all the steps — the tutorial guides them on screen. Give a one-line lead-in instead.',
@@ -172,7 +181,11 @@ function buildSystemPrompt({ screen, screens, tours, targets, openRecord }) {
     '  Compose an ordered list of short, action-oriented steps. For each: write a plain instruction, set `screen` when the step happens on a specific screen (the app moves the user there and the next element appears), and give the element to spotlight. The user advances by clicking the highlighted element, so order the steps as the real click-path: navigate → click → next element → next. Start with the step that gets them to the right screen.',
     '  You can spotlight an element two ways: `target_id` for a KNOWN element from the targets list (use it when one matches), or `find` for anything else — set `find` to the element\'s exact on-screen text/label (e.g. "Settings", "Save changes", "New Store", "Reporting", "Record Payment") and the app finds and highlights that visible button/tab/link. Use `find` freely so you can guide through almost any screen, not just instrumented ones. Use the real caption you would expect on screen; if it can\'t be matched, the step still shows as a written instruction — so never stop early or fall back to a lone highlight. Give a one-line lead-in in your text; the steps carry the detail.',
     '- When the user wants to FIND, LIST, FILTER, or COUNT their actual records — "show me…", "which…", "how many…", "find the … order", "jobs that…" — call the `search` tool with a structured filter spec. You do NOT see the results; the app displays them. Give a one-line lead-in ("Here are the open orders for Chase:") and NEVER state specific order/job ids, totals, counts, or margins yourself — the results panel shows them.',
-    '- When the user has an estimate OPEN and asks to add an item to it ("add … at N% margin", "put a … on this estimate"), call the `add_line` tool with the product description and the target margin percent if they stated one. It only works while an estimate is open; the app resolves the product from the catalog and prices it, and the user reviews before saving. Do not state a price or claim it is added — the app confirms.',
+    '- When the user has an estimate or sales order OPEN and asks to add an item ("add 12 navy pregame tees at 40%", "put a … on this estimate"), call the `add_line` tool with the product description, the margin percent if stated, and the quantities: per-size in `sizes` when they name sizes ("6 M and 6 L" -> {"M":6,"L":6}), or the bare total in `qty` ("12 tees" -> 12). The app resolves the product, prices it, and shows a confirm card. Do not state a price or claim it is added — the app confirms.',
+    '- To CHANGE a line on the OPEN estimate/sales order — sizes ("set L to 12", "take the XL off the tee line" -> remove_sizes ["XL"]), quantity, sell price, or margin — call `update_line` with `line` (the SKU or words identifying the line) and ONLY the fields being changed. To DELETE a whole line, call `remove_line`. Both confirm before saving; the app enforces PO/pull guards and may refuse.',
+    '- To remove a purchase-order line or cancel one size on it ("remove the JY6033 XL line from this PO", "pull JY6033 off PO 57204"), call `po_remove_line` with the SKU, the PO number if given, and `size` ONLY when they mean one size. "This PO" with a sales order open = that order\'s PO for the item. Received or billed units can\'t be removed from chat — the app will say so.',
+    isAdmin ? '- To set warehouse ON-HAND stock ("set warehouse qty on JY6033 to 40", "we counted 12 larges") call `adjust_inventory` with the SKU and the NEW absolute per-size quantities in `sizes` (a bare number with no size = OSFA/one-size unless the user says otherwise — ask if unsure). Optionally `bin` and a short `reason`. This is our own warehouse stock, not vendor stock, and it confirms before saving.' : null,
+    '- Applying promo funds or credits happens through the editor\'s Actions menu — you cannot apply them directly. Build a `guide`: open the record, then the Actions menu (target oe-actions-toggle), then Apply Promo Funds (target oe-promo-apply).',
     '- To START a NEW estimate ("start/build/create an estimate or quote for <customer>", optionally "with <items>"), call the start_estimate tool with the customer and an items array (each item = a description + optional margin_pct). The app resolves the customer and items and opens the draft for review. This is different from add_line (which adds to an already-open estimate).',
     '- If nothing matches, just answer in words. Only use a tool when it genuinely helps.',
     '',
@@ -205,12 +218,14 @@ function buildSystemPrompt({ screen, screens, tours, targets, openRecord }) {
     '',
     'Highlightable targets (id — label):',
     targetLines,
-  ].join('\n');
+  ].filter((l) => l != null).join('\n');
 }
 
 // ── Tools (strict JSON schemas, ids constrained to what the client sent) ───
-function buildTools({ tours, targets, screens }) {
+function buildTools({ tours, targets, screens, isAdmin }) {
   const tools = [];
+  // Per-size quantity map shared by the write tools ({"M":6,"L":6,"XL":12}).
+  const SIZES_SCHEMA = { type: 'object', description: 'Per-size quantities, e.g. {"M":6,"L":6}. Use the size names the user said (S/M/L/XL/2XL, numeric youth sizes, OSFA…).', additionalProperties: { type: 'number' } };
   // Dynamic step-by-step walkthrough the AI composes for a "how do I…" question.
   // Steps are grounded in the screen/target catalogs; enums steer the model to
   // real ids (server-side sanitize is the backstop). Optional fields only get an
@@ -395,20 +410,88 @@ function buildTools({ tours, targets, screens }) {
       additionalProperties: false,
     },
   });
-  // Add a product line to the estimate the user has open (write, reviewed before save).
+  // Add a product line to the estimate/SO the user has open (write, confirmed before save).
   tools.push({
     name: 'add_line',
-    description: "Add a product line to the estimate the user currently has OPEN on screen. Use when they say to add/put an item onto the estimate (e.g. 'add adidas navy long-sleeve pregame tee at 40% margin'). Only works while an estimate is open. You do NOT see the catalog — the app resolves the product from your description, prices it, and adds the line for the user to review before saving.",
+    description: "Add a product line to the estimate or sales order the user currently has OPEN on screen. Use when they say to add/put an item on it (e.g. 'add 12 navy long-sleeve pregame tees at 40% margin'). Only works while a record is open. You do NOT see the catalog — the app resolves the product from your description, prices it, and shows a confirm card before anything is added.",
     input_schema: {
       type: 'object',
       properties: {
         description: { type: 'string', description: 'The product to add, as described (brand, color, style, sleeve length, etc.).' },
         margin_pct: { type: 'number', description: 'Target margin percent if the user gave one (e.g. 40). Omit if none was stated.' },
+        sizes: SIZES_SCHEMA,
+        qty: { type: 'number', description: 'Total quantity when the user gave a number but no size breakdown ("12 tees" -> 12). Omit if sizes are given.' },
       },
       required: ['description'],
       additionalProperties: false,
     },
   });
+  // Change one line on the open estimate/SO (write, confirmed before save).
+  tools.push({
+    name: 'update_line',
+    description: "Change ONE line on the estimate or sales order the user has OPEN: set size quantities, remove sizes, change a bare quantity, set the sell price, or set a target margin. Pass ONLY the fields being changed. The app resolves the line, enforces PO/pull guards, and shows a before/after confirm card — never claim it changed.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        line: { type: 'string', description: 'Which line: the SKU if known, else the words identifying it ("the tee line", "navy polo").' },
+        order_id: { type: 'string', description: 'The record id ONLY if the user named one (e.g. SO-1727, EST-2041). Omit for "this order/estimate".' },
+        sizes: { ...SIZES_SCHEMA, description: 'NEW absolute per-size quantities to set, e.g. "set L to 12" -> {"L":12}. Only the sizes being changed.' },
+        remove_sizes: { type: 'array', items: { type: 'string' }, description: 'Sizes to take OFF the line ("take the XL off" -> ["XL"]). They go to 0.' },
+        qty: { type: 'number', description: 'New total quantity — only for lines with no size breakdown.' },
+        unit_sell: { type: 'number', description: 'New sell price per unit in dollars, if the user stated a price.' },
+        margin_pct: { type: 'number', description: 'Target margin percent, if the user stated a margin instead of a price.' },
+      },
+      required: ['line'],
+      additionalProperties: false,
+    },
+  });
+  // Remove a whole line from the open estimate/SO (destructive, confirmed before save).
+  tools.push({
+    name: 'remove_line',
+    description: "Remove a WHOLE line from the estimate or sales order the user has OPEN ('remove the polo line', 'delete the JY6033'). Destructive — the app checks PO/pull/job links and shows an explicit confirm card. To remove just one size, use update_line with remove_sizes instead.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        line: { type: 'string', description: 'Which line: the SKU if known, else the words identifying it.' },
+        order_id: { type: 'string', description: 'The record id ONLY if the user named one. Omit for "this order/estimate".' },
+      },
+      required: ['line'],
+      additionalProperties: false,
+    },
+  });
+  // Remove a purchase-order line / cancel one size's open units (destructive, confirmed).
+  tools.push({
+    name: 'po_remove_line',
+    description: "Remove a purchase-order line, or cancel ONE size's open units on it ('remove the JY6033 XL line from this PO', 'pull JY6033 off PO 57204'). Identify by SKU plus the PO number when given; with a sales order open, 'this PO' means that order's PO for the item. Received/billed units refuse. Destructive — the app shows an explicit confirm card and keeps the sales-order status math coherent.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        sku: { type: 'string', description: 'The item SKU on the PO line (e.g. JY6033).' },
+        po: { type: 'string', description: 'The PO number if the user named one (e.g. "PO 57204" or "57204"). Omit for "this PO" with an order open.' },
+        size: { type: 'string', description: 'ONLY when they mean one size ("the XL line" -> "XL"). Omit to remove the whole line.' },
+      },
+      required: ['sku'],
+      additionalProperties: false,
+    },
+  });
+  // Admin-only: adjust warehouse on-hand stock (destructive, confirmed).
+  if (isAdmin) {
+    tools.push({
+      name: 'adjust_inventory',
+      description: "ADMIN ONLY. Set our own WAREHOUSE on-hand quantities for a product ('set warehouse qty on JY6033 to 40', 'we counted 12 larges'). Pass the NEW absolute per-size quantities — not deltas. This is house stock, not vendor stock (that's vendor_stock, read-only). The app shows a confirm card and logs the adjustment like the Adjust Inventory modal.",
+      input_schema: {
+        type: 'object',
+        properties: {
+          sku: { type: 'string', description: 'The product SKU.' },
+          sizes: { ...SIZES_SCHEMA, description: 'NEW absolute on-hand quantity per size, e.g. {"L":40}. A one-size product uses its size name (often OSFA).' },
+          bin: { type: 'string', description: 'New warehouse bin/location, only if the user gave one.' },
+          reason: { type: 'string', description: 'Short reason if stated ("cycle count", "damaged").' },
+        },
+        required: ['sku', 'sizes'],
+        additionalProperties: false,
+      },
+    });
+  }
   if (targets.length) {
     tools.push({
       name: 'highlight',
@@ -440,6 +523,19 @@ function buildTools({ tours, targets, screens }) {
     });
   }
   return tools;
+}
+
+// Per-size quantity map from a write tool: keys capped, integer values >= 0.
+function normSizes(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {}; let n = 0;
+  for (const [k, v] of Object.entries(raw)) {
+    const sz = normStr(k, 10); const q = Number(v);
+    if (!sz || !isFinite(q) || q < 0) continue;
+    out[sz] = Math.min(Math.floor(q), 99999);
+    if (++n >= 16) break;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // ── Request-message normalization (server-enforced caps) ───────────────────
@@ -508,8 +604,44 @@ async function runAssistant({ client, catalogs, messages }) {
       } else if (tu.name === 'add_line') {
         const description = normStr(tu.input && tu.input.description, 200);
         const mp = Number(tu.input && tu.input.margin_pct);
-        if (description) { actions.push({ type: 'add_line', description, margin_pct: (mp > 0 && mp < 100) ? mp : null }); out = { ok: true }; }
+        const q = Number(tu.input && tu.input.qty);
+        if (description) { actions.push({ type: 'add_line', description, margin_pct: (mp > 0 && mp < 100) ? mp : null, sizes: normSizes(tu.input && tu.input.sizes), qty: (q > 0 && q < 1e5) ? Math.floor(q) : null }); out = { ok: true }; }
         else out = { error: 'No product description' };
+      } else if (tu.name === 'update_line') {
+        const line = normStr(tu.input && tu.input.line, 120);
+        if (line) {
+          const us = Number(tu.input && tu.input.unit_sell);
+          const mp2 = Number(tu.input && tu.input.margin_pct);
+          const q2 = Number(tu.input && tu.input.qty);
+          const spec = {
+            line,
+            order_id: normStr(tu.input && tu.input.order_id, 40) || null,
+            sizes: normSizes(tu.input && tu.input.sizes),
+            remove_sizes: Array.isArray(tu.input && tu.input.remove_sizes) ? tu.input.remove_sizes.slice(0, 16).map((s) => normStr(s, 10)).filter(Boolean) : [],
+            qty: (q2 >= 0 && q2 < 1e5 && (tu.input.qty != null)) ? Math.floor(q2) : null,
+            unit_sell: (us >= 0 && us < 1e6 && (tu.input.unit_sell != null)) ? us : null,
+            margin_pct: (mp2 > 0 && mp2 < 100) ? mp2 : null,
+          };
+          if (spec.sizes || spec.remove_sizes.length || spec.qty != null || spec.unit_sell != null || spec.margin_pct != null) { actions.push({ type: 'update_line', spec }); out = { ok: true }; }
+          else out = { error: 'Nothing to change — pass sizes, remove_sizes, qty, unit_sell, or margin_pct' };
+        } else out = { error: 'line required' };
+      } else if (tu.name === 'remove_line') {
+        const line = normStr(tu.input && tu.input.line, 120);
+        if (line) { actions.push({ type: 'remove_line', spec: { line, order_id: normStr(tu.input && tu.input.order_id, 40) || null } }); out = { ok: true }; }
+        else out = { error: 'line required' };
+      } else if (tu.name === 'po_remove_line') {
+        const sku = normStr(tu.input && tu.input.sku, 60);
+        if (sku) { actions.push({ type: 'po_remove_line', spec: { sku, po: normStr(tu.input && tu.input.po, 40) || null, size: normStr(tu.input && tu.input.size, 10) || null } }); out = { ok: true }; }
+        else out = { error: 'sku required' };
+      } else if (tu.name === 'adjust_inventory') {
+        if (!catalogs.isAdmin) out = { error: 'Inventory adjustments are admin-only' };
+        else {
+          const sku = normStr(tu.input && tu.input.sku, 60);
+          const sizes = normSizes(tu.input && tu.input.sizes);
+          const bin = tu.input && tu.input.bin != null ? normStr(tu.input.bin, 40) : null;
+          if (sku && (sizes || bin != null)) { actions.push({ type: 'adjust_inventory', spec: { sku, sizes: sizes || {}, bin, reason: normStr(tu.input && tu.input.reason, 160) || null } }); out = { ok: true }; }
+          else out = { error: 'sku and sizes required' };
+        }
       } else if (tu.name === 'start_estimate') {
         const customer = normStr(tu.input && tu.input.customer, 120);
         const rawItems = Array.isArray(tu.input && tu.input.items) ? tu.input.items : [];
@@ -617,6 +749,9 @@ exports.handler = async (event) => {
       if (!id || !['sales_order', 'estimate', 'invoice', 'customer', 'product'].includes(type)) return null;
       return { type, id, customer: normStr(r.customer, 120) };
     })(),
+    // Client-asserted role. A UX gate only (it decides which tools are offered / how the
+    // prompt talks about inventory) — the client re-checks the real cu.role before any commit.
+    isAdmin: (() => { const role = normStr(body.user && body.user.role, 20).toLowerCase(); return role === 'admin' || role === 'super_admin'; })(),
   };
 
   try {
@@ -631,5 +766,6 @@ exports.handler = async (event) => {
 
 // ── Test surface ───────────────────────────────────────────────────────────
 module.exports.buildSystemPrompt = buildSystemPrompt;
+module.exports.buildTools = buildTools;
 module.exports.normalizeMessages = normalizeMessages;
 module.exports.normCatalog = normCatalog;

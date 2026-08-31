@@ -44,6 +44,37 @@ describe('effFund — per-item vs store rule', () => {
   });
 });
 
+describe('priceAddOnSelections', () => {
+  const defs = [
+    { id: 'num', label: 'Player number', kind: 'number', required: true, upcharge: 3 },
+    { id: 'txt', label: 'Locker name', kind: 'text', required: false, upcharge: 2 },
+    { id: 'color', label: 'Collar color', kind: 'choice', required: true, choices: [{ label: 'Royal', upcharge: 1 }, { label: 'Red', upcharge: 0 }] },
+    { id: 'patch', label: 'Add captain patch', kind: 'addon', required: false, upcharge: 5 },
+  ];
+
+  test('sanitizes all supported field types and prices from server definitions', () => {
+    const r = checkout.priceAddOnSelections(defs, [
+      { id: 'num', value: '12', upcharge: 999 }, { id: 'txt', value: '  SMITH  ' },
+      { id: 'color', value: 'Royal' }, { id: 'patch', value: true },
+    ]);
+    expect(r.error).toBeUndefined();
+    expect(r.extra).toBe(11);
+    expect(r.selections.map((s) => [s.id, s.value, s.upcharge])).toEqual([
+      ['num', '12', 3], ['txt', 'SMITH', 2], ['color', 'Royal', 1], ['patch', true, 5],
+    ]);
+  });
+
+  test('rejects missing required answers and unknown choices', () => {
+    expect(checkout.priceAddOnSelections(defs, [{ id: 'color', value: 'Royal' }]).error).toMatch(/Player number/);
+    expect(checkout.priceAddOnSelections(defs, [{ id: 'num', value: '12' }, { id: 'color', value: 'Green' }]).error).toMatch(/invalid selection/i);
+  });
+
+  test('rejects non-numeric input for a number field', () => {
+    const r = checkout.priceAddOnSelections(defs, [{ id: 'num', value: '12A' }, { id: 'color', value: 'Red' }]);
+    expect(r.error).toMatch(/must be a number/i);
+  });
+});
+
 describe('couponDiscount — percent only', () => {
   test('applies to cart + shipping by default', () => {
     expect(checkout.couponDiscount({ kind: 'percent', value: 10 }, 100, 5)).toBe(10.5);
@@ -224,6 +255,17 @@ describe('priceCart', () => {
     const r = await checkout.priceCart(sb(), store, [{ webstore_product_id: 'wp1', size: '2XL', qty: 1 }]);
     expect(r.lines[0].unit_price).toBe(24);
     expect(r.subtotal).toBe(24);
+  });
+
+  test('validates and prices configured add-on answers server-side', async () => {
+    const product = { ...wpTee, options: [{ id: 'nick', label: 'Player nickname', kind: 'text', required: true, upcharge: 4 }] };
+    const r = await checkout.priceCart(sb({ webstore_products: { data: [product], error: null } }), store, [{ webstore_product_id: 'wp1', size: 'M', qty: 2, option_selections: [{ id: 'nick', value: 'Ace', upcharge: 999 }] }]);
+    expect(r.error).toBeUndefined();
+    expect(r.lines[0].unit_price).toBe(24);
+    expect(r.lines[0].option_extra).toBe(4);
+    expect(r.lines[0].option_selections[0]).toMatchObject({ label: 'Player nickname', value: 'Ace', upcharge: 4 });
+    expect(r.subtotal).toBe(48);
+    expect(r.feeBase).toBe(48);
   });
 
   test('applies store fundraising to the line', async () => {

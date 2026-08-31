@@ -29,7 +29,7 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
     // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
@@ -457,7 +457,10 @@ export default function InvoicesPage(){
                 if(!storedLineItems.length&&lineItems.length>0){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,line_items:lineItems}:i))}
                 setSplitModal({inv:invForSplit,selItems:[],memo:inv.memo||''});
               }}>Split Invoice</button>}
-            {canDelete&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',color:'#dc2626',border:'1px solid #fca5a5',background:'white',marginLeft:'auto'}}
+            {canDelete&&String(inv.status||'').toLowerCase()!=='void'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',color:'#b45309',border:'1px solid #fcd34d',background:'white',marginLeft:'auto'}}
+              title="Back this invoice out of the books but keep the payment history"
+              onClick={()=>{voidInvoice(inv.id);setViewInvoice(null)}}>Void</button>}
+            {canDelete&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',color:'#dc2626',border:'1px solid #fca5a5',background:'white',marginLeft:String(inv.status||'').toLowerCase()==='void'?'auto':8}}
               onClick={()=>{deleteInvoice(inv.id);setViewInvoice(null)}}>Delete</button>}
           </div>
 

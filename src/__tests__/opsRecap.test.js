@@ -6,7 +6,8 @@
 
 const {
   soFulfillment, isShippedNotInvoiced, isReadyToInvoice, soGoodsValue,
-  quoteAgeDays, quoteColdBucket, numericSizeKeys, NON_SIZE,
+  quoteAgeDays, quoteColdBucket, quoteInDigest, numericSizeKeys, shortOnPull, NON_SIZE,
+  groupOverdueInvoicesByAccount,
 } = require('../lib/opsRecap');
 
 // Minimal SO: one line fully covered, jobs optional.
@@ -104,6 +105,65 @@ describe('numericSizeKeys (mobile/desktop PO size discovery)', () => {
   });
 });
 
+describe('shortOnPull', () => {
+  test('a response PO clears the digest alert using its loaded metadata', () => {
+    const so = mkSo({
+      items: [{
+        sku: 'TEE', sizes: { M: 10 },
+        picks: [{ _sku: 'TEE', status: 'pulled', pulled_at: '8/25/2026', M: 5 }],
+        pos: [{ po_id: 'PO-NEW', status: 'waiting', created_at: '8/25/2026', M: 1, received: {}, cancelled: {} }],
+      }],
+    });
+    expect(shortOnPull(so)).toBeNull();
+  });
+
+  test('an old SKU IF does not hide a later shortage for the replacement SKU', () => {
+    const so = mkSo({
+      items: [{
+        sku: 'NEW-SKU', sizes: { M: 10 }, pos: [],
+        picks: [
+          { _sku: 'OLD-SKU', status: 'pulled', pulled_at: '8/20/2026', M: 10 },
+          { _sku: 'NEW-SKU', status: 'pulled', pulled_at: '8/25/2026', M: 4 },
+        ],
+      }],
+    });
+    expect(shortOnPull(so)).toEqual({ units: 6, detail: 'NEW-SKU (M:6)' });
+  });
+});
+
+
+describe('groupOverdueInvoicesByAccount', () => {
+  const row = (id, customerId, balance, dpd) => ({
+    inv: { id, customer_id: customerId }, balance, dpd,
+  });
+  const names = { A: 'Alpha School', B: 'Beta Club' };
+
+  test('ranks accounts by combined overdue balance, not individual invoice age', () => {
+    const groups = groupOverdueInvoicesByAccount([
+      row('INV-OLD', 'A', 900, 80),
+      row('INV-B1', 'B', 700, 20),
+      row('INV-B2', 'B', 600, 10),
+    ], (id) => names[id]);
+
+    expect(groups.map((g) => g.customerId)).toEqual(['B', 'A']);
+    expect(groups[0]).toMatchObject({ account: 'Beta Club', total: 1300, oldestDpd: 20 });
+    expect(groups[0].invoices.map((r) => r.inv.id)).toEqual(['INV-B1', 'INV-B2']);
+  });
+
+  test('sorts invoices oldest-first within an account and isolates missing customer ids', () => {
+    const groups = groupOverdueInvoicesByAccount([
+      row('INV-A1', 'A', 100, 15),
+      row('INV-A2', 'A', 100, 45),
+      row('INV-X1', null, 50, 5),
+      row('INV-X2', null, 40, 6),
+    ], (id) => names[id]);
+
+    const alpha = groups.find((g) => g.customerId === 'A');
+    expect(alpha.invoices.map((r) => r.inv.id)).toEqual(['INV-A2', 'INV-A1']);
+    expect(groups.filter((g) => g.customerId == null)).toHaveLength(2);
+  });
+});
+
 describe('quote aging (shared dashboard/digest tiers)', () => {
   const now = new Date(2026, 6, 8, 12).getTime(); // Jul 8 2026 local noon
 
@@ -126,5 +186,14 @@ describe('quote aging (shared dashboard/digest tiers)', () => {
     expect(quoteColdBucket(13)).toBe('going_cold');
     expect(quoteColdBucket(14)).toBe('stale');
     expect(quoteColdBucket(null)).toBe(null);
+  });
+
+  test('daily digest includes day 30 but removes quotes over 30 days old', () => {
+    expect(quoteInDigest(6)).toBe(false);
+    expect(quoteInDigest(7)).toBe(true);
+    expect(quoteInDigest(30)).toBe(true);
+    expect(quoteInDigest(31)).toBe(false);
+    expect(quoteInDigest(64)).toBe(false);
+    expect(quoteInDigest(null)).toBe(false);
   });
 });

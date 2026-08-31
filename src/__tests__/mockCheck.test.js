@@ -10,7 +10,10 @@
  *  - garmentsNeedingMockCheck surfaces those garments + the prior mock to confirm/redo.
  */
 
-const { skusMissingMockups, garmentsNeedingMockCheck, resolveMockLink, mockLinkDependents } = require('../safeHelpers');
+const {
+  skusMissingMockups, garmentsNeedingMockCheck, resolveMockLink, mockLinkDependents,
+  mockSlotKeys, slotMockFiles, nnMockCounts,
+} = require('../safeHelpers');
 
 // Build a job + sales-order pair where one item references one art file.
 const makeCase = (artFile, item = { sku: 'A2009', color: 'White' }) => {
@@ -323,6 +326,63 @@ describe('garmentsNeedingMockCheck', () => {
     };
     const { job, so } = makeCase(art);
     expect(garmentsNeedingMockCheck(job, so)).toEqual([]);
+  });
+});
+
+// SO-1777 repro: one released job combines the yellow logo on several garments with
+// numbers on those same garments. JZ2525 belongs to that job ONLY for its numbers
+// decoration (deco_idxs: [1]); its logo at deco index 0 is a separate black-art job.
+// Falling back to the released job's primary yellow art made JZ2525 look like it needed
+// an old yellow-logo mock confirmed even though that art is not printed on the garment.
+describe('mock checks — an item owned only for numbers does not inherit the job art', () => {
+  const yellowArt = {
+    id: 'af-yellow', name: 'LOGO - YELLOW', deco_type: 'heat_press',
+    item_mockups: {
+      'JZ2524|Black/White': [{ url: 'http://x/jz2524.png' }],
+      'JZ2529|Yellow/Black': [{ url: 'http://x/jz2529.png' }],
+    },
+    mockup_files: [],
+  };
+  const blackArt = { id: 'af-black', name: 'Logo - BLACK', deco_type: 'dtf', item_mockups: {}, mockup_files: [] };
+  const so = {
+    items: [{
+      sku: 'JZ2525', color: 'Light Grey/White',
+      decorations: [
+        { kind: 'art', art_file_id: 'af-black', position: 'Left Sleeve' },
+        { kind: 'numbers', position: 'Back' },
+      ],
+    }],
+    art_files: [yellowArt, blackArt],
+  };
+  const numbersSliceInCombinedJob = {
+    _art_ids: ['af-yellow'], art_file_id: 'af-yellow',
+    items: [{ item_idx: 0, sku: 'JZ2525', color: 'Light Grey/White', deco_idxs: [1] }],
+  };
+
+  test('does not block approval for a mock on art this item does not own', () => {
+    expect(skusMissingMockups(numbersSliceInCombinedJob, so)).toEqual([]);
+  });
+
+  test('does not offer old mocks from art this item does not own', () => {
+    expect(garmentsNeedingMockCheck(numbersSliceInCombinedJob, so)).toEqual([]);
+  });
+
+  test('still displays and recognizes the garment-specific back-numbers mock', () => {
+    // Numbers/name proofs intentionally live on the combined job's primary art file even when
+    // this garment owns no ART decoration in that job. The art-warning fix must not hide them.
+    const yellowWithBackNumbers = {
+      ...yellowArt,
+      item_mockups: {
+        ...yellowArt.item_mockups,
+        'JZ2525|Light Grey/White|numbers': [{ url: 'http://x/jz2525-back-numbers.png' }],
+      },
+    };
+    const numberSlot = mockSlotKeys('JZ2525|Light Grey/White', so.items[0].decorations)
+      .find(slot => slot.kind === 'numbers');
+    const shown = slotMockFiles({ ...numberSlot, artFile: yellowWithBackNumbers }, [], so.items[0]);
+
+    expect(shown).toEqual([{ url: 'http://x/jz2525-back-numbers.png' }]);
+    expect(nnMockCounts([yellowWithBackNumbers], so.items[0])).toEqual({ numbers: 1, names: 0 });
   });
 });
 

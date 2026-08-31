@@ -170,6 +170,47 @@ export function reparentOrphanSplitJobs(jobs) {
 }
 
 /**
+ * Repair frozen job rows whose positional item indexes drifted after a middle SO line was
+ * removed/replaced without running the editor's normal index remap. This also covers two SKU
+ * substitutions collapsing into one identical line during persistence (SO-2199).
+ *
+ * Released/merged/split jobs claim decorations by item_idx + deco_idx. Before any live-deco
+ * lookup or garment-identity refresh, move a row to the one live line that still has its saved
+ * garment identity. Matching is intentionally conservative: duplicate sku/color lines are
+ * ambiguous and stay untouched, as do rows whose current index still points at the same garment.
+ */
+export function remapFrozenJobItemIndexes(job, liveItems) {
+  if (!job || !Array.isArray(job.items) || !Array.isArray(liveItems) || !liveItems.length) return job;
+  const norm = (v) => String(v || '').trim().toLowerCase();
+  const identity = (row) => {
+    if (!row) return null;
+    const sku = norm(row.sku);
+    const color = norm(row.color);
+    if (sku && sku !== '—') return 'sku:' + sku + '|color:' + color;
+    const name = norm(row.name);
+    return name ? 'name:' + name + '|color:' + color : null;
+  };
+  const liveByIdentity = new Map();
+  liveItems.forEach((item, idx) => {
+    const key = identity(item);
+    if (!key) return;
+    if (!liveByIdentity.has(key)) liveByIdentity.set(key, []);
+    liveByIdentity.get(key).push(idx);
+  });
+  let changed = false;
+  const items = job.items.map((gi) => {
+    if (!gi) return gi;
+    const key = identity(gi);
+    if (!key || identity(liveItems[gi.item_idx]) === key) return gi;
+    const candidates = liveByIdentity.get(key) || [];
+    if (candidates.length !== 1 || candidates[0] === gi.item_idx) return gi;
+    changed = true;
+    return { ...gi, item_idx: candidates[0] };
+  });
+  return changed ? { ...job, items } : job;
+}
+
+/**
  * Drop frozen-job decoration claims whose LIVE decoration is a different method.
  *
  * Released/merged jobs claim decorations positionally (item_idx + deco_idx). If those
