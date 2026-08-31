@@ -40,6 +40,7 @@ import { closeOpenArtRequests } from './lib/artRequests';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
+import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -4442,19 +4443,19 @@ export default function App(){
       }
     }
   },[ests,estHistory]);
-  React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  React.useEffect(()=>{if(storedUserCanManageQuickBooks())_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // QB background auto-sync — self-contained: builds the sync engine from CURRENT
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
   // so hourly/daily auto-sync silently did nothing until someone opened the QB page
   // that session — and afterwards synced the stale snapshot from the last render.
-  React.useEffect(()=>{_qbSyncCtxRef.current={cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}});
+  React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
-    if(!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
+    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
     const ms=intervals[qbConfig.autoSync];
     if(!ms)return;
     const id=setInterval(()=>{
-      if(qbSyncing||!_qbSyncCtxRef.current)return;
+      if(!storedUserCanManageQuickBooks()||qbSyncing||!_qbSyncCtxRef.current)return;
       const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
       if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
     },60000);// check every 60s
@@ -4543,6 +4544,7 @@ export default function App(){
   },[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
+    if(!storedUserCanManageQuickBooks())return;
     try{
       const params=new URLSearchParams(window.location.search);
       if(params.get('qb_connected')==='true'){
@@ -4566,6 +4568,7 @@ export default function App(){
   // only returns a connected flag + realm id in the hash — no credentials reach the browser.
   // Step 1: capture the connected signal before the Supabase load can overwrite qbConfig.
   React.useEffect(()=>{
+    if(!storedUserCanManageQuickBooks())return;
     const hash=window.location.hash;
     if(hash.includes('qb_connected=')){
       try{
@@ -4583,7 +4586,7 @@ export default function App(){
   },[]);
   // Step 2: apply AFTER Supabase load so the persisted qb_config doesn't overwrite it.
   React.useEffect(()=>{
-    if(dbLoading||!_pendingQBTokens.current)return;
+    if(!storedUserCanManageQuickBooks()||dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
     setQBConfig(prev=>({...prev,connected:true,sandbox:false,realm_id:t.realm_id||prev.realm_id}));
     // Company name comes from the proxy; the access token is read server-side, not passed here.
@@ -4598,7 +4601,7 @@ export default function App(){
   // On load, reconcile connection state with the server-side token store (source of truth).
   // qb-api refreshes the token server-side, so the client no longer manages tokens at all.
   React.useEffect(()=>{
-    if(dbLoading||_pendingQBTokens.current)return;
+    if(!storedUserCanManageQuickBooks()||dbLoading||_pendingQBTokens.current)return;
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'connection_status'})})
       .then(r=>r.ok?r.json():null).then(d=>{
@@ -6244,6 +6247,9 @@ export default function App(){
   },[cu,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
   const canAccess=useCallback((pageId)=>{
     if(!cu)return false;
+    // QBO is an accounting system, not a delegable portal page. Legacy access
+    // arrays that contain `qb` must not expose it to reps or other operations roles.
+    if(pageId==='qb')return canManageQuickBooksRole(cu.role);
     if(cu.role==='admin'||cu.role==='super_admin')return true;
     // Import is always on for reps and CSRs regardless of their stored access array
     if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
@@ -25232,10 +25238,12 @@ export default function App(){
   // ── QB API helper (shared by rImport and QBPage, via context) ──
   // Tokens are held + refreshed server-side; the client sends only the action + payload.
   const qbApi=async(action,payload={})=>{
+    if(!storedUserCanManageQuickBooks())return null;
     if(!qbConfig.connected){nf('QB not connected','error');return null}
     try{
       const r=await authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action,sandbox:qbConfig.sandbox,...payload})});
+      if(r.status===403)return null;
       if(!r.ok&&r.status!==401&&r.status!==409){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
       if(r.status===401||r.status===409){setQBConfig(prev=>({...prev,connected:false}));nf('QB not connected — please reconnect','error');return null}
@@ -25245,9 +25253,11 @@ export default function App(){
 
   // ── Connect to QB via OAuth (shared by rImport & QBPage, via context) ──
   const connectQB=async()=>{
+    if(!storedUserCanManageQuickBooks())return;
     try{
-      const r=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+      const r=await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'connect'})});
+      if(r.status===403)return;
       const d=await r.json();
       if(d.authUrl){window.location.href=d.authUrl}
       else if(d.error){nf('QB connect error: '+d.error,'error')}
@@ -25256,6 +25266,7 @@ export default function App(){
 
   // ── Disconnect from QB (shared by rImport & QBPage, via context) ──
   const disconnectQB=async()=>{
+    if(!storedUserCanManageQuickBooks())return;
     if(!window.confirm('Disconnect from QuickBooks? You can reconnect anytime.'))return;
     // authFetch sends the staff JWT — disconnect is staff-only and revokes the token server-side.
     try{await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -25265,6 +25276,8 @@ export default function App(){
   };
 
   function rImport(){
+
+    const qbOperator=canManageQuickBooksRole(cu?.role);
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
     const updItem=(pi,k,v)=>setImp(x=>({...x,parsed:x.parsed.map((p,i)=>i===pi?{...p,[k]:v}:p)}));
@@ -29271,12 +29284,12 @@ export default function App(){
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
-      const canaryRemaining=Math.max(0,5-completedCanaries.size);
-      if(canaryMode&&!canaryRemaining){nf('Five QBO canary bills are complete. Review them in QuickBooks and approve the migration before any production batch.','error');return}
-      // Before approval, send no more than three explicitly confirmed canaries at
-      // once and no more than five total. After approval, use resumable batches of
-      // 20. Posting transactions stay sequential in both modes.
-      const batchLimit=canaryMode?Math.min(3,canaryRemaining):20;
+      const canaryRemaining=Math.max(0,3-completedCanaries.size);
+      if(canaryMode&&!canaryRemaining){nf('Three QBO canary bills are complete. Review them in QuickBooks and approve the migration before any production batch.','error');return}
+      // Before approval, send exactly one explicitly confirmed canary per click
+      // and no more than three total. After approval, use resumable batches of 20.
+      // Posting transactions stay sequential in both modes.
+      const batchLimit=canaryMode?1:20;
       const batch=selectedEntries.slice(0,batchLimit);
       if(canaryMode){
         const preview=batch.map(({row})=>{
@@ -30407,14 +30420,14 @@ export default function App(){
             style={{display:'inline-flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid '+MGRAY,color:TXTL,fontSize:12,fontWeight:700,padding:'10px 14px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
             &#9881; {ssPullFrom?ssPullFrom+(ssPullTo?' → '+ssPullTo:' →'):'All dates'} {billImport.pullOptsOpen?'▲':'▾'}
           </button>
-          {qbConfig.connected
+          {qbOperator&&(qbConfig.connected
             ?<span title={'QuickBooks connected'+(qbConfig.companyName?' · '+qbConfig.companyName:'')+'. Matched bills can also post to QB.'} style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#E7F2EC',border:'1px solid #bfdfd0',color:'#166534',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'9px 15px',borderRadius:6,whiteSpace:'nowrap'}}>
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={GREEN} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
                 QuickBooks{qbConfig.companyName?' · '+qbConfig.companyName:''}</span>
             :<button onClick={connectQB} title="Bills save to the Portal either way — connect QuickBooks to also post the matched pile to QB."
                 style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#fff',border:'1px solid '+RED,color:RED,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'10px 16px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
-                Connect QB</button>}
+                Connect QB</button>)}
         </div>
         {/* Pull options — the invoiced-from/to window + per-vendor pulls, hidden until asked for */}
         {billImport.pullOptsOpen&&<div style={{marginBottom:14,padding:'11px 16px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
@@ -30539,7 +30552,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test up to 3 in QuickBooks')})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
@@ -36486,7 +36499,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'uniforms',label:'Uniform Jobs',icon:'package'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'salesmap',label:'Sales Map',icon:'grid'},{id:'marketing',label:'Marketing',icon:'grid'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar',roles:['admin','super_admin','accounting']},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
   nav.splice(3,0,{id:'ai_inbox',label:'AI Inbox',icon:'mail'},{id:'ai_tasks',label:'AI Tasks',icon:'grid',roles:['admin','rep']});
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',salesmap:'Sales Map',marketing:'Marketing',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',uniforms:'Uniform Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   titles.ai_inbox='AI Sales Inbox';titles.ai_tasks='AI Tasks';

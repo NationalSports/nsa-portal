@@ -7,7 +7,7 @@ export const QB_ACCOUNT_SPECS = Object.freeze({
   discount_account: Object.freeze({ number: '40200', name: 'Sales:Discounts', types: ['Income'] }),
   purchases_account: Object.freeze({ number: '51300', name: 'Purchases', types: ['Cost of Goods Sold'] }),
   freight_account: Object.freeze({ number: '51000', name: 'Cost of Goods Sold:Freight In', types: ['Cost of Goods Sold'] }),
-  outbound_freight_account: Object.freeze({ number: '67000', name: 'Freight Expenses', types: ['Expense'] }),
+  outbound_freight_account: Object.freeze({ number: '40100', name: 'Shipping Expense', types: ['Expense'] }),
   sports_inc_fee_account: Object.freeze({ number: '58000', name: 'Sports Inc Fee', types: ['Cost of Goods Sold'] }),
   omg_fee_account: Object.freeze({ number: '57000', name: 'OMG Fee', types: ['Cost of Goods Sold'] }), // OMG vendor invoices and Deposit Statement OMG Fee Withheld
   omg_card_fee_account: Object.freeze({ number: '71400', name: 'Bank Charges', types: ['Expense'] }),
@@ -45,7 +45,8 @@ const LEGACY_MAPPING_VALUES = Object.freeze({
   Purchases: '51300',
   'Shipping and delivery expense': '51000',
   'Freight In': '51000',
-  'Freight Expenses': '67000',
+  'Freight Expenses': '40100',
+  'Shipping Expense': '40100',
   'Sports Inc Fee': '58000',
   'OMG Fee': '57000',
   'Bank Charges': '71400',
@@ -361,6 +362,12 @@ export function migrateQBAccountMapping(mapping = {}) {
     // approved 55200 Decoration Labor for portal in-house labor.
     if (key === 'decoration_account' && clean === '55100') {
       migrated[key] = '55200';
+      continue;
+    }
+    // 67000 Freight Expenses is explicitly retired. Customer-bound UPS/FedEx
+    // shipping must route to 40100 Shipping Expense.
+    if (key === 'outbound_freight_account' && clean === '67000') {
+      migrated[key] = '40100';
       continue;
     }
     migrated[key] = LEGACY_MAPPING_VALUES[clean] || clean;

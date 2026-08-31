@@ -2,7 +2,7 @@
 // Staff-only (Supabase JWT). The access token is read from the service-role-only store and
 // refreshed server-side when stale — tokens are never supplied by, or returned to, the client.
 const https = require('https');
-const { verifyUser } = require('./_shared');
+const { verifyQBOUser } = require('./_shared');
 const { getSupabaseAdmin, getStoredTokens, getValidAccessToken } = require('./_qb');
 
 const corsHeaders = (origin) => ({
@@ -52,9 +52,9 @@ exports.handler = async (event) => {
     return { statusCode: 405, headers: corsHeaders(origin), body: JSON.stringify({ error: 'POST only' }) };
   }
 
-  // Staff-only: QBO writes (invoices, payments, POs, inventory) require a signed-in,
-  // active team member's Supabase JWT in the Authorization header.
-  const v = await verifyUser(event);
+  // Company financial data is restricted to accounting and admin roles. This
+  // gate covers connection status and reads as well as transaction writes.
+  const v = await verifyQBOUser(event);
   if (!v.ok) {
     return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
   }

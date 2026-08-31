@@ -60,7 +60,9 @@ describe('QuickBooks account resolution', () => {
       ar_account: '11000', ap_account: '21100', tax_parent_account: '25201',
     });
     expect(QB_ACCOUNT_MAPPING_DEFAULTS.decoration_account).toBe('55200');
+    expect(QB_ACCOUNT_MAPPING_DEFAULTS.outbound_freight_account).toBe('40100');
     expect(migrateQBAccountMapping({decoration_account:'55100'}).decoration_account).toBe('55200');
+    expect(migrateQBAccountMapping({outbound_freight_account:'67000'}).outbound_freight_account).toBe('40100');
     expect(QB_STATE_TAX_ACCOUNT_KEYS).toEqual({
       CA: 'tax_ca_account', AZ: 'tax_az_account', CO: 'tax_co_account',
       NV: 'tax_nv_account', TX: 'tax_tx_account', WA: 'tax_wa_account',

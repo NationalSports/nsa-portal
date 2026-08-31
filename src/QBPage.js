@@ -90,7 +90,7 @@ export default function QBPage(){
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
     const uploadBill=async()=>{
-      if(!migrationUnlocked){nf('For the initial test, use Supplier Bills → Test up to 3 in QuickBooks. Manual bills do not carry the parsed SKU/quantity checks.','error');return}
+      if(!migrationUnlocked){nf('For the initial test, use Supplier Bills → Test 1 in QuickBooks. Manual bills do not carry the parsed SKU/quantity checks.','error');return}
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before any test bill','error');return}
       if(!qbBillVendor){nf('Select a vendor','error');return}
       if(!qbBillAmount||parseFloat(qbBillAmount)<=0){nf('Enter bill amount','error');return}
@@ -371,7 +371,7 @@ export default function QBPage(){
                 </div>
               </div>
               {!migrationUnlocked&&<div style={{padding:10,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e',marginBottom:10}}>
-                <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the Supplier Bills “Test up to 3” button. Verified bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
+                <div>Initial-migration safety lock is active. Run the read-only live preflight, then use the Supplier Bills “Test 1” button. Verified bill canaries: <strong>{verifiedCanaryBills}/3 minimum</strong>.</div>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8}} disabled={!livePreflightReady||verifiedCanaryBills<3}
                   title={!livePreflightReady?'Run a successful live preflight first':verifiedCanaryBills<3?'At least three live canaries must pass API read-back first':''}
                   onClick={()=>{if(window.confirm('I reviewed the verified canary bills in the correct QuickBooks company, checked the screenshots/transaction details and account impact, and approve 20-record production batches.'))setQBConfig(prev=>({...prev,initialMigrationApproved:true,autoSync:'manual'}))}}>
@@ -408,12 +408,13 @@ export default function QBPage(){
           <div className="card-header"><h2>🗂️ Account Mapping</h2></div>
           <div className="card-body">
             <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Account numbers are matched to QBO AcctNum and validated before every posting transaction.</div>
-            {QB_MAPPING_FIELDS.map(([key,label])=>
+            {QB_MAPPING_FIELDS.map(([key,label])=>{const live=qbConfig.preflight?.accounts?.[key];return(
               <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
                 <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
-                <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||QB_ACCOUNT_MAPPING_DEFAULTS[key]}
+                <input className="form-input" style={{width:90,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||QB_ACCOUNT_MAPPING_DEFAULTS[key]}
                   onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
-              </div>)}
+                <span style={{flex:1,fontSize:10,color:live?'#166534':'#64748b'}}>{live?'✓ QBO '+live.number+' · '+live.name+' · ID '+live.id:'Not yet validated against live QBO'}</span>
+              </div>)})}
           </div>
         </div>
 
@@ -619,7 +620,7 @@ export default function QBPage(){
                 <span><strong>Live canary test</strong><br/>Tags this real QBO bill with NSA-QB-CANARY for your screenshot review. Required until the initial migration is approved.</span>
               </label>
               <button className="btn btn-primary" style={{width:'100%'}} disabled={qbBillUploading||!migrationUnlocked} onClick={uploadBill}
-                title={!migrationUnlocked?'Use Supplier Bills → Test up to 3 so SKU quantities and bill totals are validated':''}>
+                title={!migrationUnlocked?'Use Supplier Bills → Test 1 so SKU quantities and bill totals are validated':''}>
                 {qbBillUploading?'Uploading to QuickBooks...':!migrationUnlocked?'Use Parsed Supplier-Bill Canary':'Upload Bill to QuickBooks'}
               </button>
             </div>

@@ -6,7 +6,7 @@
 //   disconnect → revokes at Intuit + clears the store (staff-only).
 // Tokens never cross to the browser or appear in a URL — see _qb.js for the store.
 const crypto = require('crypto');
-const { verifyUser } = require('./_shared');
+const { verifyQBOUser } = require('./_shared');
 const { getSupabaseAdmin, httpsPost, basicAuth, saveTokens, getStoredTokens, clearTokens, refreshStoredTokens, revokeToken } = require('./_qb');
 
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
@@ -45,6 +45,13 @@ exports.handler = async (event) => {
   let action = params.action;
   let body = {};
   if (event.body) { try { body = JSON.parse(event.body); } catch { body = {}; } if (body.action) action = body.action; }
+
+  // The Intuit callback authenticates with the short-lived CSRF state cookie.
+  // Every staff-initiated OAuth action requires accounting/admin authorization.
+  if (['debug', 'connect', 'refresh', 'disconnect'].includes(action)) {
+    const v = await verifyQBOUser(event);
+    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
+  }
 
   // ── ACTION: debug ──
   if (action === 'debug') {
@@ -120,8 +127,6 @@ exports.handler = async (event) => {
   // ── ACTION: disconnect ──
   // Revoke at Intuit + clear the store. Staff-only (no token is accepted from the client).
   if (action === 'disconnect') {
-    const v = await verifyUser(event);
-    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
     try {
       const admin = getSupabaseAdmin();
       const cur = await getStoredTokens(admin);
