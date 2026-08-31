@@ -107,6 +107,7 @@ describe('manual PO costs', () => {
       expect(editor).toContain("setShowPO('manual')");
       expect(editor).toContain("po_type:'manual_cost'");
       expect(editor).toContain("setTab('costs')");
+      expect(editor.indexOf('Digitizing / Vector File — Topstar')).toBeLessThan(editor.indexOf('💳 Manual Cost / Purchase'));
     });
   });
 });

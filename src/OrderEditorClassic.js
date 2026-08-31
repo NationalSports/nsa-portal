@@ -8948,9 +8948,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">
-          <div style={{padding:'11px 12px',border:'2px solid #f59e0b',borderRadius:9,background:'#fffbeb',marginBottom:10}}>
-            <div style={{display:'flex',alignItems:'center',gap:10}}><span style={{fontSize:22}}>💳</span><div style={{flex:1}}><div style={{fontWeight:800,color:'#92400e',fontSize:14}}>Manual Cost / Purchase</div><div style={{fontSize:11,color:'#78716c',marginTop:1}}>Record a card, wire, or cash purchase without ordering more units.</div></div><button className="btn btn-sm" style={{background:'#d97706',color:'#fff',border:'none',fontWeight:800,whiteSpace:'nowrap'}} onClick={()=>{setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setPoAlphaSuffix(cust?.alpha_tag||'');setShowPO('manual')}}>+ Add Manual Cost</button></div>
-          </div>
           {Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
@@ -9031,6 +9028,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Multiple digitizing/vector jobs can legitimately be needed on one order, so the button always
                 stays enabled — this list just makes an existing PO visible before a rep clicks it again. */}
             <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}}>{(o.deco_pos||[]).some(dp=>dp.topstar_service)?'Order Another Digitizing / Vector File':'Order Digitizing / Vector File'}</button>
+          </div>
+          <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#0891b2',textTransform:'uppercase',marginBottom:6}}>💳 Manual Cost / Purchase</div>
+            <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setPoAlphaSuffix(cust?.alpha_tag||'');setShowPO('manual')}}>Add Manual Cost / Purchase</button>
           </div>
         </div></div></div>;
       if(showPO==='manual'){
