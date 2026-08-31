@@ -591,7 +591,7 @@ export const QB_ACCOUNT_POSTING_MATRIX = Object.freeze([
   { itemType: 'Vendor apparel / equipment by SKU', accountKey: 'purchases_account', account: '51300 Purchases', posting: 'Debit (COGS via NonInventory item)', control: '21100 A/P credit' },
   { itemType: 'No-SKU supplies', accountKey: 'purchases_account', account: '51300 Purchases', posting: 'Debit (COGS)', control: '21100 A/P credit' },
   { itemType: 'Vendor freight on a bill', accountKey: 'freight_account', account: '51000 Freight In', posting: 'Debit', control: '21100 A/P credit' },
-  { itemType: 'Outbound UPS / FedEx expense', accountKey: 'outbound_freight_account', account: '67000 Freight Expenses', posting: 'Debit', control: 'Not currently created by Connect' },
+  { itemType: 'Outbound UPS / FedEx expense', accountKey: 'outbound_freight_account', account: '40100 Shipping Expense', posting: 'Debit', control: 'Not currently created by Connect; 67000 is retired' },
   { itemType: 'Outside decoration vendor bill', accountKey: 'deco_account', account: '52000 Outside Decoration', posting: 'Debit', control: '21100 A/P credit' },
   { itemType: 'Sports Inc fee', accountKey: 'sports_inc_fee_account', account: '58000 Sports Inc Fee', posting: 'Debit', control: '21100 A/P credit' },
   { itemType: 'OrderMyGear vendor invoice fee', accountKey: 'omg_fee_account', account: '57000 OMG Fee', posting: 'Debit on OMG vendor bill', control: '21100 A/P credit' },
