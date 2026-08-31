@@ -13,26 +13,34 @@ const money = (value) => Number(value || 0).toFixed(2);
 const paymentLabel = (value) => ({ credit_card: 'Credit card', wire: 'Wire', cash: 'Cash' }[String(value || '').toLowerCase()] || 'Credit card');
 const cleanId = (value) => String(value || '').trim().slice(0, 120);
 
-function buildEmail({ so, customer, po, member }) {
+function personLabel(person, fallback = 'Unassigned') {
+  if (!person) return fallback;
+  const name = person.name || fallback;
+  return name + (person.email ? ` (${person.email})` : '');
+}
+
+function buildEmail({ so, customer, po, member, rep }) {
   const meta = po.sizes || {};
   const amount = Number(meta._manual_cost || 0);
   const method = paymentLabel(meta._payment_method);
   const posterName = member?.name || 'Unknown staff member';
-  const posterEmail = member?.email || '';
   const vendor = po.vendor || 'Manual purchase';
   const note = meta._manual_cost_note || po.memo || '';
   const postedAt = meta._manual_cost_created_at || po.created_at || '';
   const orderUrl = 'https://connect.nationalsportsapparel.com/?pg=orders&so=' + encodeURIComponent(so.id);
   const subject = `Manual cost posted by ${posterName} — ${so.id} · $${money(amount)}`;
-  const poster = posterName + (posterEmail ? ` (${posterEmail})` : '');
+  const poster = personLabel(member, 'Unknown staff member');
+  const salesRep = personLabel(rep);
+  const account = customer?.name || so.customer_id || 'Unknown account';
   const textContent = [
     `A manual cost was posted to ${so.id}.`,
-    `Amount: $${money(amount)}`,
+    `Account: ${account}`,
+    `Sales rep: ${salesRep}`,
+    `Cost amount: $${money(amount)}`,
     `Paid by: ${method}`,
     `Vendor / payee: ${vendor}`,
     `PO reference: ${po.po_id}`,
-    `Posted by: ${poster}`,
-    customer?.name ? `Customer: ${customer.name}` : '',
+    `Entered by (verified): ${poster}`,
     so.memo ? `Order memo: ${so.memo}` : '',
     note ? `Cost note: ${note}` : '',
     postedAt ? `Posted at: ${postedAt}` : '',
@@ -43,12 +51,13 @@ function buildEmail({ so, customer, po, member }) {
     + `<h2 style="margin:0 0 8px;color:#0f766e">Manual cost posted to ${esc(so.id)}</h2>`
     + `<p style="margin:0 0 14px;color:#475569">${esc(posterName)} recorded a job cost that is included in the order Costs tab and commission COGS.</p>`
     + '<table role="presentation" cellspacing="0" cellpadding="0" border="0">'
-    + row('Amount', `$${money(amount)}`)
+    + row('Account', account)
+    + row('Sales rep', salesRep)
+    + row('Cost amount', `$${money(amount)}`)
     + row('Paid by', method)
     + row('Vendor / payee', vendor)
     + row('PO reference', po.po_id)
-    + row('Posted by', poster)
-    + (customer?.name ? row('Customer', customer.name) : '')
+    + row('Entered by (verified)', poster)
     + (so.memo ? row('Order memo', so.memo) : '')
     + (note ? row('Cost note', note) : '')
     + (postedAt ? row('Posted at', postedAt) : '')
@@ -88,7 +97,7 @@ exports.handler = async (event) => {
     }
 
     const [{ data: so, error: soError }, { data: member, error: memberError }] = await Promise.all([
-      admin.from('sales_orders').select('id,customer_id,memo').eq('id', soId).maybeSingle(),
+      admin.from('sales_orders').select('id,customer_id,memo,created_by').eq('id', soId).maybeSingle(),
       admin.from('team_members').select('id,name,email').eq('id', verified.teamMemberId).maybeSingle(),
     ]);
     if (soError) throw soError;
@@ -96,11 +105,20 @@ exports.handler = async (event) => {
     if (!so || !member) return { statusCode: 404, headers: JSON_HEADERS, body: JSON.stringify({ error: 'Sales order or poster was not found' }) };
     let customer = null;
     if (so.customer_id) {
-      const customerResult = await admin.from('customers').select('id,name').eq('id', so.customer_id).maybeSingle();
+      const customerResult = await admin.from('customers').select('id,name,primary_rep_id').eq('id', so.customer_id).maybeSingle();
       if (!customerResult.error) customer = customerResult.data;
     }
+    const repId = customer?.primary_rep_id || so.created_by || '';
+    let rep = null;
+    if (repId) {
+      if (String(repId) === String(member.id)) rep = member;
+      else {
+        const repResult = await admin.from('team_members').select('id,name,email').eq('id', repId).maybeSingle();
+        if (!repResult.error) rep = repResult.data;
+      }
+    }
 
-    const email = buildEmail({ so, customer, po, member });
+    const email = buildEmail({ so, customer, po, member, rep });
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': apiKey },
@@ -121,4 +139,4 @@ exports.handler = async (event) => {
   }
 };
 
-exports._internals = { ALERT_EMAIL, buildEmail, paymentLabel };
+exports._internals = { ALERT_EMAIL, buildEmail, paymentLabel, personLabel };
