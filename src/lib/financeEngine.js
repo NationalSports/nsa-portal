@@ -539,7 +539,9 @@ function uninvoicedOrderRows({
   const invoicedBySo = new Map();
   for (const inv of allInvs) {
     if (!liveInv(inv) || !inv.so_id) continue;
-    const billed = Math.max(0, N(inv.total) - N(inv.tax));
+    // Invoice totals are customer-facing, tax-inclusive amounts. Compare like
+    // with like so the remaining amount agrees with the invoice and order UI.
+    const billed = Math.max(0, N(inv.total));
     invoicedBySo.set(inv.so_id, (invoicedBySo.get(inv.so_id) || 0) + billed);
   }
   const customerById = new Map(customers.filter(Boolean).map((c) => [c.id, c]));
@@ -549,20 +551,28 @@ function uninvoicedOrderRows({
     if (!liveSO(so)) continue;
     let margin = null;
     try { margin = calcMargin ? calcMargin(so) : null; } catch (_) {}
-    const orderValue = Math.max(0, N(margin?.rev) + N(margin?.shipRev));
+    const customer = customerById.get(so.customer_id);
+    const orderSubtotal = Math.max(0, N(margin?.rev) + N(margin?.shipRev));
+    const taxRate = (so.tax_exempt || customer?.tax_exempt)
+      ? 0
+      : N(so.tax_rate != null ? so.tax_rate : customer?.tax_rate);
+    // Shipping is not taxed in the order editor; mirror that calculation here.
+    const orderTax = Math.max(0, N(margin?.rev) * taxRate);
+    const orderValue = orderSubtotal + orderTax;
     const invoiced = N(invoicedBySo.get(so.id));
     const openToInvoice = Math.max(0, orderValue - invoiced);
     if (openToInvoice < 1) continue;
     let status = so.status || '';
     try { status = calcStatus ? calcStatus(so) : status; } catch (_) {}
-    const customer = customerById.get(so.customer_id);
-    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(status)
-      || ['complete', 'completed', 'shipped'].includes(String(so.status || '').toLowerCase());
+    const storedStatus = String(so.status || '').toLowerCase();
+    // The stored workflow state is authoritative for operational TODOs. A
+    // calculated ready state must not pull waiting/receiving orders forward.
+    const completed = ['ready_to_invoice', 'complete', 'completed', 'shipped'].includes(storedStatus);
     const orderDate = parseDate(so.created_at);
     rows.push({
       id: so.id, customerId: so.customer_id || null, customerName: customer?.name || 'Unknown account',
       repId: customer?.primary_rep_id || so.created_by || null, status, storedStatus: so.status || '',
-      orderValue, invoiced, openToInvoice, completed, orderDate,
+      orderSubtotal, orderTax, taxRate, orderValue, invoiced, openToInvoice, completed, orderDate,
       ageDays: orderDate ? Math.max(0, daysBetween(today, orderDate)) : null,
       memo: so.memo || '', order: so,
     });
