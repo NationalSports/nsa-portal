@@ -245,6 +245,25 @@ describe('operational AR forecast and exposure', () => {
     expect(orderRows.reduce((sum, r) => sum + r.openToInvoice, 0)).toBe(exposure[0].completedUninvoiced);
   });
 
+  test('uses tax-inclusive totals and does not queue a waiting-receive order from a calculated status', () => {
+    const customers = [{ id: 'C1', name: 'Alpha', primary_rep_id: 'R1', tax_rate: 0.09 }];
+    const sos = [
+      { id: 'SO-TAX', customer_id: 'C1', status: 'complete', _rev: 100, _ship: 10 },
+      { id: 'SO-WAIT', customer_id: 'C1', status: 'waiting_receive', _rev: 900 },
+    ];
+    const orderRows = completedUninvoicedOrdersReport({
+      sos,
+      invs: [{ id: 'I-TAX', so_id: 'SO-TAX', total: 55, tax: 5, status: 'open' }],
+      customers,
+      calcMargin,
+      calcStatus: () => 'ready_to_invoice',
+    });
+    expect(orderRows).toHaveLength(1);
+    expect(orderRows[0]).toMatchObject({
+      id: 'SO-TAX', orderSubtotal: 110, orderTax: 9, orderValue: 119, invoiced: 55, openToInvoice: 64,
+    });
+  });
+
   test('builds team and rep daily snapshots with forecast and exposure values', () => {
     const ar = {
       openInvoices,
