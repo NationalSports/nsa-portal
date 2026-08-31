@@ -833,7 +833,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poAlphaSuffix,setPoAlphaSuffix]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
-    const[poManualCost,setPoManualCost]=useState('');const[poManualCostNote,setPoManualCostNote]=useState('');const[poPaymentMethod,setPoPaymentMethod]=useState('credit_card');
+    const[poManualCost,setPoManualCost]=useState('');const[poManualCostNote,setPoManualCostNote]=useState('');const[poPaymentMethod,setPoPaymentMethod]=useState('credit_card');const[poManualVendor,setPoManualVendor]=useState('');
     // Record every PO number the form DISPLAYS as a claim (owner report 2026-07-22): reps
     // quote the shown number to the vendor before clicking Create; abandoning the form
     // orphans it and the vendor's bill later arrives with a PO the portal never owned
@@ -8995,9 +8995,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const poIdx=(safeItems(o)[idx]?.po_lines||[]).findIndex(pl=>pl&&pl.po_type==='customer_supplied');
         if(idx>=0&&poIdx>=0){setShowPO(null);setEditPO({lineIdx:idx,poIdx,po:safeItems(o)[idx].po_lines[poIdx],allLines:[{lineIdx:idx,poIdx}]})}
       };
+      if(showPO==='manual')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div className="modal-header"><h2>Create Manual PO</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>Use this for a real job expense when the vendor is not attached to an order item. It creates a cost-only PO; no merchandise or receiving quantities are added.</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 150px',gap:12}}>
+            <div><label className="form-label">Vendor name</label><input className="form-input" value={poManualVendor} onChange={e=>setPoManualVendor(e.target.value)} placeholder="Enter vendor or payee"/></div>
+            <div><label className="form-label">Paid by</label><select className="form-input" value={poPaymentMethod} onChange={e=>setPoPaymentMethod(normalizePoPaymentMethod(e.target.value))}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'150px 1fr',gap:12,marginTop:12}}>
+            <div><label className="form-label">Cost</label><div style={{display:'flex',alignItems:'center',gap:5}}><span>$</span><input className="form-input" type="number" min="0.01" step="0.01" value={poManualCost} onChange={e=>setPoManualCost(e.target.value)} placeholder="0.00"/></div></div>
+            <div><label className="form-label">What was this cost for?</label><input className="form-input" value={poManualCostNote} onChange={e=>setPoManualCostNote(e.target.value)} placeholder="Credit-card purchase, rush charge, cash payment, etc."/></div>
+          </div>
+          <div style={{marginTop:14,padding:'9px 11px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>This amount is internal only and is counted once in the sales-order Costs tab, margin, promo deductions, and commissions.</div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button>
+          <button className="btn btn-primary" disabled={!poManualVendor.trim()||!(Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0)>0)||safeItems(o).length===0} onClick={()=>{
+            if(_poCreatingRef.current)return;
+            const amount=Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0);
+            const vendor=poManualVendor.trim();
+            if(!vendor){nf('Enter the vendor or payee name','error');return}
+            if(!(amount>0)){nf('Enter a manual PO cost greater than $0','error');return}
+            const items=safeItems(o);
+            if(items.length===0){nf('This sales order has no item to attach the manual PO to','error');return}
+            _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+            const manualPoId='PO '+poCounter+(poAlphaSuffix?' '+poAlphaSuffix:'');
+            const poLine={po_id:manualPoId,vendor,po_type:'manual_cost',status:'complete',created_at:new Date().toLocaleDateString(),memo:poManualCostNote.trim()||'Manual job cost',received:{},shipments:[],unit_cost:0,_payment_method:poPaymentMethod,_manual_cost:amount,...(poManualCostNote.trim()?{_manual_cost_note:poManualCostNote.trim()}:{})};
+            const updatedItems=items.map((it,idx)=>idx===0?{...it,po_lines:[...(it.po_lines||[]),poLine]}:it);
+            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+            setO(updated);onSave(updated);_consumeHeldPoNumber(true,false);
+            setShowPO(null);setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');
+            nf(manualPoId+' created for '+vendor+' · $'+amount.toFixed(2)+' manual cost applied to '+o.id);
+          }}>Create Manual PO</button>
+        </div>
+      </div></div>;
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
-        <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
+        <div className="modal-body">
+          <button className="btn" style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'10px 12px',marginBottom:10,background:'#0f766e',color:'#fff',border:'none',fontWeight:800}} onClick={()=>{setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setPoAlphaSuffix(cust?.alpha_tag||'');setShowPO('manual')}}>＋ Create Manual PO</button>
+          <div style={{fontSize:10,color:'#64748b',textAlign:'center',marginTop:-5,marginBottom:10}}>For a vendor or job expense that is not represented by the item vendors below</div>
+          {Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
           if(openCount===0)return<div key={vk} style={{display:'flex',alignItems:'center',gap:12,border:'1px solid #E2E6EF',background:'#FAFBFD',borderRadius:9,padding:'11px 14px',marginBottom:8,opacity:0.7}}>
