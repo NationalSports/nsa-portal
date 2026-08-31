@@ -5,25 +5,70 @@
 -- National BillPayment + Methodic Payment, with local rows preserving partial
 -- success so retries never blindly duplicate a transaction.
 
+-- Some environments predate the server-only token migration. Create the secure
+-- token store here as a prerequisite so this migration can roll out safely on
+-- its own, then preserve any existing National connection before removing the
+-- credential copy from app_state.
+create table if not exists public.qb_oauth_tokens (
+  realm_id         text primary key,
+  access_token     text not null,
+  refresh_token    text not null,
+  expires_in       integer,
+  token_created_at bigint not null default (extract(epoch from now()) * 1000)::bigint,
+  updated_at       timestamptz not null default now()
+);
+
+alter table public.qb_oauth_tokens enable row level security;
+revoke all on public.qb_oauth_tokens from anon, authenticated;
+grant all on public.qb_oauth_tokens to service_role;
+
 alter table public.qb_oauth_tokens
   add column if not exists company_key text;
+
+insert into public.qb_oauth_tokens (
+  realm_id, access_token, refresh_token, expires_in,
+  token_created_at, updated_at, company_key
+)
+select
+  coalesce(value::jsonb ->> 'realm_id', value::jsonb ->> 'companyId'),
+  value::jsonb ->> 'access_token',
+  value::jsonb ->> 'refresh_token',
+  null,
+  case
+    when (value::jsonb ->> 'token_created_at') ~ '^[0-9]+$'
+      then (value::jsonb ->> 'token_created_at')::bigint
+    else (extract(epoch from now()) * 1000)::bigint
+  end,
+  coalesce(updated_at, now()),
+  'national'
+from public.app_state
+where id = 'qb_config'
+  and value is not null
+  and value <> ''
+  and coalesce(value::jsonb ->> 'realm_id', value::jsonb ->> 'companyId') is not null
+  and value::jsonb ? 'access_token'
+  and value::jsonb ? 'refresh_token'
+on conflict (realm_id) do nothing;
 
 update public.qb_oauth_tokens
    set company_key = 'national'
  where company_key is null;
 
--- The old connector was single-company but could leave an obsolete realm row
--- behind after a reconnect. Keep only the newest legacy National connection
--- before enforcing one token row per named company.
-with ranked as (
-  select realm_id,
-         row_number() over (partition by company_key order by updated_at desc, realm_id desc) as row_rank
-    from public.qb_oauth_tokens
-)
-delete from public.qb_oauth_tokens t
- using ranked r
- where t.realm_id = r.realm_id
-   and r.row_rank > 1;
+-- Do not guess which credential to keep if a legacy environment somehow has
+-- duplicates. Abort without changing anything so an operator can reconcile the
+-- connections explicitly rather than silently deleting an OAuth grant.
+do $$
+begin
+  if exists (
+    select 1
+      from public.qb_oauth_tokens
+     group by company_key
+    having count(*) > 1
+  ) then
+    raise exception 'Multiple QuickBooks OAuth rows exist for one company; reconcile them before applying Methodic accounting.';
+  end if;
+end;
+$$;
 
 alter table public.qb_oauth_tokens
   alter column company_key set default 'national',
@@ -37,6 +82,23 @@ alter table public.qb_oauth_tokens
 
 create unique index if not exists qb_oauth_tokens_company_key_uidx
   on public.qb_oauth_tokens (company_key);
+
+-- Remove browser-readable credentials only after the same grant is present in
+-- the server-only table. Non-secret QuickBooks mapping/config values remain.
+update public.app_state a
+   set value = ((a.value::jsonb) - 'access_token' - 'refresh_token' - 'token_created_at')::text,
+       updated_at = now()
+ where a.id = 'qb_config'
+   and a.value is not null
+   and a.value <> ''
+   and exists (
+     select 1
+       from public.qb_oauth_tokens t
+      where t.company_key = 'national'
+        and t.realm_id = coalesce(a.value::jsonb ->> 'realm_id', a.value::jsonb ->> 'companyId')
+        and t.access_token = a.value::jsonb ->> 'access_token'
+        and t.refresh_token = a.value::jsonb ->> 'refresh_token'
+   );
 
 alter table public.methodic_requests
   drop constraint if exists methodic_requests_billing_status_check;
