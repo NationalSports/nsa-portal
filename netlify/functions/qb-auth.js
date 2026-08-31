@@ -8,6 +8,7 @@
 const crypto = require('crypto');
 const { verifyUser } = require('./_shared');
 const { getSupabaseAdmin, httpsPost, basicAuth, saveTokens, getStoredTokens, clearTokens, refreshStoredTokens, revokeToken } = require('./_qb');
+const { qbPortalRedirect } = require('./_qbOAuthRedirect');
 
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -71,15 +72,19 @@ exports.handler = async (event) => {
   // Intuit redirects here after the user authorizes. Validate state, exchange code, store tokens.
   if (action === 'callback' || params.code) {
     const clearState = stateCookie('', 0);
+    const redirect = (values) => qbPortalRedirect(event, SITE_URL, values);
     // CSRF: the state echoed back by Intuit must match the cookie set at connect.
     const cookieState = readCookie(event, STATE_COOKIE);
     if (!params.state || !cookieState || params.state !== cookieState) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=state_mismatch`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ error: 'state_mismatch' }), 'Set-Cookie': clearState }, body: '' };
+    }
+    if (params.error) {
+      return { statusCode: 302, headers: { Location: redirect({ error: params.error }), 'Set-Cookie': clearState }, body: '' };
     }
     const code = params.code;
     const realmId = params.realmId;
     if (!code || !realmId) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=missing_code`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ error: 'missing_code' }), 'Set-Cookie': clearState }, body: '' };
     }
     try {
       const tokenBody = `grant_type=authorization_code&code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(QB_REDIRECT_URI)}`;
@@ -87,7 +92,7 @@ exports.handler = async (event) => {
         'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(), 'Accept': 'application/json',
       });
       if (result.status !== 200 || !result.data?.access_token) {
-        return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=token_exchange_failed`, 'Set-Cookie': clearState }, body: '' };
+        return { statusCode: 302, headers: { Location: redirect({ error: 'token_exchange_failed' }), 'Set-Cookie': clearState }, body: '' };
       }
       // Persist tokens server-side ONLY. They never reach the browser or the redirect URL.
       await saveTokens(getSupabaseAdmin(), {
@@ -97,9 +102,9 @@ exports.handler = async (event) => {
         expires_in: result.data.expires_in,
         token_created_at: Date.now(),
       });
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?qb_connected=1&realm=${encodeURIComponent(realmId)}`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ qb_connected: '1', realm: realmId }), 'Set-Cookie': clearState }, body: '' };
     } catch (err) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=exception`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ error: 'exception' }), 'Set-Cookie': clearState }, body: '' };
     }
   }
 

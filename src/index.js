@@ -8,6 +8,13 @@ import {
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
 import { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isMoveCheckinPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
+import { qboFunctionCallbackUrl } from './qbOAuthCallback';
+
+// Intuit currently returns to /?action=callback. Complete the exchange in the
+// serverless function before mounting the portal, so the code cannot be mistaken
+// for an ordinary dashboard reload or remain in browser history.
+const _qboCallbackForwardUrl = typeof window !== 'undefined' ? qboFunctionCallbackUrl(window.location) : null;
+if (_qboCallbackForwardUrl) window.location.replace(_qboCallbackForwardUrl);
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -270,7 +277,9 @@ const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      {isAdidasInventory
+      {_qboCallbackForwardUrl
+        ? <AppFallback />
+        : isAdidasInventory
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading inventory…</div>}><AdidasInventory /></React.Suspense>
         : isTeamStores
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading team stores…</div>}><TeamStores /></React.Suspense>
