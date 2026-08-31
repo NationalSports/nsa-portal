@@ -74,6 +74,7 @@ describe('manual PO costs', () => {
     const root = path.join(__dirname, '..');
     const commissions = fs.readFileSync(path.join(root, 'CommissionsPage.js'), 'utf8');
     const editor = fs.readFileSync(path.join(root, 'OrderEditor.js'), 'utf8');
+    const classicEditor = fs.readFileSync(path.join(root, 'OrderEditorClassic.js'), 'utf8');
 
     // Paid invoice GP, open pipeline GP, and promo deductions are separate calculations.
     expect(commissions).toContain('cost+=manualPoCost');
@@ -82,5 +83,14 @@ describe('manual PO costs', () => {
     // The order Costs tab must surface the same canonical rows and payment labels.
     expect(editor).toContain("category:'Manual PO Cost'");
     expect(editor).toContain('paymentLabel:row.payment_label');
+    // Both editor variants expose a cost-only path that does not depend on an item vendor.
+    [editor, classicEditor].forEach(source => {
+      expect(source).toContain('＋ Create Manual PO');
+      expect(source).toContain("po_type:'manual_cost'");
+      expect(source).toContain('_manual_cost:amount');
+      expect(source).toContain('_payment_method:poPaymentMethod');
+      expect(source).toContain('_consumeHeldPoNumber(true,false)');
+      expect(source).toContain('no merchandise or receiving quantities are added');
+    });
   });
 });
