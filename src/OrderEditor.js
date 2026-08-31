@@ -9097,13 +9097,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!poN){_poCreatingRef.current=false;nf('Couldn\'t reserve a PO number — check your connection and try again.','error');return}
           const finalPoId='PO '+poN+(poAlphaSuffix?' '+poAlphaSuffix:'');
           const note=poManualCostNote.trim();
-          const poLine={po_id:finalPoId,vendor:poManualVendor.trim()||'Manual purchase',po_type:'manual_cost',status:'received',unit_cost:0,received:{},shipments:[],created_at:new Date().toLocaleDateString(),_manual_cost:amount,_payment_method:normalizePoPaymentMethod(poPaymentMethod),...(note?{memo:note,_manual_cost_note:note}:{})};
+          const createdAt=new Date().toISOString();
+          const poLine={po_id:finalPoId,vendor:poManualVendor.trim()||'Manual purchase',po_type:'manual_cost',status:'received',unit_cost:0,received:{},shipments:[],created_at:new Date().toLocaleDateString(),_manual_cost:amount,_payment_method:normalizePoPaymentMethod(poPaymentMethod),_manual_cost_created_at:createdAt,_manual_cost_created_by:cu?.name||cuEmail||cu?.id||'Unknown staff member',_manual_cost_created_by_id:cu?.id||'',_manual_cost_created_by_email:cuEmail||'',...(note?{memo:note,_manual_cost_note:note}:{})};
           const updatedItems=safeItems(o).map((it,i)=>i===targetIdx?{...it,po_lines:[...safePOs(it),poLine]}:it);
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-          setO(updated);onSave(updated);_consumeHeldPoNumber(true,false);
+          const saved=onSaveNow?await onSaveNow(updated):(onSave(updated),true);
+          if(saved===false){_poCreatingRef.current=false;nf('Manual cost was not saved — no email was sent. Check your connection and try again.','error');return}
+          setO(updated);_consumeHeldPoNumber(true,false);
           setShowPO(null);setPoManualVendor('');setPoManualCost('');setPoManualCostNote('');setPoPaymentMethod('credit_card');setTab('costs');
           _poCreatingRef.current=false;
-          nf(finalPoId+' recorded · $'+amount.toFixed(2)+' paid by '+poPaymentMethodLabel(poPaymentMethod)+' · added to '+o.id+' costs and commission COGS');
+          let emailResult={ok:false,error:'Notification was not attempted'};
+          try{const response=await authFetch('/.netlify/functions/manual-cost-notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({so_id:o.id,po_id:finalPoId})});const data=await response.json().catch(()=>({}));emailResult=response.ok?{ok:true}:{ok:false,error:data.error||('HTTP '+response.status)}}catch(error){emailResult={ok:false,error:error.message}}
+          nf(finalPoId+' recorded · $'+amount.toFixed(2)+' paid by '+poPaymentMethodLabel(poPaymentMethod)+' · added to '+o.id+' costs and commission COGS'+(emailResult.ok?' · Steve emailed':''));
+          if(!emailResult.ok)nf('Manual cost saved, but the email to Steve failed: '+emailResult.error,'error');
         };
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
           <div className="modal-header"><h2>Manual Cost / Purchase</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
@@ -9115,7 +9121,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div className="form-group"><label className="form-label">Paid by</label><select className="form-input" value={poPaymentMethod} onChange={e=>setPoPaymentMethod(normalizePoPaymentMethod(e.target.value))} style={{fontWeight:700}}><option value="credit_card">Credit card</option><option value="wire">Wire</option><option value="cash">Cash</option></select></div>
               <div className="form-group"><label className="form-label">What was this cost for? (optional)</label><input className="form-input" value={poManualCostNote} onChange={e=>setPoManualCostNote(e.target.value)} placeholder="Rush fee, samples, supplies, or other expense"/></div>
             </div>
-            <div style={{padding:'9px 11px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:7,fontSize:11,color:'#166534'}}>This cost appears on the sales order Costs tab and is deducted once from commission gross profit.</div>
+            <div style={{padding:'9px 11px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:7,fontSize:11,color:'#166534'}}>This cost appears on the sales order Costs tab, is deducted once from commission gross profit, and emails Steve after it saves.</div>
           </div>
           <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button><button className="btn btn-primary" disabled={!(amount>0)||_poCreatingRef.current} onClick={saveManualCost}>Record ${amount.toFixed(2)} Cost</button></div>
         </div></div>;
