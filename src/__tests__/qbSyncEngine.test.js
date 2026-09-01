@@ -1,4 +1,4 @@
-import { createQBSyncEngine, findExactQBCustomerMatches, groupPortalPurchaseOrders, rotatingBatch } from '../qbSyncEngine';
+import { createQBSyncEngine, findExactQBCustomerMatches, groupPortalPurchaseOrders, portalCustomerDisplayName, rotatingBatch } from '../qbSyncEngine';
 
 describe('QuickBooks rotating batches', () => {
   test('moves past a permanently blocked first batch', () => {
@@ -74,6 +74,10 @@ describe('QuickBooks one-customer canary', () => {
       {Id:'12',CompanyName:'West Valley College Baseball',Active:false},
     ]);
     expect(matches.map(row=>row.Id)).toEqual(['10']);
+  });
+
+  test('trims hidden customer whitespace for the selector label and sorting key', () => {
+    expect(portalCustomerDisplayName({name:' Del Lago Academy ',alpha_tag:' DLA '})).toBe('Del Lago Academy (DLA)');
   });
 
   test('links and reads back one exact existing customer without a QBO write', async() => {

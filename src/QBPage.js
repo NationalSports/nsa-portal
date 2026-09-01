@@ -7,7 +7,7 @@ import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
-import { createQBSyncEngine, groupPortalPurchaseOrders } from './qbSyncEngine';
+import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -232,7 +232,7 @@ export default function QBPage(){
     const migrationUnlocked=qbConfig.initialMigrationApproved===true;
     const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
     const livePreflightReady=qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
-    const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+    const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>portalCustomerDisplayName(a).localeCompare(portalCustomerDisplayName(b)));
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
       const result=await syncCustomerCanary(qbCanaryCustomerId);
@@ -520,13 +520,14 @@ export default function QBPage(){
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Customer to test in QuickBooks" style={{minWidth:320,maxWidth:520}} value={qbCanaryCustomerId} onChange={e=>setQbCanaryCustomerId(e.target.value)}>
                 <option value="">Select one customer...</option>
-                {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{c.name}{c.alpha_tag?' ('+c.alpha_tag+')':''}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
+                {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{portalCustomerDisplayName(c)}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
               </select>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!qbCanaryCustomerId||!livePreflightReady}
                 title={!livePreflightReady?'Run a successful read-only live preflight first':!qbCanaryCustomerId?'Select one customer first':''} onClick={runCustomerCanary}>
                 {qbSyncing?'Testing...':'Test 1 Customer'}
               </button>
             </div>
+            {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight, then return here.</div>}
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
