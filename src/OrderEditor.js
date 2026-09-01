@@ -1127,7 +1127,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const itemVendorSource=useCallback((item)=>{
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    return itemVendorInvSource(item,vendorList.find(v=>v.id===vId));
+    // Treat a vendor resolved from the catalog/server map as authoritative too.
+    // Legacy webstore lines often omitted vendor_id even though their SKU was
+    // correctly mapped; otherwise an old `ssa-*` product id wins and shows S&S.
+    return itemVendorInvSource(vId?{...item,vendor_id:vId}:item,vendorList.find(v=>v.id===vId));
   },[products,vendorList,dbVendorBySku]);
 
   // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
