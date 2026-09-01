@@ -308,7 +308,9 @@ exports.handler = async (event) => {
           for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = costOf(r); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
           const sizeCosts = {};
           for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
-          const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
+          // Prefer SanMar's garment-only flat for webstore decoration/mockups. Model
+          // photography remains a fallback for colors without a published flat.
+          const img    = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           // SanMar prefixes retired styles with "DISCONTINUED" — strip it (still sells from stock).
           const title  = (r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName)).replace(/DISCONTINUED/ig, '').replace(/\s{2,}/g, ' ').trim();
           prodRows.push({

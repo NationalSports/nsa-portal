@@ -145,7 +145,7 @@ exports.handler = async () => {
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
           const cost = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
           const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
-          const img = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
+          const img = r0.frontFlat || r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
           // SanMar prefixes retired styles with "DISCONTINUED" (sometimes glued to the
           // next word, e.g. "DISCONTINUEDNike …"). Strip it — the item still sells from stock.
           const title = (r0.productTitle || r0.productDescription || (style + ' ' + grp.colorName)).replace(/DISCONTINUED/ig, '').replace(/\s{2,}/g, ' ').trim();
