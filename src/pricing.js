@@ -373,7 +373,7 @@ export const calcPaidQualifyingSpend=({sos,invs,histInvs,famIds,start,end})=>{
   const inRange=(v)=>{const d=promoDateKey(v);return !!d&&d>=start&&d<=end};
   const soSpend=(sos||[]).filter(so=>so&&fam.has(so.customer_id)&&inRange(so.order_date||so.created_at)&&soIsPaid(so,invs))
     .reduce((a,so)=>a+calcQualifyingSpend(so),0);
-  const histSpend=(histInvs||[]).filter(hi=>hi&&fam.has(hi.customer_id)&&hi.status==='paid'&&inRange(hi.date||hi.invoice_date))
+  const histSpend=(histInvs||[]).filter(hi=>hi&&fam.has(hi.customer_id)&&String(hi.status||'').trim().toLowerCase().startsWith('paid')&&inRange(hi.date||hi.invoice_date))
     .reduce((a,hi)=>{
       const net=hi.subtotal!=null?safeNum(hi.subtotal):safeNum(hi.total)-safeNum(hi.tax);
       return a+(hi.invoice_type==='credit_memo'?-Math.abs(net):net);
