@@ -1,0 +1,76 @@
+name: Shipping Audit Refresh
+
+# Keeps SHIPPING_COST_HANDOFF.md describing the data as it is rather than as it
+# was on Aug 31 2026. Each run re-derives every figure from the live database,
+# appends a row to ship_audit_snapshots (so the recording gap has a history),
+# and commits the doc if anything moved.
+#
+# The audit's whole point is a backfill that should be closing a ~91% gap in
+# recorded shipping costs. A number that only ever gets written once cannot show
+# whether that is happening.
+
+on:
+  schedule:
+    - cron: '0 13 * * 1' # Mondays ~8am Central (6am PT)
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/shipping-audit.js'
+      - 'SHIPPING_COST_HANDOFF.md'
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # On a PR the job is a guard, not a writer: it only reports whether the
+      # committed doc still matches the database. On the schedule it refreshes
+      # and commits. SUPABASE_DB_URL is a Postgres connection string held as a
+      # repo secret — the same one scripts/check-schema-drift.js uses. It needs
+      # INSERT on ship_audit_snapshots for the scheduled run; a read-only role
+      # still works, the snapshot step just warns and skips.
+      - name: Refresh the audit
+        if: github.event_name != 'pull_request'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: node scripts/shipping-audit.js
+
+      # Never fail the PR on a stale doc — data moves on its own, and a
+      # contributor editing the script should not be blocked by orders that
+      # arrived overnight. The notice tells them what the scheduled run will do.
+      - name: Check the committed doc against live data
+        if: github.event_name == 'pull_request'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::notice::SUPABASE_DB_URL not set — skipping the shipping audit check."
+            exit 0
+          fi
+          node scripts/shipping-audit.js --check \
+            || echo "::notice::SHIPPING_COST_HANDOFF.md is behind the live data. The scheduled Monday run will refresh it."
+
+      # Commits straight to the default branch. If that branch is protected, this
+      # step fails and the job goes red — deliberately loud rather than silent.
+      # The snapshot row is already in Postgres by then, so the history survives
+      # regardless; only the doc refresh needs unblocking.
+      - name: Commit the refreshed doc
+        if: github.event_name != 'pull_request'
+        run: |
+          if git diff --quiet -- SHIPPING_COST_HANDOFF.md; then
+            echo "No change in the shipping audit."
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add SHIPPING_COST_HANDOFF.md
+          git commit -m 'Refresh shipping cost audit from live data'
+          git push
