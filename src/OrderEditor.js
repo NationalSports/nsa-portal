@@ -2994,6 +2994,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>s!==sz))};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
+  const _withDecoDeleteIntent=(e,ii,nextCount)=>{const from=safeDecos(safeItems(e)[ii]).length;if(nextCount>=from)return{};const prior=e._decoDeleteIntents?.[ii];return{_decoDeleteIntents:{...(e._decoDeleteIntents||{}),[ii]:{from:Number.isFinite(prior?.from)?prior.from:from,to:nextCount}}}};
   const addArtDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
   const addNumDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{},...(rev?{reversible:true}:{})}]}:x))};
   const addNameDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',name_method:'heat_press',sell_override:null,sell_each:6,cost_each:3,names:{},...(rev?{reversible:true}:{})}]}:x))};
@@ -3032,7 +3033,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const sg='sg_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
       artDecos=active.map(d=>({kind:'art',position:d.position,art_file_id:d.art_file_id,sell_override:null,split_group:sg,split_sizes:{...d.sizes},...(rev?{reversible:true}:{})}));
     }
-    setO(e=>({...e,items:safeItems(e).map((x,i)=>i===m.itemIdx?{...x,no_deco:false,decorations:[...artDecos,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
+    setO(e=>{const next=[...artDecos,...keepNonArt];return{...e,..._withDecoDeleteIntent(e,m.itemIdx,next.length),items:safeItems(e).map((x,i)=>i===m.itemIdx?{...x,no_deco:false,decorations:next}:x),updated_at:new Date().toLocaleString()}});
     setDirty(true);setSplitArtModal(null);
     nf(active.length>=2?('✂️ Split into '+active.length+' designs — '+active.length+' jobs created'):'Updated — one design on all pieces');
   };
@@ -3044,7 +3045,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const keepNonArt=safeDecos(it).filter(d=>d.kind!=='art');
     const first=splitArts[0];
     const merged={kind:'art',position:first.position||'Front Center',art_file_id:first.art_file_id||null,sell_override:null,...(first.reversible?{reversible:true}:{})};
-    setO(e=>({...e,items:safeItems(e).map((x,i)=>i===idx?{...x,decorations:[merged,...otherArts,...keepNonArt]}:x),updated_at:new Date().toLocaleString()}));
+    setO(e=>{const next=[merged,...otherArts,...keepNonArt];return{...e,..._withDecoDeleteIntent(e,idx,next.length),items:safeItems(e).map((x,i)=>i===idx?{...x,decorations:next}:x),updated_at:new Date().toLocaleString()}});
     setDirty(true);nf('Split removed — first design kept on all pieces');
   };
   const uD=(ii,di,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
@@ -3186,7 +3187,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     nf(val==='outside'
       ?'\uD83C\uDFA8 '+ln+' marked Outside'+(markDeco.vendor?' \u00B7 '+markDeco.vendor:'')+(isSO?' \u2014 add a Deco PO to bundle & cost '+(n!==1?'them':'it')+'.':' \u2014 carries to the sales order, where you bundle the Deco PO.')
       :'\uD83C\uDFED '+ln+' marked In-house'+(blocked.length?' \u00B7 '+blocked.length+' left on a Deco PO':''))};
-  const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  const rmD=(ii,di)=>{setO(e=>{const current=safeDecos(safeItems(e)[ii]);const next=current.filter((_,i)=>i!==di);return{...e,..._withDecoDeleteIntent(e,ii,next.length),items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}});setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
   // Art-folder mutators use the functional setO form so they always read the
