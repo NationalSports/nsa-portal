@@ -437,7 +437,7 @@ import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus 
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, resolveQBAccountRefs } from './qbAccountMappings';
-import BaggingDashCard from './baggingstation/BaggingDashCard';
+import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -9879,8 +9879,6 @@ export default function App(){
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
     </div>
-    {/* Bagging queue — batches ready at the tablet Bagging Station (/bagging-station) */}
-    <div style={{marginBottom:16}}><BaggingDashCard/></div>
     {/* Ready for decoration — jobs whose last units were just checked in with art already complete */}
     {(()=>{
       const readyNotifs=todos.filter(t=>t.type==='ready_for_deco'&&!dismissedNotifs.includes(t.dismissKey));
@@ -10496,8 +10494,6 @@ export default function App(){
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
     </div>
-    {/* Bagging queue — batches ready at the tablet Bagging Station (/bagging-station) */}
-    <div style={{marginBottom:16}}><BaggingDashCard/></div>
     {/* Ready for decoration — jobs whose last units were just checked in with art already complete */}
     {(()=>{
       const readyNotifs=todos.filter(t=>t.type==='ready_for_deco'&&!dismissedNotifs.includes(t.dismissKey));
@@ -19369,8 +19365,6 @@ export default function App(){
     const _whTodoComplete=(id)=>{if(!_confirmTodoComplete(id))return;const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
     // Open the Assign-Task modal pre-tied to a warehouse document (SO / IF / job), warehouse-only assignees.
     const _whOpenAssign=({title,description,so,soId,docLabel})=>{const s=so||sos.find(x=>x.id===soId);setTodoModal({open:true,title:title||'',description:description||'',assigned_to:'',so_id:soId||s?.id||'',customer_id:s?.customer_id||'',priority:2,due_date:_whTodayStr,doc_label:docLabel||soId||s?.id||'',wh_only:true})};
-    // Count awaiting pickup shipments for tab badge
-    const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     // ── READY TO SHIP IS PER JOB, NOT PER SALES ORDER ──────────────────────────────────────
     // What the warehouse packs is a finished decoration job (or a fully-pulled no-deco line),
     // not an order: one SO can carry several jobs finishing weeks apart, and a job can own just
@@ -19515,7 +19509,7 @@ export default function App(){
       {id:'deco',label:'Ready for Deco',icon:'🎨',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'Ready to Ship',icon:'📦',count:fShip.length,color:'#166534'},
       {id:'deliver',label:'Deliver',icon:'🚚',count:fDeliver.length,color:'#d97706'},
-      {id:'pickup',label:'Awaiting Pickup',icon:'🚚',count:awaitingPickupCount,color:'#d97706'},
+      {id:'bagging',label:'Bagging Queue',icon:'🛍️',color:'#7c3aed'},
       {id:'stockpo',label:'Stock POs',icon:'📋',count:openStockPOs.length,color:'#6366f1'},
       ...(cu.role==='warehouse'?[{id:'tasks',label:'My Tasks',icon:'📌',count:myWhTasks.length,color:'#0891b2'}]:[]),
       {id:'recent',label:'Recent Actions',icon:'🕐',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
@@ -19955,8 +19949,6 @@ export default function App(){
         </div>})()}
 
       {!whViewIF&&<>
-      {/* Bagging queue — batches ready at the tablet Bagging Station (/bagging-station) */}
-      <div style={{marginBottom:16}}><BaggingDashCard/></div>
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
@@ -19982,7 +19974,7 @@ export default function App(){
 
       {/* Portal cards — click to switch view */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:14}}>
-        {tabs.map(t=>{const active=whTab===t.id;
+        {tabs.map(t=>{if(t.id==='bagging')return <BaggingQueueTile key={t.id}/>;const active=whTab===t.id;
           return<button key={t.id} onClick={()=>setWhTab(t.id)}
             style={{padding:'14px 12px',borderRadius:10,border:active?'2px solid '+t.color:'1px solid #e2e8f0',
               background:active?t.color:'#fff',color:active?'#fff':'#0f172a',cursor:'pointer',
