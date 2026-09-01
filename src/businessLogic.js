@@ -1444,6 +1444,34 @@ function itemsWithWipedQty(clientItems, dbItems) {
   return out;
 }
 
+// A decoration reduction is destructive, so it must be tied to the exact before/after counts
+// recorded by the editor's Remove action. Hydration flags are deliberately irrelevant here: a
+// stale or partially reconciled client can incorrectly believe it fully loaded decorations.
+function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteIntents) {
+  const clients = safeArr(clientItems);
+  const intents = safeObj(deleteIntents);
+  const countFor = id => dbDecoCounts instanceof Map
+    ? safeNum(dbDecoCounts.get(id))
+    : safeNum(safeObj(dbDecoCounts)[id]);
+  return safeArr(dbItems).reduce((out, dbItem) => {
+    const oldCount = countFor(dbItem.id);
+    const clientItem = clients[dbItem.item_index];
+    if (!clientItem || oldCount <= 0) return out; // removing the whole item is handled separately
+    const newCount = safeDecos(clientItem).length;
+    if (newCount >= oldCount) return out;
+    const intent = safeObj(intents[String(dbItem.item_index)]);
+    if (safeNum(intent.from) === oldCount && safeNum(intent.to) === newCount) return out;
+    out.push({
+      item_index: dbItem.item_index,
+      sku: clientItem.sku || dbItem.sku || '',
+      name: clientItem.name || dbItem.name || '',
+      oldCount,
+      newCount,
+    });
+    return out;
+  }, []);
+}
+
 // ─── Commission / account attribution ───
 // The account OWNER (customer.primary_rep_id) is credited — for earned commission, pipeline,
 // promo-cost deductions, and every per-rep rollup. The SO creator (so.created_by) is only a fallback
@@ -1796,5 +1824,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems,
+  itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems,
 };

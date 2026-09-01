@@ -17,10 +17,12 @@ import { buildTeamArtLibrary } from './lib/artIdentity';
 import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCloseTime, DEFAULT_CLOSE_TIME, DEFAULT_OPEN_TIME } from './lib/storeClock';
 import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
+import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import QuickMockBuilder from './QuickMockBuilder';
-import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
+import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
+import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -414,7 +416,9 @@ function sizeSkuMapOf(catalog) {
 // _skuOv (true when it differs from the line's own SKU).
 function annotateEffSkus(lines, skuMap) {
   return (lines || []).map((i) => {
-    const ov = i.product_id && skuMap[i.product_id] ? String(skuMap[i.product_id][i.size || 'OS'] || '').trim() : '';
+    const raw = i.product_id && skuMap[i.product_id] ? skuMap[i.product_id][i.size || 'OS'] : null;
+    const source = resolveSizeSkuSource({ raw, lineSku: i.sku, lineColor: i.color, baseProduct: { id: i.product_id || null, sku: i.sku || '', color: i.color || '' }, candidates: [] });
+    const ov = source.isOverride ? source.sku : '';
     const eff = ov || i.sku || '';
     return { ...i, _effSku: eff, _skuOv: !!ov && ov !== (i.sku || '') };
   });
@@ -2692,7 +2696,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
     if (Object.prototype.hasOwnProperty.call(fields, 'options')) groupFields.options = fields.options;
     if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
-    if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
+    // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
+    // other rows in a multi-color card (Navy, Black, etc.).
     if (Object.keys(groupFields).length) {
       const cat = detail?.catalog || [];
       const me = cat.find((c) => c.id === id);
@@ -3322,12 +3327,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
-  // Per-player roll-up (printable): every player and exactly what they ordered.
+  // Player fulfillment export: the same SO-scoped, substitution-aware CSV used
+  // from the Sales Order editor. The readable on-screen Orders tab remains the
+  // place to browse players; the handoff artifact is deliberately one flat CSV.
   const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, audit, orderById, roster, stockByPid } = await gatherAll();
+    const { valid, lines, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildPlayerReport(sel, lines, orderById, roster, stockByPid, audit);
+    const scope = selectFulfillmentReportScope(lines);
+    if (!scope.ok) { flash(scope.message, 'error'); return; }
+    downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
+    flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
@@ -3347,8 +3357,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     try {
-      const result = downloadSilverScreenFulfillment({ store: sel, lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit });
-      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+      const scope = selectFulfillmentReportScope(lines);
+      if (!scope.ok) throw new Error(scope.message);
+      if (!scope.soId) throw new Error('Create a batch / Sales Order before downloading the Silver Screen XLSX.');
+      const result = downloadSilverScreenFulfillment({ store: sel, lines: scope.lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit, reference: scope.label });
+      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'} for ${scope.label}${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } catch (e) { flash(e?.message || 'Silver Screen fulfillment export failed', 'error'); }
   }, [sel, detail, gatherAll, flash, cust]);
 
@@ -3360,19 +3373,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
-      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Adidas Tag SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
-      // Sort by order number (every line of an order contiguous, oldest order first) —
-      // same rule the Orders CSV got in #1991; without it the fetch order is arbitrary.
-      const sorted = [...lines].sort((a, b) => {
-        const oa = orderById[a.order_id] || {}, ob = orderById[b.order_id] || {};
-        return ((Number(oa.order_number) || 0) - (Number(ob.order_number) || 0))
-          || (new Date(oa.created_at || 0) - new Date(ob.created_at || 0))
-          || String(oa.id || '').localeCompare(String(ob.id || ''))
-          || String(a.player_name || '').localeCompare(String(b.player_name || ''))
-          || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid));
-      });
-      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i._adidasTagSku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
-      downloadCsv(`${slug}-players.csv`, header, rows);
+      const scope = selectFulfillmentReportScope(lines);
+      if (!scope.ok) { flash(scope.message, 'error'); return; }
+      downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
+      flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
       const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
@@ -3591,15 +3595,40 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // own SO line (same art/deco, same price, but a different item number to source).
     const sizeSkusByCatPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
+    const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
+    const pinfo = {};
+    if (pids.length) {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('id', pids);
+      (data || []).forEach((p) => { pinfo[p.id] = p; });
+    }
+    // Pull every substitute SKU's product candidates too. A SKU can exist under
+    // multiple vendors, so resolution below uses the supplier saved with the
+    // override (or the base product's supplier for legacy string overrides).
+    const overrideSkus = [...new Set(bLines.map((i) => {
+      const sz = i.size || 'OS';
+      return sizeSkuCode(inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz]);
+    }).filter(Boolean))];
+    const candidatesBySku = {};
+    if (overrideSkus.length) {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('sku', overrideSkus);
+      (data || []).forEach((p) => {
+        pinfo[p.id] = p;
+        const k = String(p.sku || '').trim().toUpperCase();
+        (candidatesBySku[k] = candidatesBySku[k] || []).push(p);
+      });
+    }
     const byProduct = {};
     bLines.forEach((i) => {
-      const basePid = i.product_id || i.sku || 'unknown';
+      const sourcePid = i.product_id || null;
+      const baseProduct = pinfo[sourcePid] || null;
+      const basePid = sourcePid || i.sku || 'unknown';
       const sz = i.size || 'OS';
-      const effectiveSku = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
-      const pid = basePid + '§' + effectiveSku;
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
-      const g = byProduct[pid]; const q = i.qty || 1;
-      const pdef = personalize[i.product_id] || {};
+      const rawOverride = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz];
+      const source = resolveSizeSkuSource({ raw: rawOverride, lineSku: i.sku, lineColor: i.color, baseProduct, candidates: candidatesBySku[sizeSkuCode(rawOverride)] || [] });
+      const key = [basePid, source.sku, source.vendor_id || ''].join('§');
+      if (!byProduct[key]) byProduct[key] = { source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      const g = byProduct[key]; const q = i.qty || 1;
+      const pdef = personalize[sourcePid] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
       g.collected = r2(g.collected + collectedForLine(i));
       for (let u = 0; u < q; u++) {
@@ -3607,12 +3636,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
       }
     });
-    const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
-    const pinfo = {};
-    if (pids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,vendor_id,nsa_cost,retail_price').in('id', pids);
-      (data || []).forEach((p) => { pinfo[p.id] = p; });
-    }
     // Store lines that never got linked to a catalog product (the builder let a bare
     // typed SKU like "AT105" through) arrive here with product_id null. Resolve them
     // against the server catalog the way manual order entry would (exact SKU, then
@@ -3697,8 +3720,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
     const routing = outsideDeco ? { fulfillment: 'outside' } : {};
     const soItems = Object.values(byProduct).map((g) => {
-      const info = pinfo[g.product_id] || skuInfo[g.sku] || {};
-      const pdef = personalize[g.product_id] || {};
+      const sourcePid = g.source_product_id || g.product_id;
+      const sourceInfo = pinfo[sourcePid] || {};
+      const info = pinfo[g.product_id] || skuInfo[g.sku] || sourceInfo;
+      const pdef = personalize[sourcePid] || {};
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
@@ -3706,7 +3731,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
-      (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
+      (decosByKey[sourcePid] || decosByKey[g.sku] || []).forEach((d) => {
         const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
         const lib = d.art_id ? artById[d.art_id] : null;
         // Confirm-modal method switch for this logo (e.g. screen print → DTF on a
@@ -3740,22 +3765,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         // garment_color label against the SO line's color (exact, then contains, then only-CW)
         // for legacy url-only picks.
         let cwId = null;
-        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(info.color)];
+        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(sourceInfo.color || info.color)];
         if (_pick && typeof _pick === 'object' && _pick.color_way_id && lib && Array.isArray(lib.color_ways) && lib.color_ways.some((c) => c && c.id === _pick.color_way_id)) {
           cwId = _pick.color_way_id;
         }
         if (!cwId && lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
-          const gc = colorKeyOf(info.color);
+          const gc = colorKeyOf(sourceInfo.color || info.color);
           const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
           const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
           cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: _ovType || (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: _ovType || (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, sourceInfo.color || info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
       // which transfer to apply. One shared art file per transfer code.
-      (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
+      (bundleXfersByPid[sourcePid] ? [...bundleXfersByPid[sourcePid]] : []).forEach((code) => {
         const xId = 'xfer_' + code;
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0, ...routing });
@@ -3765,8 +3790,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // collected. Deco sells are suppressed above so the garment line carries it all.
       const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
-      return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
-        product_id: g.product_id || info.id || null, vendor_id: info.vendor_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
+      return { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
+        product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
@@ -8054,7 +8079,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       // Inventory tracking only matters for stock-backed items; persist the choice there.
       if (inventoryBacked) fields.track_inventory = !!trackInv;
       // Size-level SKU overrides: only persist when there's something set.
-      fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
+      const overrideColor = stockByWp[item.id]?.color || item.color || '';
+      fields.size_skus = Object.fromEntries(Object.entries(sizeSkus).flatMap(([sz, raw]) => {
+        const ov = normalizeSizeSkuOverride(raw);
+        return ov.sku ? [[sz, { sku: ov.sku, vendor_id: ov.vendor_id || null, color: ov.color || overrideColor }]] : [];
+      }));
     }
     // Only claim success if the write actually landed. onSave returns false when
     // the DB rejected it (error or RLS-blocked 0-row write) — don't clear the dirty
@@ -8375,22 +8404,31 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         {!isBundle && item.product_id && sizeList.length > 0 && (
           <ItemSection title="SKU overrides by size" hint="· substitute a different item number for specific sizes — same decoration, same price">
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Leave blank to use the default SKU{item.sku ? ` (${item.sku})` : ''}. Sizes with an override become a separate line on the Sales Order.</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 10px', alignItems: 'center' }}>
-              {sizeList.map((sz) => (
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(120px,1fr) minmax(130px,1fr)', gap: '6px 10px', alignItems: 'center' }}>
+              <span />
+              <span style={{fontSize:10,fontWeight:700,color:'#64748b'}}>ITEM NUMBER</span>
+              <span style={{fontSize:10,fontWeight:700,color:'#64748b'}}>SUPPLIER</span>
+              {sizeList.map((sz) => { const ov = normalizeSizeSkuOverride(sizeSkus[sz]); const overrideColor = stockByWp[item.id]?.color || item.color || ''; return (
                 <React.Fragment key={sz}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{sz}</span>
                   <input
                     className="form-input"
-                    value={sizeSkus[sz] || ''}
+                    value={ov.sku}
                     onChange={(e) => {
                       const v = e.target.value.trim().toUpperCase();
-                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = v; else delete n[sz]; return n; });
+                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = { sku: v, vendor_id: ov.vendor_id || null, color: overrideColor }; else delete n[sz]; return n; });
                     }}
                     placeholder={item.sku || 'e.g. JL5412XL'}
                     style={{ fontSize: 12, padding: '4px 8px', fontFamily: 'monospace' }}
                   />
+                  <select className="form-input" value={ov.vendor_id || ''} disabled={!ov.sku}
+                    onChange={(e) => setSizeSkus((prev) => ({ ...prev, [sz]: { sku: ov.sku, vendor_id: e.target.value || null, color: overrideColor } }))}
+                    style={{fontSize:12,padding:'4px 8px',color:ov.sku?'#0f172a':'#94a3b8'}}>
+                    <option value="">Match item &amp; color automatically</option>
+                    {vendorList.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
                 </React.Fragment>
-              ))}
+              ); })}
             </div>
           </ItemSection>
         )}
@@ -13603,8 +13641,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </button>
         )}
         {onPlayerReport && (
-          <button className="btn btn-secondary" onClick={onPlayerReport} title="Every player and exactly what they ordered (plus who hasn't ordered)">
-            👥 Player report
+          <button className="btn btn-secondary" onClick={onPlayerReport} title="Download the SO-scoped player report as CSV">
+            ⬇ Player report CSV
           </button>
         )}
         {onStockReport && (
@@ -13620,7 +13658,6 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
         {onExportCsv && (
           <select style={sel} value="" onChange={(e) => { const v = e.target.value; if (v) onExportCsv(v); }} title="Download as CSV (Excel)">
             <option value="">⬇️ Export CSV…</option>
-            <option value="players">Players CSV</option>
             <option value="stock">Stock CSV</option>
             <option value="orders">Orders CSV</option>
           </select>
