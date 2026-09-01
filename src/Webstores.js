@@ -19,7 +19,7 @@ import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import QuickMockBuilder from './QuickMockBuilder';
-import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
+import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, reportBlockingIssues, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
@@ -330,7 +330,9 @@ function reportSyncBanner(audit) {
   (audit.unmatched || []).forEach((u) => rows.push(`⚠ ${esc(u.soId)} · ${esc(u.item)} is active in the store but not matched to the SO`));
   (audit.missingSos || []).forEach((soId) => rows.push(`⚠ ${esc(soId)} could not be loaded`));
   (audit.wrongStoreLinks || []).forEach((x) => rows.push(`⚠ ${esc(x.soId)} belongs to another store — fix the batch link before fulfillment`));
-  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} SO units vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} ${esc(m.targetLabel || 'sales-order units')} vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  (audit.externalIssues || []).forEach((issue) => rows.push(`⚠ ${esc(issue)}`));
+  (audit.orderExtras || []).forEach((x) => rows.push(`ℹ ${esc(x.soId)} includes ${x.units} Silver Screen order extra${x.units === 1 ? '' : 's'} with no player assignment`));
   return rows.length ? `<div class="syncwarn"><b>Sales-order reconciliation:</b><br>${rows.join('<br>')}</div>` : '';
 }
 
@@ -3305,7 +3307,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
     }
     for (let i = 0; i < soIds.length; i += 100) {
-      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id').in('id', soIds.slice(i, i + 100));
+      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id,deco_pos').in('id', soIds.slice(i, i + 100));
       if (error) throw new Error('Could not validate Sales Order links: ' + error.message);
       (data || []).forEach((so) => { soMetaBySo[so.id] = so; });
     }
@@ -3332,10 +3334,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // place to browse players; the handoff artifact is deliberately one flat CSV.
   const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, orderById } = await gatherAll();
+    const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     const scope = selectFulfillmentReportScope(lines);
     if (!scope.ok) { flash(scope.message, 'error'); return; }
+    const blocking = reportBlockingIssues(audit);
+    if (blocking.length) { flash(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error'); return; }
     downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
     flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
   }, [sel, detail, gatherAll, flash]);
@@ -3369,12 +3373,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // 'orders' (every line item with order + payment detail).
   const exportCsv = useCallback(async (kind) => {
     if (!sel || !detail) return;
-    const { lines, orderById, stockByPid, stockBySku } = await gatherAll();
+    const { lines, audit, orderById, stockByPid, stockBySku } = await gatherAll();
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
       const scope = selectFulfillmentReportScope(lines);
       if (!scope.ok) { flash(scope.message, 'error'); return; }
+      const blocking = reportBlockingIssues(audit);
+      if (blocking.length) { flash(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error'); return; }
       downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
       flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } else if (kind === 'stock') {

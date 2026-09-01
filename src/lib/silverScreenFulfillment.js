@@ -28,6 +28,7 @@ const clean = (value) => String(value == null ? '' : value)
   .trim();
 
 const orderNo = (order) => clean(order && (order.order_number || order.omg_order_number || order.id));
+const orderSorter = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 
 const customerDestination = (customer) => ({
   attention: clean(customer && (customer.shipping_attention || customer.contact_name || customer.name)),
@@ -96,16 +97,34 @@ export function buildSilverScreenDomesticRows({ store = {}, lines = [], orderByI
   const fatalAudit = [
     ...(audit?.missingSos || []).map((soId) => `${soId}: linked sales order could not be loaded`),
     ...(audit?.wrongStoreLinks || []).map((x) => `${x.soId}: linked sales order belongs to another store`),
-    ...(audit?.unitMismatches || []).map((x) => `${x.soId}: ${x.sourceUnits} active customer units do not match ${x.soUnits} sales-order units`),
+    ...(audit?.unitMismatches || []).map((x) => `${x.soId}: ${x.sourceUnits} active customer units do not match ${x.soUnits} ${x.targetLabel || 'sales-order units'}`),
     ...(audit?.unmatched || []).map((x) => `${x.soId || 'Order'}: ${x.item || x} is not matched to the sales order`),
+    ...(audit?.externalIssues || []),
   ];
   issues.push(...fatalAudit);
 
+  // Silver Screen bags and researches by the webstore order number. Keep every
+  // line for one order contiguous even when the source lines arrive grouped by
+  // product/SKU (the normal database fetch order).
+  const orderedLines = (lines || []).map((line, index) => ({ line, index })).sort((a, b) => {
+    const ao = orderById[a.line.order_id] || {};
+    const bo = orderById[b.line.order_id] || {};
+    return orderSorter.compare(orderNo(ao), orderNo(bo))
+      || orderSorter.compare(clean(a.line.player_name), clean(b.line.player_name))
+      || orderSorter.compare(clean(a.line._sku || a.line._effSku || a.line.sku), clean(b.line._sku || b.line._effSku || b.line.sku))
+      || orderSorter.compare(clean(a.line._size || a.line.size), clean(b.line._size || b.line.size))
+      || a.index - b.index;
+  });
+
   const rows = [];
-  lines.forEach((line, index) => {
+  orderedLines.forEach(({ line }, index) => {
     const order = orderById[line.order_id] || {};
     const item = effectiveLine(line);
     const destination = orderDestination(order, store, customer);
+    // The Domestic template has no extra player column. Its existing required
+    // attention field is the import-safe place for the player's name; the full
+    // destination remains in the standard address columns on the same row.
+    destination.attention = clean(line.player_name) || destination.attention;
     const row = [
       orderNo(order), destination.attention, destination.company, item.quantity,
       item.size, item.color, item.style, item.description,
