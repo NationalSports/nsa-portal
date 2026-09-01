@@ -37,11 +37,24 @@ jobs:
       # repo secret — the same one scripts/check-schema-drift.js uses. It needs
       # INSERT on ship_audit_snapshots for the scheduled run; a read-only role
       # still works, the snapshot step just warns and skips.
+      # Deliberately FAILS when the secret is missing. The script itself exits 0
+      # with a notice, which is right for an ad-hoc run but wrong here: a
+      # scheduled refresh that finds no credentials would go green having updated
+      # nothing, and the doc would rot while the job reported success every week.
+      # A silently-not-running updater is worse than no updater, because people
+      # keep trusting the numbers. As of 2026-09-01 this secret does not exist —
+      # the job is expected to be red until someone adds it.
       - name: Refresh the audit
         if: github.event_name != 'pull_request'
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: node scripts/shipping-audit.js
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::SUPABASE_DB_URL is not set, so the shipping audit cannot refresh."
+            echo "::error::SHIPPING_COST_HANDOFF.md will go stale silently until this repo secret exists."
+            exit 1
+          fi
+          node scripts/shipping-audit.js
 
       # Never fail the PR on a stale doc — data moves on its own, and a
       # contributor editing the script should not be blocked by orders that

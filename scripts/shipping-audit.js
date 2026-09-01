@@ -76,7 +76,10 @@ const FEATURE_SQL = `select
   (to_regclass('public.ship_carrier_invoices') is not null) as has_rebills,
   exists(select 1 from information_schema.columns
          where table_schema='public' and table_name='sales_orders'
-           and column_name='no_carrier_cost') as has_ncc;`;
+           and column_name='no_carrier_cost') as has_ncc,
+  exists(select 1 from information_schema.columns
+         where table_schema='public' and table_name='ship_audit_snapshots'
+           and column_name='margin_true_pct') as has_true_cost;`;
 
 const buildSql = (feat = {}) => `
 with item_qty as (
@@ -91,6 +94,11 @@ so_merch as (
          count(distinct brand) filter (where brand is not null and brand <> '') as nbrands
   from item_qty group by so_id
 ),
+inv as (
+  ${feat.has_rebills ? `select so_id, sum(billed_amount) as billed
+   from ship_carrier_invoices where so_id is not null group by so_id`
+   : `select null::text as so_id, null::numeric as billed where false`}
+),
 base as (
   select s.id,
          ${SO_TS} as ts,
@@ -104,11 +112,16 @@ base as (
          -- That is a resolved order, not a gap: without the flag a 0 is ambiguous.
          ${feat.has_ncc ? 'coalesce(s.no_carrier_cost, false)' : 'false'} as no_carrier_cost,
          coalesce(s._inbound_freight, 0) as inbound,
+         -- What the carrier actually charged, falling back to the label-time
+         -- quote for orders no invoice has been loaded for yet.
+         coalesce(iv.billed, coalesce(s._shipstation_cost, s._shipping_cost)) as true_cost,
+         (iv.billed is not null) as invoiced,
          case when s.shipping_type = 'flat' then coalesce(s.shipping_value, 0)
               when s.shipping_type = 'pct'  then coalesce(s.shipping_value, 0) / 100.0 * coalesce(m.merch_sell, 0)
               else 0 end as charged
   from sales_orders s
   left join so_merch m on m.so_id = s.id
+  left join inv iv on iv.so_id = s.id
 ),
 scored as (select * from base where actual_cost > 0)
 select json_build_object(
@@ -136,7 +149,11 @@ select json_build_object(
         'cost',    round(sum(actual_cost), 0),
         'margin_pct', round(100 * (sum(charged) - sum(actual_cost)) / nullif(sum(charged), 0), 1),
         'losers',  count(*) filter (where charged < actual_cost),
-        'inbound', round(sum(inbound), 0)
+        'inbound', round(sum(inbound), 0),
+        'cost_true', round(sum(true_cost), 0),
+        'margin_true_pct', round(100 * (sum(charged) - sum(true_cost)) / nullif(sum(charged), 0), 1),
+        'losers_true', count(*) filter (where charged < true_cost),
+        'invoiced', count(*) filter (where invoiced)
       ) as r
       from scored group by rollup(shipping_type)) t),
   'brands', (select coalesce(json_agg(r order by (r->>'avg_inbound')::numeric desc), '[]') from (
@@ -172,15 +189,28 @@ select json_build_object(
 
 function fail(msg) { console.error(msg); process.exit(2); }
 
+// Parse the probe's one pipe-separated row. Kept separate and exported because
+// the failure mode is silent: a flag added to FEATURE_SQL but not read here
+// leaves the feature permanently off, and the only symptom is a column that
+// stays empty forever. FEATURE_ORDER is the single list both sides agree on.
+const FEATURE_ORDER = ['has_rebills', 'has_ncc', 'has_true_cost'];
+
+function parseFeatures(rowText) {
+  const cells = String(rowText == null ? '' : rowText).trim().split('|');
+  const out = {};
+  FEATURE_ORDER.forEach((name, i) => { out[name] = cells[i] === 't'; });
+  return out;
+}
+
 function query(url) {
   let feat = {};
   try {
-    const rows = execFileSync('psql', [url, '-At', '-F', '|', '-c', FEATURE_SQL], { encoding: 'utf8' })
-      .trim().split('|');
-    feat = { has_rebills: rows[0] === 't', has_ncc: rows[1] === 't' };
+    feat = parseFeatures(execFileSync('psql', [url, '-At', '-F', '|', '-c', FEATURE_SQL], { encoding: 'utf8' }));
   } catch (_) { /* pre-migration database: fall through with everything off */ }
   try {
-    return JSON.parse(execFileSync('psql', [url, '-At', '-c', buildSql(feat)], { encoding: 'utf8' }));
+    const metrics = JSON.parse(execFileSync('psql', [url, '-At', '-c', buildSql(feat)], { encoding: 'utf8' }));
+    metrics._features = feat;
+    return metrics;
   } catch (e) {
     fail(`[shipping-audit] query failed: ${e.stderr || e.message}`);
   }
@@ -203,23 +233,35 @@ const share = (part, total) => (total ? pct(100 * part / total) : 'n/a');
 function writeSnapshot(url, m) {
   const total = m.margin.find((r) => r.shipping_type === 'TOTAL');
   const c = m.coverage;
+  const t = (m._features || {}).has_true_cost;
+  const trueCols = t ? ', cost_true_total, margin_true_pct, invoiced_sos' : '';
+  const trueVals = t
+    ? `, ${total ? total.cost_true : 0}`
+      + `, ${total && total.margin_true_pct !== null ? total.margin_true_pct : 'null'}`
+      + `, ${total ? total.invoiced : 0}`
+    : '';
+  const trueUpd = t
+    ? `, cost_true_total = excluded.cost_true_total,
+       margin_true_pct = excluded.margin_true_pct,
+       invoiced_sos = excluded.invoiced_sos`
+    : '';
   const sql = `insert into ship_audit_snapshots
       (captured_on, total_sos, sos_with_charge, sos_with_cost,
        charged_total, cost_total, margin_pct, losing_sos, inbound_freight,
-       window_start, window_end, unparsed_dates)
+       window_start, window_end, unparsed_dates${trueCols})
     values (current_date, ${c.total_sos}, ${c.with_charge}, ${c.with_cost},
        ${total ? total.charged : 0}, ${total ? total.cost : 0},
        ${total && total.margin_pct !== null ? total.margin_pct : 'null'},
        ${total ? total.losers : 0}, ${total ? total.inbound : 0},
        ${c.window_start ? `'${c.window_start}'` : 'null'},
-       ${c.window_end ? `'${c.window_end}'` : 'null'}, ${c.unparsed_dates})
+       ${c.window_end ? `'${c.window_end}'` : 'null'}, ${c.unparsed_dates}${trueVals})
     on conflict (captured_on) do update set
        total_sos = excluded.total_sos, sos_with_charge = excluded.sos_with_charge,
        sos_with_cost = excluded.sos_with_cost, charged_total = excluded.charged_total,
        cost_total = excluded.cost_total, margin_pct = excluded.margin_pct,
        losing_sos = excluded.losing_sos, inbound_freight = excluded.inbound_freight,
        window_start = excluded.window_start, window_end = excluded.window_end,
-       unparsed_dates = excluded.unparsed_dates;`;
+       unparsed_dates = excluded.unparsed_dates${trueUpd};`;
   try {
     execFileSync('psql', [url, '-At', '-c', sql], { encoding: 'utf8', stdio: 'pipe' });
     return true;
@@ -230,11 +272,13 @@ function writeSnapshot(url, m) {
   }
 }
 
-function readTrend(url) {
+function readTrend(url, feat = {}) {
+  const trueCols = feat.has_true_cost
+    ? `, 'margin_true_pct', margin_true_pct, 'invoiced_sos', invoiced_sos` : '';
   const sql = `select coalesce(json_agg(json_build_object(
       'captured_on', to_char(captured_on, 'YYYY-MM-DD'),
       'total_sos', total_sos, 'sos_with_cost', sos_with_cost,
-      'margin_pct', margin_pct, 'losing_sos', losing_sos) order by captured_on), '[]')
+      'margin_pct', margin_pct, 'losing_sos', losing_sos${trueCols}) order by captured_on), '[]')
     from (select * from ship_audit_snapshots order by captured_on desc limit 12) t;`;
   try {
     return JSON.parse(execFileSync('psql', [url, '-At', '-c', sql], { encoding: 'utf8', stdio: 'pipe' }));
@@ -298,6 +342,19 @@ function render(m, trend) {
     L.push('on shipping. The average hides a coin flip — this is a variance problem, not a');
     L.push('pricing-level problem, which is what a per-order estimate is good at fixing.');
     L.push('');
+    if (total.invoiced > 0) {
+      L.push('');
+      L.push(`**Corrected for carrier invoices: ${money(total.cost_true)} actual cost, `
+        + `${pct(total.margin_true_pct)} margin, ${num(total.losers_true)} orders losing money.** `
+        + `That covers ${num(total.invoiced)} of ${num(total.n)} scored orders —`);
+      L.push('the rest still use the label-time quote. The two converge as more invoices are');
+      L.push('loaded, and the gap between them is what the quote was hiding.');
+    } else {
+      L.push('');
+      L.push('This margin is computed on the label-time quote, so it is an upper bound. No');
+      L.push('carrier invoice has been loaded yet — see the rebill section below.');
+    }
+    L.push('');
     L.push(`**Inbound freight on these same orders is ${money(total.inbound)}, against ${money(total.cost)}`);
     L.push('outbound.** Whether inbound belongs in product margin or shipping margin is an');
     L.push('accounting call for Steve and Andrea, not a code decision — do not silently roll');
@@ -358,12 +415,14 @@ function render(m, trend) {
     L.push('_No snapshots recorded yet. Each run of `scripts/shipping-audit.js` appends one_');
     L.push('_row to `ship_audit_snapshots`; this table fills in as those accumulate._');
   } else {
-    L.push('| Captured | Orders | With actual cost | Coverage | Margin | Lost money |');
-    L.push('|---|---:|---:|---:|---:|---:|');
+    L.push('| Captured | Orders | With actual cost | Coverage | Margin (quoted) | Margin (invoiced) | Invoiced | Lost money |');
+    L.push('|---|---:|---:|---:|---:|---:|---:|---:|');
     for (const t of trend) {
       const cov = share(t.sos_with_cost, t.total_sos);
+      const mt = (t.margin_true_pct === null || t.margin_true_pct === undefined) ? '—' : pct(t.margin_true_pct);
       L.push(`| ${t.captured_on} | ${num(t.total_sos)} | ${num(t.sos_with_cost)} | ${cov} `
-        + `| ${t.margin_pct === null ? 'n/a' : pct(t.margin_pct)} | ${t.losing_sos} |`);
+        + `| ${t.margin_pct === null ? 'n/a' : pct(t.margin_pct)} | ${mt} `
+        + `| ${num(t.invoiced_sos || 0)} | ${num(t.losing_sos)} |`);
     }
     L.push('');
     L.push(`Coverage is the column that matters. Margin computed over a `
@@ -421,7 +480,7 @@ function main() {
   // --check is read-only: it must not write a snapshot row.
   if (!argv.includes('--no-snapshot') && !argv.includes('--check')) writeSnapshot(url, metrics);
 
-  const block = stamp(render(metrics, readTrend(url)), new Date().toISOString().slice(0, 10));
+  const block = stamp(render(metrics, readTrend(url, metrics._features)), new Date().toISOString().slice(0, 10));
   const doc = fs.readFileSync(DOC, 'utf8');
   const next = splice(doc, block);
 
@@ -447,4 +506,4 @@ if (require.main === module) main();
 
 // Exported so the query and the renderer can be exercised without running the
 // CLI (see scripts/pgtest/README.md for the local-Postgres harness).
-module.exports = { buildSql, FEATURE_SQL, render, splice, stamp };
+module.exports = { buildSql, FEATURE_SQL, FEATURE_ORDER, parseFeatures, render, splice, stamp };

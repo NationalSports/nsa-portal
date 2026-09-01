@@ -55,6 +55,10 @@ Margin averages 37.0%, but **63 of 113 orders lost money**
 on shipping. The average hides a coin flip — this is a variance problem, not a
 pricing-level problem, which is what a per-order estimate is good at fixing.
 
+
+This margin is computed on the label-time quote, so it is an upper bound. No
+carrier invoice has been loaded yet — see the rebill section below.
+
 **Inbound freight on these same orders is $11,445, against $8,781
 outbound.** Whether inbound belongs in product margin or shipping margin is an
 accounting call for Steve and Andrea, not a code decision — do not silently roll
@@ -108,9 +112,9 @@ _Until `ship_carrier_invoices` has rows, the margin above is an upper bound._
 
 ### Trend — is the gap closing?
 
-| Captured | Orders | With actual cost | Coverage | Margin | Lost money |
-|---|---:|---:|---:|---:|---:|
-| 2026-09-01 | 1,225 | 113 | 9.2% | 37.0% | 63 |
+| Captured | Orders | With actual cost | Coverage | Margin (quoted) | Margin (invoiced) | Invoiced | Lost money |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2026-09-01 | 1,225 | 113 | 9.2% | 37.0% | 37.0% | 0 | 63 |
 
 Coverage is the column that matters. Margin computed over a 9.2% sample is not a business fact yet;
 it becomes one as coverage climbs.
@@ -372,8 +376,12 @@ case/punctuation-insensitively against an alias list and takes
 format** — it prints the resolved mapping and a preview. Re-running the same
 invoice upserts rather than duplicating.
 
-Until that table has rows, every margin figure in this document is an upper
-bound rather than a measurement, and the audit says so in its own words.
+As invoices load, the audit **corrects the margin figure itself** rather than
+just reporting the rebills beside it: outbound cost becomes the invoiced amount
+wherever an invoice exists and the label-time quote everywhere else, and the
+trend carries both so the two can be watched converging. On a two-order test
+where UPS billed $52.80 and $60.00 against $39.14 quotes, margin fell from 60.9%
+to 43.6% — a 17-point overstatement the quote was hiding.
 
 ---
 
@@ -389,7 +397,8 @@ So the numbers above are generated, not typed:
 |---|---|
 | `scripts/shipping-audit.js` | Re-derives every figure from the live DB and rewrites the block above. |
 | `supabase/migrations/20260901120000_ship_audit_snapshots.sql` | `ship_audit_snapshots` — one row per run, so the recording gap has a history. |
-| `.github/workflows/shipping-audit.yml` | Runs it every Monday and commits the refreshed doc. |
+| `.github/workflows/shipping-audit.yml` | Runs it every Monday and commits the refreshed doc. **Requires the `SUPABASE_DB_URL` repo secret — see below.** |
+| `supabase/migrations/20260901180000_ship_audit_true_cost.sql` | Snapshot columns for the invoice-corrected cost, so the trend shows accuracy improving. |
 | `supabase/migrations/20260901160000_shipping_cost_capture.sql` | `no_carrier_cost`, `ship_cartons`, `ship_carrier_invoices`. Applied. |
 | `scripts/import-carrier-invoice.js` | Loads a carrier invoice CSV into `ship_carrier_invoices`, matching lines to orders by tracking number. |
 
@@ -404,6 +413,22 @@ node scripts/shipping-audit.js            # refresh the doc + record a snapshot
 node scripts/shipping-audit.js --check    # exit 1 if stale (what CI runs)
 node scripts/shipping-audit.js --json     # raw metrics, no writes
 ```
+
+### ⚠️ The weekly refresh needs a repo secret that does not exist yet
+
+As of 2026-09-01 `SUPABASE_DB_URL` is **not set** in this repository — confirmed
+from a workflow run log, where the step reported `SUPABASE_DB_URL:` empty. Until
+an admin adds it under Settings → Secrets, the Monday job cannot reach the
+database and nothing above refreshes.
+
+The job is written to **fail loudly** in that state rather than skip quietly. An
+updater that finds no credentials and exits green is worse than no updater,
+because the document keeps looking maintained while it rots. A red Monday job is
+the intended signal that the secret is missing.
+
+(`.github/workflows/schema-drift.yml` depends on the same secret and has the
+same gap — its own comments note the drift step "has been reporting green
+without checking anything".)
 
 **What the refresh does and does not cover.** It regenerates the coverage,
 margin, brand-freight and Adidas-threshold tables, and the trend. It does not
