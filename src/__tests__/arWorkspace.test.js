@@ -167,12 +167,12 @@ describe('ARWorkspace',()=>{
     expect(screen.getAllByText('Alpha South').length).toBeGreaterThan(0);
   });
 
-  test('shows the exact completed order list, links the order, and seeds one rep TODO',()=>{
+  test('shows the exact ready-to-invoice list, links the order, and seeds one normal-priority rep TODO',()=>{
     const api=renderWorkspace(reps[2],{}, {
       sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',memo:'Championship uniforms',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[]}]}],
       invs:[{id:'I-PART',so_id:'SO-READY',customer_id:'C1',date:'2026-08-01',due_date:'2026-08-15',total:250,tax:0,paid:0,status:'open'}],
     });
-    expect(screen.getByText('Completed, uninvoiced orders')).toBeTruthy();
+    expect(screen.getByText('Ready-to-invoice orders')).toBeTruthy();
     const row=screen.getAllByText('SO-READY')[0].closest('tr');
     expect(row.textContent).toContain('Alpha Athletics');
     expect(row.textContent).toContain('$1,000');
@@ -184,8 +184,24 @@ describe('ARWorkspace',()=>{
     const todoUpdater=api.setAssignedTodos.mock.calls.find(call=>typeof call[0]==='function')[0];
     const todos=todoUpdater([]);
     expect(todos).toHaveLength(1);
-    expect(todos[0]).toMatchObject({id:'todo-completed-uninvoiced-SO-READY',source:'completed_uninvoiced:SO-READY',assigned_to:'R1',so_id:'SO-READY',customer_id:'C1',priority:1,status:'open'});
+    expect(todos[0]).toMatchObject({id:'todo-completed-uninvoiced-SO-READY',source:'completed_uninvoiced:SO-READY',title:'Invoice ready order — SO-READY',assigned_to:'R1',so_id:'SO-READY',customer_id:'C1',priority:2,status:'open'});
+    const due=new Date();due.setDate(due.getDate()+3);
+    expect(todos[0].due_date).toBe(`${due.getFullYear()}-${String(due.getMonth()+1).padStart(2,'0')}-${String(due.getDate()).padStart(2,'0')}`);
+    expect(todos[0].description).toContain('including estimated tax');
     expect(todos[0].description).toContain('Reports → Finance → My Receivables');
     expect(todoUpdater(todos)).toBe(todos);
+  });
+
+  test('rewrites legacy completed-order TODO copy, priority, and due date without duplicating it',()=>{
+    const legacy={id:'todo-completed-uninvoiced-SO-READY',source:'completed_uninvoiced:SO-READY',title:'Invoice completed order — SO-READY',description:'old amount',created_by:'A1',assigned_to:'R1',customer_id:'C1',so_id:'SO-READY',priority:1,status:'open',due_date:'2026-08-01',created_at:'2026-08-01T12:00:00Z',comments:[]};
+    const api=renderWorkspace(reps[2],{}, {
+      assignedTodos:[legacy],
+      sos:[{id:'SO-READY',customer_id:'C1',created_by:'R1',created_at:'2026-07-01',status:'complete',items:[{sizes:{M:10},unit_sell:100,nsa_cost:50,no_deco:true,decos:[]}]}],
+    });
+    const todos=applyTodoUpdates(api.setAssignedTodos,[legacy]);
+    const invoiceTodos=todos.filter(t=>t.source==='completed_uninvoiced:SO-READY');
+    expect(invoiceTodos).toHaveLength(1);
+    expect(invoiceTodos[0]).toMatchObject({title:'Invoice ready order — SO-READY',priority:2,due_date:'2026-08-04',status:'open'});
+    expect(invoiceTodos[0].description).toContain('$1,000.00 including estimated tax left to invoice');
   });
 });
