@@ -152,6 +152,9 @@ describe('player report CSV', () => {
       'BILLING - 3RD PARTY POSTAL CODE (if applicable)',
     ]);
     expect(rows.slice(1).reduce((sum, row) => sum + Number(row[3]), 0)).toBe(3);
+    expect(rows.slice(1).map((row) => row[0])).toEqual(['99', '1010525']);
+    expect(rows[1][1]).toBe('Alexandra "Alex" Spitzer');
+    expect(rows[1].slice(8, 14)).toEqual(['12 Oak St', 'Apt 4', 'Reno', 'NV', '89502', 'UPS Ground']);
     expect(rows.slice(1).some((row) => row[6] === 'AT310-50' && /Adidas tag JL5410/.test(row[7]))).toBe(true);
   });
 });
