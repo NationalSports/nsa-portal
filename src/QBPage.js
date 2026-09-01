@@ -52,12 +52,13 @@ export default function QBPage(){
   const [qbBillFreight,setQbBillFreight]=useState('');
   const [qbBillSportsFee,setQbBillSportsFee]=useState('');
   const [qbCanaryMode,setQbCanaryMode]=useState(true);
+  const [qbCanaryCustomerId,setQbCanaryCustomerId]=useState('');
   const [qbPreflighting,setQbPreflighting]=useState(false);
 
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -231,6 +232,15 @@ export default function QBPage(){
     const migrationUnlocked=qbConfig.initialMigrationApproved===true;
     const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
     const livePreflightReady=qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
+    const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+    const runCustomerCanary=async()=>{
+      if(!qbCanaryCustomerId)return;
+      const result=await syncCustomerCanary(qbCanaryCustomerId);
+      if(result?.status!=='needs_confirmation')return;
+      const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer and verify it by API read-back?');
+      if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
+      await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+    };
 
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
@@ -503,6 +513,20 @@ export default function QBPage(){
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Customer Sync</h2>
             <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncCustomers}>{qbSyncing?'Syncing...':'Sync All Customers'}</button>
+          </div>
+          <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An existing exact QBO match is linked without changing it. If no exact match exists, you must confirm before one new QBO customer is created. Bulk sync stays locked.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <select className="form-input" aria-label="Customer to test in QuickBooks" style={{minWidth:320,maxWidth:520}} value={qbCanaryCustomerId} onChange={e=>setQbCanaryCustomerId(e.target.value)}>
+                <option value="">Select one customer...</option>
+                {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{c.name}{c.alpha_tag?' ('+c.alpha_tag+')':''}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
+              </select>
+              <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!qbCanaryCustomerId||!livePreflightReady}
+                title={!livePreflightReady?'Run a successful read-only live preflight first':!qbCanaryCustomerId?'Select one customer first':''} onClick={runCustomerCanary}>
+                {qbSyncing?'Testing...':'Test 1 Customer'}
+              </button>
+            </div>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
