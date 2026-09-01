@@ -56,6 +56,25 @@ describe('manual PO costs', () => {
     expect(poPaymentMethodLabel('cash')).toBe('Cash');
   });
 
+  test('applies a standalone zero-quantity manual purchase to order cost and margin', () => {
+    const manualOnly = {
+      items: [{
+        sizes: { M: 1 }, unit_sell: 100, nsa_cost: 40, decorations: [],
+        po_lines: [{
+          po_id: 'PO 901 TEST', po_type: 'manual_cost', vendor: 'Office Store', status: 'received',
+          unit_cost: 0, received: {}, _manual_cost: 18, _manual_cost_note: 'Supplies', _payment_method: 'wire',
+        }],
+      }],
+      deco_pos: [], shipping_type: 'flat', shipping_value: 0,
+    };
+
+    expect(manualPoCostRows(manualOnly)).toEqual([{
+      po_id: 'PO 901 TEST', amount: 18, note: 'Supplies', vendor: 'Office Store', payment_method: 'wire', payment_label: 'Wire',
+    }]);
+    expect(calcOrderMargin(manualOnly)).toMatchObject({ rev: 100, cost: 58, margin: 42 });
+    expect(BL.calcTotals(manualOnly, { tax_rate: 0 })).toMatchObject({ cost: 58, margin: 42 });
+  });
+
   test('sums separate POs while ignoring zero, negative, and non-numeric costs', () => {
     const mixed = {
       items: [{ po_lines: [
@@ -73,14 +92,26 @@ describe('manual PO costs', () => {
   test('Costs and Commissions pages retain every required manual-cost hook', () => {
     const root = path.join(__dirname, '..');
     const commissions = fs.readFileSync(path.join(root, 'CommissionsPage.js'), 'utf8');
-    const editor = fs.readFileSync(path.join(root, 'OrderEditor.js'), 'utf8');
+    const editors = ['OrderEditor.js', 'OrderEditorClassic.js'].map(file => fs.readFileSync(path.join(root, file), 'utf8'));
 
     // Paid invoice GP, open pipeline GP, and promo deductions are separate calculations.
     expect(commissions).toContain('cost+=manualPoCost');
     expect(commissions).toContain('cost+=manualPoCostTotal(so)');
     expect(commissions).toContain('const manualCost=manualPoCostTotal(so)');
     // The order Costs tab must surface the same canonical rows and payment labels.
-    expect(editor).toContain("category:'Manual PO Cost'");
-    expect(editor).toContain('paymentLabel:row.payment_label');
+    editors.forEach(editor => {
+      expect(editor).toContain("category:'Manual PO Cost'");
+      expect(editor).toContain('paymentLabel:row.payment_label');
+      // Manual purchases remain available even when every garment is already covered by a PO.
+      expect(editor).toContain('Manual Cost / Purchase');
+      expect(editor).toContain("setShowPO('manual')");
+      expect(editor).toContain("po_type:'manual_cost'");
+      expect(editor).toContain("setTab('costs')");
+      expect(editor).toContain('await onSaveNow(updated)');
+      expect(editor).toContain('_manual_cost_created_by_id');
+      expect(editor).toContain('/.netlify/functions/manual-cost-notify');
+      expect(editor.indexOf('await onSaveNow(updated)')).toBeLessThan(editor.indexOf('/.netlify/functions/manual-cost-notify'));
+      expect(editor.indexOf('Digitizing / Vector File — Topstar')).toBeLessThan(editor.indexOf('💳 Manual Cost / Purchase'));
+    });
   });
 });
