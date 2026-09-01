@@ -9,7 +9,7 @@ jest.mock('barcode-detector', () => ({ __esModule: true, BarcodeDetector: class 
 jest.mock('imagetracerjs', () => ({ __esModule: true, default: { imagedataToSVG: () => '' } }));
 jest.mock('xlsx', () => ({ __esModule: true, read: () => ({}), utils: {}, writeFile: () => {} }));
 
-import { vendorInvSource } from '../vendorInventory';
+import { itemVendorInvSource, vendorInvCacheKey, vendorInvSource } from '../vendorInventory';
 
 // vendorInvSource decides which stock source an OMG item is checked against.
 // It keys off the vendor's api_provider (or name/brand), so a wrong mapping
@@ -41,5 +41,17 @@ describe('vendorInvSource', () => {
     expect(vendorInvSource({ name: 'Flag', api_provider: '' })).toBe('');
     expect(vendorInvSource(null)).toBe('');
     expect(vendorInvSource({})).toBe('');
+  });
+
+  test('an explicit Adidas Golf assignment outranks an old S&S catalog id', () => {
+    const item = { sku: 'LH0083', color: 'White', product_id: 'ssa-lh0083-white', vendor_id: 'adidas-golf' };
+    expect(itemVendorInvSource(item, { id: 'adidas-golf', name: 'Adidas Golf' })).toBe('adidas');
+    expect(itemVendorInvSource({ ...item, vendor_id: null }, null)).toBe('ss');
+  });
+
+  test('inventory keys separate supplier and color for the same style', () => {
+    expect(vendorInvCacheKey('ss', { sku: 'LH0083', color: 'White' })).toBe('ss:LH0083:white');
+    expect(vendorInvCacheKey('ss', { sku: 'LH0083', color: 'Collegiate Navy' })).toBe('ss:LH0083:collegiate navy');
+    expect(vendorInvCacheKey('sm', { sku: 'LH0083', color: 'White' })).toBe('sm:LH0083:white');
   });
 });

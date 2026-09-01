@@ -26,16 +26,40 @@ const _inflight = {};  // key -> Promise
 // 'adidas' stock comes from the synced inventory_unified view, not an API, so the
 // caller handles it separately; this still tags it so the caller can branch.
 export function vendorInvSource(vendorRec, { brand } = {}) {
-  const b = String(brand || '').toLowerCase();
-  if (b === 'richardson') return 'rs';
   const ap = String(vendorRec?.api_provider || '').toLowerCase();
   const nm = String(vendorRec?.name || '').toLowerCase();
   if (ap === 'ss_activewear' || nm === 's&s activewear') return 'ss';
   if (ap === 'sanmar' || nm === 'sanmar') return 'sm';
   if (ap === 'momentec' || nm === 'momentec') return 'mt';
   if (ap === 'richardson' || nm === 'richardson') return 'rs';
-  if (nm.startsWith('adidas') || b.startsWith('adidas')) return 'adidas';
+  if (nm.startsWith('adidas')) return 'adidas';
+  // An explicit vendor assignment is authoritative. Do not let the item's
+  // brand (or a catalog-id hint) route it back to the old supplier.
+  if (vendorRec) return '';
+  const b = String(brand || '').toLowerCase();
+  if (b === 'richardson') return 'rs';
+  if (b.startsWith('adidas')) return 'adidas';
   return '';
+}
+
+// Resolve the live-stock source for an order line. A saved vendor_id outranks
+// session/catalog hints such as an `ssa-*` product id; those hints are only a
+// fallback for legacy lines that genuinely lost their vendor assignment.
+export function itemVendorInvSource(item = {}, vendorRec) {
+  if (item.vendor_id && vendorRec) return vendorInvSource(vendorRec, item);
+  if (item._rs_live) return 'rs';
+  if (item._mt_live) return 'mt';
+  if (item._sm_live) return 'sm';
+  if (item._ss_live || /^ss/i.test(String(item.product_id || ''))) return 'ss';
+  return vendorInvSource(vendorRec, item);
+}
+
+// Color belongs in the key: one style can appear on the same order from
+// different suppliers and in different colorways with different stock.
+export function vendorInvCacheKey(source, item = {}) {
+  const sku = String(item.sku || '').trim().toUpperCase();
+  const color = String(item.color || '').trim().toLowerCase();
+  return source && sku ? source + ':' + sku + ':' + color : '';
 }
 
 // Fetch live per-size on-hand for one style from a supplier API.
@@ -48,7 +72,7 @@ export async function fetchVendorSizeInventory(source, item) {
   const sku = String(item?.sku || '').trim();
   const empty = { sizes: {}, sizeNextAvail: {}, nextAvail: '', source };
   if (!sku || !['ss', 'sm', 'mt', 'rs'].includes(source)) return empty;
-  const key = source + ':' + sku.toUpperCase() + ':' + String(item?.color || '').toLowerCase();
+  const key = vendorInvCacheKey(source, item);
   const c = _cache[key];
   if (c && Date.now() - c.fetchedAt < TTL) return c.value;
   if (_inflight[key]) return _inflight[key];

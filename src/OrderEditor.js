@@ -32,6 +32,7 @@ import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artR
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
+import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
 import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -1124,53 +1125,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     })();
   },[o.items?.length]);// eslint-disable-line react-hooks/exhaustive-deps
 
-  // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
-  const isSSItem=useCallback((item)=>{
-    if(item._ss_live)return true;
-    // S&S-synced catalog rows carry an ss* product id (ssb- blanks, ssa- adidas,
-    // ssua- UA). Those rows are excluded from the in-memory catalog (API-vendor
-    // rows aren't bootstrapped), so the products.find fallbacks below miss them
-    // — key off the id prefix so e.g. an S&S-sourced adidas tee is treated as an
-    // S&S item, not routed by its brand.
-    if(/^ss/.test(String(item.product_id||'')))return true;
+  const itemVendorSource=useCallback((item)=>{
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='ss_activewear'||vRec.name==='S&S Activewear';
-    if(item.brand==='S&S Activewear')return true;
-    return false;
+    return itemVendorInvSource(item,vendorList.find(v=>v.id===vId));
   },[products,vendorList,dbVendorBySku]);
+
+  // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
+  const isSSItem=useCallback((item)=>itemVendorSource(item)==='ss',[itemVendorSource]);
 
   // Check if item is from SanMar
-  const isSanMarItem=useCallback((item)=>{
-    if(item._sm_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='sanmar'||vRec.name==='SanMar';
-    return false;
-  },[products,vendorList,dbVendorBySku]);
+  const isSanMarItem=useCallback((item)=>itemVendorSource(item)==='sm',[itemVendorSource]);
 
   // Check if item is from Momentec
-  const isMomentecItem=useCallback((item)=>{
-    if(item._mt_live)return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='momentec'||vRec.name==='Momentec';
-    return false;
-  },[products,vendorList,dbVendorBySku]);
+  const isMomentecItem=useCallback((item)=>itemVendorSource(item)==='mt',[itemVendorSource]);
 
   // Check if item is from Richardson (live StockInventory feed available)
-  const isRichardsonItem=useCallback((item)=>{
-    if(item._rs_live)return true;
-    if((item.brand||'').toLowerCase()==='richardson')return true;
-    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
-    if(!vId)return false;
-    const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.api_provider==='richardson'||vRec.name==='Richardson';
-    return false;
-  },[products,vendorList,dbVendorBySku]);
+  const isRichardsonItem=useCallback((item)=>itemVendorSource(item)==='rs',[itemVendorSource]);
 
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
@@ -1203,9 +1173,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // Keyed by style (sku base), stores {sizes:{S:qty,M:qty,...}, price:{S:cost,...}, fetchedAt:timestamp}
   const vendorInvCache=useRef({});
-  const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
+  const[vendorInv,setVendorInv]=useState({});// {source:sku:color: {sizes:{S:qty,...}, loading:bool, error:str}}
   const vendorInvFetching=useRef({});// track in-flight fetches
-  const vendorInvRequestSeq=useRef({});// newest supplier request per SKU; stale responses cannot overwrite a vendor change
+  const vendorInvRequestSeq=useRef({});// newest request per supplier/SKU/color; stale responses cannot overwrite it
+  const itemVendorInvKey=useCallback((item)=>{
+    const source=itemVendorSource(item);
+    return ['ss','sm','mt','rs'].includes(source)?vendorInvCacheKey(source,item):'';
+  },[itemVendorSource]);
+  const vendorInvForItem=useCallback((item)=>{const key=itemVendorInvKey(item);return key?vendorInv[key]:null},[itemVendorInvKey,vendorInv]);
 
   // ─── Adidas B2B Inventory Cache ───
   const adidasInvCache=useRef({});// {sku: {sizes:{...}, lastSynced, fetchedAt}}
@@ -1344,19 +1319,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const isRS=isRichardsonItem(itemRef);
     if(!isSS&&!isSM&&!isMT&&!isRS)return;
     const source=isRS?'rs':isMT?'mt':isSM?'sm':'ss';
-    const cacheKey=source+':'+sku;
+    const cacheKey=vendorInvCacheKey(source,{...itemRef,sku});
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
-      vendorInvRequestSeq.current[sku]=(vendorInvRequestSeq.current[sku]||0)+1;
-      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail,sizeNextAvail:cached.sizeNextAvail||{}}}));
+      vendorInvRequestSeq.current[cacheKey]=(vendorInvRequestSeq.current[cacheKey]||0)+1;
+      setVendorInv(prev=>({...prev,[cacheKey]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail,sizeNextAvail:cached.sizeNextAvail||{}}}));
       return;
     }
     if(vendorInvFetching.current[cacheKey])return;
-    const requestSeq=(vendorInvRequestSeq.current[sku]||0)+1;
-    vendorInvRequestSeq.current[sku]=requestSeq;
-    const commit=(result)=>{if(vendorInvRequestSeq.current[sku]!==requestSeq)return false;vendorInvCache.current[cacheKey]=result;setVendorInv(prev=>({...prev,[sku]:{sizes:result.sizes||{},price:result.price||{},nextAvail:result.nextAvail||'',sizeNextAvail:result.sizeNextAvail||{},loading:false,error:null,source:result.source}}));return true};
+    const requestSeq=(vendorInvRequestSeq.current[cacheKey]||0)+1;
+    vendorInvRequestSeq.current[cacheKey]=requestSeq;
+    const commit=(result)=>{if(vendorInvRequestSeq.current[cacheKey]!==requestSeq)return false;vendorInvCache.current[cacheKey]=result;setVendorInv(prev=>({...prev,[cacheKey]:{sizes:result.sizes||{},price:result.price||{},nextAvail:result.nextAvail||'',sizeNextAvail:result.sizeNextAvail||{},loading:false,error:null,source:result.source}}));return true};
     vendorInvFetching.current[cacheKey]=true;
-    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source}}));
+    setVendorInv(prev=>({...prev,[cacheKey]:{sizes:{},price:{},loading:true,error:null,source}}));
     try{
       if(isRS){
         // Richardson: pull StockInventory feed grouped by Style; pick the color match for this item
@@ -1645,7 +1620,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
     }catch(err){
       console.error('[Vendor] Inventory fetch failed for',sku,err);
-      if(vendorInvRequestSeq.current[sku]===requestSeq)setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source}}));
+      if(vendorInvRequestSeq.current[cacheKey]===requestSeq)setVendorInv(prev=>({...prev,[cacheKey]:{sizes:{},price:{},loading:false,error:err.message,source}}));
     }finally{
       delete vendorInvFetching.current[cacheKey];
     }
@@ -1655,7 +1630,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
-      if((isSSItem(item)||isSanMarItem(item)||isMomentecItem(item)||isRichardsonItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+      const key=itemVendorInvKey(item);
+      if(key&&!vendorInv[key]&&!vendorInvFetching.current[key]){
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
@@ -1679,7 +1655,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // what the rep saved. We only fill genuine gaps.
       const hasCost=safeNum(item.nsa_cost)>0||Object.values(item._sizeCosts||{}).some(c=>safeNum(c)>0);
       if(hasCost)return item;
-      const price=vendorInv[item.sku]?.price;
+      const price=vendorInvForItem(item)?.price;
       if(!price)return item;
       const sizeCosts={};Object.entries(price).forEach(([sz,c])=>{const n=safeNum(c);if(n>0)sizeCosts[sz]=n});
       const vals=Object.values(sizeCosts);
@@ -1710,7 +1686,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let changed=false;
       const next=safeItems(e).map(it=>{
         if(!pendingCostSku[it.sku])return it;
-        const inv=vendorInv[it.sku];
+        const inv=vendorInvForItem(it);
         if(!inv||inv.loading)return it;// still fetching — keep waiting
         settled.push(it.sku);
         if(safePOs(it).length||safePicks(it).length)return it;
@@ -2525,7 +2501,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // from the click render. Size additions can land in the same tick; using the
     // stale object here previously reverted those newly-added sizes.
     setO(e=>({...e,items:safeItems(e).map((it,x)=>{if(x!==i)return it;const{_ss_live,_sm_live,_mt_live,_rs_live,...latest}=it;const assigned={...latest,vendor_id:vid};if(canRecost&&next.nsa_cost!==cur.nsa_cost)assigned.nsa_cost=next.nsa_cost;return assigned}),updated_at:new Date().toLocaleString()}));setDirty(true);
-    if(cur.sku){vendorInvRequestSeq.current[cur.sku]=(vendorInvRequestSeq.current[cur.sku]||0)+1;Object.keys(vendorInvCache.current).forEach(k=>{if(k===cur.sku||k.endsWith(':'+cur.sku))delete vendorInvCache.current[k]});Object.keys(vendorInvFetching.current).forEach(k=>{if(k===cur.sku||k.endsWith(':'+cur.sku))delete vendorInvFetching.current[k]});setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
     if(isLive){if(canRecost&&next.sku)setPendingCostSku(p=>({...p,[next.sku]:true}));fetchVendorInventory(next.sku,vid,next)}
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
@@ -2772,8 +2747,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // The garment's `sku|color` identity changed — move its per-garment mocks/links with it (SO-1480).
     if(cur)_rekeyLineMocks(itemIdx,cur.sku,cur.color);
     setColorPickerModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);
-    // Refresh live per-size stock for the newly chosen color (inventory cache is keyed by sku).
-    if(cur){delete vendorInvCache.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n;});fetchVendorInventory(cur.sku,cur.vendor_id,{...cur,color:color.colorName});}
+    // Refresh live per-size stock for the newly chosen supplier/SKU/color key.
+    if(cur){const changed={...cur,color:color.colorName};const key=itemVendorInvKey(changed);if(key){delete vendorInvCache.current[key];delete vendorInvFetching.current[key];setVendorInv(prev=>{const n={...prev};delete n[key];return n;})}fetchVendorInventory(cur.sku,cur.vendor_id,changed);}
     nf('🎨 Color changed to '+color.colorName);
   };
   // Inline color picker rendered UNDER a placed line item (reuses the same vendor
@@ -5440,14 +5415,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(stk==null)return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:'transparent'}}>&nbsp;</div>;
                 const free=availInv(p,sz);const held=Math.max(0,stk-free);const need=_iSz[sz]||0;
                 return<div title={invTip(p,sz)} style={{fontSize:9,fontWeight:600,minHeight:13,cursor:held>0?'help':'default',color:free<=0?'#dc2626':free<need?'#ca8a04':'#166534'}}>{free+' inv'}{held>0?'*':''}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
+              {(()=>{const vi=vendorInvForItem(item);if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:9,color:'#a78bfa',minHeight:12}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='rs'?'rs':vi.source==='mt'?'':vi.source==='sm'?'sm':'ss';const clr=vi.source==='rs'?'#dc2626':vi.source==='mt'?'#16a34a':vi.source==='sm'?'#0891b2':'#7c3aed';const sizeNext=vi.source==='rs'?(vi.sizeNextAvail?.[sz]||''):'';const shortDate=sizeNext?(()=>{const [m,d]=sizeNext.split('/');return parseInt(m,10)+'/'+parseInt(d,10)})():'';const displayQty=vi.source==='mt'?(vStk>0?'✓ In Stock':'✗ Out'):(vi.source==='rs'&&vStk<=0&&shortDate)?shortDate:vStk.toLocaleString();const srcName=vi.source==='rs'?'Richardson':vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear';const tip=vi.source==='mt'?('Momentec: '+(vStk>0?'In stock':'Out of stock')+' — Momentec does not publish exact quantities'):(srcName+' stock: '+vStk.toLocaleString()+((vi.source==='rs'&&(sizeNext||vi.nextAvail))?' • next avail '+(sizeNext||vi.nextAvail):''));return<div style={{fontSize:9,fontWeight:700,minHeight:12,color:vStk<=0?(vi.source==='rs'&&shortDate?'#b45309':'#dc2626'):clr}} title={tip}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isSyncedB2BItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:9,color:'#059669',minHeight:12}}>...</div>:null;const cell=ai.sizes?.[sz];const b2bStk=cell?.qty;if(b2bStk==null)return<div style={{fontSize:9,color:'transparent',minHeight:12}}>&nbsp;</div>;const need=_iSz[sz]||0;const dOut=cell.futureDate?restockDaysOut(cell.futureDate):null;const hasRestock=b2bStk<=0&&dOut!=null&&dOut>=0;const soon=hasRestock&&dOut<=RESTOCK_SOON_DAYS;const color=b2bStk>0?((need>0&&b2bStk<need)?'#ca8a04':'#166534'):soon?'#ca8a04':hasRestock?'#b45309':'#dc2626';return<div onMouseEnter={e=>{const r=e.currentTarget.getBoundingClientRect();setB2bPop({idx,top:r.bottom+6,left:Math.max(8,Math.min(r.left-40,(typeof window!=='undefined'?window.innerWidth:1280)-360))})}} onMouseLeave={()=>setB2bPop(null)} style={{fontSize:9,fontWeight:700,minHeight:12,color:color,cursor:'help'}}>{soon?'✓':b2bStk.toLocaleString()}</div>})()}
               {(()=>{
                 // Per-size cost upcharge ($X.XX under larger sizes). Prefer the item's
                 // stored _sizeCosts; fall back to the live vendor pricing map so the
                 // upcharge label persists after reload (the vendor fetch repopulates
                 // vi.price even when _sizeCosts wasn't saved on the item).
-                const vi=vendorInv[item.sku];const costMap=item._sizeCosts||vi?.price;
+                const vi=vendorInvForItem(item);const costMap=item._sizeCosts||vi?.price;
                 if(!costMap)return null;
                 const sc=costMap[sz];
                 if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return<div style={{fontSize:8,minHeight:11}}>{'\u00A0'}</div>;
@@ -5459,8 +5434,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div className="oe-num" style={{fontSize:20,fontWeight:800,color:'#192853'}}>{qty}</div>
             </div>
             </>}
-            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
-              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
+            {(()=>{const vi=vendorInvForItem(item);const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
+              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{const key=itemVendorInvKey(item);if(key){delete vendorInvCache.current[key];delete vendorInvFetching.current[key];setVendorInv(prev=>{const n={...prev};delete n[key];return n})}fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
             {!isQtyOnly&&<div style={{position:'relative',marginLeft:4}}><button id={'oe-szbtn-'+idx} className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
               {showSzPicker&&showSzPicker.idx===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'fixed',top:showSzPicker.top,left:showSzPicker.left,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:260,maxHeight:'70vh',overflowY:'auto'}}>
                 <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}}>
@@ -9679,7 +9654,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (Restores the pre-collapse submit semantics: el?parseInt(el.value)||0:v.)
       const _poQtyVal=(vi,sz,fallback)=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);if(!el)return fallback;const raw=String(el.value).trim();if(raw==='')return 0;const n=parseInt(raw,10);return isNaN(n)?0:n};
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
-      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
+      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const liveInv=vendorInvForItem(it);const scMap={...((liveInv&&liveInv.price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poManualCostValue=Math.max(0,parseFloat(String(poManualCost).replace(/[$,\s]/g,''))||0);
       const poMerchandiseTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
       const poOrderTotal=poMerchandiseTotal+poManualCostValue;
@@ -10086,7 +10061,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. Source the per-size cost from the
             // item's captured _sizeCosts when present, otherwise fall back to live vendor pricing already fetched into
             // vendorInv (e.g. SanMar getPricing), so catalog-added items still render per-size inputs and capture the upcharge.
-            const liveSizePrice=(vendorInv[it.sku]&&vendorInv[it.sku].price)||{};
+            const liveSizePrice=(vendorInvForItem(it)&&vendorInvForItem(it).price)||{};
             const sizeCostMap={...liveSizePrice,...(it._sizeCosts||{})};
             const priceForSize=sz=>{const sc=safeNum(sizeCostMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):catCost};
             const distinctPrices=new Set(it.openSizes.map(([sz])=>priceForSize(sz).toFixed(2)));
