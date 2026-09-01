@@ -19,9 +19,10 @@ import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
 import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import QuickMockBuilder from './QuickMockBuilder';
-import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
+import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
+import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -3326,12 +3327,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
-  // Per-player roll-up (printable): every player and exactly what they ordered.
+  // Player fulfillment export: the same SO-scoped, substitution-aware CSV used
+  // from the Sales Order editor. The readable on-screen Orders tab remains the
+  // place to browse players; the handoff artifact is deliberately one flat CSV.
   const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, audit, orderById, roster, stockByPid } = await gatherAll();
+    const { valid, lines, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildPlayerReport(sel, lines, orderById, roster, stockByPid, audit);
+    const scope = selectFulfillmentReportScope(lines);
+    if (!scope.ok) { flash(scope.message, 'error'); return; }
+    downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
+    flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
@@ -3351,8 +3357,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     try {
-      const result = downloadSilverScreenFulfillment({ store: sel, lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit });
-      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+      const scope = selectFulfillmentReportScope(lines);
+      if (!scope.ok) throw new Error(scope.message);
+      if (!scope.soId) throw new Error('Create a batch / Sales Order before downloading the Silver Screen XLSX.');
+      const result = downloadSilverScreenFulfillment({ store: sel, lines: scope.lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit, reference: scope.label });
+      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'} for ${scope.label}${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } catch (e) { flash(e?.message || 'Silver Screen fulfillment export failed', 'error'); }
   }, [sel, detail, gatherAll, flash, cust]);
 
@@ -3364,19 +3373,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
-      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Adidas Tag SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
-      // Sort by order number (every line of an order contiguous, oldest order first) —
-      // same rule the Orders CSV got in #1991; without it the fetch order is arbitrary.
-      const sorted = [...lines].sort((a, b) => {
-        const oa = orderById[a.order_id] || {}, ob = orderById[b.order_id] || {};
-        return ((Number(oa.order_number) || 0) - (Number(ob.order_number) || 0))
-          || (new Date(oa.created_at || 0) - new Date(ob.created_at || 0))
-          || String(oa.id || '').localeCompare(String(ob.id || ''))
-          || String(a.player_name || '').localeCompare(String(b.player_name || ''))
-          || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid));
-      });
-      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i._adidasTagSku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
-      downloadCsv(`${slug}-players.csv`, header, rows);
+      const scope = selectFulfillmentReportScope(lines);
+      if (!scope.ok) { flash(scope.message, 'error'); return; }
+      downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
+      flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
       const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
@@ -13641,8 +13641,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </button>
         )}
         {onPlayerReport && (
-          <button className="btn btn-secondary" onClick={onPlayerReport} title="Every player and exactly what they ordered (plus who hasn't ordered)">
-            👥 Player report
+          <button className="btn btn-secondary" onClick={onPlayerReport} title="Download the SO-scoped player report as CSV">
+            ⬇ Player report CSV
           </button>
         )}
         {onStockReport && (
@@ -13658,7 +13658,6 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
         {onExportCsv && (
           <select style={sel} value="" onChange={(e) => { const v = e.target.value; if (v) onExportCsv(v); }} title="Download as CSV (Excel)">
             <option value="">⬇️ Export CSV…</option>
-            <option value="players">Players CSV</option>
             <option value="stock">Stock CSV</option>
             <option value="orders">Orders CSV</option>
           </select>

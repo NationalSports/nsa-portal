@@ -95,7 +95,7 @@ export function activeWebstoreLines(lines, orderById = null) {
 // One row per line item, ordered by order number — the CSV the warehouse sorts and bags from.
 // Every row repeats its order's ship-to so a single line can be read on its own (the whole
 // point of the flat file: filter to one player, still know where the box goes).
-function renderCsv({ so, storeName, lines, orderById }) {
+export function downloadPlayerReportCsv({ so, storeName, lines, orderById }) {
   const header = [
     'Order #', 'Order Date', 'Player', 'Player #', 'Buyer', 'Buyer Email', 'Buyer Phone',
     'Item', 'SKU', 'Adidas Tag SKU', 'Color', 'Size', 'Qty', 'Was SKU', 'Was Size', 'Flag',
@@ -488,7 +488,7 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     const mapped = mapLinesToSoItems(activeLines, soItems);
     const lines = await attachAdidasTagSkus(supabase, mapped.lines);
     const { substitutions, unmatched } = mapped;
-    if (format === 'csv') renderCsv({ so, storeName: ws.name || '', lines, orderById });
+    if (format === 'csv') downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
     else if (format === 'product') {
       let fulfillmentCustomer = customer;
       if (!fulfillmentCustomer && ws.customer_id) {
