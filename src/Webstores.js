@@ -330,7 +330,8 @@ function reportSyncBanner(audit) {
   (audit.unmatched || []).forEach((u) => rows.push(`⚠ ${esc(u.soId)} · ${esc(u.item)} is active in the store but not matched to the SO`));
   (audit.missingSos || []).forEach((soId) => rows.push(`⚠ ${esc(soId)} could not be loaded`));
   (audit.wrongStoreLinks || []).forEach((x) => rows.push(`⚠ ${esc(x.soId)} belongs to another store — fix the batch link before fulfillment`));
-  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} SO units vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} ${esc(m.targetLabel || 'sales-order units')} vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  (audit.externalIssues || []).forEach((issue) => rows.push(`⚠ ${esc(issue)}`));
   return rows.length ? `<div class="syncwarn"><b>Sales-order reconciliation:</b><br>${rows.join('<br>')}</div>` : '';
 }
 
@@ -3305,7 +3306,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
     }
     for (let i = 0; i < soIds.length; i += 100) {
-      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id').in('id', soIds.slice(i, i + 100));
+      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id,deco_pos').in('id', soIds.slice(i, i + 100));
       if (error) throw new Error('Could not validate Sales Order links: ' + error.message);
       (data || []).forEach((so) => { soMetaBySo[so.id] = so; });
     }

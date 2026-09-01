@@ -41,6 +41,9 @@ const LINES = [
 // soItems: what the SO currently carries. AT310-50 is unchanged; the tank was swapped.
 const SO_ITEMS = [
   { sku: 'AT310-50', name: 'Adidas Techfit VB Shorts W', color: 'Black', sizes: { '2XS': 2 } },
+  // Obsolete off-order remnant left behind after the swap. It is not assigned to
+  // a player and must not block the per-SO fulfillment download.
+  { sku: '1203.080', name: 'Girls Racerback Tank', color: 'Black', sizes: { L: 1, S: 0 } },
   { sku: '1203.005', name: 'Girls Racerback Tank', color: 'White', sizes: { S: 1 } },
 ];
 

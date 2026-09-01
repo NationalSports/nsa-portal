@@ -97,8 +97,9 @@ export function buildSilverScreenDomesticRows({ store = {}, lines = [], orderByI
   const fatalAudit = [
     ...(audit?.missingSos || []).map((soId) => `${soId}: linked sales order could not be loaded`),
     ...(audit?.wrongStoreLinks || []).map((x) => `${x.soId}: linked sales order belongs to another store`),
-    ...(audit?.unitMismatches || []).map((x) => `${x.soId}: ${x.sourceUnits} active customer units do not match ${x.soUnits} sales-order units`),
+    ...(audit?.unitMismatches || []).map((x) => `${x.soId}: ${x.sourceUnits} active customer units do not match ${x.soUnits} ${x.targetLabel || 'sales-order units'}`),
     ...(audit?.unmatched || []).map((x) => `${x.soId || 'Order'}: ${x.item || x} is not matched to the sales order`),
+    ...(audit?.externalIssues || []),
   ];
   issues.push(...fatalAudit);
 

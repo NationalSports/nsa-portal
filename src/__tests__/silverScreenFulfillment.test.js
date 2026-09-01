@@ -77,4 +77,14 @@ describe('Silver Screen Domestic fulfillment export', () => {
     expect(built.issues.join(' ')).toMatch(/missing style/i);
     expect(built.issues.join(' ')).toMatch(/missing address line 1/i);
   });
+
+  test('blocks a known incomplete Silver Screen job with the precise audit reason', () => {
+    const order = { id: 'o4', order_number: 100, ship_method: 'deliver_club' };
+    const line = { order_id: 'o4', sku: 'TEE', name: 'Tee', color: 'Navy', size: 'M', qty: 1, player_name: 'Player' };
+    const built = buildSilverScreenDomesticRows({
+      store: STORE, lines: [line], orderById: { o4: order }, customer: CUSTOMER,
+      audit: { externalIssues: ['SO-2030: Silver Screen job #58505 is incomplete — only 12 of 13 product lines were added'] },
+    });
+    expect(built.issues).toContain('SO-2030: Silver Screen job #58505 is incomplete — only 12 of 13 product lines were added');
+  });
 });
