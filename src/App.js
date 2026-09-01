@@ -42,6 +42,7 @@ import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPaste
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
+import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { canViewFinancials } from './lib/financialAccess';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -435,6 +436,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, resolveQBAccountRefs } from './qbAccountMappings';
 import BaggingDashCard from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -1704,6 +1706,14 @@ const parseOmgDollar=(text)=>({
 // labels with no adjacent value (PDF printouts), so we fall back to the
 // "Deposit Subtotal" row, which carries Collected / OMG Fee / Credit Card Fee.
 const parseOmgAccounting=(text)=>{
+  // A Deposit Statement is a company-level bank deposit that can contain many
+  // stores, payments, and refunds. This screen stores accounting data on one
+  // selected store, so accepting that report here would silently assign the
+  // entire deposit to the wrong store. The dedicated QBO deposit importer must
+  // split/validate the statement before any accounting write.
+  if(/Deposit\s*Statement/i.test(String(text||''))){
+    throw new Error('This is a multi-store OMG Deposit Statement. It cannot be attached to one store. Import it through the QuickBooks OMG Deposits workflow.');
+  }
   let collected=_omgLineVal(text,/Total\s*Collected/i);
   let omg      =_omgLineVal(text,/^\s*\t*OMG\s*Fees?\b/i)||_omgLineVal(text,/\bOMG\s*Fees?\b/i);
   let cc       =_omgLineVal(text,/Credit\s*Card\s*Fees?/i);
@@ -2287,9 +2297,9 @@ export default function App(){
   const[dashSalesBasis,setDashSalesBasis]=useState('sales');// By Rep / Top Customers basis: sales (new SO revenue) | billed (invoices issued)
   const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
-  const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
+  const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,
     realm_id:'',sandbox:false,// access/refresh tokens live server-side (qb_oauth_tokens), never in client state
-    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
+    mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncing]=useState(false);
@@ -2845,7 +2855,7 @@ export default function App(){
           // replaced by the stale DB copy the load already read.
           if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
           if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
-          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:migrateQBAccountMapping(as.qb_config.mapping),autoSync:as.qb_config.initialMigrationApproved===true?(as.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
@@ -2931,7 +2941,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
               if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
-              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',initialMigrationApproved:false,realm_id:'',sandbox:false,mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:migrateQBAccountMapping(as2.qb_config.mapping),autoSync:as2.qb_config.initialMigrationApproved===true?(as2.qb_config.autoSync||'manual'):'manual',syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
@@ -4498,7 +4508,7 @@ export default function App(){
   // that session — and afterwards synced the stale snapshot from the last render.
   React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
-    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual')return;
+    if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
     const ms=intervals[qbConfig.autoSync];
     if(!ms)return;
@@ -4508,7 +4518,7 @@ export default function App(){
       if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
     },60000);// check every 60s
     return()=>clearInterval(id);
-  },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
+  },[qbConfig.connected,qbConfig.autoSync,qbConfig.initialMigrationApproved,qbSyncing]);
   // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
   const _visFlushRefs=useRef({});
   // Batch groups with an orderVendorBatch submission in flight — blocks double-submits per group.
@@ -4598,7 +4608,8 @@ export default function App(){
       if(params.get('qb_connected')==='true'){
         const company=params.get('qb_company')||'';
         const realm=params.get('qb_realm')||'';
-        setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
+        setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
+          preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
         nf('Connected to QuickBooks Online'+(company?' — '+company:''));
         // Clean URL
         const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
@@ -4636,7 +4647,8 @@ export default function App(){
   React.useEffect(()=>{
     if(!storedUserCanManageQuickBooks()||dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
-    setQBConfig(prev=>({...prev,connected:true,sandbox:false,realm_id:t.realm_id||prev.realm_id}));
+    setQBConfig(prev=>({...prev,connected:true,connectionError:'',sandbox:false,realm_id:t.realm_id||prev.realm_id,
+      preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
     // Company name comes from the proxy; the access token is read server-side, not passed here.
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'company_info'})})
@@ -4646,6 +4658,25 @@ export default function App(){
       }).catch(()=>{});
     nf('Connected to QuickBooks Online');
   },[dbLoading]);
+  // Deploy previews cannot complete the production OAuth callback directly: the
+  // CSRF cookie belongs to the preview host while Intuit returns to the custom
+  // production domain. A preview Connect click sends the operator here with a
+  // one-shot marker; this same-origin production page now starts OAuth safely.
+  React.useEffect(()=>{
+    if(!storedUserCanManageQuickBooks()||dbLoading)return;
+    let u;
+    try{u=new URL(window.location)}catch{return}
+    if(u.searchParams.get('qb_reconnect')!=='1')return;
+    u.searchParams.delete('qb_reconnect');
+    u.searchParams.set('pg','qb');
+    window.history.replaceState({},'',u);
+    authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'connect'})})
+      .then(async r=>({ok:r.ok,status:r.status,data:await r.json()})).then(({ok,status,data})=>{
+        if(ok&&data.authUrl){window.location.href=data.authUrl;return}
+        nf('QB reconnect could not start'+(data?.error?': '+data.error:' ('+status+')'),'error');
+      }).catch(e=>nf('Cannot reach QB auth service: '+e.message,'error'));
+  },[dbLoading]); // eslint-disable-line
   // On load, reconcile connection state with the server-side token store (source of truth).
   // qb-api refreshes the token server-side, so the client no longer manages tokens at all.
   React.useEffect(()=>{
@@ -4653,7 +4684,9 @@ export default function App(){
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'connection_status'})})
       .then(r=>r.ok?r.json():null).then(d=>{
-        if(d)setQBConfig(prev=>({...prev,connected:!!d.connected,realm_id:d.realm_id||prev.realm_id}));
+        if(d)setQBConfig(prev=>({...prev,connected:!!d.connected,realm_id:d.realm_id||prev.realm_id,
+          connectionError:d.connected?'':(d.error||''),connectionVerifiedAt:d.connected?new Date().toISOString():'',
+          ...(d.connected?{}:{preflight:null,initialMigrationApproved:false,autoSync:'manual'})}));
       }).catch(()=>{});
   },[dbLoading]); // eslint-disable-line
   // Open a record in a new browser tab (NetSuite-style middle-click / Cmd-click).
@@ -6295,6 +6328,8 @@ export default function App(){
   },[cu,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
   const canAccess=useCallback((pageId)=>{
     if(!cu)return false;
+    // QBO is an accounting system, not a delegable portal page. Legacy access
+    // arrays that contain `qb` must not expose it to reps or other operations roles.
     // Financials is identity-restricted even among admins. Never let an admin
     // role or editable access array override the owner allowlist.
     if(pageId==='financials')return canViewFinancials(cu);
@@ -15061,13 +15096,16 @@ export default function App(){
   // so the invoice is an internal accounting document against funds already
   // in hand — there's nothing to wait for. Builds the same full invoice a
   // manual create would (blended per-size sells + deco sells + flat shipping,
-  // tax-exempt) and stamps the store-funds payment at birth: paid in full
-  // when the net remit (collected − OMG & CC fees) covers the total, else
-  // paid to exactly what was collected so a shortfall stays visible as a
+  // tax-exempt) and stamps the gross store-funds payment at birth: paid in
+  // full when customer collections cover the total, else paid to exactly
+  // what was collected so a shortfall stays visible as a
   // partial balance. If the Accounting Report isn't entered yet the invoice
   // is created open and the settlement queue keeps flagging the store.
   // Idempotent: skips SOs that already carry any invoice, and the
-  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert.
+  // 'OMG <sale code>' payment ref dedupes in the invoice_payments upsert. The
+  // customer payment is GROSS. OMG/card fees are separate deposit deductions
+  // (57000/71400); netting them against the invoice would leave a false A/R
+  // balance equal to the fees.
   // Called at store port (createOmgSO) and from the settlement queue.
   const createAndSettleOmgInvoice=(so)=>{
     if(!so||!so.omg_store_id)return null;
@@ -15088,8 +15126,7 @@ export default function App(){
     const ship=so.shipping_type==='pct'?Math.round(sub*(safeNum(so.shipping_value)/100)*100)/100:safeNum(so.shipping_value)||0;
     const total=Math.round((sub+ship)*100)/100;
     const acct=+(so._omg_acct_collected??store?._omg_acct_collected)||0;
-    const netRemit=Math.round((acct-(+(so._omg_omg_fees??store?._omg_omg_fees)||0)-(+(so._omg_cc_fees??store?._omg_cc_fees)||0))*100)/100;
-    const applied=netRemit>0?Math.min(netRemit,total):0;
+    const applied=calculateOmgInvoicePayment(acct,total);
     const saleCode=(store&&store._omg_sale_code)||String(so.omg_store_id).replace(/^OMG-sale_/,'');
     const dateStr=new Date().toLocaleDateString('en-CA');
     const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
@@ -19722,7 +19759,7 @@ export default function App(){
                 })}
               </div>}
             </div>
-          </div>}
+          </div>
 
           {/* Ship Destination */}
           <div className="card" style={{marginBottom:12,borderLeft:'3px solid '+(shipDest==='ship_customer'?'#3b82f6':shipDest==='ship_deco'?'#d97706':'#64748b')}}>
@@ -25473,7 +25510,8 @@ export default function App(){
       if(!r.ok&&r.status!==401&&r.status!==409){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
       if(r.status===401||r.status===409){
-        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual'}));
+        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual',preflight:null,initialMigrationApproved:false,
+          connectionError:d?.error||'QuickBooks authorization expired — reconnect required'}));
         const now=Date.now();
         if(now-_qbReconnectNoticeRef.current>30000){_qbReconnectNoticeRef.current=now;nf('QB not connected — please reconnect','error')}
         return null;
@@ -25485,9 +25523,12 @@ export default function App(){
   // ── Connect to QB via OAuth (shared by rImport & QBPage, via context) ──
   const connectQB=async()=>{
     if(!storedUserCanManageQuickBooks())return;
+    const productionReconnect=qboProductionReconnectUrl(window.location);
+    if(productionReconnect){window.location.href=productionReconnect;return}
     try{
-      const r=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+      const r=await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'connect'})});
+      if(r.status===403)return;
       const d=await r.json();
       if(d.authUrl){window.location.href=d.authUrl}
       else if(d.error){nf('QB connect error: '+d.error,'error')}
@@ -25501,11 +25542,13 @@ export default function App(){
     // authFetch sends the staff JWT — disconnect is staff-only and revokes the token server-side.
     try{await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'disconnect'})});}catch{}
-    setQBConfig(prev=>({...prev,connected:false,realm_id:'',companyId:'',companyName:''}));
+    setQBConfig(prev=>({...prev,connected:false,connectionError:'',realm_id:'',companyId:'',companyName:'',preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
     nf('Disconnected from QuickBooks');
   };
 
   function rImport(){
+
+    const qbOperator=canManageQuickBooksRole(cu?.role);
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
     const updItem=(pi,k,v)=>setImp(x=>({...x,parsed:x.parsed.map((p,i)=>i===pi?{...p,[k]:v}:p)}));
@@ -29506,147 +29549,213 @@ export default function App(){
     // Push bills to QuickBooks — SAME pile as the Portal button (Matched = matched + clean),
     // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
-      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!b.qbStatus);
-      if(!selected.length){nf('No matched bills to push','error');return}
-      const qbIds=new Set(selected.map(b=>b.id));
+      if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
+      const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
+        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&!row.qbStatus);
+      if(!selectedEntries.length){nf('No matched bills to push','error');return}
+      const canaryMode=qbConfig.initialMigrationApproved!==true;
+      const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
+      const canaryRemaining=Math.max(0,3-completedCanaries.size);
+      if(canaryMode&&!canaryRemaining){nf('Three QBO canary bills are complete. Review them in QuickBooks and approve the migration before any production batch.','error');return}
+      // Before approval, send exactly one explicitly confirmed canary per click
+      // and no more than three total. After approval, use resumable batches of 20.
+      // Posting transactions stay sequential in both modes.
+      const batchLimit=canaryMode?1:20;
+      const batch=selectedEntries.slice(0,batchLimit);
+      if(canaryMode){
+        const preview=batch.map(({row})=>{
+          const bill=row.parsed||{};
+          return '• '+(bill.doc_number||row.id||'no document #')+' — '+(bill.supplier||'unknown vendor')+' — $'+safeNum(bill.doc_total).toFixed(2);
+        }).join('\n');
+        if(!window.confirm('TEST MODE — send only these '+batch.length+' bill(s) to the live QBO company?\n\n'+preview+'\n\nThe full push stays locked until you review the QBO records and approve it.'))return;
+      }
+      const selectedIndexes=new Set(batch.map(entry=>entry.index));
+      const remainingAfterBatch=Math.max(0,selectedEntries.length-batch.length);
       setBillImport(x=>({...x,uploading:true}));
-      // Look up QB expense accounts so AccountRef includes the required value (ID)
-      let acctMap={};
+
+      let qbAccounts=[],existingQBVendors=[],existingQBItems=[],existingQBBills=[];
       try{
-        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
-        (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
-      }catch(e){console.warn('[QB] Account query failed:',e)}
-      if(!Object.keys(acctMap).length){
-        nf('Could not load QB expense accounts — check your QuickBooks connection','error');
+        [qbAccounts,existingQBVendors,existingQBItems,existingQBBills]=await Promise.all([
+          loadQBAccounts(qbApi),
+          loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',1000),
+          loadAllQBEntities(qbApi,'Item','Id, Name, Sku, Type, Active',1000),
+          loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500),
+        ]);
+      }catch(e){
+        nf('Could not run the QuickBooks bill preflight — '+(e.message||'connection error'),'error');
         setBillImport(x=>({...x,uploading:false}));return;
       }
-      const resolveAcct=(name)=>acctMap[name]||Object.values(acctMap).find(a=>a.name.toLowerCase()===name?.toLowerCase())||Object.values(acctMap)[0];
+
+      const billsByDoc=new Map();
+      existingQBBills.forEach(qbBill=>{
+        const key=String(qbBill.DocNumber||'').trim().toLowerCase();
+        if(!key)return;
+        if(!billsByDoc.has(key))billsByDoc.set(key,[]);
+        billsByDoc.get(key).push(qbBill);
+      });
+      const setRowResult=(bi,b,status,message)=>{
+        setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:status,qbMsg:message}:p)}));
+        return {[b.id]:{qbStatus:status,qbMsg:message}};
+      };
+
       let success=0,failed=0;
-      const qbResults={};// Track QB status locally to avoid stale closure issue
+      const qbResults={};
       for(let bi=0;bi<billImport.parsed.length;bi++){
-        const b=billImport.parsed[bi];if(!qbIds.has(b.id))continue;
-        const bill=b.parsed;
-        // Find vendor
-        const vendorName=bill.supplier||'Unknown Vendor';
-        let vendor=vend.find(v=>v.name.toLowerCase().includes(vendorName.toLowerCase()));
-        if(!vendor)vendor=vend.find(v=>vendorName.toLowerCase().includes(v.name.toLowerCase()));
-        let qbVendorId=vendor?.qb_vendor_id;
-        if(!qbVendorId&&vendor){
-          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendor.name,CompanyName:vendor.name}});
-          if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id;setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v))}
-        }
-        if(!qbVendorId){
-          // Create vendor with supplier name
-          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
-          if(vRes?.Vendor?.Id)qbVendorId=vRes.Vendor.Id;
-        }
-        // Query QB for existing vendor by name before giving up
-        if(!qbVendorId){
-          try{
-            const qRes=await qbApi('query',{query:"SELECT * FROM Vendor WHERE DisplayName = '"+vendorName.replace(/'/g,"\\'")+"'"});
-            const qbVendor=qRes?.QueryResponse?.Vendor?.[0];
-            if(qbVendor?.Id){
-              qbVendorId=qbVendor.Id;
-              if(vendor)setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
-            }
-          }catch(e){console.warn('[QB] Vendor query failed:',e)}
-        }
-        if(!qbVendorId){
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'Vendor not found/created'}:p)}));
-          failed++;continue;
-        }
-        const amt=bill.doc_total||bill.merchandise_total+bill.freight+(bill.si_upcharge||0);
-        const lineItems=[];
-        if(bill.kind==='decoration'){
-          // Decoration bills: deco cost line (doc_total minus freight) + freight line.
-          // merchandise_total is 0 on these, so the goods-bill path would skip the cost entirely.
-          const decoAmt=Math.round(((bill.doc_total||0)-(bill.freight||0))*100)/100;
-          if(decoAmt>0){
-            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:decoAmt,
-              Description:'Outside decoration — PO '+bill.po_number+(bill.supplier?' — '+bill.supplier:''),
-              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.deco_account||qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+        if(!selectedIndexes.has(bi))continue;
+        const b=billImport.parsed[bi];
+        const bill=b.parsed||{};
+        try{
+          if(!_billHasTarget(bill))throw new Error('Bill is not linked to a portal PO/SO; no QBO bill was sent.');
+          const vendorName=String(bill.supplier||'').trim();
+          if(!vendorName)throw new Error('Bill supplier is blank; no QBO bill was sent.');
+
+          const vendor=findUniqueVendorMatch(vendorName,vend);
+          const decoVendor=findUniqueVendorMatch(vendorName,decoVendors||[]);
+          if(vendor&&decoVendor&&String(vendor.id)!==String(decoVendor.vendor_id||decoVendor.id)){
+            throw new Error('Supplier '+vendorName+' matches both merchandise and decoration vendor lists; no QBO bill was sent.');
           }
-          if(bill.freight>0){
-            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
-              Description:'Shipping — PO '+bill.po_number,
-              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
+          const portalVendor=vendor||decoVendor;
+          if(!portalVendor)throw new Error('Supplier '+vendorName+' does not uniquely match an active portal vendor; no QBO bill was sent.');
+          let qbVendorId=portalVendor?.qb_vendor_id;
+          if(qbVendorId&&!existingQBVendors.some(v=>String(v.Id)===String(qbVendorId)&&v.Active!==false))qbVendorId=null;
+
+          if(!qbVendorId){
+            const candidateNames=new Set([vendorName,portalVendor?.name].filter(Boolean).map(normalizeVendorName));
+            const exactMatches=existingQBVendors.filter(v=>v.Active!==false&&
+              (candidateNames.has(normalizeVendorName(v.DisplayName))||candidateNames.has(normalizeVendorName(v.CompanyName))));
+            if(exactMatches.length>1)throw new Error('Multiple active QBO vendors match '+vendorName+' after legal-name normalization; no bill was sent.');
+            if(exactMatches.length===1)qbVendorId=exactMatches[0].Id;
           }
-        }else{
-          // Goods bills (Adidas / UA / etc.) — merchandise + freight + SI upcharge lines.
-          if(bill.merchandise_total>0){
-            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
-              Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
-              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
-          }else if(amt>0&&!bill.freight){
-            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
-              Description:'Vendor bill — PO '+bill.po_number,
-              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+          if(!qbVendorId){
+            const displayName=String(portalVendor?.name||vendorName).trim();
+            const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:displayName,CompanyName:displayName}});
+            if(!vRes?.Vendor?.Id)throw new Error(vRes?.Fault?.Error?.[0]?.Detail||'Vendor was not found or created.');
+            qbVendorId=vRes.Vendor.Id;
+            existingQBVendors.push({Id:qbVendorId,DisplayName:displayName,CompanyName:displayName,Active:true});
           }
-          if(bill.freight>0){
-            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
-              Description:'Freight charge — PO '+bill.po_number,
-              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
+          if(vendor&&String(vendor.qb_vendor_id||'')!==String(qbVendorId)){
+            setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
           }
-          if(bill.si_upcharge>0){
-            lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
-              Description:'SI Upcharge — PO '+bill.po_number,
-              AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
+
+          const decorationCategory=isDecorationVendorBill(bill,decoVendors);
+          const routedBill=decorationCategory&&bill.kind!=='decoration'?{...bill,kind:'decoration'}:bill;
+          const keys=decorationCategory
+            ?['deco_account','freight_account','ap_account']
+            :['purchases_account','freight_account','sports_inc_fee_account','ap_account'];
+          const billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
+          const requiredSkus=decorationCategory?[]:(bill.items||[]).map(item=>item?.sku).filter(Boolean);
+          const billItemRefs=requiredSkus.length?indexQBNonInventoryItems(existingQBItems,requiredSkus):{};
+          const built=buildVendorBillLines(routedBill,billRefs,billItemRefs);
+          const amt=built.total;
+          const lineItems=built.lines;
+
+          const txnDate=parseQBDateValue(bill.doc_date);
+          if(!txnDate)throw new Error('Bill date is missing or invalid; no QBO bill was sent.');
+          const dueDate=parseQBDateValue(bill.due_date);
+          if(bill.due_date&&!dueDate)throw new Error('Bill due date is invalid; no QBO bill was sent.');
+          const billDocNumber=String(bill.doc_number||b.id||'').trim();
+          if(!billDocNumber)throw new Error('Bill has no vendor document number or portal source ID; no QBO bill was sent.');
+          const memo=[canaryMode?'NSA-QB-CANARY:'+String(b.id||bill.doc_number||bi):'','PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
+          const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:billRefs.ap_account,TxnDate:txnDate,
+            DueDate:dueDate,DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
+
+          // Idempotency check happens before every create. An exact vendor/date/total
+          // match is reused; any same-number conflict blocks rather than guessing.
+          const docKey=billDocNumber.toLowerCase();
+          const sameNumber=billsByDoc.get(docKey)||[];
+          const exact=sameNumber.filter(existing=>
+            String(existing.VendorRef?.value||'')===String(qbVendorId)
+            &&Math.abs(safeNum(existing.TotalAmt)-amt)<0.005
+            &&String(existing.TxnDate||'').slice(0,10)===txnDate);
+          if(exact.length>1)throw new Error('QBO contains duplicate exact bills for document '+billDocNumber+'; no new bill was sent.');
+          if(sameNumber.length&&exact.length!==1)throw new Error('QBO document '+billDocNumber+' already exists with a different vendor, date, or total; no new bill was sent.');
+
+          let qboBillId,created=false;
+          if(exact.length===1){
+            qboBillId=exact[0].Id;
+          }else{
+            const billRes=await qbApi('upsert_bill',{bill:qbBill});
+            if(!billRes?.Bill?.Id)throw new Error(billRes?.Fault?.Error?.[0]?.Detail||'Unknown QBO bill error');
+            qboBillId=billRes.Bill.Id;created=true;
+            const savedQBBill={Id:qboBillId,DocNumber:billDocNumber,VendorRef:{value:String(qbVendorId)},TotalAmt:amt,TxnDate:txnDate};
+            existingQBBills.push(savedQBBill);
+            billsByDoc.set(docKey,[...(billsByDoc.get(docKey)||[]),savedQBBill]);
           }
-        }
-        if(lineItems.length===0){
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'No amounts to bill'}:p)}));
-          failed++;continue;
-        }
-        const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
-        // Date → QB ISO. The old regex blindly prepended '20' to the year, turning
-        // MM/DD/YYYY (how S&S/SI bills print dates) into '202026-07-17' — an invalid
-        // TxnDate QB rejects. Handle ISO passthrough, 2- and 4-digit years.
-        const _qbDate=(s)=>{if(!s)return undefined;const t=String(s).trim();
-          if(/^\d{4}-\d{2}-\d{2}/.test(t))return t.slice(0,10);
-          const m2=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
-          if(!m2)return undefined;
-          return (m2[3].length===2?'20'+m2[3]:m2[3])+'-'+m2[1].padStart(2,'0')+'-'+m2[2].padStart(2,'0');};
-        const qbBill={VendorRef:{value:qbVendorId},TxnDate:_qbDate(bill.doc_date)||new Date().toISOString().slice(0,10),
-          DueDate:_qbDate(bill.due_date),
-          DocNumber:bill.doc_number||bill.po_number||undefined,
-          Line:lineItems,PrivateNote:memo};
-        // Apply billed quantities, tracking, and freight to matched SO/PO
-        // (uses shared applyBillToSO — skips if already applied at parse time). Ledger only
-        // when there was a target to apply to — an unmatched bill writes no billed qty here.
-        if(!bill._applied){applyBillToSO(bill);if(_billHasTarget(bill))await _recordAppliedBills([{parsed:bill}]);}
-        // Now push to QuickBooks
-        const billRes=await qbApi('upsert_bill',{bill:qbBill});
-        if(billRes?.Bill?.Id){
-          const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
-            details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
-          // Mark our own QB bill as already-synced so the QB→portal bill pull
-          // (syncBillsFromQB) can never pull it back and apply its cost a SECOND time —
-          // the portal already applied this bill's costs when it was pushed.
-          setQBConfig(prev=>({...prev,_syncedBillIds:[...(prev._syncedBillIds||[]),billRes.Bill.Id],syncLog:[log,...prev.syncLog].slice(0,100)}));
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
-          qbResults[b.id]={qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id};
-          success++;
-        }else{
-          const errMsg=billRes?.Fault?.Error?.[0]?.Detail||'Unknown error';
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:errMsg}:p)}));
-          qbResults[b.id]={qbStatus:'error',qbMsg:errMsg};
+
+          let canaryReadback='';
+          if(canaryMode){
+            let readRes;
+            try{readRes=await qbApi('query',{query:"SELECT * FROM Bill WHERE Id = '"+String(qboBillId).replace(/'/g,"\\'")+"'"})}
+            catch(e){throw new Error('QBO Bill #'+qboBillId+' exists, but canary read-back failed: '+e.message)}
+            const readFault=readRes?.Fault?.Error?.[0];
+            if(readFault)throw new Error('QBO Bill #'+qboBillId+' exists, but canary read-back failed: '+(readFault.Detail||readFault.Message||'QBO query error'));
+            const readBill=readRes?.QueryResponse?.Bill?.[0];
+            if(!readBill)throw new Error('QBO Bill #'+qboBillId+' exists, but canary read-back returned no bill.');
+            const lineSignature=line=>{
+              if(line.DetailType==='ItemBasedExpenseLineDetail')return 'I|'+String(line.ItemBasedExpenseLineDetail?.ItemRef?.value||'')+'|'+safeNum(line.ItemBasedExpenseLineDetail?.Qty).toFixed(4)+'|'+safeNum(line.Amount).toFixed(2);
+              if(line.DetailType==='AccountBasedExpenseLineDetail')return 'A|'+String(line.AccountBasedExpenseLineDetail?.AccountRef?.value||'')+'|'+safeNum(line.Amount).toFixed(2);
+              return '';
+            };
+            const sentLines=lineItems.map(lineSignature).filter(Boolean).sort();
+            const readLines=(readBill.Line||[]).map(lineSignature).filter(Boolean).sort();
+            const readMatches=String(readBill.DocNumber||'')===billDocNumber
+              &&String(readBill.VendorRef?.value||'')===String(qbVendorId)
+              &&String(readBill.TxnDate||'').slice(0,10)===txnDate
+              &&Math.abs(safeNum(readBill.TotalAmt)-amt)<0.005
+              &&JSON.stringify(readLines)===JSON.stringify(sentLines);
+            if(!readMatches)throw new Error('QBO Bill #'+qboBillId+' exists, but its read-back vendor/date/total/lines do not match the canary payload. Portal was not applied.');
+            canaryReadback='Canary read-back verified: document, vendor, date, total, and '+readLines.length+' posting line(s)';
+          }
+
+          // Only now—after QBO success or an exact existing read-back—may the
+          // portal apply quantities/costs. This prevents a QBO failure from
+          // mutating the portal and makes a crash/retry safely recoverable.
+          let portalApplied=!!bill._applied;
+          let portalWarning='';
+          if(!portalApplied){
+            try{applyBillToSO(bill);portalApplied=true}
+            catch(e){portalWarning='QBO Bill #'+qboBillId+' exists, but portal apply failed: '+(e.message||'unknown error')}
+          }
+          if(portalApplied&&!bill._applied&&_billHasTarget(bill)){
+            try{await _recordAppliedBills([{parsed:bill}])}
+            catch(e){portalWarning='QBO Bill #'+qboBillId+' and portal quantities were applied, but ledger write failed: '+(e.message||'unknown error')}
+          }
+
+          const action=created?'created':'verified existing';
+          const log={ts:new Date().toLocaleString(),type:'bill_upload',status:portalWarning?'partial':'success',
+            details:['Bill '+action+': '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+qboBillId,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2),...(canaryReadback?[canaryReadback]:[]),...(portalWarning?[portalWarning]:[])]};
+          if(portalApplied){
+            setQBConfig(prev=>{
+              const ids=new Set((prev._syncedBillIds||[]).map(String));ids.add(String(qboBillId));
+              const canaryIds=new Set((prev._qbCanaryBillIds||[]).map(String));
+              if(canaryMode)canaryIds.add(String(qboBillId));
+              return {...prev,_syncedBillIds:[...ids],_qbCanaryBillIds:[...canaryIds],syncLog:[log,...prev.syncLog].slice(0,100)};
+            });
+          }else{
+            setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          }
+          const status=portalWarning?'partial':'success';
+          const msg=portalWarning||('QB Bill #'+qboBillId+(created?'':' (existing verified)'));
+          Object.assign(qbResults,setRowResult(bi,b,status,msg));
+          if(portalWarning)failed++;else success++;
+        }catch(e){
+          const msg=e.message||'Bill sync failed';
+          Object.assign(qbResults,setRowResult(bi,b,'error',msg));
           failed++;
         }
       }
+
       setBillImport(x=>({...x,uploading:false}));
-      // Persist QB status to savedBills history (use local qbResults to avoid stale closure)
       setSavedBills(prev=>{
         const updated=prev.map(sb=>{
           const result=qbResults[sb.id];
-          if(result)return{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''};
-          return sb;
+          return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''}:sb;
         });
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
       });
-      nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
+      nf((canaryMode?'TEST: ':'')+success+' bill(s) completed in this batch'+(failed?' · '+failed+' need review':'')+(remainingAfterBatch?(canaryMode?' · full push remains locked for review':' · '+remainingAfterBatch+' ready for the next batch'):''));
     };
-
     // Import sub-tabs visible per role. Admins see everything; reps and CSRs
     // see only the NetSuite order import; accounting also gets supplier bills.
     const IMPORT_TABS_BY_ROLE={
@@ -30582,14 +30691,14 @@ export default function App(){
             style={{display:'inline-flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid '+MGRAY,color:TXTL,fontSize:12,fontWeight:700,padding:'10px 14px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
             &#9881; {ssPullFrom?ssPullFrom+(ssPullTo?' → '+ssPullTo:' →'):'All dates'} {billImport.pullOptsOpen?'▲':'▾'}
           </button>
-          {qbConfig.connected
+          {qbOperator&&(qbConfig.connected
             ?<span title={'QuickBooks connected'+(qbConfig.companyName?' · '+qbConfig.companyName:'')+'. Matched bills can also post to QB.'} style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#E7F2EC',border:'1px solid #bfdfd0',color:'#166534',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'9px 15px',borderRadius:6,whiteSpace:'nowrap'}}>
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={GREEN} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
                 QuickBooks{qbConfig.companyName?' · '+qbConfig.companyName:''}</span>
             :<button onClick={connectQB} title="Bills save to the Portal either way — connect QuickBooks to also post the matched pile to QB."
                 style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#fff',border:'1px solid '+RED,color:RED,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'10px 16px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
-                Connect QB</button>}
+                Connect QB</button>)}
         </div>
         {/* Pull options — the invoiced-from/to window + per-vendor pulls, hidden until asked for */}
         {billImport.pullOptsOpen&&<div style={{marginBottom:14,padding:'11px 16px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
@@ -30714,7 +30823,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+ready.filter(b=>!b.qbStatus).length+' to QuickBooks'})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
@@ -36937,7 +37046,7 @@ export default function App(){
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
   const appData={
     // core entity collections + setters
-    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,_truncatedTables,
+    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,decoVendors,invs,setInvs,msgs,setMsgs,REPS,_truncatedTables,
     assignedTodos,setAssignedTodos,
     // session / navigation / notify
     cu,nf,pg,setPg,setESO,setESOC,setESOTab,setSelC,

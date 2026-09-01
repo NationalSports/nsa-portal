@@ -1,4 +1,4 @@
-import { qboFunctionCallbackUrl } from '../qbOAuthCallback';
+import { qboFunctionCallbackUrl, qboProductionReconnectUrl } from '../qbOAuthCallback';
 
 describe('QuickBooks root OAuth callback forwarding', () => {
   test('forwards a successful Intuit callback to the serverless exchange', () => {
@@ -20,5 +20,21 @@ describe('QuickBooks root OAuth callback forwarding', () => {
   test('does not redirect an ordinary portal URL', () => {
     expect(qboFunctionCallbackUrl({ pathname: '/', search: '?pg=qb' })).toBeNull();
     expect(qboFunctionCallbackUrl({ pathname: '/', search: '?action=callback&code=x' })).toBeNull();
+  });
+});
+
+describe('QuickBooks preview reconnect routing', () => {
+  test('moves a deploy-preview reconnect to the production QB page first', () => {
+    expect(qboProductionReconnectUrl({
+      hostname: 'deploy-preview-2041--nsa-portal.netlify.app',
+      origin: 'https://deploy-preview-2041--nsa-portal.netlify.app',
+    })).toBe('https://connect.nationalsportsapparel.com/?pg=qb&qb_reconnect=1');
+  });
+
+  test('does not bounce an already same-origin production reconnect', () => {
+    expect(qboProductionReconnectUrl({
+      hostname: 'connect.nationalsportsapparel.com',
+      origin: 'https://connect.nationalsportsapparel.com',
+    })).toBeNull();
   });
 });
