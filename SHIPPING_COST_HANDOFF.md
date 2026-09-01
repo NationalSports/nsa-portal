@@ -239,15 +239,38 @@ box is the only thing that satisfies the "select at least one item" guard.
 
 Five steps and a page bounce, 511 times, is why it is not happening.
 
+**Fixed (in this branch).** The picker now reaches any order by explicit search
+rather than only ones that still owe a shipment; finished orders are listed with
+a "record cost" badge; and a cost alone is a valid record on an order with
+nothing left to ship, so the rep no longer has to invent an item description.
+The page bounce remains — `App.js` returns the order editor early, so the modal
+cannot render over it without restructuring that render path.
+
+**Still needed: a way to say "no carrier cost".** 46 `warehouse_delivery` and 29
+`rep_delivery` orders ($6,763 charged) went out on our own truck and have no
+carrier cost to record. Today `_shipping_cost` is `0` on 1,103 rows and `NULL`
+on 2, so "we delivered it ourselves, cost nothing" is indistinguishable from
+"nobody recorded it" — the same unknown-versus-zero trap this document flags for
+`_inbound_freight`. That needs a column (a `no_carrier_cost` flag or a reason
+code), not just a button, and until it exists the audit cannot tell a genuine
+zero from a gap.
+
 ## Suggested order of work
 
 1. **Apply `shipping_schema.sql`.** Additive, low risk.
 2. **Build and apply `local_delivery_zips`** from the `zipcodes` package.
-3. **Backfill actual cost from ShipStation** for the orders missing it.
-   ShipStation already holds this. This is the highest-value item on the list —
-   without it, everything downstream is guessing, and with it the audit goes
-   from a ~9% sample to potentially every order. Watch the trend table above:
-   the coverage column is how you'll know the backfill is working.
+3. ~~**Backfill actual cost from ShipStation.**~~ **Checked — it cannot work.**
+   The handoff assumed "ShipStation already holds this" because
+   `_shipstation_order_id` is "populated on some rows". It is populated on
+   **exactly 1 row out of 1,226**. The 511 completed orders have no shipment
+   record at all, so there is no ShipStation shipment id, no tracking number and
+   no label to join on. 237 of 301 shipment rows do carry a
+   `shipstation_shipment_id` — but those are the orders that already have costs
+   (147 of 149). The backfill can only reach orders that already went through
+   the ship flow, which are exactly the ones that do not need it.
+   If the warehouse buys labels in ShipStation's own UI for these orders, those
+   records exist there but match back only on customer/address/date — fuzzy, and
+   worth a manual spot-check before anyone builds on it.
 4. **Build the unrecorded-shipping queue.** SOs where actual cost is null and
    the customer ZIP is absent from `local_delivery_zips` (or over 40 miles).
    Sorted by age. This is the review list.

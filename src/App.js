@@ -21593,20 +21593,27 @@ export default function App(){
               {(()=>{
                 const q=(manualShipModal.custSearch||'').toLowerCase();
                 if(q.length<2)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>Type at least 2 characters to search</div>;
+                // "Open" = still owes a shipment. That is the right filter for BROWSING (the
+                // per-customer open count below), but it must not gate an explicit search: a
+                // finished order is exactly the one whose cost nobody recorded, and status
+                // 'complete' is hidden from every warehouse queue, so search is the only way
+                // back to it. 511 completed orders carry a shipping charge and no cost.
                 const _canOverride=so=>!so.deleted_at&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so));
+                const _isRecordable=so=>!so.deleted_at;
                 const openSosByCust={};
                 sos.forEach(so=>{
                   if(!_canOverride(so))return;
                   if(!openSosByCust[so.customer_id])openSosByCust[so.customer_id]=[];
                   openSosByCust[so.customer_id].push(so);
                 });
-                const soResults=sos.filter(so=>{if(!_canOverride(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+(cc?.name||'')).toLowerCase().includes(q)}).slice(0,8);
+                const soResults=sos.filter(so=>{if(!_isRecordable(so))return false;const cc=cust.find(x=>x.id===so.customer_id);return((so.id||'')+' '+(so.memo||'')+' '+(cc?.name||'')).toLowerCase().includes(q)})
+                  .sort((a,b)=>(_canOverride(b)?1:0)-(_canOverride(a)?1:0)).slice(0,8);
                 const results=cust.filter(cc=>(cc.name||'').toLowerCase().includes(q)).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).slice(0,12);
                 if(results.length===0&&soResults.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No matching customer or sales order</div>;
                 return<div style={{display:'grid',gap:4}}>
                   {soResults.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:2}}>Sales orders</div>}
                   {soResults.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #93c5fd',cursor:'pointer'}} onClick={()=>setManualShipModal(manualShipStateForSO(so,cc,manualShipModal))}>
-                    <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{so.id}</span><span style={{fontSize:11,fontWeight:700}}>{cc?.name||'Unknown'}</span><span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{calcSOStatus(so)} · {unshippedOrderItems(so).reduce((a,it)=>a+it.qty,0)} unshipped</span></div>
+                    <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{so.id}</span><span style={{fontSize:11,fontWeight:700}}>{cc?.name||'Unknown'}</span><span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{calcSOStatus(so)} · {_canOverride(so)?(unshippedOrderItems(so).reduce((a,it)=>a+it.qty,0)+' unshipped'):'nothing left to ship — record cost'}</span></div>
                   </div>})}
                   {results.length>0&&<div style={{fontSize:9,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginTop:soResults.length?6:2}}>Customers</div>}
                   {results.map(cc=>{
@@ -21633,12 +21640,17 @@ export default function App(){
                 <span style={{fontSize:10,color:'#64748b'}}>— select an order to ship</span>
               </div>
               {(()=>{
-                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id&&(unshippedOrderItems(so).length>0||soHasOpenShipWork(so)));
+                const _custOpen=so=>unshippedOrderItems(so).length>0||soHasOpenShipWork(so);
+                // Open orders first, then finished ones so a cost can still be attached. Capped
+                // because a long-standing customer has hundreds; the SO-number search above is
+                // the precise route to anything older than this list.
+                const custSos=sos.filter(so=>!so.deleted_at&&so.customer_id===manualShipModal.custFilter.id)
+                  .sort((a,b)=>(_custOpen(b)?1:0)-(_custOpen(a)?1:0)).slice(0,25);
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
                   onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'ups'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
                 </button>;
-                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
+                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No sales orders for this customer</div>{_noSoBtn}</>;
                 return<><div style={{display:'grid',gap:4}}>
                   {custSos.map(so=>{
                     const st=calcSOStatus(so);
@@ -21654,6 +21666,7 @@ export default function App(){
                       <div style={{display:'flex',alignItems:'center',gap:8}}>
                         <span style={{fontWeight:800,color:'#1e40af',fontSize:12,fontFamily:'monospace'}}>{so.id}</span>
                         <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b'}}>{st}</span>
+                        {!_custOpen(so)&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>record cost</span>}
                         <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{itemCount} items · {jobCount} jobs</span>
                       </div>
                       {so.memo&&<div style={{fontSize:10,color:'#64748b',marginTop:2,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{so.memo}</div>}
@@ -21971,11 +21984,19 @@ export default function App(){
               const _doConfirmManualShip=async(openEmail)=>{
                   const so=manualShipModal.so;
                   const hasSelectedItems=(manualShipModal.shipItems||[]).some(it=>Object.values(it.sizes||{}).some(v=>safeNum(v)>0));
-                  if(!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()){nf('Select at least one item and quantity to ship','error');return}
                   const cost=parseFloat(manualShipModal.cost)||0;
+                  // Cost-only record. On a finished order there is nothing left to select, and
+                  // requiring a description just makes the rep invent one — which is why the
+                  // cost went unrecorded instead. A cost against an order with nothing left to
+                  // ship is a complete, honest record on its own.
+                  const _nothingLeft=(manualShipModal.availItems||[]).length===0;
+                  const _costOnly=!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()&&_nothingLeft&&(cost>0||(parseFloat(manualShipModal.charge)||0)>0);
+                  if(!hasSelectedItems&&!String(manualShipModal.itemDesc||'').trim()&&!_costOnly){
+                    nf(_nothingLeft?'Enter the shipping cost to record it against this order':'Select at least one item and quantity to ship','error');return}
                   const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
                   const shipItems=(manualShipModal.shipItems||[]).map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:{...it.sizes}}));
                   if(manualShipModal.itemDesc)shipItems.push({sku:'MANUAL',name:manualShipModal.itemDesc,color:'',sizes:{}});
+                  if(_costOnly)shipItems.push({sku:'COST-ONLY',name:'Shipping cost recorded after the fact',color:'',sizes:{}});
                   // Destination — where this shipment is headed (customer / our warehouse / decorator)
                   const _mode=manualShipModal.shipToMode||'customer';
                   const _da=manualShipModal.destAddr||{};
