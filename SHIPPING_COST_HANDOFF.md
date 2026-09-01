@@ -30,13 +30,13 @@ Data window **2026-04-24 to 2026-08-31** (dates parsed from
 
 | | Orders | Share |
 |---|---:|---:|
-| Sales orders in range | 1,226 | 100% |
-| Carrying a shipping charge | 1,107 | 90.3% |
+| Sales orders in range | 1,225 | 100% |
+| Carrying a shipping charge | 1,106 | 90.3% |
 | With a recorded actual cost | 113 | 9.2% |
 | **Scoreable (charge and cost)** | **102** | **8.3%** |
 | Asserted "no carrier cost" | 0 | 0.0% |
 
-**1,005 charged orders are still unresolved** — no
+**1,004 charged orders are still unresolved** — no
 recorded cost, and nobody has said they were delivered on our own truck. That is the
 real gap; it is the number to watch in the trend table below.
 
@@ -90,8 +90,8 @@ it into the shipping margin number.
 
 | Order value | Orders | Zero freight | Share |
 |---|---:|---:|---:|
-| under $250 | 60 | 25 | 42% |
-| $250-1k | 96 | 30 | 31% |
+| under $250 | 61 | 25 | 41% |
+| $250-1k | 95 | 30 | 32% |
 | $1k-5k | 170 | 77 | 45% |
 | $5k+ | 87 | 43 | 49% |
 
@@ -110,7 +110,7 @@ _Until `ship_carrier_invoices` has rows, the margin above is an upper bound._
 
 | Captured | Orders | With actual cost | Coverage | Margin | Lost money |
 |---|---:|---:|---:|---:|---:|
-| 2026-09-01 | 1,226 | 113 | 9.2% | 37.0% | 63 |
+| 2026-09-01 | 1,225 | 113 | 9.2% | 37.0% | 63 |
 
 Coverage is the column that matters. Margin computed over a 9.2% sample is not a business fact yet;
 it becomes one as coverage climbs.
@@ -253,22 +253,23 @@ nothing left to ship, so the rep no longer has to invent an item description.
 The page bounce remains — `App.js` returns the order editor early, so the modal
 cannot render over it without restructuring that render path.
 
-**"No carrier cost" (built, migration pending).** 46 `warehouse_delivery` and 29
+**"No carrier cost" (live).** 46 `warehouse_delivery` and 29
 `rep_delivery` orders ($6,763 charged) went out on our own truck and have no
 carrier cost to record. `_shipping_cost` is `0` on 1,103 rows and `NULL` on 2, so
 "we delivered it ourselves, cost nothing" was indistinguishable from "nobody
 recorded it" — the same unknown-versus-zero trap this document flags for
-`_inbound_freight`. Migration `20260901160000` adds `no_carrier_cost` (plus
+`_inbound_freight`. Migration `20260901160000` (applied) adds `no_carrier_cost` (plus
 reason, who and when), the manual-ship modal gets a **🚚 No carrier cost**
 button, and the audit counts those orders as resolved rather than missing.
 
 The flag is written by a targeted `update`, deliberately **not** through
-`savSO`. The `_soCols` write list must not name a column the database lacks: a
-write list naming a missing column makes PostgREST reject and silently retry
-**every** `sales_orders` save with columns stripped, which is a far worse failure
-than the one being fixed. So the columns stay out of `_soCols` until the
-migration is applied, and the button surfaces an error instead of failing
-quietly. `scripts/check-column-parity.js` enforces the same rule.
+`savSO`. Asserting "no carrier cost" is a decision about one order at one moment;
+carrying it on every unrelated `sales_orders` save would make it a silent side
+effect, and a targeted update reports its own failure rather than being dropped
+from a batch. (It also had to stay out of `_soCols` before the migration landed:
+a write list naming a column the database lacks makes PostgREST reject and
+silently retry **every** `sales_orders` save with columns stripped —
+`scripts/check-column-parity.js` enforces that rule.)
 
 ## Suggested order of work
 
@@ -348,7 +349,7 @@ Two consequences if dimensions stay out:
 - Predicted cost and actual invoice cost stop reconciling, which breaks the
   accuracy tracking the whole system depends on.
 
-**Fixed (migration pending).** `ship_cartons` holds the standard sizes and the
+**Fixed (live).** `ship_cartons` holds the standard sizes and the
 manual-ship modal renders them as buttons that fill L/W/H, so a rep picks a box
 instead of typing three numbers. The catalog is seeded from the five sizes
 actually observed in `_shipments` — no invented cartons — and `dim_weight_lb` is
@@ -356,11 +357,23 @@ a generated column so a quote and the audit read the same number. With an empty
 or absent catalog the picker renders nothing and the manual inputs still work.
 
 The other half is capturing the carrier invoice at all. `ship_carrier_invoices`
-now exists for that: one row per invoice line, joined back on tracking number,
-with `adjustment` (billed − quoted) generated. Nothing populates it yet — a UPS
-invoice import is the next piece — but until it has rows, every margin figure in
-this document is an upper bound rather than a measurement, and the audit now
-says so in its own words.
+holds that: one row per invoice line, joined back on tracking number, with
+`adjustment` (billed − quoted) generated. `scripts/import-carrier-invoice.js`
+loads a carrier CSV into it:
+
+```bash
+node scripts/import-carrier-invoice.js ups-invoice.csv --dry-run   # resolve headers, write nothing
+node scripts/import-carrier-invoice.js ups-invoice.csv             # load (needs SUPABASE_DB_URL)
+```
+
+Headers vary by carrier and export template, so the importer matches them
+case/punctuation-insensitively against an alias list and takes
+`--map field="Column"` overrides. **Run `--dry-run` first on any new invoice
+format** — it prints the resolved mapping and a preview. Re-running the same
+invoice upserts rather than duplicating.
+
+Until that table has rows, every margin figure in this document is an upper
+bound rather than a measurement, and the audit says so in its own words.
 
 ---
 
@@ -377,7 +390,8 @@ So the numbers above are generated, not typed:
 | `scripts/shipping-audit.js` | Re-derives every figure from the live DB and rewrites the block above. |
 | `supabase/migrations/20260901120000_ship_audit_snapshots.sql` | `ship_audit_snapshots` — one row per run, so the recording gap has a history. |
 | `.github/workflows/shipping-audit.yml` | Runs it every Monday and commits the refreshed doc. |
-| `supabase/migrations/20260901160000_shipping_cost_capture.sql` | `no_carrier_cost`, `ship_cartons`, `ship_carrier_invoices`. **Not yet applied.** |
+| `supabase/migrations/20260901160000_shipping_cost_capture.sql` | `no_carrier_cost`, `ship_cartons`, `ship_carrier_invoices`. Applied. |
+| `scripts/import-carrier-invoice.js` | Loads a carrier invoice CSV into `ship_carrier_invoices`, matching lines to orders by tracking number. |
 
 The audit probes for the `20260901160000` objects and folds the answer into its
 query, so it keeps working on a database at either migration level rather than

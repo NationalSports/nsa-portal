@@ -89,11 +89,12 @@ describe('shipping override UI wiring', () => {
     expect(src).toContain('migration 20260901160000 may not be applied');
   });
 
-  // A write list naming a column the database lacks makes PostgREST reject and silently
-  // retry EVERY sales_orders save with columns stripped — so these columns must stay out
-  // of _soCols until the migration is applied. scripts/check-column-parity.js enforces
-  // the same rule; this pins the reason so nobody "fixes" it by adding them.
-  test('no_carrier_cost columns are not in the sales_orders write list', () => {
+  // Migration 20260901160000 is applied, so naming these in _soCols would no longer break
+  // column parity. They stay out anyway: "no carrier cost" is a person asserting something
+  // about one order at one moment, so it is written by a targeted update that reports its
+  // own failure — not carried along on every unrelated sales_orders save. Adding them here
+  // would make the assertion a silent side effect of saving anything else.
+  test('no_carrier_cost is written deliberately, not via the sales_orders write list', () => {
     expect(read('constants.js')).not.toContain('no_carrier_cost');
   });
 });

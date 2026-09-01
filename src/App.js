@@ -22035,10 +22035,11 @@ export default function App(){
                     :'Local delivery / customer pickup');
                 const patch={no_carrier_cost:true,no_carrier_cost_reason:reason,
                   no_carrier_cost_by:cu?.id||'',no_carrier_cost_at:new Date().toISOString()};
-                // Deliberately NOT through savSO: these columns are not in _soCols, because a
-                // write list naming a column the database lacks makes PostgREST reject and
-                // silently retry EVERY sales_orders save with columns stripped. A targeted
-                // update surfaces the error instead, so a missing migration is loud.
+                // Deliberately NOT through savSO. These columns are not in _soCols: asserting
+                // "no carrier cost" is a decision about one order at one moment, and riding it
+                // along on every unrelated sales_orders save would make it a silent side
+                // effect. A targeted update also surfaces its own failure rather than being
+                // dropped from a batch.
                 if(supabase){
                   const{error}=await supabase.from('sales_orders').update(patch).eq('id',so.id);
                   if(error){nf('Could not record "no carrier cost": '+error.message+' — migration 20260901160000 may not be applied','error');return}
