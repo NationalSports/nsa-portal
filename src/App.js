@@ -44,6 +44,7 @@ import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { canViewFinancials } from './lib/financialAccess';
+import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -3607,22 +3608,16 @@ export default function App(){
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
     _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
-    // Also save products when they change
-    const oldProds=JSON.stringify((old?.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
-    const newProds=JSON.stringify((s.products||[]).map(p=>p.sku+p.cost+(p.decorations||[]).map(d=>d.type+':'+d.art_group).join('|')+p.vendor_id).sort());
-    if(oldProds!==newProds&&(s.products||[]).length>0){
-      const prods=(s.products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|'),_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
-      // Insert the fresh set first, then delete the old rows by id (handles SKU changes).
-      // Never delete-then-insert: if the insert fails after the delete, the store's products are gone.
-      // Also self-heals duplicate rows left by the old pattern — oldIds covers every existing row.
+    // Compare the complete persisted shape so a quantity/color/image-only report
+    // refresh is saved too. The previous abbreviated signature missed those edits.
+    const productRows=products=>consolidateOmgProductRows(products||[]).map(p=>({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.no_deco?'no_deco':((p.decorations||[]).map(d=>d.type).join('|')||''),deco_cost:p.deco_cost||0,sizes:p.sizes||{},image_url:p.image_url||'',manufacturer:p.manufacturer||'',vendor_id:p.vendor_id||'',art_group:(p.decorations||[]).map(d=>d.art_group).join('|')||'',art_cust_ids:(p.decorations||[]).map(d=>d._cust_art_id||'').join('|'),_cost_source:p._cost_source||'',art_ready:!!p.art_ready}));
+    const oldProds=productRows(old?.products||[]);const prods=productRows(s.products||[]);
+    if(JSON.stringify(oldProds)!==JSON.stringify(prods)&&prods.length>0){
+      // One transaction + a per-store advisory lock. The old insert-then-delete
+      // sequence allowed overlapping autosaves to leave two (or more) full snapshots.
       if(supabase){(async()=>{try{
-        const{data:oldRows,error:oldErr}=await supabase.from('omg_store_products').select('id').eq('store_id',s.id);
-        if(oldErr){console.error('[DB] omg products: read of existing rows failed, save skipped:',oldErr.message);return}
-        const{error:insErr}=await supabase.from('omg_store_products').insert(prods);
-        if(insErr){console.error('[DB] omg products save:',insErr.message);return}
-        const oldIds=(oldRows||[]).map(r=>r.id);
-        if(oldIds.length){const{error:delErr}=await supabase.from('omg_store_products').delete().in('id',oldIds);
-          if(delErr)console.error('[DB] omg products: stale-row cleanup failed (duplicates until next save):',delErr.message)}
+        const{error}=await supabase.rpc('replace_omg_store_products',{p_store_id:s.id,p_products:prods});
+        if(error)console.error('[DB] omg products save:',error.message);
       }catch(e){console.error('[DB] omg products save:',e.message||e)}})()}
     }
   }});_dbSnap.current.omg=omgStores}},[omgStores]);
