@@ -28,11 +28,13 @@ describe('vendorInvSource', () => {
     expect(vendorInvSource({ name: 'Momentec' })).toBe('mt');
     expect(vendorInvSource({ name: 'Richardson' })).toBe('rs');
     expect(vendorInvSource({ name: 'Adidas' })).toBe('adidas');
+    expect(vendorInvSource({ name: 'Adidas Golf' })).toBe('adidas');
   });
 
   test('Richardson brand resolves even without a vendor record', () => {
     expect(vendorInvSource(null, { brand: 'Richardson' })).toBe('rs');
     expect(vendorInvSource(undefined, { brand: 'adidas' })).toBe('adidas');
+    expect(vendorInvSource(undefined, { brand: 'Adidas Golf' })).toBe('adidas');
   });
 
   test('vendors with no stock API return empty (no fake check)', () => {

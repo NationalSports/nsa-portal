@@ -34,7 +34,7 @@ export function vendorInvSource(vendorRec, { brand } = {}) {
   if (ap === 'sanmar' || nm === 'sanmar') return 'sm';
   if (ap === 'momentec' || nm === 'momentec') return 'mt';
   if (ap === 'richardson' || nm === 'richardson') return 'rs';
-  if (nm === 'adidas' || b === 'adidas') return 'adidas';
+  if (nm.startsWith('adidas') || b.startsWith('adidas')) return 'adidas';
   return '';
 }
 

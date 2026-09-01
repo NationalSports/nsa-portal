@@ -1174,11 +1174,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
-    if((item.brand||'').toLowerCase()==='adidas')return true;
+    if((item.brand||'').toLowerCase().startsWith('adidas'))return true;
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id||dbVendorBySku[item.sku];
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return(vRec.name||'').toLowerCase()==='adidas';
+    if(vRec)return(vRec.name||'').toLowerCase().startsWith('adidas');
     return false;
   },[products,vendorList,dbVendorBySku]);
   // Under Armour items use the same synced B2B stock path (ua_inventory via the
@@ -1205,6 +1205,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const vendorInvCache=useRef({});
   const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
   const vendorInvFetching=useRef({});// track in-flight fetches
+  const vendorInvRequestSeq=useRef({});// newest supplier request per SKU; stale responses cannot overwrite a vendor change
 
   // ─── Adidas B2B Inventory Cache ───
   const adidasInvCache=useRef({});// {sku: {sizes:{...}, lastSynced, fetchedAt}}
@@ -1342,15 +1343,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const isMT=isMomentecItem(itemRef);
     const isRS=isRichardsonItem(itemRef);
     if(!isSS&&!isSM&&!isMT&&!isRS)return;
-    const cacheKey=sku;
+    const source=isRS?'rs':isMT?'mt':isSM?'sm':'ss';
+    const cacheKey=source+':'+sku;
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
+      vendorInvRequestSeq.current[sku]=(vendorInvRequestSeq.current[sku]||0)+1;
       setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source,nextAvail:cached.nextAvail,sizeNextAvail:cached.sizeNextAvail||{}}}));
       return;
     }
     if(vendorInvFetching.current[cacheKey])return;
+    const requestSeq=(vendorInvRequestSeq.current[sku]||0)+1;
+    vendorInvRequestSeq.current[sku]=requestSeq;
+    const commit=(result)=>{if(vendorInvRequestSeq.current[sku]!==requestSeq)return false;vendorInvCache.current[cacheKey]=result;setVendorInv(prev=>({...prev,[sku]:{sizes:result.sizes||{},price:result.price||{},nextAvail:result.nextAvail||'',sizeNextAvail:result.sizeNextAvail||{},loading:false,error:null,source:result.source}}));return true};
     vendorInvFetching.current[cacheKey]=true;
-    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isRS?'rs':isMT?'mt':isSM?'sm':'ss'}}));
+    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source}}));
     try{
       if(isRS){
         // Richardson: pull StockInventory feed grouped by Style; pick the color match for this item
@@ -1399,8 +1405,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e){console.warn('[Richardson] Inventory fetch error for',sku,e.message);throw e}
         console.log('[Richardson] Inventory result for',sku,':',JSON.stringify(sizeQty),'next:',nextAvail);
         const result={sizes:sizeQty,price:sizePrice,nextAvail,sizeNextAvail,fetchedAt:Date.now(),source:'rs'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,nextAvail,sizeNextAvail,loading:false,error:null,source:'rs'}}));
+        commit(result);
       }else if(isMT){
         // Momentec: fetch product detail via HCL Commerce to get child SKUs + inventory
         const sizeQty={};const sizePrice={};
@@ -1427,8 +1432,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const hasMtInv=Object.values(sizeQty).some(v=>v>0);
         const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:hasMtInv?sizeQty:{},price:sizePrice,loading:false,error:null,source:'mt'}}));
+        commit(result);
       }else if(isSM){
         // SanMar: fetch inventory + pricing via SOAP API (now returns JSON)
         const prod3=products.find(p=>p.sku===sku);
@@ -1579,8 +1583,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }
         console.log('[SanMar] Inventory result for',sku,':',JSON.stringify(sizeQty),'price:',JSON.stringify(sizePrice));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
+        commit(result);
       }else{
         // S&S Activewear: fetch via REST API
         let data;
@@ -1638,12 +1641,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
         console.log('[S&S] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'ss'};
-        vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'ss'}}));
+        commit(result);
       }
     }catch(err){
       console.error('[Vendor] Inventory fetch failed for',sku,err);
-      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source:isRS?'rs':isMT?'mt':isSM?'sm':'ss'}}));
+      if(vendorInvRequestSeq.current[sku]===requestSeq)setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source}}));
     }finally{
       delete vendorInvFetching.current[cacheKey];
     }
@@ -2519,8 +2521,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const cp=products.find(p=>(p.sku===cur.sku||(cur.product_id&&p.id===cur.product_id))&&p.vendor_id===vid&&catalogRepCost(p)>0);
       if(cp&&Math.abs(catalogRepCost(cp)-safeNum(cur.nsa_cost))>0.005)next.nsa_cost=catalogRepCost(cp);
     }
-    setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?next:it),updated_at:new Date().toLocaleString()}));setDirty(true);
-    if(cur.sku){delete vendorInvCache.current[cur.sku];delete vendorInvFetching.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
+    // Build the replacement from the item in the functional update, not `cur`
+    // from the click render. Size additions can land in the same tick; using the
+    // stale object here previously reverted those newly-added sizes.
+    setO(e=>({...e,items:safeItems(e).map((it,x)=>{if(x!==i)return it;const{_ss_live,_sm_live,_mt_live,_rs_live,...latest}=it;const assigned={...latest,vendor_id:vid};if(canRecost&&next.nsa_cost!==cur.nsa_cost)assigned.nsa_cost=next.nsa_cost;return assigned}),updated_at:new Date().toLocaleString()}));setDirty(true);
+    if(cur.sku){vendorInvRequestSeq.current[cur.sku]=(vendorInvRequestSeq.current[cur.sku]||0)+1;Object.keys(vendorInvCache.current).forEach(k=>{if(k===cur.sku||k.endsWith(':'+cur.sku))delete vendorInvCache.current[k]});Object.keys(vendorInvFetching.current).forEach(k=>{if(k===cur.sku||k.endsWith(':'+cur.sku))delete vendorInvFetching.current[k]});setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n})}
     if(isLive){if(canRecost&&next.sku)setPendingCostSku(p=>({...p,[next.sku]:true}));fetchVendorInventory(next.sku,vid,next)}
     const vn=vendorList.find(v=>v.id===vid)?.name||'—';nf('Vendor set to '+vn+(isLive&&canRecost?' — refreshing live cost…':'')+' for '+(cur.sku||'item'));setVendorModal(null);
   };
@@ -15893,7 +15898,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             <div style={{fontSize:12,color:'#475569'}}><strong>{it.sku}</strong>{it.color?' · '+it.color:''} — {it.name}</div>
             <div style={{fontSize:12,color:'#64748b'}}>Currently ordered from: <strong style={{color:'#0f172a'}}>{curName||'(unassigned)'}</strong></div>
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Order from vendor</label>
-              <SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..."/></div>
+              <SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={curVid} onChange={vid=>{if(vid&&vid!==curVid)reassignVendor(vendorModal.itemIdx,vid);else setVendorModal(null)}} placeholder="Search vendors..." menuPortal/></div>
             {hasPO&&<div style={{fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'8px 10px'}}>⚠️ This item already has a PO. Switching won't move quantities already on that PO or change its cost — review the existing PO after switching.</div>}
             <div style={{fontSize:11,color:'#94a3b8'}}>Cost is refreshed from the new vendor (live wholesale price, then catalog). The customer sell price and the item's brand are left unchanged.</div>
           </div>
