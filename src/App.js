@@ -19249,6 +19249,20 @@ export default function App(){
   const[clearShipModal,setClearShipModal]=useState(null);
   const[shipExpanded,setShipExpanded]=useState({});// key->bool; Ready-to-Ship cards start collapsed
   const[manualShipModal,setManualShipModal]=useState(null);
+  // Standard carton sizes. Carriers bill the greater of actual and dimensional weight
+  // (L*W*H/139), and only 6 of 301 recorded shipments carry dimensions — typing three
+  // numbers per box is why. Picking one is not. Loaded directly rather than through the
+  // bulk loader so an un-migrated database just yields an empty list and the manual
+  // inputs keep working.
+  const[shipCartons,setShipCartons]=useState([]);
+  useEffect(()=>{
+    if(!supabase||!manualShipModal||shipCartons.length)return;
+    let alive=true;
+    supabase.from('ship_cartons').select('id,name,length_in,width_in,height_in,dim_weight_lb,active,sort_order')
+      .eq('active',true).order('sort_order')
+      .then(({data,error})=>{if(alive&&!error&&Array.isArray(data))setShipCartons(data)});
+    return()=>{alive=false};
+  },[manualShipModal,shipCartons.length]);
   const manualShipStateForSO=(so,c2,base={})=>{
     const _sel=resolveOrderShipTo(so,c2);
     const _destAddr=_sel&&_sel.street
@@ -19256,6 +19270,30 @@ export default function App(){
       :{company:c2?.name||'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};
     return{...base,custSearch:'',custFilter:c2||null,so,cust:c2||null,carrier:base.carrier||'ups',tracking:'',cost:'',notes:'',weight:base.weight||5,dimensions:base.dimensions||{length:'',width:'',height:''},availItems:unshippedOrderItems(so),shipItems:[],markShipped:{},shipToMode:'customer',decoId:'',attn:'',destTouched:false,destAddr:_destAddr,labelUrl:null,shipstationShipmentId:null};
   };
+  // Row of standard-carton buttons that fill the L/W/H inputs. Renders nothing when the
+  // catalog is empty (pre-migration database), so the manual inputs stay the fallback.
+  const renderCartonPicker=()=>{
+    if(!shipCartons.length)return null;
+    const dims=manualShipModal?.dimensions||{};
+    const isOn=(c)=>String(dims.length)===String(c.length_in)&&String(dims.width)===String(c.width_in)&&String(dims.height)===String(c.height_in);
+    return<div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginBottom:6}}>
+      <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box</label>
+      {shipCartons.map(c=>{
+        const on=isOn(c);
+        return<button key={c.id} type="button" className="btn btn-sm"
+          title={`${c.length_in} × ${c.width_in} × ${c.height_in} in · ${c.dim_weight_lb} lb dim weight`}
+          style={{fontSize:10,padding:'3px 8px',fontWeight:700,border:'1px solid '+(on?'#1e40af':'#cbd5e1'),
+            background:on?'#dbeafe':'white',color:on?'#1e40af':'#475569'}}
+          onClick={()=>setManualShipModal(m=>({...m,dimensions:{length:String(c.length_in),width:String(c.width_in),height:String(c.height_in)}}))}>
+          {c.length_in}×{c.width_in}×{c.height_in}
+        </button>;
+      })}
+      {(dims.length||dims.width||dims.height)&&<button type="button" className="btn btn-sm"
+        style={{fontSize:10,padding:'3px 8px',background:'none',border:'none',color:'#94a3b8'}}
+        onClick={()=>setManualShipModal(m=>({...m,dimensions:{length:'',width:'',height:''}}))}>clear</button>}
+    </div>;
+  };
+
   const openManualShipForSO=(so)=>{
     const c2=cust.find(cc=>cc.id===so?.customer_id);
     if(!so||!c2){nf('Sales order or customer could not be loaded','error');return}
@@ -21496,6 +21534,7 @@ export default function App(){
                 <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
                   <div><label style={_lbl}>Weight (lbs)</label>
                     <input className="form-input" type="number" min="0.1" step="0.5" value={manualShipModal.weight===''||manualShipModal.weight===undefined?'':manualShipModal.weight} placeholder="5" style={{width:70,fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,weight:e.target.value===''?'':parseFloat(e.target.value)})}/></div>
+                  {renderCartonPicker()}
                   <div style={{display:'flex',alignItems:'center',gap:3}}>
                     <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box (in)</label>
                     <input className="form-input" type="number" min="1" placeholder="L" value={(manualShipModal.dimensions||{}).length||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}} onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),length:e.target.value}})}/>
@@ -21869,6 +21908,7 @@ export default function App(){
                     style={{width:70,fontSize:11}}
                     onChange={e=>setManualShipModal({...manualShipModal,weight:e.target.value===''?'':parseFloat(e.target.value)})}/>
                 </div>
+                {renderCartonPicker()}
                 <div style={{display:'flex',alignItems:'center',gap:3}}>
                   <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box (in)</label>
                   <input className="form-input" type="number" min="1" placeholder="L" value={(manualShipModal.dimensions||{}).length||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}}
@@ -21981,6 +22021,33 @@ export default function App(){
 
             {/* Actions */}
             {(()=>{
+              // Local/rep delivery and customer pickup have no carrier cost. Recording that
+              // as a $0 shipment is indistinguishable from never recording anything —
+              // _shipping_cost is already 0 on 1,103 of 1,226 orders — so this asserts the
+              // zero explicitly instead. 46 warehouse_delivery and 29 rep_delivery orders
+              // carrying $6,763 of shipping charge need exactly this.
+              const _doNoCarrierCost=async()=>{
+                const so=manualShipModal.so;
+                if(!so)return;
+                const reason=(manualShipModal.notes||'').trim()
+                  ||(manualShipModal.carrier==='rep_delivery'?'Rep delivery'
+                    :manualShipModal.shipToMode==='warehouse'?'Warehouse delivery'
+                    :'Local delivery / customer pickup');
+                const patch={no_carrier_cost:true,no_carrier_cost_reason:reason,
+                  no_carrier_cost_by:cu?.id||'',no_carrier_cost_at:new Date().toISOString()};
+                // Deliberately NOT through savSO: these columns are not in _soCols, because a
+                // write list naming a column the database lacks makes PostgREST reject and
+                // silently retry EVERY sales_orders save with columns stripped. A targeted
+                // update surfaces the error instead, so a missing migration is loud.
+                if(supabase){
+                  const{error}=await supabase.from('sales_orders').update(patch).eq('id',so.id);
+                  if(error){nf('Could not record "no carrier cost": '+error.message+' — migration 20260901160000 may not be applied','error');return}
+                }
+                setSOs(prev=>prev.map(x=>x.id===so.id?{...x,...patch}:x));
+                addWhAction({type:'no_carrier_cost',soId:so.id,customer:manualShipModal.cust?.name||'',reason,by:cu?.id||'warehouse'});
+                nf(so.id+' marked as no carrier cost — '+reason);
+                setManualShipModal(null);
+              };
               const _doConfirmManualShip=async(openEmail)=>{
                   const so=manualShipModal.so;
                   const hasSelectedItems=(manualShipModal.shipItems||[]).some(it=>Object.values(it.sizes||{}).some(v=>safeNum(v)>0));
@@ -22061,6 +22128,9 @@ export default function App(){
               return <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
                 <button className="btn btn-primary" style={{background:'#92400e',borderColor:'#92400e',fontWeight:800}}
                   onClick={()=>_doConfirmManualShip(false)}>⚡ Confirm Shipment</button>
+                <button className="btn btn-sm" style={{fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px 12px'}}
+                  title="We delivered this ourselves — record that there is no carrier cost, rather than leaving it looking unrecorded"
+                  onClick={_doNoCarrierCost}>🚚 No carrier cost</button>
                 {manualShipModal.labelUrl&&<button className="btn btn-primary" style={{background:'#0369a1',borderColor:'#0369a1',fontWeight:800}}
                   onClick={()=>_doConfirmManualShip(true)}>📧 Confirm &amp; Email Label…</button>}
                 <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>

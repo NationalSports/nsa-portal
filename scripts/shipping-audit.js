@@ -69,7 +69,16 @@ const LINE_QTY = `coalesce(nullif((
 
 // One query, one JSON blob. shipping_value is DOLLARS when shipping_type='flat'
 // and a PERCENT when 'pct' — never sum it across types.
-const SQL = `
+// The audit runs against databases at different migration levels: the no_carrier_cost
+// column and ship_carrier_invoices arrive in 20260901160000. Probe for them and fold the
+// answer into the query rather than keeping a second legacy copy of it in sync.
+const FEATURE_SQL = `select
+  (to_regclass('public.ship_carrier_invoices') is not null) as has_rebills,
+  exists(select 1 from information_schema.columns
+         where table_schema='public' and table_name='sales_orders'
+           and column_name='no_carrier_cost') as has_ncc;`;
+
+const buildSql = (feat = {}) => `
 with item_qty as (
   select i.so_id, i.brand, i.unit_sell, i.nsa_cost, ${LINE_QTY} as qty
   from so_items i
@@ -91,6 +100,9 @@ base as (
          coalesce(m.merch_cost, 0) as merch_cost,
          m.brand, m.nbrands,
          coalesce(s._shipstation_cost, s._shipping_cost) as actual_cost,
+         -- A person asserted this order had no carrier cost (local/rep delivery).
+         -- That is a resolved order, not a gap: without the flag a 0 is ambiguous.
+         ${feat.has_ncc ? 'coalesce(s.no_carrier_cost, false)' : 'false'} as no_carrier_cost,
          coalesce(s._inbound_freight, 0) as inbound,
          case when s.shipping_type = 'flat' then coalesce(s.shipping_value, 0)
               when s.shipping_type = 'pct'  then coalesce(s.shipping_value, 0) / 100.0 * coalesce(m.merch_sell, 0)
@@ -104,6 +116,11 @@ select json_build_object(
       'total_sos',   count(*),
       'with_charge', count(*) filter (where charged > 0),
       'with_cost',   count(*) filter (where actual_cost > 0),
+      'no_carrier_cost', count(*) filter (where no_carrier_cost),
+      -- coalesce, not a bare NOT: actual_cost is NULL on an unrecorded order,
+      -- NULL > 0 is NULL, and a FILTER on NULL drops the row — which would silently
+      -- report zero unresolved orders precisely when every order is unresolved.
+      'unresolved',  count(*) filter (where charged > 0 and coalesce(actual_cost, 0) <= 0 and not no_carrier_cost),
       'scoreable',   count(*) filter (where charged > 0 and actual_cost > 0),
       'unparsed_dates', count(*) filter (where ts is null),
       'window_start', to_char(min(ts), 'YYYY-MM-DD'),
@@ -130,6 +147,14 @@ select json_build_object(
         'pct_of_merch_cost', round(100 * sum(inbound) / nullif(sum(merch_cost), 0), 1)
       ) as r
       from base where nbrands = 1 group by brand having count(*) >= 5) t),
+  'rebills', ${feat.has_rebills ? `(select json_build_object(
+      'rows',       count(*),
+      'matched_so', count(*) filter (where so_id is not null),
+      'quoted',     round(coalesce(sum(quoted_amount), 0), 2),
+      'billed',     round(coalesce(sum(billed_amount), 0), 2),
+      'adjustment', round(coalesce(sum(adjustment), 0), 2),
+      'dim_weight_adj', round(coalesce(sum(adjustment) filter (where adjustment_reason = 'dim_weight'), 0), 2)
+    ) from ship_carrier_invoices)` : 'null'},
   'adidas_bands', (select coalesce(json_agg(r order by r->>'band'), '[]') from (
       select json_build_object(
         'band', band, 'sos', count(*),
@@ -148,8 +173,14 @@ select json_build_object(
 function fail(msg) { console.error(msg); process.exit(2); }
 
 function query(url) {
+  let feat = {};
   try {
-    return JSON.parse(execFileSync('psql', [url, '-At', '-c', SQL], { encoding: 'utf8' }));
+    const rows = execFileSync('psql', [url, '-At', '-F', '|', '-c', FEATURE_SQL], { encoding: 'utf8' })
+      .trim().split('|');
+    feat = { has_rebills: rows[0] === 't', has_ncc: rows[1] === 't' };
+  } catch (_) { /* pre-migration database: fall through with everything off */ }
+  try {
+    return JSON.parse(execFileSync('psql', [url, '-At', '-c', buildSql(feat)], { encoding: 'utf8' }));
   } catch (e) {
     fail(`[shipping-audit] query failed: ${e.stderr || e.message}`);
   }
@@ -228,10 +259,21 @@ function render(m, trend) {
   L.push(`| Carrying a shipping charge | ${num(c.with_charge)} | ${share(c.with_charge, c.total_sos)} |`);
   L.push(`| With a recorded actual cost | ${num(c.with_cost)} | ${share(c.with_cost, c.total_sos)} |`);
   L.push(`| **Scoreable (charge and cost)** | **${num(c.scoreable)}** | **${share(c.scoreable, c.total_sos)}** |`);
+  if (c.no_carrier_cost !== undefined && c.no_carrier_cost !== null) {
+    L.push(`| Asserted "no carrier cost" | ${num(c.no_carrier_cost)} | ${share(c.no_carrier_cost, c.total_sos)} |`);
+  }
   L.push('');
-  L.push(`**The recording gap is ${pct(gap)}** — that many orders carry no actual shipping`);
-  L.push('cost, so they cannot be scored at all. Closing this is what the ShipStation');
-  L.push('backfill is for, and it is the number to watch in the trend table below.');
+  const unresolved = (c.unresolved === undefined || c.unresolved === null)
+    ? c.with_charge - c.scoreable : c.unresolved;
+  L.push(`**${num(unresolved)} charged ${unresolved === 1 ? 'order is' : 'orders are'} still unresolved** — no`);
+  L.push('recorded cost, and nobody has said they were delivered on our own truck. That is the');
+  L.push('real gap; it is the number to watch in the trend table below.');
+  if (c.no_carrier_cost) {
+    L.push('');
+    L.push(`${num(c.no_carrier_cost)} ${c.no_carrier_cost === 1 ? 'order is' : 'orders are'} resolved the other way: a person marked`);
+    L.push('them as having no carrier cost. Those are answered, not missing — which is the whole');
+    L.push('point of the flag, since `_shipping_cost = 0` cannot tell the two apart on its own.');
+  }
   if (c.unparsed_dates > 0) {
     L.push('');
     L.push(`> ⚠️ ${c.unparsed_dates} order(s) have a \`created_at\` this script cannot parse and`);
@@ -286,6 +328,30 @@ function render(m, trend) {
   L.push('Treat `_inbound_freight = 0` as unknown, not as zero.');
   L.push('');
 
+  if (m.rebills && m.rebills.rows > 0) {
+    const r = m.rebills;
+    L.push('### Carrier rebills — quoted versus actually billed');
+    L.push('');
+    L.push('| | |');
+    L.push('|---|---:|');
+    L.push(`| Invoice lines captured | ${num(r.rows)} |`);
+    L.push(`| Matched to a sales order | ${num(r.matched_so)} |`);
+    L.push(`| Quoted at label time | ${money(r.quoted, 2)} |`);
+    L.push(`| Actually billed | ${money(r.billed, 2)} |`);
+    L.push(`| **Adjustment** | **${money(r.adjustment, 2)}** |`);
+    L.push(`| …of which dim weight | ${money(r.dim_weight_adj, 2)} |`);
+    L.push('');
+    L.push('A positive adjustment is money the label-time cost never showed. Until these are');
+    L.push('captured, every margin figure above is an upper bound rather than a measurement.');
+    L.push('');
+  } else if (m.rebills !== undefined) {
+    L.push('### Carrier rebills — quoted versus actually billed');
+    L.push('');
+    L.push('_No carrier invoice lines captured yet. Recorded shipping cost is the label-time_');
+    L.push('_quote; undeclared cartons get re-measured at the hub and rebilled weeks later._');
+    L.push('_Until `ship_carrier_invoices` has rows, the margin above is an upper bound._');
+    L.push('');
+  }
   L.push('### Trend — is the gap closing?');
   L.push('');
   if (!trend || trend.length === 0) {
@@ -381,4 +447,4 @@ if (require.main === module) main();
 
 // Exported so the query and the renderer can be exercised without running the
 // CLI (see scripts/pgtest/README.md for the local-Postgres harness).
-module.exports = { SQL, render, splice, stamp };
+module.exports = { buildSql, FEATURE_SQL, render, splice, stamp };

@@ -66,4 +66,34 @@ describe('shipping override UI wiring', () => {
     expect(end).toBeGreaterThan(start);
     expect(src.slice(start, end)).toContain('const cost=parseFloat(manualShipModal.cost)||0;');
   });
+  // Carriers bill the greater of actual and dimensional weight. Only 6 of 301 recorded
+  // shipments carry dimensions, because entering them means typing three numbers per box.
+  test('standard cartons can be picked instead of typed, in both ship branches', () => {
+    const src = read('App.js');
+    expect(src).toContain('const renderCartonPicker=()=>{');
+    // One definition, used by the no-SO branch and the against-an-order branch, so there
+    // is no second copy to hand-sync.
+    expect(src.match(/\{renderCartonPicker\(\)\}/g)).toHaveLength(2);
+    // Absent catalog (pre-migration database) must leave the manual inputs working.
+    expect(src).toContain('if(!shipCartons.length)return null;');
+    expect(src).toContain("supabase.from('ship_cartons')");
+  });
+
+  test('no-carrier-cost is asserted explicitly and fails loudly without the migration', () => {
+    const src = read('App.js');
+    expect(src).toContain('const _doNoCarrierCost=async()=>{');
+    expect(src).toContain('🚚 No carrier cost');
+    expect(src).toContain('no_carrier_cost:true');
+    // A targeted update, NOT savSO: the columns are deliberately absent from _soCols.
+    expect(src).toContain("supabase.from('sales_orders').update(patch).eq('id',so.id)");
+    expect(src).toContain('migration 20260901160000 may not be applied');
+  });
+
+  // A write list naming a column the database lacks makes PostgREST reject and silently
+  // retry EVERY sales_orders save with columns stripped — so these columns must stay out
+  // of _soCols until the migration is applied. scripts/check-column-parity.js enforces
+  // the same rule; this pins the reason so nobody "fixes" it by adding them.
+  test('no_carrier_cost columns are not in the sales_orders write list', () => {
+    expect(read('constants.js')).not.toContain('no_carrier_cost');
+  });
 });

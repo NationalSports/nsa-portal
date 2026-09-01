@@ -34,10 +34,11 @@ Data window **2026-04-24 to 2026-08-31** (dates parsed from
 | Carrying a shipping charge | 1,107 | 90.3% |
 | With a recorded actual cost | 113 | 9.2% |
 | **Scoreable (charge and cost)** | **102** | **8.3%** |
+| Asserted "no carrier cost" | 0 | 0.0% |
 
-**The recording gap is 90.8%** — that many orders carry no actual shipping
-cost, so they cannot be scored at all. Closing this is what the ShipStation
-backfill is for, and it is the number to watch in the trend table below.
+**1,005 charged orders are still unresolved** — no
+recorded cost, and nobody has said they were delivered on our own truck. That is the
+real gap; it is the number to watch in the trend table below.
 
 > ⚠️ 1 order(s) have a `created_at` this script cannot parse and
 > are excluded from the window bounds. They are still counted in every total.
@@ -98,6 +99,12 @@ Zero-freight share is flat across every order-size band. If Adidas waived freigh
 above some order value, the top band would stand out; it does not. Steve’s read is
 that these are **unrecorded, not free**, consistent with the recording gap above.
 Treat `_inbound_freight = 0` as unknown, not as zero.
+
+### Carrier rebills — quoted versus actually billed
+
+_No carrier invoice lines captured yet. Recorded shipping cost is the label-time_
+_quote; undeclared cartons get re-measured at the hub and rebilled weeks later._
+_Until `ship_carrier_invoices` has rows, the margin above is an upper bound._
 
 ### Trend — is the gap closing?
 
@@ -246,14 +253,22 @@ nothing left to ship, so the rep no longer has to invent an item description.
 The page bounce remains — `App.js` returns the order editor early, so the modal
 cannot render over it without restructuring that render path.
 
-**Still needed: a way to say "no carrier cost".** 46 `warehouse_delivery` and 29
+**"No carrier cost" (built, migration pending).** 46 `warehouse_delivery` and 29
 `rep_delivery` orders ($6,763 charged) went out on our own truck and have no
-carrier cost to record. Today `_shipping_cost` is `0` on 1,103 rows and `NULL`
-on 2, so "we delivered it ourselves, cost nothing" is indistinguishable from
-"nobody recorded it" — the same unknown-versus-zero trap this document flags for
-`_inbound_freight`. That needs a column (a `no_carrier_cost` flag or a reason
-code), not just a button, and until it exists the audit cannot tell a genuine
-zero from a gap.
+carrier cost to record. `_shipping_cost` is `0` on 1,103 rows and `NULL` on 2, so
+"we delivered it ourselves, cost nothing" was indistinguishable from "nobody
+recorded it" — the same unknown-versus-zero trap this document flags for
+`_inbound_freight`. Migration `20260901160000` adds `no_carrier_cost` (plus
+reason, who and when), the manual-ship modal gets a **🚚 No carrier cost**
+button, and the audit counts those orders as resolved rather than missing.
+
+The flag is written by a targeted `update`, deliberately **not** through
+`savSO`. The `_soCols` write list must not name a column the database lacks: a
+write list naming a missing column makes PostgREST reject and silently retry
+**every** `sales_orders` save with columns stripped, which is a far worse failure
+than the one being fixed. So the columns stay out of `_soCols` until the
+migration is applied, and the button surfaces an error instead of failing
+quietly. `scripts/check-column-parity.js` enforces the same rule.
 
 ## Suggested order of work
 
@@ -333,14 +348,19 @@ Two consequences if dimensions stay out:
 - Predicted cost and actual invoice cost stop reconciling, which breaks the
   accuracy tracking the whole system depends on.
 
-Better fix for whatever made this annoying: standardize on two or three carton
-sizes, store them, and let the rep pick a box rather than type three numbers.
-That removes the data entry without removing the data. There is no carton
-catalog today — `BOX_TRACKING_PLAN.md` defines `BX-####` plates but boxes carry
-no dimensions — so this would be new, and small.
+**Fixed (migration pending).** `ship_cartons` holds the standard sizes and the
+manual-ship modal renders them as buttons that fill L/W/H, so a rep picks a box
+instead of typing three numbers. The catalog is seeded from the five sizes
+actually observed in `_shipments` — no invented cartons — and `dim_weight_lb` is
+a generated column so a quote and the audit read the same number. With an empty
+or absent catalog the picker renders nothing and the manual inputs still work.
 
-The other half of the fix is capturing the carrier invoice at all. Until UPS
-adjustments land somewhere, no amount of estimator accuracy will reconcile.
+The other half is capturing the carrier invoice at all. `ship_carrier_invoices`
+now exists for that: one row per invoice line, joined back on tracking number,
+with `adjustment` (billed − quoted) generated. Nothing populates it yet — a UPS
+invoice import is the next piece — but until it has rows, every margin figure in
+this document is an upper bound rather than a measurement, and the audit now
+says so in its own words.
 
 ---
 
@@ -357,6 +377,11 @@ So the numbers above are generated, not typed:
 | `scripts/shipping-audit.js` | Re-derives every figure from the live DB and rewrites the block above. |
 | `supabase/migrations/20260901120000_ship_audit_snapshots.sql` | `ship_audit_snapshots` — one row per run, so the recording gap has a history. |
 | `.github/workflows/shipping-audit.yml` | Runs it every Monday and commits the refreshed doc. |
+| `supabase/migrations/20260901160000_shipping_cost_capture.sql` | `no_carrier_cost`, `ship_cartons`, `ship_carrier_invoices`. **Not yet applied.** |
+
+The audit probes for the `20260901160000` objects and folds the answer into its
+query, so it keeps working on a database at either migration level rather than
+erroring out and silently ceasing to update.
 
 ```bash
 export SUPABASE_DB_URL='postgresql://…'   # read-only is fine, except for the snapshot row
