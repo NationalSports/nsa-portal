@@ -25205,9 +25205,25 @@ export default function App(){
   // it never trips the high-confidence override; the ≈113 core collisions stay correctly Outside.
   const _siTriage=(row,cands)=>{
     const parsed=mapSportsLinkDocToBill(row.raw||{});
-    if(['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
+    // A row a PERSON resolved stays resolved. A row the MACHINE auto-parked as outside_portal is
+    // re-checked on every load: the auto-park scores against whatever orders happened to be loaded
+    // in that browser, so a bill whose order simply wasn't in memory got filed as "not portal work"
+    // and — because captured rows short-circuit here — was never looked at again. The 2026-08-31
+    // audit found 222 such rows ($162,770) whose PO core + customer tag match a live portal PO.
+    // Re-surface only on a DEFINITIVE (high-confidence) match so genuinely old-system bills stay put.
+    const autoParked=row.status==='outside_portal'&&String(row.resolved_by||'').startsWith('auto:');
+    if(!autoParked&&['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
     const isEdi=row.source_type==='edi';
     const best=(rankSiPoCandidates(parsed,cands)||[])[0]||null;
+    // Recovered rows go to REVIEW (not straight to Approve): they were filed by a machine and
+    // never seen by a person, so a human ties each one to its order rather than an
+    // "Approve all high-confidence" click sweeping the whole backlog in one go.
+    if(autoParked){
+      if(best&&best.confidence==='high')
+        return{bucket:isEdi?'review':'grab',parsed,match:best,
+          reason:'Auto-filed as pre-portal, but PO # + customer match portal order '+(best.candidate?.po_id||'')+' — confirm and apply.'};
+      return{bucket:'captured',parsed,match:null};
+    }
     // Definitive portal match beats the space rule. EDI → approve; a scanned/OCR match still needs its
     // PDF pulled before it can apply, so it lands in Grab (with the matched order shown alongside).
     if(best&&best.confidence==='high')return{bucket:isEdi?'approve':'grab',parsed,match:best};
@@ -25260,7 +25276,13 @@ export default function App(){
   // confident match) is written outside_portal WITHOUT a human click — these are not
   // portal work by definition. Reversible (it's a status update, resolved_by says 'auto'),
   // idempotent (captured rows triage straight to captured next load).
-  const _autoCaptureOutside=async(rows)=>{
+  const _autoCaptureOutside=async(rows,cands)=>{
+    // NEVER auto-park from an empty/unloaded candidate set. Candidates come from the orders +
+    // customers held in THIS browser's state; with either not loaded every bill scores 0, the
+    // space rule fires, and this writes 'outside_portal' to the SHARED queue for every user —
+    // permanently, since a parked row is only re-checked on a high-confidence match. An empty
+    // candidate list is an unloaded page, not evidence that a bill isn't ours.
+    if(!(cands||[]).length||!(cust||[]).length)return rows;
     const targets=(rows||[]).filter(r=>r._t&&r._t.bucket==='outside'&&!['approved','manual_done','outside_portal','ignored'].includes(r.status||''));
     if(!targets.length||!supabase)return rows;
     const ids=targets.map(r=>r.si_doc_number);
@@ -25281,7 +25303,7 @@ export default function App(){
       if(error)throw error;
       const cands=_siBuildCandidates();
       let rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
-      rows=await _autoCaptureOutside(rows);
+      rows=await _autoCaptureOutside(rows,cands);
       setSiQueue(rows);
     }catch(e){nf('Failed to load Sports Inc queue: '+(e.message||e),'error')}
     setSiQueueLoading(false);
@@ -27486,7 +27508,7 @@ export default function App(){
         if(error)throw error;
         const cands=_siBuildCandidates();
         let rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
-        rows=await _autoCaptureOutside(rows);
+        rows=await _autoCaptureOutside(rows,cands);
         setSiQueue(rows);
         // Matched EDI bills land in ✓ Matched; weak/no-match EDI bills land in Review so
         // they can be tied to their order right here. Grab (PDF-only) and Outside are not
@@ -29408,12 +29430,26 @@ export default function App(){
       // `false` is _dbSaveSOInner's explicit failure signal; undefined means the save was queued
       // behind an in-flight one, which the per-entity queue completes with the latest data —
       // treated as dispatched-ok (same ok!==false convention as savSONow). Bills that collected
-      // no SO saves (batch-record / inventory-PO only) keep today's behavior — their state
-      // persists via its own save effects and can't be gated here.
+      // no SO saves are split below: batch-record / inventory-PO bills legitimately dispatch none
+      // (their state persists via its own save effects), but an so_po-matched bill that dispatched
+      // none wrote nothing and is failed rather than recorded as applied.
       for(const b of bills){
         if(b.portalStatus!=='success')continue;
         const _ps=_collect.filter(e=>e.key===b.id).map(e=>e.p);
-        if(!_ps.length)continue;
+        if(!_ps.length){
+          // An SO-PO bill that dispatched NO save wrote nothing to the order. Recording it as
+          // applied flips the SI row to approved AND burns its doc# in applied_bills' unique
+          // index, so it can never be re-applied — the bill's cost is stranded off the SO for
+          // good (2026-08-31 audit: 125 approved docs, $52,412, that reached no PO line).
+          // Batch-record / inventory-PO bills legitimately collect no SO save, so only the
+          // so_po path fails here.
+          if(b.parsed?.matchedPOSource==='so_po'&&b.parsed?.kind!=='decoration'){
+            b.portalStatus='error';
+            b.portalMsg='Nothing was written to the order — no SO save was dispatched. Use Match manually or Find PO with AI.';
+            applied--;
+          }
+          continue;
+        }
         const _rs=await Promise.all(_ps.map(p=>Promise.resolve(p).catch(()=>false)));
         if(_rs.some(r=>r===false)){
           b.portalStatus='error';b.portalMsg='Applied locally but the SO save FAILED — not recorded as applied. Check your connection and push again.';
