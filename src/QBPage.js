@@ -7,7 +7,7 @@ import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
-import { createQBSyncEngine, groupPortalPurchaseOrders } from './qbSyncEngine';
+import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -232,14 +232,19 @@ export default function QBPage(){
     const migrationUnlocked=qbConfig.initialMigrationApproved===true;
     const verifiedCanaryBills=new Set((qbConfig._qbCanaryBillIds||[]).map(String)).size;
     const livePreflightReady=qbConfig.preflight?.status==='success'&&String(qbConfig.preflight?.realm_id||'')===String(qbConfig.realm_id||'');
-    const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+    const activeCanaryCustomers=cust.filter(c=>c.is_active!==false&&!c.deleted_at).sort((a,b)=>portalCustomerDisplayName(a).localeCompare(portalCustomerDisplayName(b)));
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
       const result=await syncCustomerCanary(qbCanaryCustomerId);
-      if(result?.status!=='needs_confirmation')return;
-      const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer and verify it by API read-back?');
-      if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
-      await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+      if(result?.status==='needs_confirmation'){
+        const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer with its mapped QBO payment terms and verify it by API read-back?');
+        if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
+        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+      }else if(result?.status==='needs_term_confirmation'){
+        const approved=window.confirm('QBO customer #'+result.qbId+' ("'+result.customerName+'") currently has terms "'+result.currentTerm+'".\n\nUpdate exactly this ONE customer to "'+result.desiredTerm+'" and verify it by API read-back?');
+        if(!approved){nf('Customer terms update cancelled — no QBO customer was changed');return}
+        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true});
+      }
     };
 
     // Build what a QB sync would push
@@ -516,17 +521,18 @@ export default function QBPage(){
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An existing exact QBO match is linked without changing it. If no exact match exists, you must confirm before one new QBO customer is created. Bulk sync stays locked.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An exact QBO match is linked without changing it when its terms already match. You must confirm before creating one customer or updating one customer&apos;s QBO Terms field. Bulk sync stays locked.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Customer to test in QuickBooks" style={{minWidth:320,maxWidth:520}} value={qbCanaryCustomerId} onChange={e=>setQbCanaryCustomerId(e.target.value)}>
                 <option value="">Select one customer...</option>
-                {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{c.name}{c.alpha_tag?' ('+c.alpha_tag+')':''}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
+                {activeCanaryCustomers.map(c=><option key={c.id} value={c.id}>{portalCustomerDisplayName(c)}{_custQBMap[c.id]?' — linked QB #'+_custQBMap[c.id]:''}</option>)}
               </select>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!qbCanaryCustomerId||!livePreflightReady}
                 title={!livePreflightReady?'Run a successful read-only live preflight first':!qbCanaryCustomerId?'Select one customer first':''} onClick={runCustomerCanary}>
                 {qbSyncing?'Testing...':'Test 1 Customer'}
               </button>
             </div>
+            {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight, then return here.</div>}
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>

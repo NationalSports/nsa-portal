@@ -8,7 +8,7 @@
 const crypto = require('crypto');
 const { verifyQBOUser } = require('./_shared');
 const { getSupabaseAdmin, httpsPost, basicAuth, saveTokens, getStoredTokens, clearTokens, refreshStoredTokens, revokeToken } = require('./_qb');
-const { qbPortalRedirect } = require('./_qbOAuthRedirect');
+const { qbOAuthRedirectUri, qbPortalRedirect } = require('./_qbOAuthRedirect');
 
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -36,7 +36,7 @@ exports.handler = async (event) => {
   const QB_CLIENT_ID = process.env.QB_CLIENT_ID;
   const QB_CLIENT_SECRET = process.env.QB_CLIENT_SECRET;
   const SITE_URL = process.env.URL || process.env.SITE_URL || 'http://localhost:3000';
-  const QB_REDIRECT_URI = process.env.QB_REDIRECT_URI || `${SITE_URL}/.netlify/functions/qb-auth?action=callback`;
+  const QB_REDIRECT_URI = qbOAuthRedirectUri(event, process.env.QB_REDIRECT_URI, SITE_URL);
 
   if (!QB_CLIENT_ID || !QB_CLIENT_SECRET) {
     return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'QuickBooks credentials not configured. Add QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI to Netlify env vars.' }) };
