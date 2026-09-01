@@ -109,6 +109,7 @@ export function downloadPlayerReportCsv({ so, storeName, lines, orderById }) {
       // Sort keys: numeric order number when it is one, so 1010525 < 1010654 (a string sort
       // would put "1010654" before "99"); then player, so one order's rows stay together.
       _num: Number(orderNo(o)) || 0,
+      _extra: !!l._orderExtra,
       _str: orderNo(o),
       _player: (l.player_name || '').trim().toLowerCase(),
       cells: [
@@ -119,14 +120,14 @@ export function downloadPlayerReportCsv({ so, storeName, lines, orderById }) {
         o.buyer_name || '', o.buyer_email || '', o.buyer_phone || '',
         f.name, f.sku, f.adidasTagSku, f.color, f.size, f.qty,
         f.wasSku, f.wasSize,
-        f.unmatched ? 'NOT ON SO — verify' : (f.wasSku || f.wasSize) ? (f.verify ? 'substituted — verify' : 'substituted') : '',
+        l._orderExtra ? 'ORDER EXTRA / UNASSIGNED' : f.unmatched ? 'NOT ON SO — verify' : (f.wasSku || f.wasSize) ? (f.verify ? 'substituted — verify' : 'substituted') : '',
         o.ship_method || '',
         a.name || o.buyer_name || '', a.street1 || '', a.street2 || '',
         a.city || '', a.state || '', a.zip || '', a.country || '',
       ],
     };
   });
-  rows.sort((x, y) => (x._num - y._num) || x._str.localeCompare(y._str) || x._player.localeCompare(y._player));
+  rows.sort((x, y) => Number(x._extra) - Number(y._extra) || (x._num - y._num) || x._str.localeCompare(y._str) || x._player.localeCompare(y._player));
   const stamp = new Date().toISOString().slice(0, 10);
   const safeStore = String(storeName || '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
   downloadCsv(['player-report', so.id, safeStore, stamp].filter(Boolean).join('_') + '.csv',
@@ -434,6 +435,77 @@ export function materializeMappedLine(l) {
 const sumSoUnits = (items) => (items || []).reduce((n, it) => n + Object.entries(it.sizes || {})
   .reduce((a, [k, q]) => a + (/^(drop_ship|unit_cost|_)/i.test(k) ? 0 : (Number(q) || 0)), 0), 0);
 
+const reportItemKey = (sku, name, color, size) => [
+  String(sku || name || '').trim().toUpperCase(),
+  String(color || '').trim().toUpperCase().replace(/\s*\/\s*/g, '/').replace(/\s+/g, ' '),
+  norm(size),
+].join('|');
+
+// A submitted Silver Screen job can contain units that were added directly to
+// the vendor order and therefore have no player checkout. When the complete gap
+// can be identified exactly on the SO's current product/color/size curve, keep
+// those units as an explicit final pseudo-order. Any ambiguity returns no extras
+// so the normal unit audit blocks instead of guessing what Silver Screen has.
+export function buildSilverScreenOrderExtras({ soId, mappedLines = [], soItems = [], targetUnits = 0, orderById = {} } = {}) {
+  const sourceUnits = mappedLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
+  const needed = Math.max(0, Number(targetUnits) - sourceUnits);
+  if (!needed) return { lines: [], units: 0, safe: sourceUnits === Number(targetUnits) };
+
+  const assigned = new Map();
+  mappedLines.forEach((raw) => {
+    const l = materializeMappedLine(raw);
+    const key = reportItemKey(l._effSku || l.sku, l.name, l.color, l.size);
+    assigned.set(key, (assigned.get(key) || 0) + (Number(l.qty) || 0));
+  });
+
+  const targets = new Map();
+  (soItems || []).forEach((it) => Object.entries(it.sizes || {}).forEach(([size, rawQty]) => {
+    if (/^(drop_ship|unit_cost|_)/i.test(size)) return;
+    const qty = Math.max(0, Number(rawQty) || 0);
+    if (!qty) return;
+    const key = reportItemKey(it.sku, it.name || it.custom_desc, it.color, size);
+    const current = targets.get(key) || { qty: 0, item: it, size };
+    current.qty += qty;
+    targets.set(key, current);
+  }));
+
+  const residual = [];
+  targets.forEach(({ qty, item, size }, key) => {
+    const remaining = Math.max(0, qty - (assigned.get(key) || 0));
+    if (remaining) residual.push({ item, size, qty: remaining });
+  });
+  const residualUnits = residual.reduce((n, r) => n + r.qty, 0);
+  if (residualUnits !== needed) return { lines: [], units: 0, safe: false, residualUnits };
+
+  const orderId = `__silver_screen_extra__${soId}`;
+  orderById[orderId] = {
+    id: orderId,
+    order_number: `${soId} ORDER EXTRA`,
+    buyer_name: 'Order Extra / Unassigned',
+    ship_method: 'deliver_club',
+    _orderExtra: true,
+  };
+  const lines = residual.map(({ item, size, qty }, index) => materializeMappedLine({
+    id: `${orderId}__${index}`,
+    order_id: orderId,
+    sku: item.sku || '',
+    _sku: item.sku || '',
+    _effSku: item.sku || '',
+    name: item.name || item.custom_desc || item.sku || 'Item',
+    _name: item.name || item.custom_desc || item.sku || 'Item',
+    color: item.color || '',
+    _color: item.color || '',
+    size,
+    _size: size,
+    qty,
+    player_name: 'Order Extra / Unassigned',
+    player_number: '',
+    _sourceSoId: soId,
+    _orderExtra: true,
+  }));
+  return { lines, units: needed, safe: true };
+}
+
 // When a Silver Screen job already exists, its submitted quantity is the right
 // audit target. Reps sometimes leave an obsolete, zeroed/extra line on the SO;
 // that line must not block a fulfillment file whose customer units already equal
@@ -474,7 +546,7 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
     if (soId) (bySo[soId] = bySo[soId] || []).push(l); else unbatched.push(l);
   });
   const out = unbatched.map((l) => ({ ...l, _effSku: l._effSku || l.sku || '' }));
-  const audit = { substitutions: [], sizeChanges: [], unmatched: [], missingSos: [], wrongStoreLinks: [], unitMismatches: [], externalIssues: [] };
+  const audit = { substitutions: [], sizeChanges: [], unmatched: [], missingSos: [], wrongStoreLinks: [], unitMismatches: [], externalIssues: [], orderExtras: [] };
   Object.entries(bySo).forEach(([soId, sourceLines]) => {
     const meta = soMetaBySo ? soMetaBySo[soId] : null;
     if (soMetaBySo) {
@@ -498,7 +570,7 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
       return;
     }
     const mapped = mapLinesToSoItems(sourceLines, soItems);
-    mapped.lines.forEach((l) => out.push(materializeMappedLine({ ...l, _sourceSoId: soId })));
+    const reportLines = mapped.lines.map((l) => materializeMappedLine({ ...l, _sourceSoId: soId }));
     mapped.substitutions.forEach((s) => audit.substitutions.push({ ...s, soId }));
     const seenSizes = new Set();
     mapped.lines.filter((l) => l._wasSize).forEach((l) => {
@@ -510,14 +582,30 @@ export function resolveWebstoreReportLines({ orders = [], lines = [], soItemsByS
     const soUnits = sumSoUnits(soItems);
     const hasSilverScreenJob = !!silverScreenDpo(meta);
     const target = fulfillmentUnitTarget(meta, soUnits);
-    // Without a submitted SS job, only a shortage is fatal. Extra SO units are
-    // not assigned to a customer/player and are therefore excluded from export.
-    // With a job, require exact equality to what Silver Screen actually received.
-    if ((hasSilverScreenJob && sourceUnits !== target.units) || (!hasSilverScreenJob && sourceUnits > target.units)) {
+    const extras = hasSilverScreenJob && sourceUnits < target.units && !mapped.unmatched.length
+      ? buildSilverScreenOrderExtras({ soId, mappedLines: reportLines, soItems, targetUnits: target.units, orderById })
+      : { lines: [], units: 0 };
+    out.push(...reportLines, ...extras.lines);
+    if (extras.units) audit.orderExtras.push({ soId, units: extras.units });
+    const reportUnits = sourceUnits + extras.units;
+    // Without a submitted SS job, only customer demand above the SO is fatal.
+    // With a job, the report must equal what Silver Screen received; exact SO
+    // residuals become explicit unassigned extras, never guessed player orders.
+    if ((hasSilverScreenJob && reportUnits !== target.units) || (!hasSilverScreenJob && sourceUnits > target.units)) {
       audit.unitMismatches.push({ soId, sourceUnits, soUnits: target.units, delta: target.units - sourceUnits, targetLabel: target.targetLabel });
     }
   });
   return { lines: out, orderById, audit };
+}
+
+export function reportBlockingIssues(audit = {}) {
+  return [
+    ...(audit.missingSos || []).map((soId) => `${soId}: linked sales order could not be loaded`),
+    ...(audit.wrongStoreLinks || []).map((x) => `${x.soId}: linked sales order belongs to another store`),
+    ...(audit.unitMismatches || []).map((x) => `${x.soId}: ${x.sourceUnits} active customer units do not match ${x.soUnits} ${x.targetLabel || 'sales-order units'}`),
+    ...(audit.unmatched || []).map((x) => `${x.soId || 'Order'}: ${x.item || x} is not matched to the sales order`),
+    ...(audit.externalIssues || []),
+  ];
 }
 
 const reportSizeRank = (s) => {
@@ -598,8 +686,28 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     const orderById = {}; scoped.forEach((o) => { orderById[o.id] = o; });
     const activeLines = activeWebstoreLines(rawLines, orderById);
     const mapped = mapLinesToSoItems(activeLines, soItems);
-    const lines = await attachAdidasTagSkus(supabase, mapped.lines);
+    const sourceUnits = activeLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
+    const soUnits = sumSoUnits(soItems);
+    const target = fulfillmentUnitTarget(so, soUnits);
+    const hasSilverScreenJob = !!silverScreenDpo(so);
+    const materialized = mapped.lines.map((l) => materializeMappedLine({ ...l, _sourceSoId: so.id }));
+    const extras = hasSilverScreenJob && sourceUnits < target.units && !mapped.unmatched.length
+      ? buildSilverScreenOrderExtras({ soId: so.id, mappedLines: materialized, soItems, targetUnits: target.units, orderById })
+      : { lines: [], units: 0 };
+    const lines = await attachAdidasTagSkus(supabase, [...materialized, ...extras.lines]);
     const { substitutions, unmatched } = mapped;
+    const audit = {
+      unmatched: unmatched.map((item) => ({ soId: so.id, item })),
+      unitMismatches: (hasSilverScreenJob ? sourceUnits + extras.units !== target.units : sourceUnits > target.units)
+        ? [{ soId: so.id, sourceUnits, soUnits: target.units, delta: target.units - sourceUnits, targetLabel: target.targetLabel }] : [],
+      externalIssues: silverScreenExternalIssues(so),
+      orderExtras: extras.units ? [{ soId: so.id, units: extras.units }] : [],
+    };
+    const blocking = reportBlockingIssues(audit);
+    if (format !== 'product' && blocking.length) {
+      toast(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error');
+      return false;
+    }
     if (format === 'csv') downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
     else if (format === 'product') {
       let fulfillmentCustomer = customer;
@@ -611,16 +719,6 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
         const { data } = await supabase.from('customers').select('id,name,contact_name,shipping_attention,shipping_address_line1,shipping_address_line2,shipping_city,shipping_state,shipping_zip').eq('id', ws.customer_id).maybeSingle();
         fulfillmentCustomer = data || fulfillmentCustomer || null;
       }
-      const sourceUnits = activeLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
-      const soUnits = sumSoUnits(soItems);
-      const target = fulfillmentUnitTarget(so, soUnits);
-      const hasSilverScreenJob = !!silverScreenDpo(so);
-      const audit = {
-        unmatched: unmatched.map((item) => ({ soId: so.id, item })),
-        unitMismatches: (hasSilverScreenJob ? sourceUnits !== target.units : sourceUnits > target.units)
-          ? [{ soId: so.id, sourceUnits, soUnits: target.units, delta: target.units - sourceUnits, targetLabel: target.targetLabel }] : [],
-        externalIssues: silverScreenExternalIssues(so),
-      };
       const result = downloadSilverScreenFulfillment({ store: ws, lines, orderById, customer: fulfillmentCustomer, audit, reference: so.id });
       toast(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
     }

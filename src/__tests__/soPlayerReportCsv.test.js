@@ -70,8 +70,8 @@ function supabaseStub() {
   };
 }
 
-const run = (format = 'csv', customer = null) => downloadSoPlayerReport({
-  so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '' },
+const run = (format = 'csv', customer = null, soOverrides = {}) => downloadSoPlayerReport({
+  so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '', ...soOverrides },
   soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format, customer,
 });
 
@@ -124,6 +124,18 @@ describe('player report CSV', () => {
     const rows = captured.replace(/^﻿/, '').split('\r\n');
     expect(rows[0]).toContain('SKU,Adidas Tag SKU,Color');
     expect(rows[1]).toContain('AT310-50,JL5410');
+  });
+
+  test('puts Silver Screen-only units last as Order Extra / Unassigned', async () => {
+    const soOverrides = { deco_pos: [{ vendor: 'Silver Screen', qty: 4, _silverscreen_job_id: 58505 }] };
+    expect(await run('csv', null, soOverrides)).toBe(true);
+    const rows = captured.replace(/^﻿/, '').split('\r\n');
+    expect(rows).toHaveLength(4);
+    expect(rows[3]).toContain('SO-2035 ORDER EXTRA');
+    expect(rows[3]).toContain('Order Extra / Unassigned');
+    expect(rows[3]).toContain('1203.080');
+    expect(rows[3]).toContain(',L,1,');
+    expect(rows[3]).toContain('ORDER EXTRA / UNASSIGNED');
   });
 
   test('PDF report prints both numbers for the S&S item', async () => {
