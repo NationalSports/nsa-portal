@@ -12,7 +12,9 @@ Nothing in the codebase watches for this. There is **no report, digest, or flag 
 compares received against billed** — the nightly `bill-anomaly-digest` only checks bill-side
 anomalies (freight %, sharp prices, doc-total mismatch). The gap is invisible by construction.
 
-This is an audit only. **No code or data was changed.**
+**Status.** The audit itself changed nothing. The three defects it found were then fixed in code in
+this same PR — see [§8 What was fixed](#8-what-was-fixed). **No production data was modified**: the
+backlog of already-mis-filed rows is re-surfaced for a person to work, not rewritten automatically.
 
 ---
 
@@ -238,6 +240,18 @@ rather than a lookup.
 
 ---
 
+## 6b. Re-verified 2026-09-01
+
+Every headline claim was re-run against live data the next day. Nothing had been fixed, and two
+numbers had grown — the leak was still live:
+
+| Finding | 2026-08-31 | 2026-09-01 |
+|---|---:|---:|
+| Auto-parked docs matching a live portal PO | 222 · $162,770 | 222 · $162,770 (unchanged) |
+| Approved EDI docs that never landed | 120 · $51,098 | **125 · $52,412** |
+| Total unbilled exposure | $957,611 | **$967,999** |
+| No-space portal POs / their stock exposure | 82 · $109,313 | 82 · $109,313 (unchanged) |
+
 ## 7. What to do, in priority order
 
 1. **Stop the auto-park.** Do not let `_autoCaptureOutside` write when the candidate set is empty
@@ -259,6 +273,84 @@ rather than a lookup.
 6. **Persist the match columns** (`matched_po_id`, `match_confidence`, `match_method`,
    `match_reason`) when triage runs, so the queue can be audited from SQL.
 7. **Work the 238 `new` docs**, oldest first.
+
+---
+
+## 8. What was fixed
+
+Items 1–3 above are implemented in this PR (`src/App.js`). Items 4–7 are **not** done.
+
+### 8.1 The auto-park can no longer fire from an unloaded page (item 1)
+
+`_autoCaptureOutside` now takes the candidate set and refuses to write when it — or the customer
+list the alpha-tag match depends on — is empty. An empty candidate list means the page hasn't
+loaded, not that a bill isn't ours; previously that state wrote `outside_portal` to the *shared*
+queue for every user.
+
+```js
+const _autoCaptureOutside=async(rows,cands)=>{
+  if(!(cands||[]).length||!(cust||[]).length)return rows;
+```
+
+Both call sites (`loadSiQueue` and `pullAllBills`) pass `cands`. `cust` defaults to `[]`
+(`constants.js: D_C=[]`), so the guard genuinely blocks the pre-load window.
+
+### 8.2 Auto-parked rows are re-checked instead of parked forever (item 2)
+
+`_siTriage` short-circuited every `outside_portal` row to `captured`, so a machine's guess was
+never revisited. Now a row a **person** resolved still stays resolved, but one the **machine**
+parked (`resolved_by` starts with `auto:`) is re-scored on every load and re-surfaced when the PO
+number *and* customer tag match a live portal order:
+
+```js
+const autoParked=row.status==='outside_portal'&&String(row.resolved_by||'').startsWith('auto:');
+if(!autoParked&&['approved','manual_done','outside_portal','ignored'].includes(row.status))
+  return{bucket:'captured',parsed,match:null};
+```
+
+Recovered rows land in **Needs Review**, not Ready-to-Approve, so "Approve all high-confidence"
+cannot sweep a 222-row backlog in one click — each is confirmed by a person. Genuinely old-system
+parks still score low and stay `captured`, so the exceptions drawer does not fill with noise.
+
+### 8.3 A bill that writes nothing is no longer recorded as applied (item 3)
+
+The save gate skipped any bill that dispatched zero SO saves — exactly the wrote-nothing case. It
+now distinguishes the two reasons for zero saves:
+
+```js
+if(!_ps.length){
+  if(b.parsed?.matchedPOSource==='so_po'&&b.parsed?.kind!=='decoration'){
+    b.portalStatus='error';
+    b.portalMsg='Nothing was written to the order — no SO save was dispatched. …';
+    applied--;
+  }
+  continue;
+}
+```
+
+Batch-record and inventory-PO bills legitimately dispatch no SO save and are unaffected. An
+`so_po`-matched bill that dispatched none now fails loudly instead of flipping its SI row to
+`approved` and burning its doc number in `applied_bills`' unique index — which is what made those
+125 documents permanently un-re-appliable.
+
+### Verification
+
+- `npx react-scripts test --watchAll=false` → **237/237 suites, 4,185 tests passing**.
+- `eslint --no-eslintrc -c .eslintrc.undef.json src/App.js` → 8 errors, **identical to the
+  pre-edit baseline** (`_soSeq`, `_estSeq`, `_invSeq`, `getRunLabels` — all pre-existing and
+  unrelated); no new errors introduced.
+- `@babel/parser` full JSX parse of `src/App.js` → clean.
+
+### Deliberately not done
+
+- **Item 4 (normalize the 82 no-space PO ids)** — rewriting live `po_id` values touches the join
+  key every bill match depends on; it needs its own change with a data-repair plan.
+- **Item 5 (received-not-billed digest)** — new monitoring, additive; the audit's whole point is
+  that this gap was invisible, so it is worth doing next.
+- **Items 6–7 (persist match columns, work the 238 `new` docs)** — untouched.
+- **The existing backlog is not auto-repaired.** 8.2 makes the 222 rows *visible* again; a person
+  still applies each bill. The 125 already-approved-but-not-landed docs need their `applied_bills`
+  rows cleared before they can be re-applied — a data change, not made here.
 
 ---
 
