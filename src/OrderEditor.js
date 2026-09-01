@@ -33,6 +33,7 @@ import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing } from './lib/promoPricing';
+import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -329,7 +330,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   // Promo dollars are owned by the parent account. Prefer that live record over
   // the child copy so a sub-account never applies a stale/empty local balance.
-  const promoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
+  const storedPromoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
+  const[promoLineHistory,setPromoLineHistory]=useState([]);const[promoHistoryReady,setPromoHistoryReady]=useState(false);
+  // The order can be opened directly, without visiting the customer Promo tab first. Load the
+  // paid NetSuite line archive here too, then preview the earned allocation in memory. It is
+  // persisted only inside the user's explicit Save/reconcile path below.
+  useEffect(()=>{
+    const pctActive=(storedPromoCust?.promo_programs||[]).some(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
+    if(!supabase||!storedPromoCust||!pctActive){setPromoLineHistory([]);setPromoHistoryReady(true);return}
+    const ownerId=storedPromoCust.id;const family=(allCustomers||[]).filter(c=>c.id===ownerId||c.parent_id===ownerId);const windows=promoHalfWindows();let cancelled=false;setPromoHistoryReady(false);
+    fetchPaidPromoHistoryInvoices({supabase,customers:family,start:windows.previous.start,end:windows.current.end})
+      .then(rows=>{if(!cancelled){setPromoLineHistory(rows);setPromoHistoryReady(true)}})
+      .catch(e=>{if(!cancelled){setPromoLineHistory([]);setPromoHistoryReady(true);console.warn('[Promo] Order NetSuite history load failed:',e?.message||e)}});
+    return()=>{cancelled=true};
+  },[storedPromoCust?.id,storedPromoCust?.promo_programs,allCustomers,supabase]);
+  const promoHistoryInvoices=useMemo(()=>mergePromoHistoryInvoices((allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice'),promoLineHistory),[allOrders,promoLineHistory]);
+  const promoCust=useMemo(()=>withEarnedPromoAllocation({customer:storedPromoCust,allCustomers,sos:allOrders,invs:allInvoices,histInvs:promoHistoryInvoices}),[storedPromoCust,allCustomers,allOrders,allInvoices,promoHistoryInvoices]);
   // Baseline of placeholder SKUs the order already carried when it was opened, as a multiset
   // of line keys. Snapshotted once — the editor is keyed by order id, so it remounts per
   // order. These lines keep saving as-is: estimates and SOs created before the requirement
@@ -3568,6 +3584,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(!orderToSave.promo_applied)return{ok:true,order:orderToSave};
     const money=n=>Math.round(safeNum(n)*100)/100;const target=money(targetAmount);
     if(Math.abs(safeNum(orderToSave.promo_amount)-target)<=0.005)return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true}};
+    if(!promoHistoryReady){nf('Promo balance is still calculating. Wait a moment and Save again.','error');return{ok:false,order:orderToSave}}
     if(!promoCust||!onSavePromoPeriod||!onSavePromoUsage||!onDeletePromoUsage){nf('Promo pricing changed, but the parent promo ledger is not available to sync. Reload and try again.','error');return{ok:false,order:orderToSave}}
     const mine=u=>isSO?u.so_id===orderToSave.id:(u.estimate_id===orderToSave.id&&!u.so_id);
     const oldUsages=(promoCust.promo_usage||[]).filter(mine);const oldByPeriod={};oldUsages.forEach(u=>{oldByPeriod[u.period_id]=(oldByPeriod[u.period_id]||0)+safeNum(u.amount)});
@@ -3578,14 +3595,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(target>available+0.005){nf('Full promo coverage needs $'+target.toFixed(2)+', but the parent account has only $'+available.toFixed(2)+' drawable.','error');return{ok:false,order:orderToSave}}
     let left=target;const takes={};drawable.forEach(p=>{if(left<=0.005)return;const take=Math.min(left,Math.max(0,safeNum(p.allocated)-safeNum(p.used)));if(take>0){takes[p.id]=money(take);left=money(left-take)}});
     const finalPeriods=restored.map(p=>takes[p.id]?{...p,used:money(safeNum(p.used)+takes[p.id])}:p);
-    const changedPeriods=finalPeriods.filter(p=>Math.abs(safeNum(p.used)-safeNum((promoCust.promo_periods||[]).find(x=>x.id===p.id)?.used))>0.005);
+    const changedPeriods=finalPeriods.filter(p=>{const old=(storedPromoCust?.promo_periods||[]).find(x=>x.id===p.id);return!old||Math.abs(safeNum(p.used)-safeNum(old.used))>0.005||Math.abs(safeNum(p.allocated)-safeNum(old.allocated))>0.005});
     for(const p of changedPeriods)await onSavePromoPeriod(p);
     for(const periodId of oldPeriodIds)await onDeletePromoUsage(periodId,isSO?orderToSave.id:null,isSO?null:orderToSave.id);
     const newUsages=Object.entries(takes).map(([period_id,amount])=>({period_id,amount,description:orderToSave.memo||('Promo on '+orderToSave.id),created_by:cu?.name||'System',so_id:isSO?orderToSave.id:null,estimate_id:isSO?(orderToSave.estimate_id||null):orderToSave.id,created_at:new Date().toISOString()}));
     for(const usage of newUsages)await onSavePromoUsage(usage);
     setCust(c=>c?{...c,promo_periods:finalPeriods,promo_usage:[...(promoCust.promo_usage||[]).filter(u=>!mine(u)),...newUsages]}:c);
     return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true,updated_at:new Date().toLocaleString()}};
-  },[promoCust,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,isSO,cu,nf]); // eslint-disable-line
+  },[promoCust,storedPromoCust,promoHistoryReady,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,isSO,cu,nf]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
   // Items that share the exact same set of decorations AND deco type are grouped into one job

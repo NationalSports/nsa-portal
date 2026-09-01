@@ -1,3 +1,5 @@
+import { calcPaidQualifyingSpend } from '../pricing';
+
 const money = value => Math.round((Number(value) || 0) * 100) / 100;
 
 const historyKey = invoice => {
@@ -106,4 +108,58 @@ export const fetchPaidPromoHistoryInvoices = async ({ supabase, customers, start
     if (page.length < pageSize) break;
   }
   return summarizePaidPromoHistoryLines(rows, customers);
+};
+
+export const promoHalfWindows = (now = new Date()) => {
+  const year = now.getFullYear();
+  const firstHalf = now.getMonth() < 6;
+  return firstHalf
+    ? {
+      previous: { start: `${year - 1}-07-01`, end: `${year - 1}-12-31` },
+      current: { start: `${year}-01-01`, end: `${year}-06-30` },
+    }
+    : {
+      previous: { start: `${year}-01-01`, end: `${year}-06-30` },
+      current: { start: `${year}-07-01`, end: `${year}-12-31` },
+    };
+};
+
+// Produce an in-memory ledger with the current half's allocation raised to the
+// amount earned in the prior half. The order editor uses this for its balance
+// preview and persists it only as part of the user's explicit Save/reconcile.
+export const withEarnedPromoAllocation = ({ customer, allCustomers, sos, invs, histInvs, now = new Date() }) => {
+  if (!customer) return customer;
+  const program = (customer.promo_programs || []).find(p => p?.is_active !== false
+    && p.type === 'percent_of_spend' && Number(p.spend_percentage) > 0);
+  if (!program) return customer;
+  const ownerId = customer.id;
+  const familyIds = [ownerId, ...(allCustomers || []).filter(c => c?.parent_id === ownerId).map(c => c.id)];
+  const windows = promoHalfWindows(now);
+  const spend = calcPaidQualifyingSpend({
+    sos: sos || [], invs: invs || [], histInvs: histInvs || [], famIds: familyIds,
+    start: windows.previous.start, end: windows.previous.end,
+  }).total;
+  const earned = money(spend * Number(program.spend_percentage));
+  if (earned <= 0) return customer;
+  const existing = (customer.promo_periods || []).find(p => p.period_start === windows.current.start);
+  if (existing && Number(existing.allocated) >= earned - 0.005) return customer;
+  const period = existing
+    ? { ...existing, allocated: earned, program_id: existing.program_id || program.id || null }
+    : {
+      id: `pp_${ownerId}_${windows.current.start}`,
+      customer_id: ownerId,
+      program_id: program.id || null,
+      period_start: windows.current.start,
+      period_end: windows.current.end,
+      allocated: earned,
+      used: 0,
+      notes: 'Auto co-op allocation from paid spend',
+      created_at: now.toISOString(),
+    };
+  return {
+    ...customer,
+    promo_periods: existing
+      ? (customer.promo_periods || []).map(p => p.id === existing.id ? period : p)
+      : [...(customer.promo_periods || []), period],
+  };
 };
