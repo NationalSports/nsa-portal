@@ -32,6 +32,7 @@ import { ART_PULLBACK_CLEARS, approveArtOnSO, sendArtBackOnSO } from './lib/artR
 import { artFamilyKey } from './lib/artSplitFamily';
 import { parseStitchCount, embStitchTierLabel } from './lib/embStitchParser';
 import { _dbPersistNewPoLine } from './lib/dbEngine';
+import { applyFullPromoPricing } from './lib/promoPricing';
 import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -326,6 +327,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
+  // Promo dollars are owned by the parent account. Prefer that live record over
+  // the child copy so a sub-account never applies a stale/empty local balance.
+  const promoCust=useMemo(()=>cust?.parent_id?(allCustomers||[]).find(c=>c.id===cust.parent_id)||cust:cust,[cust,allCustomers]);
   // Baseline of placeholder SKUs the order already carried when it was opened, as a multiset
   // of line keys. Snapshotted once — the editor is keyed by order id, so it remounts per
   // order. These lines keep saving as-is: estimates and SOs created before the requirement
@@ -2341,6 +2345,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const expColorSearchInput=(borderColor)=><input value={expandColorQ} onChange={e=>setExpandColorQ(e.target.value)} onClick={e=>e.stopPropagation()} placeholder="Search colors..." autoFocus style={{flexBasis:'100%',padding:'4px 8px',fontSize:11,border:'1px solid '+borderColor,borderRadius:4,marginBottom:4}}/>;
   const expColorNoMatch=<div style={{fontSize:11,color:'#94a3b8',padding:'4px 2px',flexBasis:'100%'}}>No colors match "{expandColorQ}"</div>;
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // Promo is an order-level mode. Heal legacy orders that only covered some
+  // lines; Save reconciles the parent ledger to the resulting full-order total.
+  React.useEffect(()=>{if(!o.promo_applied)return;
+    let changed=!o.tax_exempt;const items=safeItems(o).map(it=>{const next=applyFullPromoPricing(it);
+      const same=it.is_promo===true&&Math.abs(safeNum(it.unit_sell)-safeNum(next.unit_sell))<=0.005
+        &&JSON.stringify(it._sizeSells||null)===JSON.stringify(next._sizeSells||null)
+        &&safeNum(it._promo_credit)===0&&safeNum(it._promo_partial_qty)===0;
+      if(same)return it;changed=true;return next;
+    });
+    if(changed){setO(cur=>({...cur,items,tax_exempt:true,updated_at:new Date().toLocaleString()}));setDirty(true)}
+  },[o.promo_applied,o.items,o.tax_exempt]); // eslint-disable-line
   // Delivery method ("How is this order getting to the customer?") is purely a warehouse instruction.
   // When every live line ships direct to the customer — each item is on a drop-ship PO and/or decorated
   // out of house, with nothing received in-house or pulled from our stock — no goods route through the
@@ -3547,6 +3562,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return{promoRev,promoCost,promoShip,promoAmount,promoCredit,normalRev,normalCost,normalShip,normalTax,customerPays};
   },[o,artQty,cust,af,costArtQty,outsourcedByItemCost]); // eslint-disable-line
 
+  // Replace this document's prior draw with the exact current promo total.
+  // Restoring its old usage first lets an edited order reuse its own dollars.
+  const reconcilePromoDraw=useCallback(async(orderToSave,targetAmount)=>{
+    if(!orderToSave.promo_applied)return{ok:true,order:orderToSave};
+    const money=n=>Math.round(safeNum(n)*100)/100;const target=money(targetAmount);
+    if(Math.abs(safeNum(orderToSave.promo_amount)-target)<=0.005)return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true}};
+    if(!promoCust||!onSavePromoPeriod||!onSavePromoUsage||!onDeletePromoUsage){nf('Promo pricing changed, but the parent promo ledger is not available to sync. Reload and try again.','error');return{ok:false,order:orderToSave}}
+    const mine=u=>isSO?u.so_id===orderToSave.id:(u.estimate_id===orderToSave.id&&!u.so_id);
+    const oldUsages=(promoCust.promo_usage||[]).filter(mine);const oldByPeriod={};oldUsages.forEach(u=>{oldByPeriod[u.period_id]=(oldByPeriod[u.period_id]||0)+safeNum(u.amount)});
+    const restored=(promoCust.promo_periods||[]).map(p=>({...p,used:Math.max(0,safeNum(p.used)-safeNum(oldByPeriod[p.id]))}));
+    const now=new Date(),year=now.getFullYear(),periodStart=now.getMonth()<6?year+'-01-01':year+'-07-01';const oldPeriodIds=new Set(Object.keys(oldByPeriod));
+    const drawable=restored.filter(p=>oldPeriodIds.has(p.id)||p.period_start>=periodStart).sort((a,b)=>(a.period_start||'').localeCompare(b.period_start||''));
+    const available=drawable.reduce((a,p)=>a+Math.max(0,safeNum(p.allocated)-safeNum(p.used)),0);
+    if(target>available+0.005){nf('Full promo coverage needs $'+target.toFixed(2)+', but the parent account has only $'+available.toFixed(2)+' drawable.','error');return{ok:false,order:orderToSave}}
+    let left=target;const takes={};drawable.forEach(p=>{if(left<=0.005)return;const take=Math.min(left,Math.max(0,safeNum(p.allocated)-safeNum(p.used)));if(take>0){takes[p.id]=money(take);left=money(left-take)}});
+    const finalPeriods=restored.map(p=>takes[p.id]?{...p,used:money(safeNum(p.used)+takes[p.id])}:p);
+    const changedPeriods=finalPeriods.filter(p=>Math.abs(safeNum(p.used)-safeNum((promoCust.promo_periods||[]).find(x=>x.id===p.id)?.used))>0.005);
+    for(const p of changedPeriods)await onSavePromoPeriod(p);
+    for(const periodId of oldPeriodIds)await onDeletePromoUsage(periodId,isSO?orderToSave.id:null,isSO?null:orderToSave.id);
+    const newUsages=Object.entries(takes).map(([period_id,amount])=>({period_id,amount,description:orderToSave.memo||('Promo on '+orderToSave.id),created_by:cu?.name||'System',so_id:isSO?orderToSave.id:null,estimate_id:isSO?(orderToSave.estimate_id||null):orderToSave.id,created_at:new Date().toISOString()}));
+    for(const usage of newUsages)await onSavePromoUsage(usage);
+    setCust(c=>c?{...c,promo_periods:finalPeriods,promo_usage:[...(promoCust.promo_usage||[]).filter(u=>!mine(u)),...newUsages]}:c);
+    return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true,updated_at:new Date().toLocaleString()}};
+  },[promoCust,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,isSO,cu,nf]); // eslint-disable-line
+
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
   // Items that share the exact same set of decorations AND deco type are grouped into one job
   // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
@@ -4470,7 +4510,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <span style={{flex:1}}/>
       {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
       <button ref={actionsRef} data-tour-id="oe-actions-toggle" className="btn btn-secondary" style={{fontSize:13,padding:'8px 13px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
-      <button className="oe2-cta" onClick={()=>{
+      <button className="oe2-cta" onClick={async()=>{
         if(!_flushActiveSizingDraft()){nf('Finish editing the quantity before saving','error');return}
         const current=oRef.current||o;
         if(!cust){nf('Select a customer first','error');return}
@@ -4485,8 +4525,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
         if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
         if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
-        if(saveO!==o)setO(saveO);
-        onSave(saveO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
+        const synced=await reconcilePromoDraw(saveO,promoTotals?.promoAmount);if(!synced.ok)return;const syncedO=synced.order;
+        if(syncedO!==o)setO(syncedO);
+        onSave(syncedO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -4848,79 +4889,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when the customer has drawable funds: a funded period (incl. a one-time
                 manual allocation with no program) or an active fixed program to auto-allocate from. */}
-            {cust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} data-tour-id="oe-promo-apply" onClick={async()=>{setShowActionsDD(false);
+            {promoCust&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(promoCust.promo_periods||[]).filter(p=>p.period_start>=_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(promoCust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} data-tour-id="oe-promo-apply" onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
               const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
               const _halfLabel=ps=>{const yy=ps.slice(0,4);return (ps.slice(5,7)==='01'?'H1 ':'H2 ')+yy};
-              let _cur=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
+              let _cur=(promoCust.promo_periods||[]).filter(p=>p.period_start===_pStart);
               // Auto-allocate current period from fixed programs if none exists
               if(_cur.length===0){
-                const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+                const progs=(promoCust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
-                  const newPeriod={id:'pp_'+(cust.parent_id||cust.id)+'_'+_pStart,customer_id:cust.parent_id||cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-                  await _dbSavePromoPeriod(newPeriod);
-                  setCust({...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]});
+                  const newPeriod={id:'pp_'+promoCust.id+'_'+_pStart,customer_id:promoCust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  if(onSavePromoPeriod)await onSavePromoPeriod(newPeriod);else await _dbSavePromoPeriod(newPeriod);
+                  setCust(c=>c?{...c,promo_periods:[...(promoCust.promo_periods||[]),newPeriod]}:c);
                   _cur=[newPeriod];
                   nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_halfLabel(_pStart));
                 }
               }
               // Drawable periods: current half first, then future allocations (early use), each with a remaining balance.
-              const _future=(cust.promo_periods||[]).filter(p=>p.period_start>_pStart).sort((a,b)=>a.period_start.localeCompare(b.period_start));
+              const _future=(promoCust.promo_periods||[]).filter(p=>p.period_start>_pStart).sort((a,b)=>a.period_start.localeCompare(b.period_start));
               const _drawable=[..._cur,..._future].filter(p=>(safeNum(p.allocated)-safeNum(p.used))>0);
               let promoBudget=_drawable.reduce((a,p)=>a+safeNum(p.allocated)-safeNum(p.used),0);
               if(promoBudget<=0){nf('No promo funds available','error');return}
-              // Calculate promo cost per item (retail price + 25% deco markup)
-              const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)}})});
-              let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
-              // Pre-compute original revenue per item so flat shipping can be allocated proportionally,
-              // matching how promoTotals.promoShip distributes flat ship across promo items.
-              const _origRev=items.map(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);let r=q2*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q2;const dp=dP(d,q2,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q2*2:q2);r+=eq*dp.sell});return r});
-              const _totalOrigRev=_origRev.reduce((a,v)=>a+v,0);
-              const _flatShip=o.shipping_type==='flat'?safeNum(o.shipping_value):0;
-              items.forEach((it,_ix)=>{
-                const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q){newItems.push(it);return}
-                if(remaining<=0){newItems.push(it);return}
-                const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
-                let itemPromoCost=q*promoSell;
-                safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
-                // Add proportional shipping estimate (25% markup on promo portion). For flat shipping,
-                // allocate by share of original revenue so the budget deduction matches promoTotals.promoAmount.
-                const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:(_totalOrigRev>0?_flatShip*_origRev[_ix]/_totalOrigRev:0);
-                const itemTotal=itemPromoCost+rQ(shipBase*1.25);
-                if(remaining>=itemTotal){
-                  // Fully covered by promo
-                  remaining-=itemTotal;fullCount++;
-                  newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell,...(it._sizeSells?{_pre_promo_sizeSells:it._sizeSells,_sizeSells:undefined}:{})});
-                }else{
-                  // Partially covered — cover N whole units fully at retail (discard the leftover),
-                  // then blend the savings across the line by scaling both unit_sell and each deco
-                  // sell down by (1 - N/q). Customer pays equivalent of (q-N) units at original sells.
-                  const perUnitRetail=q>0?itemTotal/q:0;
-                  const N=perUnitRetail>0?Math.floor(remaining/perUnitRetail):0;
-                  if(N<=0){newItems.push(it)}
-                  else{
-                    const coveredFraction=N/q;
-                    const newGarmentSell=rQ(safeNum(it.unit_sell)*(1-coveredFraction));
-                    const promoSpent=rQ(N*perUnitRetail);
-                    const scaledDecos=safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const blendedSell=rQ(dp.sell*(1-coveredFraction));return{...d,_pre_promo_sell_override:d.sell_override,sell_override:blendedSell}});
-                    const scaledSizeSells=it._sizeSells?Object.fromEntries(Object.entries(it._sizeSells).map(([sz,s])=>[sz,rQ(safeNum(s)*(1-coveredFraction))])):null;
-                    partialItem=true;
-                    newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:newGarmentSell,decorations:scaledDecos,_promo_credit:promoSpent,_promo_partial_qty:N,...(scaledSizeSells?{_pre_promo_sizeSells:it._sizeSells,_sizeSells:scaledSizeSells}:{})});
-                    // Subtract only what was actually spent; the rounded-off leftover stays in the customer's budget.
-                    remaining=Math.max(0,remaining-promoSpent);
-                  }
-                }
+              // Promo is all-or-nothing at the order level. Price every line,
+              // then require the shared parent fund to cover the complete order.
+              const items=safeItems(o);const _aq={};items.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)}})});
+              const newItems=items.map(applyFullPromoPricing);let promoSubtotal=0,originalSubtotal=0;let fullCount=0;
+              newItems.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;fullCount++;
+                if(!it.is_free_promo){promoSubtotal+=q*safeNum(it.unit_sell);originalSubtotal+=it._pre_promo_sizeSells&&sq>0?Object.entries(safeSizes(it)).reduce((a,[sz,v])=>a+safeNum(v)*safeNum(it._pre_promo_sizeSells[sz]||it._pre_promo_sell),0):q*safeNum(it._pre_promo_sell)}
+                safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoSubtotal+=eq*rQ(dp.sell*1.25);originalSubtotal+=eq*dp.sell});
               });
-              if(fullCount===0&&!partialItem){nf('Promo not applied — remaining funds ($'+remaining.toFixed(2)+") can't cover any eligible item",'error');return}
-              sv('promo_applied',true);sv('items',newItems);
+              const promoShip=o.shipping_type==='pct'?rQ(originalSubtotal*(o.shipping_value||0)/100*1.25):rQ(safeNum(o.shipping_value)*1.25);
+              const promoUsed=Math.round((promoSubtotal+promoShip)*100)/100;const remaining=Math.round((promoBudget-promoUsed)*100)/100;
+              if(promoUsed>promoBudget+0.005){nf('Promo not applied — the full order needs $'+promoUsed.toFixed(2)+', but the parent account has only $'+promoBudget.toFixed(2)+' available','error');return}
+              sv('tax_exempt',true);sv('promo_applied',true);sv('items',newItems);
               // Deduct from balance + record usage immediately on both estimates and SOs so the Promo $ tab
               // and balance reflect the spend right away. Usage is keyed by estimate_id on an estimate (so_id
               // null) and by so_id on an SO; convertSO re-links the estimate's usage to the new SO instead of
               // deducting again, so an estimate and the SO it becomes never double-spend.
               {
-                const promoUsed=promoBudget-remaining;
                 if(promoUsed>0){
                   // Spread the deduction across drawable periods: current half first, then future (early use).
                   let _toDeduct=promoUsed;const _updatedPeriods=[];const _usageRecs=[];
@@ -4934,30 +4942,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   }
                   for(const up of _updatedPeriods){if(onSavePromoPeriod)await onSavePromoPeriod(up);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(up)}
                   for(const ur of _usageRecs){if(onSavePromoUsage)await onSavePromoUsage(ur)}
-                  setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>{const up=_updatedPeriods.find(x=>x.id===p.id);return up||p}),promo_usage:[...(c.promo_usage||[]),..._usageRecs]}:c);
+                  setCust(c=>c?{...c,promo_periods:(promoCust.promo_periods||[]).map(p=>{const up=_updatedPeriods.find(x=>x.id===p.id);return up||p}),promo_usage:[...(promoCust.promo_usage||[]),..._usageRecs]}:c);
                   sv('promo_amount',promoUsed);
                 }
               }
-              const totalItems=items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
-              if(fullCount===totalItems){nf('Promo mode enabled — all eligible items set to retail pricing')}
-              else if(partialItem){nf(fullCount+' item(s) fully covered, 1 partially discounted — customer pays the rest')}
-              else{nf('Promo applied to '+fullCount+' of '+totalItems+' eligible items — customer pays for rest')}
+              nf('Promo mode enabled — all '+fullCount+' priced line(s) are covered by the parent promo fund')
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               // Reverse the deduction by deleting any usage tied to this doc (by so_id on an SO, by estimate_id
               // on an estimate) and restoring each affected period's balance.
-              if(cust){
+              if(promoCust){
                 const _mine=u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id);
-                const usages=(cust.promo_usage||[]).filter(_mine);
+                const usages=(promoCust.promo_usage||[]).filter(_mine);
                 for(const u of usages){
-                  const period=(cust.promo_periods||[]).find(p=>p.id===u.period_id);
+                  const period=(promoCust.promo_periods||[]).find(p=>p.id===u.period_id);
                   if(period){
                     const restored={...period,used:Math.max(0,safeNum(period.used)-safeNum(u.amount))};
                     if(onSavePromoPeriod)await onSavePromoPeriod(restored);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(restored);
                   }
                 }
                 if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,isSO?o.id:null,isSO?null:o.id)}
-                if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(c.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(c.promo_usage||[]).filter(u=>!_mine(u))}})}
+                if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(promoCust.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(promoCust.promo_usage||[]).filter(u=>!_mine(u))}})}
               }
               sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,...(it._pre_promo_sizeSells?{_sizeSells:it._pre_promo_sizeSells}:{}),decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_pre_promo_sizeSells:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {/* Credit — show when customer has credits available */}
@@ -5029,22 +5034,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         })()}
         {o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays)<=0.005:true)&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
-          // Backfill: if this SO has promo applied but never recorded a usage row (e.g. converted before deduction was wired up), record it now.
-          if(isSO&&cust&&!(cust.promo_usage||[]).some(u=>u.so_id===o.id)){
-            const promoAmt=promoTotals?promoTotals.promoAmount:safeNum(o.promo_amount);
-            if(promoAmt>0){
-              const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';
-              const period=(cust.promo_periods||[]).find(p=>p.period_start===_pStart)||(cust.promo_periods||[])[0];
-              if(period){
-                const updatedPeriod={...period,used:safeNum(period.used)+promoAmt};
-                const usageRec={period_id:period.id,amount:promoAmt,description:o.memo||('Promo on '+o.id),created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
-                if(onSavePromoPeriod)await onSavePromoPeriod(updatedPeriod);
-                if(onSavePromoUsage)await onSavePromoUsage(usageRec);
-                setCust(c=>c?{...c,promo_periods:(c.promo_periods||[]).map(p=>p.id===period.id?updatedPeriod:p),promo_usage:[...(c.promo_usage||[]),usageRec]}:c);
-              }
-            }
-          }
-          const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
+          const synced=await reconcilePromoDraw(o,promoTotals?.promoAmount);if(!synced.ok)return;
+          const updated={...synced.order,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
         }}><Icon name="check" size={14}/> Close Promo Order</button>)}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
@@ -5120,8 +5111,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
-        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id)).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis){const _covered=Math.max(0,_availableForThis);const _over=promoTotals.promoAmount-_covered;return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Overdraws promo funds — ${_covered.toLocaleString(undefined,{maximumFractionDigits:2})} covered, ${_over.toLocaleString(undefined,{maximumFractionDigits:2})} overdraft (carries to next semester)</span>}return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
-        {safeNum(o.promo_amount)>0&&Math.abs(safeNum(o.promo_amount)-promoTotals.promoAmount)>1&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠ Recorded promo draw ${safeNum(o.promo_amount).toLocaleString(undefined,{maximumFractionDigits:2})} ≠ current promo lines ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})} — promo items were edited after funds were applied</span>}
+        {(()=>{if(!promoCust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(promoCust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(promoCust.promo_usage||[]).filter(u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id)).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis){const _covered=Math.max(0,_availableForThis);const _over=promoTotals.promoAmount-_covered;return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Parent promo funds are short — ${_covered.toLocaleString(undefined,{maximumFractionDigits:2})} available, ${_over.toLocaleString(undefined,{maximumFractionDigits:2})} more needed</span>}return<span style={{fontSize:11,color:'#64748b'}}>Parent remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {safeNum(o.promo_amount)>0&&Math.abs(safeNum(o.promo_amount)-promoTotals.promoAmount)>1&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠ Recorded promo draw ${safeNum(o.promo_amount).toLocaleString(undefined,{maximumFractionDigits:2})} ≠ full-order promo ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})} — Save to reconcile the parent ledger</span>}
       </div>}
       {/* Credit Summary */}
       {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
@@ -5337,8 +5328,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
-                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);if(item._sizeSells){uI(idx,'_pre_promo_sizeSells',item._sizeSells);uI(idx,'_sizeSells',undefined)}uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);if(item._pre_promo_sizeSells){uI(idx,'_sizeSells',item._pre_promo_sizeSells);uI(idx,'_pre_promo_sizeSells',undefined)}uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
-                {o.promo_applied&&!item.is_promo&&safeNum(item._promo_partial_qty)>0&&<span title={'Promo covers '+item._promo_partial_qty+' of '+qty+' units at retail. Sell prices on this line are blended across all '+qty+' units.'} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 {item._promo_partial_qty}/{qty} at retail (blended)</span>}</div>
+                {o.promo_applied&&<label title="Every line on a promo order is covered" style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}}><input type="checkbox" checked disabled style={{width:12,height:12}}/> Promo (${safeNum(item.unit_sell).toFixed(2)})</label>}</div>
               {/* Sell/cost editors + margin figures live in the per-item ledger (right column below) */}
               {(item.customer_supplied||item.is_free_promo||(item.is_custom&&isAU(item.brand)))&&<div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 {item.customer_supplied&&<span style={{fontSize:11,color:'#0e7490'}}>$0 garment — decoration charges below</span>}
