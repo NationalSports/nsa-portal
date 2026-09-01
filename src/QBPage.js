@@ -236,10 +236,15 @@ export default function QBPage(){
     const runCustomerCanary=async()=>{
       if(!qbCanaryCustomerId)return;
       const result=await syncCustomerCanary(qbCanaryCustomerId);
-      if(result?.status!=='needs_confirmation')return;
-      const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer and verify it by API read-back?');
-      if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
-      await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+      if(result?.status==='needs_confirmation'){
+        const approved=window.confirm('No exact active QBO customer matches "'+result.customerName+'".\n\nCreate exactly ONE new QBO customer with its mapped QBO payment terms and verify it by API read-back?');
+        if(!approved){nf('Customer test cancelled — no QBO customer was created');return}
+        await syncCustomerCanary(qbCanaryCustomerId,{allowCreate:true});
+      }else if(result?.status==='needs_term_confirmation'){
+        const approved=window.confirm('QBO customer #'+result.qbId+' ("'+result.customerName+'") currently has terms "'+result.currentTerm+'".\n\nUpdate exactly this ONE customer to "'+result.desiredTerm+'" and verify it by API read-back?');
+        if(!approved){nf('Customer terms update cancelled — no QBO customer was changed');return}
+        await syncCustomerCanary(qbCanaryCustomerId,{allowTermUpdate:true});
+      }
     };
 
     // Build what a QB sync would push
@@ -516,7 +521,7 @@ export default function QBPage(){
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:6}}>Test exactly one customer</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An existing exact QBO match is linked without changing it. If no exact match exists, you must confirm before one new QBO customer is created. Bulk sync stays locked.</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>An exact QBO match is linked without changing it when its terms already match. You must confirm before creating one customer or updating one customer&apos;s QBO Terms field. Bulk sync stays locked.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Customer to test in QuickBooks" style={{minWidth:320,maxWidth:520}} value={qbCanaryCustomerId} onChange={e=>setQbCanaryCustomerId(e.target.value)}>
                 <option value="">Select one customer...</option>
