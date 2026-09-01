@@ -45,6 +45,7 @@ import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAcce
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
+import { acquireOmgCreationGuard, omgCollectedUnitPrice, omgInvoiceIdempotencyKey, webstoreInvoiceIdempotencyKey } from './lib/omgCreationGuard';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -5259,6 +5260,11 @@ export default function App(){
   const[omgIngestOpen,setOmgIngestOpen]=useState(false);const[omgIngestUrl,setOmgIngestUrl]=useState('');
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
+  // React state does not update until the next render. These synchronous guards
+  // close the double-click window that duplicated SO-2277 and both invoices.
+  const omgSoCreating=useRef(new Set());
+  const omgInvoiceCreating=useRef(new Set());
+  const webstoreInvoiceCreating=useRef(new Set());
 
   // Import products from an OMG shared report URL.
   // Fetches report JSON via Netlify proxy, parses products with SKUs, sizes,
@@ -5419,7 +5425,9 @@ export default function App(){
               manufacturer: meta.manufacturer || '',
               category: meta.category || '',
               color: [...g.colors].join(', '),
-              retail: meta.base_price || 0,
+              // Preserve actual collected product revenue, including per-size
+              // upcharges. SO-2277 lost $12 by pricing four 2XLs at base price.
+              retail: omgCollectedUnitPrice(g.paid,g.qty,meta.base_price),
               cost: meta.cogs || 0,
               deco_type: '',
               deco_cost: 0,
@@ -15068,6 +15076,7 @@ export default function App(){
     // Create new invoice B
     const newId=nextInvId(invs);
     const newInv={...inv,id:newId,line_items:itemsB,total:totalB,paid:paidB,status:statusB,
+      idempotency_key:null,
       shipping:shipB,tax:taxB,memo:(splitMemo||inv.memo||'')+' (Split 2/2)',
       payments:inv.payments?inv.payments.map(p=>({...p,amount:Math.round(p.amount*pctB*100)/100,cc_fee:Math.round((p.cc_fee||0)*pctB*100)/100})):[],
       cc_fee:Math.round((inv.cc_fee||0)*pctB*100)/100,
@@ -15101,6 +15110,7 @@ export default function App(){
   const createAndSettleOmgInvoice=(so)=>{
     if(!so||!so.omg_store_id)return null;
     if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
+    if(!acquireOmgCreationGuard(omgInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
     const store=(omgStores||[]).find(x=>x.id===so.omg_store_id);
     const c=cust.find(x=>x.id===so.customer_id);
     const af=safeArt(so);
@@ -15123,7 +15133,7 @@ export default function App(){
     const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
     const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
     const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
-    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,
+    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,idempotency_key:omgInvoiceIdempotencyKey(so),
       date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
       total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
       memo:'Invoice — '+(so.memo||so.id),_rep:so.created_by||cu?.id||null,
@@ -15158,6 +15168,7 @@ export default function App(){
   const createAndSettleWebstoreInvoice=(so,settle)=>{
     if(!so||so.omg_store_id)return null;
     if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
+    if(!acquireOmgCreationGuard(webstoreInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
     const r2=n=>Math.round((+n||0)*100)/100;
     const c=cust.find(x=>x.id===so.customer_id);
     const lineItems=safeItems(so).map(it=>{
@@ -15177,7 +15188,7 @@ export default function App(){
     const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
     const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
     const ref='WEB '+so.id;
-    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,
+    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,idempotency_key:webstoreInvoiceIdempotencyKey(so),
       date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
       total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
       memo:'Invoice — '+(so.memo||so.id)+(tabExtras>0?' (shipping line = team-tab tax/ship/processing)':''),
@@ -17955,6 +17966,8 @@ export default function App(){
               // create un-orderable line items. The rep fixes them in Store Products.
               const badSku=(s.products||[]).filter(p=>_skuLooksInvalid(p.sku));
               if(badSku.length){nf(`${badSku.length} item(s) have an invalid SKU (e.g. a compound like IP9746//IS1111). Fix them in Store Products before creating the SO.`,'error');return;}
+              const _createKey=(force?'redo:':'port:')+s.id;
+              if(!acquireOmgCreationGuard(omgSoCreating.current,_createKey)){nf('Sales Order creation is already running for this OMG store','error');return;}
               // Build art files from unique art_group labels across all decorations
               // Each distinct art is either a customer-library logo (keyed by its
               // saved art id) or a new named group. Build one art file per identity.
