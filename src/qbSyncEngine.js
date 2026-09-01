@@ -21,6 +21,29 @@ export function rotatingBatch(items = [], offset = 0, size = 20) {
   return { items: batch, nextOffset: (start + count) % list.length };
 }
 
+const normalizeQBCustomerName = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+export function portalCustomerDisplayName(customer = {}) {
+  const name = String(customer.name || '').trim();
+  const alpha = String(customer.alpha_tag || '').trim();
+  return name + (alpha ? ' (' + alpha + ')' : '');
+}
+
+// Exact means case/spacing-insensitive only. Punctuation and words must still
+// match, so a canary never guesses between similarly named schools or teams.
+export function findExactQBCustomerMatches(customer, qboCustomers = []) {
+  const portalName = normalizeQBCustomerName(customer?.name);
+  const portalDisplayName = normalizeQBCustomerName(portalCustomerDisplayName(customer));
+  const matches = (qboCustomers || []).filter(qbo => {
+    if (!qbo || qbo.Active === false) return false;
+    const displayName = normalizeQBCustomerName(qbo.DisplayName);
+    const companyName = normalizeQBCustomerName(qbo.CompanyName);
+    return (displayName && (displayName === portalDisplayName || displayName === portalName)) ||
+      (companyName && companyName === portalName);
+  });
+  return [...new Map(matches.map(match => [String(match.Id), match])).values()];
+}
+
 // One portal PO can span several SO item rows. Group those rows before both UI
 // preview and QBO posting so the operator sees the same one-PO payload the API
 // will receive. Mixed vendors or mixed merchandise/decoration categories under
@@ -98,6 +121,73 @@ export function createQBSyncEngine(ctx){
       return String(res.Item.Id);
     };
 
+    const buildQBCustomerPayload=(c,{qbId='',syncToken=''}={})=>{
+      const custSOs=sos.filter(s=>s.customer_id===c.id);
+      const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total??0),0);
+      const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid??0),0);
+      const openBalance=totalRevenue-totalPaid;
+      return{
+        DisplayName:portalCustomerDisplayName(c),
+        CompanyName:c.name,
+        ...((()=>{const raw=String(c.contact_email||c.contacts?.[0]?.email||'').trim();return raw&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)?{PrimaryEmailAddr:{Address:raw}}:{}})()),
+        ...((()=>{const raw=String(c.contact_phone||c.contacts?.[0]?.phone||'').trim();return raw?{PrimaryPhone:{FreeFormNumber:raw}}:{}})()),
+        ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
+        ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
+        Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
+        ...(qbId?{Id:qbId,sparse:true}:{}),
+        ...(syncToken?{SyncToken:syncToken}:{}),
+      };
+    };
+
+    // One-customer canary is intentionally available while production batches
+    // are locked. Existing exact matches are linked without updating QBO. A new
+    // customer is created only after the caller repeats with allowCreate=true.
+    const syncCustomerCanary=async(customerId,{allowCreate=false}={})=>{
+      const c=cust.find(customer=>String(customer.id)===String(customerId));
+      if(!c||c.is_active===false||c.deleted_at){nf('Choose an active customer for the QBO test','error');return{status:'blocked'}}
+      if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){
+        nf('Run the read-only live QBO preflight before testing a customer','error');return{status:'blocked'};
+      }
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'customer_canary',status:'success',details:[]};
+      try{
+        const qboCustomers=await loadAllQBEntities(qbApi,'Customer','Id, DisplayName, CompanyName, Active, SyncToken',1000);
+        const savedId=String((qbConfig.custQBMap||{})[c.id]||c.qb_customer_id||'');
+        let qboCustomer=savedId?qboCustomers.find(row=>String(row.Id)===savedId):null;
+        if(qboCustomer?.Active===false)throw new Error('Saved QBO customer #'+savedId+' is inactive; no record was changed.');
+        if(!qboCustomer){
+          const matches=findExactQBCustomerMatches(c,qboCustomers);
+          if(matches.length>1)throw new Error('Multiple active QBO customers exactly match "'+c.name+'"; no record was changed.');
+          qboCustomer=matches[0]||null;
+        }
+        let created=false;
+        if(!qboCustomer){
+          if(!allowCreate)return{status:'needs_confirmation',customerId:c.id,customerName:c.name};
+          const response=await qbApi('upsert_customer',{customer:buildQBCustomerPayload(c)});
+          const fault=response?.Fault?.Error?.[0];
+          if(!response?.Customer?.Id)throw new Error(fault?.Detail||fault?.Message||'QuickBooks did not return the new customer.');
+          qboCustomer=response.Customer;created=true;
+        }
+        const qbId=String(qboCustomer.Id||'');
+        if(!/^\d+$/.test(qbId))throw new Error('QuickBooks returned an invalid customer ID; the portal link was not saved.');
+        const readback=await qbApi('query',{query:"SELECT * FROM Customer WHERE Id = '"+qbId+"' MAXRESULTS 1"});
+        const readFault=readback?.Fault?.Error?.[0];
+        if(readFault)throw new Error(readFault.Detail||readFault.Message||'Customer read-back failed.');
+        const verified=readback?.QueryResponse?.Customer?.[0];
+        if(!verified||String(verified.Id)!==qbId)throw new Error('Customer was not returned by the QBO read-back; the portal link was not saved.');
+        log.details.push((created?'CREATED ONE QBO CUSTOMER':'LINK ONLY — no QBO customer was changed')+': '+c.name+' → QB #'+qbId);
+        log.details.push('READ-BACK VERIFIED: '+(verified.DisplayName||verified.CompanyName||c.name)+(verified.SalesTermRef?.name?' · QBO terms '+verified.SalesTermRef.name:verified.SalesTermRef?.value?' · QBO terms ID '+verified.SalesTermRef.value:''));
+        setQBConfig(prev=>({...prev,custQBMap:{...(prev.custQBMap||{}),[c.id]:qbId},syncLog:[log,...(prev.syncLog||[])].slice(0,100),lastSync:new Date().toLocaleString()}));
+        nf((created?'Created and verified ':'Linked and verified ')+c.name+' in QBO');
+        return{status:'success',created,qbId,customerName:c.name};
+      }catch(e){
+        log.status='error';log.details.push(e.message||'Customer canary failed');
+        setQBConfig(prev=>({...prev,syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        nf('Customer test stopped — '+(e.message||'unknown error'),'error');
+        return{status:'blocked',error:e.message};
+      }finally{setQbSyncing(false)}
+    };
+
     // ── SYNC: Customers (name + totals) ──
     const syncCustomers=async()=>{
       if(productionSyncLocked())return{};
@@ -122,12 +212,7 @@ export function createQBSyncEngine(ctx){
       const customerBatch=rotatingBatch(sortedCustomers,qbConfig._customerSyncOffset,QB_SYNC_BATCH_SIZE);
       const customersToSync=customerBatch.items;
       for(const c of customersToSync){
-        // Calculate totals
-        const custSOs=sos.filter(s=>s.customer_id===c.id);
-        const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total??0),0);
-        const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid??0),0);
-        const openBalance=totalRevenue-totalPaid;
-        const displayName=c.name+(c.alpha_tag?' ('+c.alpha_tag+')':'');
+        const displayName=portalCustomerDisplayName(c);
         // Match existing QB customer by name if we don't already have a QB ID
         let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
         if(!qbId){
@@ -138,20 +223,7 @@ export function createQBSyncEngine(ctx){
           const match=existingQBCusts.find(q=>q.Id===qbId);
           if(match)syncToken=match.SyncToken;
         }
-        const qbCustomer={
-          DisplayName:displayName,
-          CompanyName:c.name,
-          // QB rejects malformed emails (code 2210) and any sync attempt with a
-          // bad value blocks the whole batch. Trim and regex-validate before
-          // sending — omit the field entirely if the value isn't a real email.
-          ...((()=>{const raw=String(c.contact_email||c.contacts?.[0]?.email||'').trim();return raw&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)?{PrimaryEmailAddr:{Address:raw}}:{}})()),
-          ...((()=>{const raw=String(c.contact_phone||c.contacts?.[0]?.phone||'').trim();return raw?{PrimaryPhone:{FreeFormNumber:raw}}:{}})()),
-          ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
-          ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
-          Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
-          ...(qbId?{Id:qbId,sparse:true}:{}),
-          ...(syncToken?{SyncToken:syncToken}:{}),
-        };
+        const qbCustomer=buildQBCustomerPayload(c,{qbId,syncToken});
         let res;
         try{res=await qbApi('upsert_customer',{customer:qbCustomer})}catch(e){log.details.push(c.name+' — FAILED: '+e.message);log.status='partial';continue}
         if(res?.Customer?.Id){
@@ -780,5 +852,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll};
 }
