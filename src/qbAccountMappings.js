@@ -382,10 +382,51 @@ export function migrateQBAccountMapping(mapping = {}) {
 export const QB_ACCOUNT_QUERY =
   'SELECT Id, Name, FullyQualifiedName, AcctNum, AccountType, AccountSubType, Active FROM Account MAXRESULTS 1000';
 
+const waitForQBRetry = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Read calls are safe to retry once, but an absent/transport-error response must
+// never be interpreted as an empty QBO list. That previously turned a 504 into
+// misleading "account/term not found" messages and could make duplicate checks
+// believe no matching record existed.
+export async function readQBWithRetry(qbApi, action, payload = {}, {
+  label = 'read request',
+  validate = response => response && typeof response === 'object',
+  retryDelayMs = 150,
+} = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await qbApi(action, payload);
+      const fault = response?.Fault?.Error?.[0];
+      if (fault) {
+        const error = new Error(fault.Detail || fault.Message || `QuickBooks ${label} failed.`);
+        error.qbLogicalFault = true;
+        throw error;
+      }
+      if (response?.__qbTransportError) {
+        throw new Error(response.error || `QuickBooks ${label} returned HTTP ${response.status || 'error'}.`);
+      }
+      if (!validate(response)) throw new Error(`QuickBooks ${label} returned no usable response.`);
+      return response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error || 'unknown error'));
+      if (lastError.qbLogicalFault) throw lastError;
+      if (attempt === 1) break;
+      if (retryDelayMs > 0) await waitForQBRetry(retryDelayMs);
+    }
+  }
+  throw new Error(`QuickBooks ${label} failed after one retry: ${lastError?.message || 'no usable response'} No transaction was sent.`);
+}
+
+export async function queryQBReadOnly(qbApi, query, label = 'query') {
+  return readQBWithRetry(qbApi, 'query', { query }, {
+    label,
+    validate: response => response && typeof response.QueryResponse === 'object',
+  });
+}
+
 export async function loadQBAccounts(qbApi) {
-  const response = await qbApi('query', { query: QB_ACCOUNT_QUERY });
-  const fault = response?.Fault?.Error?.[0];
-  if (fault) throw new Error(fault.Detail || fault.Message || 'QuickBooks account query failed');
+  const response = await queryQBReadOnly(qbApi, QB_ACCOUNT_QUERY, 'account query');
   return response?.QueryResponse?.Account || [];
 }
 
@@ -394,11 +435,11 @@ export async function loadAllQBEntities(qbApi, entity, fields = '*', pageSize = 
   const size = Math.max(1, Math.min(1000, Number(pageSize) || 500));
   const rows = [];
   for (let start = 1; start <= 100000; start += size) {
-    const response = await qbApi('query', {
-      query: `SELECT ${fields} FROM ${entity} STARTPOSITION ${start} MAXRESULTS ${size}`,
-    });
-    const fault = response?.Fault?.Error?.[0];
-    if (fault) throw new Error(fault.Detail || fault.Message || `QuickBooks ${entity} query failed`);
+    const response = await queryQBReadOnly(
+      qbApi,
+      `SELECT ${fields} FROM ${entity} STARTPOSITION ${start} MAXRESULTS ${size}`,
+      `${entity} query page ${start}`,
+    );
     const page = response?.QueryResponse?.[entity] || [];
     rows.push(...page);
     if (page.length < size) return rows;

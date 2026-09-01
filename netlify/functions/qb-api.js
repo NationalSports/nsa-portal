@@ -38,6 +38,9 @@ function qbRequest(method, path, accessToken, body, useSandbox) {
       });
     });
     req.on('error', reject);
+    // Fail before the Netlify function's hard timeout so the client receives a
+    // structured 500 and can perform its one permitted read-only retry.
+    req.setTimeout(8000, () => req.destroy(new Error('QBO upstream request timed out')));
     if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
     req.end();
   });

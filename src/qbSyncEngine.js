@@ -7,7 +7,7 @@
 import { D_V } from './constants';
 import { _dbSaveSO } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
-import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, resolveQBAccountRefs } from './qbAccountMappings';
+import { calculateCustomerShipping, loadAllQBEntities, loadQBAccounts, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 
 // Return a circular batch and the cursor for the next run. Permanent blockers
 // in the first N records must not starve every later customer/invoice/item/PO.
@@ -141,9 +141,7 @@ export function createQBSyncEngine(ctx){
     // product does not yet have its own QBO item.
     const ensurePortalSalesItem=async(incomeAccountRef)=>{
       const name='NSA Portal Sales';
-      const qRes=await qbApi('query',{query:"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 1"});
-      const qFault=qRes?.Fault?.Error?.[0];
-      if(qFault)throw new Error(qFault.Detail||qFault.Message||'Could not inspect the QBO portal sales item');
+      const qRes=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 1",'portal sales item query');
       const existing=qRes?.QueryResponse?.Item?.[0];
       if(existing?.Id&&String(existing.IncomeAccountRef?.value||'')===String(incomeAccountRef.value))return String(existing.Id);
       const item=existing?.Id
@@ -154,9 +152,7 @@ export function createQBSyncEngine(ctx){
       return String(res.Item.Id);
     };
     const requireExistingPortalSalesItem=async(incomeAccountRef)=>{
-      const qRes=await qbApi('query',{query:"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 2"});
-      const fault=qRes?.Fault?.Error?.[0];
-      if(fault)throw new Error(fault.Detail||fault.Message||'Could not inspect the QBO portal sales item');
+      const qRes=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 2",'portal sales item query');
       const matches=qRes?.QueryResponse?.Item||[];
       if(matches.length!==1)throw new Error(matches.length?'Multiple QBO items are named NSA Portal Sales; no record was sent.':'QBO item "NSA Portal Sales" is missing; test one QBO item first.');
       const item=matches[0];
@@ -164,9 +160,7 @@ export function createQBSyncEngine(ctx){
       return String(item.Id);
     };
     const verifyCanaryReadback=async(entity,id,expected={})=>{
-      const res=await qbApi('query',{query:"SELECT * FROM "+entity+" WHERE Id = '"+String(id).replace(/'/g,"\\'")+"' MAXRESULTS 1"});
-      const fault=res?.Fault?.Error?.[0];
-      if(fault)throw new Error(fault.Detail||fault.Message||entity+' API read-back failed.');
+      const res=await queryQBReadOnly(qbApi,"SELECT * FROM "+entity+" WHERE Id = '"+String(id).replace(/'/g,"\\'")+"' MAXRESULTS 1",entity+' API read-back');
       const row=res?.QueryResponse?.[entity]?.[0];
       if(!row||String(row.Id)!==String(id))throw new Error(entity+' was not returned by API read-back.');
       if(expected.docNumber!=null&&String(row.DocNumber||'')!==String(expected.docNumber))throw new Error(entity+' document number did not match on API read-back.');
@@ -235,9 +229,7 @@ export function createQBSyncEngine(ctx){
         }
         const qbId=String(qboCustomer.Id||'');
         if(!/^\d+$/.test(qbId))throw new Error('QuickBooks returned an invalid customer ID; the portal link was not saved.');
-        const readback=await qbApi('query',{query:"SELECT * FROM Customer WHERE Id = '"+qbId+"' MAXRESULTS 1"});
-        const readFault=readback?.Fault?.Error?.[0];
-        if(readFault)throw new Error(readFault.Detail||readFault.Message||'Customer read-back failed.');
+        const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Customer WHERE Id = '"+qbId+"' MAXRESULTS 1",'customer API read-back');
         const verified=readback?.QueryResponse?.Customer?.[0];
         if(!verified||String(verified.Id)!==qbId)throw new Error('Customer was not returned by the QBO read-back; the portal link was not saved.');
         if(String(verified.SalesTermRef?.value||'')!==String(termRef.value))throw new Error('QBO customer terms did not match "'+termRef.name+'" on read-back; the portal link was not saved.');
@@ -356,7 +348,7 @@ export function createQBSyncEngine(ctx){
         let customerTermRef=null;
         if(canary){
           try{
-            const customerRes=await qbApi('query',{query:"SELECT Id, SalesTermRef FROM Customer WHERE Id = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1"});
+            const customerRes=await queryQBReadOnly(qbApi,"SELECT Id, SalesTermRef FROM Customer WHERE Id = '"+String(cQBId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'invoice customer terms query');
             const qboCustomer=customerRes?.QueryResponse?.Customer?.[0];
             if(!qboCustomer?.SalesTermRef?.value)throw new Error('linked QBO customer has no payment terms');
             customerTermRef={value:String(qboCustomer.SalesTermRef.value),...(qboCustomer.SalesTermRef.name?{name:qboCustomer.SalesTermRef.name}:{})};
@@ -383,7 +375,7 @@ export function createQBSyncEngine(ctx){
         if(!res?.Invoice?.Id&&(res?.Fault?.Error?.[0]?.code==='6140'||/duplicate/i.test(res?.Fault?.Error?.[0]?.Detail||''))){
           const docNum=inv.display_id||inv.id;
           let lookup;
-          try{lookup=await qbApi('query',{query:"SELECT Id, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+String(docNum).replace(/'/g,"\\'")+"'"})}
+          try{lookup=await queryQBReadOnly(qbApi,"SELECT Id, CustomerRef, TotalAmt, TxnDate FROM Invoice WHERE DocNumber = '"+String(docNum).replace(/'/g,"\\'")+"'",'invoice duplicate query')}
           catch(e){log.details.push(docNum+' — BLOCKED: duplicate lookup failed: '+e.message);log.status='partial';continue}
           const lookupFault=lookup?.Fault?.Error?.[0];
           if(lookupFault){log.details.push(docNum+' — BLOCKED: duplicate lookup failed: '+(lookupFault.Detail||lookupFault.Message||'QBO query error'));log.status='partial';continue}
@@ -438,7 +430,7 @@ export function createQBSyncEngine(ctx){
       try{
         // Query QB for all invoices and their balance
         const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
-        const res=await qbApi('query',{query:"SELECT Id, DocNumber, Balance, TotalAmt, SyncToken FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')"});
+        const res=await queryQBReadOnly(qbApi,"SELECT Id, DocNumber, Balance, TotalAmt, SyncToken FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')",'paid-status invoice query');
         const qbInvList=res?.QueryResponse?.Invoice||[];
         const qbMap={};qbInvList.forEach(qi=>{qbMap[qi.Id]=qi});
         for(const inv of linkedInvs){
