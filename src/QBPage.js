@@ -7,7 +7,7 @@ import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
-import { createQBSyncEngine } from './qbSyncEngine';
+import { createQBSyncEngine, groupPortalPurchaseOrders } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -219,8 +219,7 @@ export default function QBPage(){
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
       return hasItems&&!soMap[so.id];
     });
-    const unsyncedPOs=[];
-    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!poMap[pl.po_id])unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
+    const unsyncedPOGroups=groupPortalPurchaseOrders(sos,poMap);
     const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
     const _custQBMap=qbConfig.custQBMap||{};
     const _prodQBMap=qbConfig.prodQBMap||{};
@@ -328,7 +327,7 @@ export default function QBPage(){
               </div>
               {qbConfig.connected?
                 <div style={{fontSize:12,color:'#64748b'}}>Company: {qbConfig.companyName||'Connected'} · Realm: {qbConfig.realm_id} · Last sync: {qbConfig.lastSync||'Never'}</div>:
-                <div style={{fontSize:12,color:'#92400e'}}>Connect your QBO account to sync customers, invoices, bills, and inventory</div>}
+                <div style={{fontSize:12,color:'#92400e'}}>{qbConfig.connectionError||'Connect your QBO account to sync customers, invoices, bills, and QBO items'}</div>}
             </div>
             <div style={{display:'flex',gap:6}}>
               {qbConfig.connected&&<button className="btn btn-secondary" style={{fontSize:12}} onClick={connectQB}>Reconnect</button>}
@@ -346,7 +345,7 @@ export default function QBPage(){
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOGroups.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
@@ -412,7 +411,7 @@ export default function QBPage(){
               <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
                 <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
                 <input className="form-input" style={{width:90,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||QB_ACCOUNT_MAPPING_DEFAULTS[key]}
-                  onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
+                  onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value},preflight:null,initialMigrationApproved:false,autoSync:'manual'}))}/>
                 <span style={{flex:1,fontSize:10,color:live?'#166534':'#64748b'}}>{live?'✓ QBO '+live.number+' · '+live.name+' · ID '+live.id:'Not yet validated against live QBO'}</span>
               </div>)})}
           </div>
@@ -437,7 +436,7 @@ export default function QBPage(){
       <div className="card" style={{marginBottom:16}}>
         <div className="card-header"><h2>📋 Sync Preview — What Will Go to QB</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {unsyncedSOs.length===0&&unsyncedPOs.length===0&&unsyncedInvs.length===0?
+          {unsyncedSOs.length===0&&unsyncedPOGroups.length===0&&unsyncedInvs.length===0?
             <div className="empty" style={{padding:20}}>Everything is synced!</div>:
           <table style={{fontSize:11}}>
             <thead><tr style={{background:'#f8fafc'}}><th>Type</th><th>Doc #</th><th>Customer/Vendor</th><th>SO Ref</th><th>QB Account</th><th style={{textAlign:'right'}}>Amount</th><th>Status</th></tr></thead>
@@ -451,17 +450,20 @@ export default function QBPage(){
                   <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${(Number(qb.total)||0).toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
-              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).map((pl,pi)=>{
-                const qb=buildQBPurchaseOrder(pl,so,it);
-                return<tr key={so.id+pl.po_id+pi} style={{borderBottom:'1px solid #f1f5f9'}}>
-                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:pl.po_type==='outside_deco'?'#ede9fe':'#fef3c7',
-                    color:pl.po_type==='outside_deco'?'#7c3aed':'#92400e',fontWeight:600}}>{pl.po_type==='outside_deco'?'Deco PO':'Blank PO'}</span></td>
-                  <td style={{fontWeight:700,color:pl.po_id?.startsWith('DPO')?'#7c3aed':'#1e40af'}}>{pl.po_id}</td>
-                  <td>{qb.vendorRef}</td><td style={{fontSize:10,color:'#64748b'}}>{so.id}</td>
-                  <td style={{fontSize:10,color:'#64748b'}}>{qb.account}</td>
-                  <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${(Number(qb.total)||0).toFixed(2)}</td>
-                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
-                </tr>}))).flat(2)}
+              {unsyncedPOGroups.map(group=>{
+                const lines=group.entries.map(({pl,so,it})=>buildQBPurchaseOrder(pl,so,it));
+                const total=lines.reduce((sum,line)=>sum+safeNum(line.total),0);
+                const soRefs=[...new Set(group.entries.map(({so})=>so.id))];
+                const isDeco=group.accountKey==='deco_account';
+                return<tr key={group.poId} style={{borderBottom:'1px solid #f1f5f9',background:group.invalidReason?'#fef2f2':undefined}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:isDeco?'#ede9fe':'#fef3c7',
+                    color:isDeco?'#7c3aed':'#92400e',fontWeight:600}}>{isDeco?'Decoration PO':'Blank Goods PO'}</span></td>
+                  <td style={{fontWeight:700,color:isDeco?'#7c3aed':'#1e40af'}}>{group.poId}<div style={{fontSize:9,color:'#64748b',fontWeight:500}}>{group.entries.length} source line{group.entries.length===1?'':'s'}</div></td>
+                  <td>{group.vendor||'—'}</td><td style={{fontSize:10,color:'#64748b'}}>{soRefs.join(', ')||'—'}</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping[group.accountKey]}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${total.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:group.invalidReason?'#fee2e2':'#fef3c7',color:group.invalidReason?'#b91c1c':'#92400e',fontWeight:600}}>{group.invalidReason?'Blocked: '+group.invalidReason:'Pending'}</span></td>
+                </tr>})}
               {unsyncedInvs.map(inv=>{const qb=buildQBInvoice(inv);
                 return<tr key={inv.id} style={{borderBottom:'1px solid #f1f5f9'}}>
                   <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Invoice</span></td>
@@ -500,7 +502,7 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Customer Sync</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncCustomers}>{qbSyncing?'Syncing...':'Sync All Customers'}</button>
+            <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncCustomers}>{qbSyncing?'Syncing...':'Sync All Customers'}</button>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
@@ -532,8 +534,8 @@ export default function QBPage(){
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Invoice Sync ({unsyncedInvs.length} pending)</h2>
             <div style={{display:'flex',gap:6}}>
-              <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
-              <button className="btn btn-secondary btn-sm" disabled={qbSyncing} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
+              <button className="btn btn-secondary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
             </div>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
@@ -649,14 +651,14 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>QBO Product Items (One per SKU)</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInventory}>{qbSyncing?'Syncing...':'Sync NonInventory Items'}</button>
+            <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={syncInventory}>{qbSyncing?'Syncing...':'Sync NonInventory Items'}</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
             Creates one NonInventory item per SKU using 40000 Sales and 51300 Purchases. QBO does not receive size/color on-hand quantities or inventory valuation; those remain in the portal.
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
-              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Total Qty</th><th style={{textAlign:'right'}}>Cost Value</th><th>QB Status</th></tr></thead>
+              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Portal Qty (not sent)</th><th style={{textAlign:'right'}}>Portal Value (not sent)</th><th>QB Status</th></tr></thead>
               <tbody>
                 {prod.filter(p=>p.is_active!==false).map(p=>{
                   const inv=p._inv||{};
@@ -688,7 +690,7 @@ export default function QBPage(){
                 <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
                   <span style={{fontSize:11,fontWeight:600,color:'#475569',width:150}}>{label}</span>
                   <input className="form-input" style={{flex:1,fontSize:11,padding:'4px 8px'}} value={qbConfig.mapping[key]||QB_ACCOUNT_MAPPING_DEFAULTS[key]}
-                    onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
+                    onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value},preflight:null,initialMigrationApproved:false,autoSync:'manual'}))}/>
                 </div>)}
             </div>
           </div>
@@ -717,7 +719,7 @@ export default function QBPage(){
         <div className="card">
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Sync History</h2>
-            {qbConfig.syncLog.length>0&&<button className="btn btn-sm btn-secondary" onClick={()=>setQBConfig(prev=>({...prev,syncLog:[]}))}>Clear Log</button>}
+            <span style={{fontSize:10,color:'#64748b'}}>Latest 100 entries retained for audit</span>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             {(qbConfig.syncLog||[]).length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:

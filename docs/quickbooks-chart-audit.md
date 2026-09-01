@@ -17,14 +17,14 @@ Source of truth reviewed: `National_Sports Apparel LLC.csv`, exported from the c
 | OrderMyGear fee withheld from a deposit | 57000 OMG Fee | Separate negative Bank Deposit line |
 | OrderMyGear processing fee withheld | 71400 Bank Charges | Separate negative Bank Deposit line |
 | OrderMyGear payout | Configured bank account (currently 10100) | Gross linked QBO Payment(s) less the two withheld-fee lines; must equal the real bank deposit |
-| In-house decoration labor | 55200 Decoration:Decoration Labor | Production/decoration clock minutes × the employee's labor rate; payroll reclass offset and cadence are gated |
-| In-house art labor | 55400 In House Art | Art-clock minutes × the artist's labor rate; payroll reclass offset and cadence are gated |
-| Outbound UPS/FedEx shipping cost | 67000 Freight Expenses | Debit when a future Connect expense source is implemented |
+| In-house decoration labor | 55200 Decoration:Decoration Labor | Reference only; daily labor is not posted by Connect |
+| In-house art labor | 55400 In House Art | Reference only; daily labor is not posted by Connect |
+| Outbound UPS/FedEx shipping cost | 40100 Shipping Expense | Debit when a future Connect expense source is implemented; 67000 is DO NOT USE |
 | Customer payment | 11010 Undeposited Funds | Debit; 11000 A/R is credited |
 | CA / AZ / CO / NV / TX / WA sales tax | 25200 / 25205 / 25215 / 25220 / 25225 / 25230 | State liability; the portal supplies the exact tax amount |
 | Quarterly sales-tax payment | Matching state subaccount | Reduces the individual state balance, not only parent 25201 |
 
-Account 40100 Shipping Expense is not used by the portal. Account 21000 Accounts Payable - Trade is not the QBO bill control account; QBO bills use 21100 Accounts Payable (A/P).
+Account 67000 Freight Expenses is retired and must not be used. Account 21000 Accounts Payable - Trade is not the QBO bill control account; QBO bills use 21100 Accounts Payable (A/P).
 
 ## Required QBO correction before any live write
 
@@ -51,10 +51,7 @@ The state account numbers are approved, but a taxable QBO invoice still needs th
 - The supplied Deposit Statement is one bank deposit: statement `MRBHQRB6G`, dated 08/18/26, containing 28 stores. It reconciles $8,963.02 collected - $369.90 OMG fee withheld to 57000 - $288.81 processing fee withheld to 71400 = $8,304.31 net.
 - OMG customer invoices are settled by the gross customer collection. The 57000 and 71400 fees are separate deposit deductions and never reduce the customer payment or leave fee-sized A/R open.
 - Invoice `credit_amount` is persisted and sent as a QBO discount line to 40200; ordinary sales remain in 40000.
-- Account 55200 has a concrete Portal source: `job_time_logs` minutes multiplied by the current employee rate in `labor_rates`.
-- Account 55400 has a separate concrete Portal source: `art_time_logs` minutes multiplied by the current artist rate in `labor_rates`.
-- These two labor streams are internal payroll cost, not vendor bills. Posting a new debit without reclassifying an already-booked payroll expense would double-count cost. The Portal therefore exposes them in the mapping/preflight and can produce a dry-run manifest, but does not yet post them.
-- The current clock blobs have no stable per-log IDs, rates are looked up at report time rather than snapshotted at clock-out, and idle minutes are tracked but presently included in the displayed cost. Those issues must be resolved before resumable QBO journals are safe.
+- Accounts 55200 and 55400 remain visible as chart references, but accounting confirmed that Connect does not post daily labor. No labor journal is part of the initial migration or production sync.
 
 The safe QBO method is: record the customer payment in full to 11010 Undeposited Funds, then create the configured-bank Deposit by linking the gross QBO Payment(s) and subtracting each confirmed withheld fee separately. The deposit is blocked unless every Payment ID is unique and the line total exactly equals the net amount received. The bank mapping is configuration because 10100 will change when NSA changes banks.
 
@@ -71,7 +68,7 @@ One OMG Deposit Statement corresponds to one bank deposit, but it can contain ma
 
 ## Remaining source gap
 
-The current Connect sync has no UPS/FedEx/outbound-shipping expense feed. Account 67000 is validated and reserved, but no transaction is created from it yet. We need to identify the portal record or carrier integration that supplies those charges before wiring that posting.
+The current Connect sync has no UPS/FedEx/outbound-shipping expense feed. When a portal or carrier source is added, it must route to 40100 Shipping Expense. Account 67000 Freight Expenses is DO NOT USE and is automatically migrated to 40100 in saved mappings.
 
 ## Chart observations that do not block the portal
 

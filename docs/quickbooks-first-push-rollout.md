@@ -29,7 +29,7 @@ The dry run should report counts for:
 - OMG vendor-bill fee manifests for 57000;
 - OMG payout deposit manifests showing gross QBO Payment(s), 57000 OMG fee, 71400 processing fee, and the exact net received in the configured bank account;
 - discounted invoice manifests showing gross sales in 40000 and the approved discount/credit in 40200;
-- 55200/55400 labor manifests by clock source, employee, rate, minutes, idle minutes, and date;
+- confirmation that 55200/55400 labor is excluded from Connect posting;
 - Deposit Statements containing refunds, which remain blocked until their QBO credit-memo/refund links are complete;
 - bills with missing SKUs or total discrepancies;
 - duplicate source IDs or QBO document numbers.
@@ -74,25 +74,21 @@ The migration is complete only when:
 - every source record is succeeded, intentionally excluded, or explicitly in needs-review;
 - no duplicate portal source IDs or QBO document numbers exist;
 - QBO read-back totals equal portal totals by transaction type;
-- 40000, 40200, 51000, 51300, 52000, 57000, 58000, 67000, 71400, the configured bank account, 11000, 11010, 21100, and the state tax balances agree with the approved manifest;
+- 40000, 40100, 40200, 51000, 51300, 52000, 57000, 58000, 71400, the configured bank account, 11000, 11010, 21100, and the state tax balances agree with the approved manifest;
+- no posting uses retired account 67000;
 - all successful canary and production records retain their QBO IDs;
 - the final reconciliation report is saved for audit.
 
 ## Confirmed historical scope
 
-- all historical customer invoices and their payments, subject to a confirmed cutover date and closed-period lock;
+- customer invoices and payments beginning with the confirmed 2026-09-01 cutover; QBO customer terms control due dates and the portal does not override them;
 - currently unpaid vendor bills;
-- recent SilverScreen bills for an exact window still to be chosen (accounting requested 3–6 months);
-- other paid/closed historical vendor bills are excluded unless separately approved.
+- paid/closed historical vendor bills, including SilverScreen, are excluded.
 
 Before NetSuite transaction access ends, export the transaction saved searches with Internal IDs and all supporting File Cabinet documents. A NetSuite Full CSV Export alone is not a complete archive.
 
 ## Still needed before the full historical push
 
-- the official portal/QBO cutover date;
-- exact portal go-live/cutover date and the closed-period lock date (Ellie);
-- exact SilverScreen lookback: 3 months or 6 months;
 - live QBO TaxCode/TxnTaxDetail results;
 - the portal source for outbound UPS/FedEx expenses;
-- the payroll reclassification offset account for weekly 55200/55400 journals;
 - confirmation that 51300 has been changed to Cost of Goods Sold in live QBO.

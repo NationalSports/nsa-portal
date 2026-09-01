@@ -42,6 +42,7 @@ import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPaste
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
+import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { canViewFinancials } from './lib/financialAccess';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -4607,7 +4608,8 @@ export default function App(){
       if(params.get('qb_connected')==='true'){
         const company=params.get('qb_company')||'';
         const realm=params.get('qb_realm')||'';
-        setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
+        setQBConfig(prev=>({...prev,connected:true,connectionError:'',companyId:realm,companyName:company,
+          preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
         nf('Connected to QuickBooks Online'+(company?' — '+company:''));
         // Clean URL
         const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
@@ -4645,7 +4647,8 @@ export default function App(){
   React.useEffect(()=>{
     if(!storedUserCanManageQuickBooks()||dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
-    setQBConfig(prev=>({...prev,connected:true,sandbox:false,realm_id:t.realm_id||prev.realm_id}));
+    setQBConfig(prev=>({...prev,connected:true,connectionError:'',sandbox:false,realm_id:t.realm_id||prev.realm_id,
+      preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
     // Company name comes from the proxy; the access token is read server-side, not passed here.
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'company_info'})})
@@ -4655,6 +4658,25 @@ export default function App(){
       }).catch(()=>{});
     nf('Connected to QuickBooks Online');
   },[dbLoading]);
+  // Deploy previews cannot complete the production OAuth callback directly: the
+  // CSRF cookie belongs to the preview host while Intuit returns to the custom
+  // production domain. A preview Connect click sends the operator here with a
+  // one-shot marker; this same-origin production page now starts OAuth safely.
+  React.useEffect(()=>{
+    if(!storedUserCanManageQuickBooks()||dbLoading)return;
+    let u;
+    try{u=new URL(window.location)}catch{return}
+    if(u.searchParams.get('qb_reconnect')!=='1')return;
+    u.searchParams.delete('qb_reconnect');
+    u.searchParams.set('pg','qb');
+    window.history.replaceState({},'',u);
+    authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'connect'})})
+      .then(async r=>({ok:r.ok,status:r.status,data:await r.json()})).then(({ok,status,data})=>{
+        if(ok&&data.authUrl){window.location.href=data.authUrl;return}
+        nf('QB reconnect could not start'+(data?.error?': '+data.error:' ('+status+')'),'error');
+      }).catch(e=>nf('Cannot reach QB auth service: '+e.message,'error'));
+  },[dbLoading]); // eslint-disable-line
   // On load, reconcile connection state with the server-side token store (source of truth).
   // qb-api refreshes the token server-side, so the client no longer manages tokens at all.
   React.useEffect(()=>{
@@ -4662,7 +4684,9 @@ export default function App(){
     authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'connection_status'})})
       .then(r=>r.ok?r.json():null).then(d=>{
-        if(d)setQBConfig(prev=>({...prev,connected:!!d.connected,realm_id:d.realm_id||prev.realm_id}));
+        if(d)setQBConfig(prev=>({...prev,connected:!!d.connected,realm_id:d.realm_id||prev.realm_id,
+          connectionError:d.connected?'':(d.error||''),connectionVerifiedAt:d.connected?new Date().toISOString():'',
+          ...(d.connected?{}:{preflight:null,initialMigrationApproved:false,autoSync:'manual'})}));
       }).catch(()=>{});
   },[dbLoading]); // eslint-disable-line
   // Open a record in a new browser tab (NetSuite-style middle-click / Cmd-click).
@@ -25486,7 +25510,8 @@ export default function App(){
       if(!r.ok&&r.status!==401&&r.status!==409){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
       if(r.status===401||r.status===409){
-        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual'}));
+        setQBConfig(prev=>({...prev,connected:false,autoSync:'manual',preflight:null,initialMigrationApproved:false,
+          connectionError:d?.error||'QuickBooks authorization expired — reconnect required'}));
         const now=Date.now();
         if(now-_qbReconnectNoticeRef.current>30000){_qbReconnectNoticeRef.current=now;nf('QB not connected — please reconnect','error')}
         return null;
@@ -25498,6 +25523,8 @@ export default function App(){
   // ── Connect to QB via OAuth (shared by rImport & QBPage, via context) ──
   const connectQB=async()=>{
     if(!storedUserCanManageQuickBooks())return;
+    const productionReconnect=qboProductionReconnectUrl(window.location);
+    if(productionReconnect){window.location.href=productionReconnect;return}
     try{
       const r=await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'connect'})});
@@ -25515,7 +25542,7 @@ export default function App(){
     // authFetch sends the staff JWT — disconnect is staff-only and revokes the token server-side.
     try{await authFetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({action:'disconnect'})});}catch{}
-    setQBConfig(prev=>({...prev,connected:false,realm_id:'',companyId:'',companyName:''}));
+    setQBConfig(prev=>({...prev,connected:false,connectionError:'',realm_id:'',companyId:'',companyName:'',preflight:null,initialMigrationApproved:false,autoSync:'manual'}));
     nf('Disconnected from QuickBooks');
   };
 

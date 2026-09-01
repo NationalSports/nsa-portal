@@ -3,7 +3,7 @@
 // refreshed server-side when stale — tokens are never supplied by, or returned to, the client.
 const https = require('https');
 const { verifyQBOUser } = require('./_shared');
-const { getSupabaseAdmin, getStoredTokens, getValidAccessToken } = require('./_qb');
+const { getSupabaseAdmin, getValidAccessToken } = require('./_qb');
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -65,13 +65,21 @@ exports.handler = async (event) => {
 
   const admin = getSupabaseAdmin();
 
-  // ── CONNECTION STATUS ── lightweight, no QBO call (client uses this to render connect state)
+  // ── CONNECTION STATUS ── validate/refresh the stored grant before claiming
+  // the company is connected. Merely finding a stale row produced a false green
+  // status until the first live read failed.
   if (action === 'connection_status') {
     try {
-      const row = await getStoredTokens(admin);
-      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ connected: !!row, realm_id: row?.realm_id || null, token_created_at: row?.token_created_at || null }) };
+      const valid = await getValidAccessToken(admin);
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ connected: true, realm_id: valid.realm_id || null }) };
     } catch (err) {
-      return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Status check failed: ' + err.message }) };
+      const notConnected = err.code === 'NOT_CONNECTED';
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({
+        connected: false,
+        requires_reconnect: !notConnected,
+        code: err.code || 'TOKEN_ERROR',
+        error: notConnected ? 'QuickBooks is not connected' : 'QuickBooks authorization expired — reconnect required',
+      }) };
     }
   }
 

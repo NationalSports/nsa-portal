@@ -21,6 +21,29 @@ export function rotatingBatch(items = [], offset = 0, size = 20) {
   return { items: batch, nextOffset: (start + count) % list.length };
 }
 
+// One portal PO can span several SO item rows. Group those rows before both UI
+// preview and QBO posting so the operator sees the same one-PO payload the API
+// will receive. Mixed vendors or mixed merchandise/decoration categories under
+// one document number are unsafe and must block instead of inheriting the first
+// line's routing.
+export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
+  const groups = new Map();
+  (sos || []).forEach(so => safeItems(so).forEach(it => (it.po_lines || []).forEach(pl => {
+    if (!pl?.po_id || poMap[pl.po_id]) return;
+    const vendor = pl.deco_vendor || D_V.find(v => v.id === it.vendor_id)?.name || it.brand || '';
+    const accountKey = pl.po_type === 'outside_deco' ? 'deco_account' : 'purchases_account';
+    let group = groups.get(pl.po_id);
+    if (!group) {
+      group = { poId: pl.po_id, entries: [], vendor, created_at: pl.created_at, accountKey, invalidReason: '' };
+      groups.set(pl.po_id, group);
+    }
+    if (String(group.vendor || '') !== String(vendor || '')) group.invalidReason = 'mixed vendors share this PO number';
+    if (group.accountKey !== accountKey) group.invalidReason = 'merchandise and outside-decoration lines share this PO number';
+    group.entries.push({ pl, so, it });
+  })));
+  return [...groups.values()];
+}
+
 export function buildQBInvoicePostingLines({ invoice, salesItemId, discountAccountRef, description }) {
   const cents = value => Math.round(safeNum(value) * 100) / 100;
   const total = cents(invoice?.total);
@@ -47,6 +70,11 @@ export function createQBSyncEngine(ctx){
   const {cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,
     setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}=ctx;
     const QB_SYNC_BATCH_SIZE=20;
+    const productionSyncLocked=()=>{
+      if(qbConfig.initialMigrationApproved===true)return false;
+      nf('Initial QBO migration is locked — complete the read-only preflight and reviewed bill canaries first','error');
+      return true;
+    };
     let accountCache=null;
     const requiredAccountRefs=async(keys)=>{
       if(!accountCache)accountCache=await loadQBAccounts(qbApi);
@@ -72,6 +100,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Customers (name + totals) ──
     const syncCustomers=async()=>{
+      if(productionSyncLocked())return{};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
       let synced=0;
@@ -146,6 +175,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Invoices (totals) ──
     const syncInvoices=async(custQBMap={},prodQBMap={})=>{
+      if(productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
@@ -223,6 +253,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Bidirectional paid status sync between QB and portal ──
     const syncPaidFromQB=async()=>{
+      if(productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
       let updated=0;
@@ -301,6 +332,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Pull bills FROM QB back to portal (bill costs → PO costs) ──
     const syncBillsFromQB=async()=>{
+      if(productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'bill_pull',status:'success',details:[]};
       let updated=0;
@@ -441,6 +473,7 @@ export function createQBSyncEngine(ctx){
     // and valuation remain in the portal. QBO carries one item per SKU so POs,
     // bills, estimates, and invoices retain SKU/quantity detail.
     const syncInventory=async()=>{
+      if(productionSyncLocked())return{};
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
       let synced=0;
@@ -530,6 +563,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Sales Orders (as QB Estimates) ──
     const syncSalesOrders=async(custQBMap={},prodQBMap={})=>{
+      if(productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'sales_orders',status:'success',details:[]};
       let synced=0;
@@ -619,6 +653,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC: Purchase Orders ──
     const syncPurchaseOrders=async(prodQBMapArg={})=>{
+      if(productionSyncLocked())return;
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'purchase_orders',status:'success',details:[]};
       let synced=0;
@@ -648,17 +683,11 @@ export function createQBSyncEngine(ctx){
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Purchase-order sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return;
       }
       // Group PO lines by po_id so we push one QB PO with all line items
-      const poGroupMap={};
-      sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
-        if(!poMap[pl.po_id]){
-          if(!poGroupMap[pl.po_id])poGroupMap[pl.po_id]={poId:pl.po_id,entries:[],vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,created_at:pl.created_at,accountKey:pl.po_type==='outside_deco'?'deco_account':'purchases_account'};
-          poGroupMap[pl.po_id].entries.push({pl,so,it});
-        }
-      })})});
-      const allPoGroups=Object.values(poGroupMap);
+      const allPoGroups=groupPortalPurchaseOrders(sos,poMap);
       const purchaseOrderBatch=rotatingBatch(allPoGroups,qbConfig._purchaseOrderSyncOffset,QB_SYNC_BATCH_SIZE);
       const poGroups=purchaseOrderBatch.items;
       for(const group of poGroups){
+        if(group.invalidReason){log.details.push(group.poId+' — BLOCKED: '+group.invalidReason);log.status='partial';continue}
         const vendorName=group.vendor;
         if(!vendorName){log.details.push(group.poId+' — skipped: no vendor name');log.status='partial';continue}
         const poDate=parseQBDateValue(group.created_at);
@@ -740,6 +769,7 @@ export function createQBSyncEngine(ctx){
 
     // ── SYNC ALL ──
     const syncAll=async()=>{
+      if(productionSyncLocked())return;
       setQbSyncing(true);
       const custQBMap=await syncCustomers();
       const prodQBMap=await syncInventory();
