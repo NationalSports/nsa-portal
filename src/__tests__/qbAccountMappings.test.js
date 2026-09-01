@@ -1,5 +1,6 @@
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
+  QB_ACCOUNT_POSTING_MATRIX,
   QB_STATE_TAX_ACCOUNT_KEYS,
   aggregateBillItemsBySku,
   buildVendorBillLines,
@@ -66,6 +67,17 @@ describe('QuickBooks account resolution', () => {
     expect(QB_STATE_TAX_ACCOUNT_KEYS).toEqual({
       CA: 'tax_ca_account', AZ: 'tax_az_account', CO: 'tax_co_account',
       NV: 'tax_nv_account', TX: 'tax_tx_account', WA: 'tax_wa_account',
+    });
+  });
+
+  test('keeps in-house labor accounts reference-only', () => {
+    const laborRows = QB_ACCOUNT_POSTING_MATRIX.filter(row =>
+      ['decoration_account', 'in_house_art_account'].includes(row.accountKey)
+    );
+    expect(laborRows).toHaveLength(2);
+    laborRows.forEach(row => {
+      expect(row.posting).toBe('Reference only — not posted');
+      expect(row.control).toMatch(/does not post daily labor/i);
     });
   });
 
