@@ -7941,21 +7941,49 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Other colorways of this garment (same product name) the store doesn't already carry,
   // so staff can add them in one step at the same price/options.
   const [colorSibs, setColorSibs] = useState([]);
+  const [vendorColorsLoading, setVendorColorsLoading] = useState(false);
   const [pickedColors, setPickedColors] = useState(() => new Set());
   const [addingColors, setAddingColors] = useState(false);
   const [separateColors, setSeparateColors] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   useEffect(() => {
-    if (isBundle || !defaultName || !onAddSingle) { setColorSibs([]); return; }
+    if (isBundle || !defaultName || !onAddSingle) { setColorSibs([]); setVendorColorsLoading(false); return; }
     let cancelled = false;
     (async () => {
       const { data } = await supabase.from('products')
         .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
         .eq('name', defaultName).neq('id', item.product_id).order('color').limit(200);
-      if (!cancelled) setColorSibs(data || []);
+      if (cancelled) return;
+      // Show imported siblings immediately, then augment them from the live vendor style.
+      // A style can have dozens of colors while `products` only contains the colors that
+      // somebody previously imported (ST650 had only True Navy and White locally).
+      setColorSibs(data || []);
+      const styleSku = String(item.sku || '').trim().toUpperCase().split('-')[0];
+      if (styleSku.length < 2) return;
+      setVendorColorsLoading(true);
+      try {
+        const { data: vendors } = await supabase.from('vendors').select('id,api_provider');
+        const vendorMap = {};
+        (vendors || []).forEach((v) => { if (v.api_provider) vendorMap[v.api_provider] = v.id; });
+        const { results } = await searchVendorCatalogs(styleSku, { vendorMap });
+        if (cancelled) return;
+        const sourceForInventory = { sanmar: 'sm', ss_activewear: 'ss', richardson: 'rs', momentec: 'mt' }[invSrcByPid?.[item.product_id]];
+        const exact = (results || []).filter((s) => String(s.sku || '').trim().toUpperCase() === styleSku);
+        const style = exact.find((s) => s.source === sourceForInventory) || exact[0];
+        if (!style) return;
+        const liveRows = (style.colors || []).map((color) => ({
+          ...vendorColorToProductRow(style, color),
+          _vendorStyle: style,
+          _vendorColor: color,
+        }));
+        // Local rows come first, so an already-imported product wins over its virtual
+        // vendor equivalent when colorOptions de-duplicates the combined list.
+        setColorSibs([...(data || []), ...liveRows]);
+      } catch (_) { /* local colors remain usable when a vendor API is unavailable */ }
+      finally { if (!cancelled) setVendorColorsLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [defaultName, item.product_id, isBundle, onAddSingle]);
+  }, [defaultName, item.product_id, item.sku, isBundle, onAddSingle, invSrcByPid]);
   const existingForStyle = new Set((catalog || []).filter((c) => c.kind === 'single' && (stockByWp[c.id]?.name || '') === defaultName).map((c) => (stockByWp[c.id]?.color || '').trim().toLowerCase()));
   const colorOptions = useMemo(() => {
     const map = new Map();
@@ -7989,9 +8017,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setAddingColors(true);
     try {
       const picks = colorOptions.filter((c) => pickedColors.has(c.id));
+      const vendorSelections = new Map();
+      picks.filter((p) => p._vendorStyle && p._vendorColor).forEach((p) => {
+        vendorSelections.set(vendorKeyOf(p._vendorStyle, p._vendorColor), { style: p._vendorStyle, color: p._vendorColor });
+      });
+      // webstore_products requires a real products FK. Import only selected live-vendor
+      // colors, using the same reuse/upsert and SanMar stock-backfill path as Add Items.
+      const imported = vendorSelections.size ? await importVendorSelections(vendorSelections) : [];
+      const products = [...picks.filter((p) => !p._vendorStyle), ...imported];
       // Default: share this card's price/options/logo. The explicit separate-items
       // choice leaves each new color standalone so its logo can be edited alone.
-      await onAddColors(item, picks, { price: Number(price) || 0, fundraise: Number(fundraise) || 0, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), decorations, separate: separateColors });
+      await onAddColors(item, products, { price: Number(price) || 0, fundraise: Number(fundraise) || 0, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), decorations, separate: separateColors });
       setPickedColors(new Set());
     } finally { setAddingColors(false); }
   };
@@ -8491,7 +8527,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        {onAddColors && colorOptions.length > 0 && (
+        {onAddColors && (colorOptions.length > 0 || vendorColorsLoading) && (
           <ItemSection title="Add more colors" hint={separateColors ? '· each color becomes its own item and can use a different logo' : '· same card, price and logo'} right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : separateColors ? `Add ${pickedColors.size || ''} separate item${pickedColors.size === 1 ? '' : 's'}` : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {colorOptions.map((s) => { const on = pickedColors.has(s.id); return (
@@ -8504,6 +8540,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                 </button>
               ); })}
             </div>
+            {vendorColorsLoading && <div style={{ marginTop: colorOptions.length ? 8 : 0, fontSize: 11, color: '#64748b' }}>Loading all vendor colors…</div>}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 12, fontWeight: 700, color: '#475569', cursor: 'pointer' }}>
               <input type="checkbox" checked={separateColors} onChange={(e) => setSeparateColors(e.target.checked)} />
               Separate items — use this when the colors need different logos
