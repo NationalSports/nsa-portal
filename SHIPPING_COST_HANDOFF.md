@@ -196,6 +196,49 @@ one's has not been checked, so re-verify those four distances before trusting it
 
 ---
 
+## Where the recording gap actually is
+
+The gap is not lost costs on shipped orders. When a package record exists, the
+cost is captured almost every time: **147 of 149 orders with a shipment carry a
+cost** (99%). Two are missing, not a thousand.
+
+The gap is that **most orders never get a package record at all**:
+
+| | Orders | Shipping charged |
+|---|---:|---:|
+| Carrying a shipping charge | 1,107 | — |
+| …with a package record | 132 | — |
+| …**with no package record** | **975** | — |
+
+Split by status, the ones that will never self-correct:
+
+| Status | Orders | Charged |
+|---|---:|---:|
+| **complete** | **511** | **$42,581** |
+| waiting_receive | 313 | $73,063 |
+| need_order | 76 | $21,333 |
+| everything else | 75 | $9,084 |
+
+The 313 `waiting_receive` and 76 `need_order` orders have not shipped yet —
+they will flow through Ready to Ship normally, and their cost will be captured
+when they do. Those are fine.
+
+**The 511 `complete` orders are the problem.** They are finished, they were
+charged $42,581 of shipping between them, and no cost was ever recorded. Ready
+to Ship is the only place a package — and therefore a shipping cost — is
+created, and `buildWarehouseData` hides `status='complete'` orders from the
+warehouse queues. So a finished order is invisible to the warehouse.
+
+They are not unreachable, but the path is narrow. The Manual Ship search picker
+filters on `unshippedOrderItems(so).length > 0 || soHasOpenShipWork(so)`
+(`src/App.js`), so a fully-shipped order cannot be found by searching for it.
+The way in is: open the SO → Actions → ⚡ Ship Items / Override → type something
+into "Item description (if not on SO)" → enter the cost. That works, but it
+navigates away from the order editor to the warehouse page, and the free-text
+box is the only thing that satisfies the "select at least one item" guard.
+
+Five steps and a page bounce, 511 times, is why it is not happening.
+
 ## Suggested order of work
 
 1. **Apply `shipping_schema.sql`.** Additive, low risk.
@@ -219,25 +262,48 @@ Steps 1–4 are SQL and back-end and can move independently of the React work.
 
 ---
 
-## Package dimensions — keep them
+## Package dimensions — keep them (now measured, not argued)
 
 Question raised: can we drop inch dimensions when creating labels?
 
-Technically yes, the carriers will issue a label from weight alone. Practically
-no, and this case is worse than average.
+**In practice they are already gone.** Of 301 recorded shipments, only **6 carry
+dimensions** — 2%. 243 carry a weight. So the question is not whether to drop
+them; it is what already dropping them costs.
 
-Carriers rate on **billable weight**, meaning the greater of actual weight and
-dimensional weight (L×W×H ÷ 139). If you don't declare dimensions, the package
-gets measured automatically at the hub and you're rebilled the difference as an
-invoice adjustment weeks later. You don't avoid the charge, you just stop being
-able to see it at label time.
+On the 6 shipments that do have dimensions, dim weight (L×W×H ÷ 139) beats
+actual weight on 4:
 
-Team apparel is the exact profile where this bites hardest — bulky and light.
-On the test case in the estimator (82 units of pants, jerseys and hoodies in
-four cartons): 68 lb actual, **155 lb billable**. Dimensions were more than
-double the cost driver that weight was.
+| SO | Box (in) | Actual lb | Dim lb | Billable lb | Recorded cost |
+|---|---|---:|---:|---:|---:|
+| SO-1869 | 24×15×14 | 18 | 36.3 | 36.3 | — |
+| SO-2047 | 20×15×14 | 15 | 30.2 | 30.2 | $39.14 |
+| SO-2246 | 20×15×14 | 8 | 30.2 | 30.2 | $39.14 |
+| SO-2200 | 21×16×10 | 11 | 24.2 | 24.2 | $32.77 |
+| SO-2019 | 10×6×5 | 3 | 2.2 | 3.0 | $20.54 |
+| SO-2021 | 10×6×4 | 2 | 1.7 | 2.0 | $19.75 |
 
-Two consequences if dimensions come out:
+**SO-2047 and SO-2246 are the proof.** Same box, 15 lb versus 8 lb, and the
+carrier charged exactly $39.14 for both. A price that ignores a 7 lb difference
+is a price computed on dim weight (30.2 lb), not on the scale. Dim weight runs
+2.0× to 3.8× actual on the big cartons.
+
+The two where weight wins are small boxes (10×6×5 and under). So the rule is
+not "dimensions always matter" — it is **dimensions matter on anything carton-
+sized, which is most team apparel**, and weight alone is fine for a poly mailer
+or a sample box.
+
+**Why the damage is invisible.** `shipping_cost` on a shipment is the label-time
+quote. Ship without declaring dimensions and the carrier measures the box at the
+hub and rebills the difference as an invoice adjustment weeks later. **No table
+in this database holds carrier invoices** — checked. So the rebill lands
+nowhere, and the recorded cost on the 295 dimension-less shipments is
+systematically optimistic by an unknown amount.
+
+That qualifies the margin figure above: 37.0% is an upper bound, not a
+measurement. Whatever UPS rebilled for undeclared cartons is missing from the
+cost side.
+
+Two consequences if dimensions stay out:
 
 - Quotes go systematically low, which given that most scored orders already
   lose money is the wrong direction to be wrong in.
@@ -246,7 +312,12 @@ Two consequences if dimensions come out:
 
 Better fix for whatever made this annoying: standardize on two or three carton
 sizes, store them, and let the rep pick a box rather than type three numbers.
-That removes the data entry without removing the data.
+That removes the data entry without removing the data. There is no carton
+catalog today — `BOX_TRACKING_PLAN.md` defines `BX-####` plates but boxes carry
+no dimensions — so this would be new, and small.
+
+The other half of the fix is capturing the carrier invoice at all. Until UPS
+adjustments land somewhere, no amount of estimator accuracy will reconcile.
 
 ---
 
