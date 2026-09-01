@@ -123,6 +123,20 @@ describe('mapLinesToSoItems — the SO is the source of truth for sizes and new 
     expect(unmatched).toEqual([]);
   });
 
+  test('flags only the source unit not covered by a smaller replacement curve', () => {
+    const source = [
+      ...storeLines(2, { sku: 'HR8472', name: 'Old Hoodie', color: 'Red', size: 'M' }),
+      ...storeLines(1, { sku: 'HR8472', name: 'Old Hoodie', color: 'Red', size: 'XL' }),
+    ];
+    const soItems = [{ sku: 'AT203', name: 'Replacement Hoodie', color: 'Team Power Red/ White', sizes: { M: 2 } }];
+    const { lines, substitutions } = mapLinesToSoItems(source, soItems);
+    const current = lines.map(materializeMappedLine);
+    expect(current.filter((line) => line.size === 'M').every((line) => !line._verify)).toBe(true);
+    expect(current.filter((line) => line.size === 'XL')).toHaveLength(1);
+    expect(current.find((line) => line.size === 'XL')._verify).toBe(true);
+    expect(substitutions).toEqual([{ from: 'HR8472', to: 'AT203 Team Power Red/ White', verify: false }]);
+  });
+
   test('same-SKU size change follows the SO (SO-2021: HI0704 XS → S)', () => {
     const source = [{ id: 'hi-1', order_id: 'o1', sku: 'HI0704', name: 'Adidas W. Team Issue Pants', color: 'Black', size: 'XS', qty: 1 }];
     const soItems = [{ sku: 'HI0704', name: 'Adidas W. Team Issue Pants', color: 'Black', sizes: { XS: 0, S: 1 } }];

@@ -357,12 +357,16 @@ export function mapLinesToSoItems(lines, soItems) {
     if (gDone.has(c.gi) || tDone.has(c.ti)) return;
     gDone.add(c.gi); tDone.add(c.ti);
     const g = looseGroups[c.gi]; const t = looseCws[c.ti];
-    const sourceQty = profileTotal(sizeProfile(g.lines, (l) => ({ size: l.size, qty: l.qty || 1 })));
     g.so = t.g; g.soColor = t.cw.color; g.matched = 'swap';
     // A unique replacement with some size overlap and the same total is
     // deterministic: matching sizes stay put, then the sole remaining curve maps
     // to the SO's surplus. Zero-overlap swaps remain on manual review below.
-    g.verify = c.ambiguous || sourceQty !== profileTotal(t.cw.profile);
+    // Quantity differences are handled per player by allocateCurrentSizes: units
+    // covered by the replacement remain certain, while only the uncovered source
+    // units are flagged. Do not contaminate every player on the product because
+    // one additional size is missing (live: XC has four confirmed hoodie units
+    // and one unpurchased XL).
+    g.verify = c.ambiguous;
   });
   // A unique whole-line replacement can also change every size, giving a zero
   // overlap score (e.g. old SKU XS deleted, new SKU S added). Match only when
@@ -599,9 +603,13 @@ export async function downloadSoPlayerReport({ so, soItems, supabase, nf, format
     if (format === 'csv') downloadPlayerReportCsv({ so, storeName: ws.name || '', lines, orderById });
     else if (format === 'product') {
       let fulfillmentCustomer = customer;
-      if (!fulfillmentCustomer && ws.customer_id) {
+      // The editor can hold a stale/partial customer object even after the linked
+      // customer address has been completed in Supabase (live: St. Francis Golf).
+      // Club delivery rows must use the freshest customer tied to the webstore,
+      // so hydrate it at download time instead of trusting the editor snapshot.
+      if (ws.customer_id) {
         const { data } = await supabase.from('customers').select('id,name,contact_name,shipping_attention,shipping_address_line1,shipping_address_line2,shipping_city,shipping_state,shipping_zip').eq('id', ws.customer_id).maybeSingle();
-        fulfillmentCustomer = data || null;
+        fulfillmentCustomer = data || fulfillmentCustomer || null;
       }
       const sourceUnits = activeLines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
       const soUnits = sumSoUnits(soItems);

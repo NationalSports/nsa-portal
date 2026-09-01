@@ -70,9 +70,9 @@ function supabaseStub() {
   };
 }
 
-const run = (format = 'csv') => downloadSoPlayerReport({
+const run = (format = 'csv', customer = null) => downloadSoPlayerReport({
   so: { id: 'SO-2035', webstore_id: 'ws-1', memo: '' },
-  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format,
+  soItems: SO_ITEMS, supabase: supabaseStub(), nf: () => {}, format, customer,
 });
 
 describe('player report CSV', () => {
@@ -139,7 +139,9 @@ describe('player report CSV', () => {
   });
 
   test('product report downloads the exact Silver Screen Domestic columns', async () => {
-    expect(await run('product')).toBe(true);
+    // Simulates an editor customer snapshot with no address. The download must
+    // rehydrate the webstore's linked customer instead of emitting blank fields.
+    expect(await run('product', { id: 'c-1', name: 'Stale customer snapshot' })).toBe(true);
     expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
     const [workbook, filename] = XLSX.writeFile.mock.calls[0];
     expect(workbook.SheetNames).toEqual(['Domestic']);
