@@ -23,6 +23,7 @@ import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapL
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
+import { webstoreProductionKey } from './lib/storeSkuGrouping';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -3558,6 +3559,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
     (detail.bundleItems || []).forEach((b) => { if (b.product_id) { const e = personalize[b.product_id] || { num: false, name: false }; personalize[b.product_id] = { num: e.num || !!b.takes_number, name: e.name || !!b.takes_name }; } });
+    const productionTransfersByPid = {};
+    (detail.bundleItems || []).forEach((b) => {
+      if (!b.product_id || !b.transfer_code) return;
+      (productionTransfersByPid[b.product_id] = productionTransfersByPid[b.product_id] || new Set()).add(b.transfer_code);
+    });
 
     // SO sell price = what the buyer actually paid, NOT catalog retail. The webstore
     // charges a flat price per line (retail + size upcharge + fundraise + name upcharge),
@@ -3627,11 +3633,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     bLines.forEach((i) => {
       const sourcePid = i.product_id || null;
       const baseProduct = pinfo[sourcePid] || null;
-      const basePid = sourcePid || i.sku || 'unknown';
       const sz = i.size || 'OS';
       const rawOverride = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz];
       const source = resolveSizeSkuSource({ raw: rawOverride, lineSku: i.sku, lineColor: i.color, baseProduct, candidates: candidatesBySku[sizeSkuCode(rawOverride)] || [] });
-      const key = [basePid, source.sku, source.vendor_id || ''].join('§');
+      // Group by the item the supplier will actually receive plus its production
+      // treatment. Stale catalog ids no longer split equivalent SKU/color lines,
+      // but different art, personalization, or transfer codes remain separate.
+      const sourceColor = source.product?.color || i.color || baseProduct?.color || '';
+      const key = webstoreProductionKey({
+        sku: source.sku,
+        color: sourceColor,
+        vendorId: source.vendor_id,
+        decorations: decosByKey[sourcePid] || decosByKey[source.sku] || [],
+        personalize: personalize[sourcePid] || {},
+        transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
+      });
       if (!byProduct[key]) byProduct[key] = { source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
       const g = byProduct[key]; const q = i.qty || 1;
       const pdef = personalize[sourcePid] || {};
