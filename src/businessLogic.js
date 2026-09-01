@@ -1447,7 +1447,7 @@ function itemsWithWipedQty(clientItems, dbItems) {
 // A decoration reduction is destructive, so it must be tied to the exact before/after counts
 // recorded by the editor's Remove action. Hydration flags are deliberately irrelevant here: a
 // stale or partially reconciled client can incorrectly believe it fully loaded decorations.
-function estimateDecorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteIntents) {
+function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteIntents) {
   const clients = safeArr(clientItems);
   const intents = safeObj(deleteIntents);
   const countFor = id => dbDecoCounts instanceof Map
@@ -1824,5 +1824,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty, estimateDecorationShrinkConflicts, unaccountedDroppedItems,
+  itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems,
 };
