@@ -401,6 +401,8 @@ So the numbers above are generated, not typed:
 | `supabase/migrations/20260901180000_ship_audit_true_cost.sql` | Snapshot columns for the invoice-corrected cost, so the trend shows accuracy improving. |
 | `supabase/migrations/20260901160000_shipping_cost_capture.sql` | `no_carrier_cost`, `ship_cartons`, `ship_carrier_invoices`. Applied. |
 | `scripts/import-carrier-invoice.js` | Loads a carrier invoice CSV into `ship_carrier_invoices`, matching lines to orders by tracking number. |
+| `src/lib/shipSuggest.js` | The order editor's suggested shipping charge. One helper, rendered by both editors. |
+| `supabase/migrations/20260901200000_ship_cost_basis.sql` | `ship_cost_basis` — calibration behind that suggestion, refreshed by the audit. |
 
 The audit probes for the `20260901160000` objects and folds the answer into its
 query, so it keeps working on a database at either migration level rather than
@@ -413,6 +415,25 @@ node scripts/shipping-audit.js            # refresh the doc + record a snapshot
 node scripts/shipping-audit.js --check    # exit 1 if stale (what CI runs)
 node scripts/shipping-audit.js --json     # raw metrics, no writes
 ```
+
+### Three sources that improve on their own
+
+Not everything here needs a person. Two of the three inputs grow by themselves:
+
+1. **ShipStation.** Packages shipped through the app record their cost at label
+   time. Capture ran 20% → 75% → 93% across Jun/Jul/Aug 2026 — see the
+   shipped-month table above. This is working and needs nothing.
+2. **Sports Inc bills.** Ingested continuously; 1,202 documents already reach
+   521 orders through the PO lines, carrying far more freight than the
+   hand-entered `_inbound_freight` column ever did. Also needs nothing.
+3. **Carrier invoices.** The one that still needs a person to run
+   `scripts/import-carrier-invoice.js` against a downloaded CSV. Until that
+   happens the margin figure stays a quote rather than a measurement.
+
+**Do not read the headline coverage number as a verdict on the process.** It
+averages the whole window, so it is dominated by April–June orders from before
+ShipStation adoption ramped. The shipped-month table is the honest measure; the
+ordered-month table lags because a young order has not shipped yet.
 
 ### ⚠️ The weekly refresh needs a repo secret that does not exist yet
 

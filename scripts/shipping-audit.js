@@ -79,7 +79,10 @@ const FEATURE_SQL = `select
            and column_name='no_carrier_cost') as has_ncc,
   exists(select 1 from information_schema.columns
          where table_schema='public' and table_name='ship_audit_snapshots'
-           and column_name='margin_true_pct') as has_true_cost;`;
+           and column_name='margin_true_pct') as has_true_cost,
+  (to_regclass('public.si_documents') is not null
+   and to_regclass('public.so_item_po_lines') is not null) as has_si_freight,
+  (to_regclass('public.ship_cost_basis') is not null) as has_cost_basis;`;
 
 const buildSql = (feat = {}) => `
 with item_qty as (
@@ -93,6 +96,15 @@ so_merch as (
          min(brand) filter (where brand is not null and brand <> '') as brand,
          count(distinct brand) filter (where brand is not null and brand <> '') as nbrands
   from item_qty group by so_id
+),
+si as (
+  ${feat.has_si_freight ? `select l.so_id, sum(d.freight_amount) as si_freight, count(*) as si_docs
+   from si_documents d
+   join (select distinct i.so_id, l.po_id
+         from so_item_po_lines l join so_items i on i.id = l.so_item_id
+         where nullif(l.po_id,'') is not null) l on l.po_id = d.po_number
+   where d.freight_amount is not null group by l.so_id`
+   : `select null::text as so_id, null::numeric as si_freight, 0 as si_docs where false`}
 ),
 inv as (
   ${feat.has_rebills ? `select so_id, sum(billed_amount) as billed
@@ -116,12 +128,24 @@ base as (
          -- quote for orders no invoice has been loaded for yet.
          coalesce(iv.billed, coalesce(s._shipstation_cost, s._shipping_cost)) as true_cost,
          (iv.billed is not null) as invoiced,
+         coalesce(sif.si_freight, 0) as si_freight,
+         (sif.si_freight is not null) as has_si,
          case when s.shipping_type = 'flat' then coalesce(s.shipping_value, 0)
               when s.shipping_type = 'pct'  then coalesce(s.shipping_value, 0) / 100.0 * coalesce(m.merch_sell, 0)
               else 0 end as charged
   from sales_orders s
   left join so_merch m on m.so_id = s.id
   left join inv iv on iv.so_id = s.id
+  left join si sif on sif.so_id = s.id
+),
+ship_months as (
+  select case
+      when sh->>'created_at' ~ '^\\d{4}-\\d{2}-\\d{2}' then substring(sh->>'created_at' from 1 for 19)::timestamp
+      when sh->>'created_at' ~ '^\\d{1,2}/\\d{1,2}/\\d{4}'
+        then to_timestamp(sh->>'created_at', 'FMMM/FMDD/YYYY, FMHH12:MI:SS AM')::timestamp
+      else null end as ts,
+    nullif(sh->>'shipping_cost','')::numeric as cost
+  from sales_orders s, jsonb_array_elements(s._shipments) sh
 ),
 scored as (select * from base where actual_cost > 0)
 select json_build_object(
@@ -172,6 +196,28 @@ select json_build_object(
       'adjustment', round(coalesce(sum(adjustment), 0), 2),
       'dim_weight_adj', round(coalesce(sum(adjustment) filter (where adjustment_reason = 'dim_weight'), 0), 2)
     ) from ship_carrier_invoices)` : 'null'},
+  -- The measure that actually answers "is capture working": of packages that went
+  -- out, how many recorded a cost. Independent of how many orders are still open.
+  'ship_cohorts', (select coalesce(json_agg(r order by r->>'month'), '[]') from (
+      select json_build_object('month', to_char(date_trunc('month', ts), 'YYYY-MM'),
+        'shipments', count(*),
+        'with_cost', count(*) filter (where cost > 0),
+        'pct', round(100.0 * count(*) filter (where cost > 0) / nullif(count(*), 0), 1)) as r
+      from ship_months where ts is not null group by date_trunc('month', ts)) t),
+  'si_freight', (select json_build_object(
+      'orders', count(*) filter (where has_si),
+      'total',  round(sum(si_freight), 0),
+      'recorded_inbound', round(sum(inbound), 0)
+    ) from base),
+  -- Coverage by the month the ORDER was created. Young months look bad because
+  -- their orders have not shipped yet, not because capture regressed.
+  'order_cohorts', (select coalesce(json_agg(r order by r->>'month'), '[]') from (
+      select json_build_object('month', to_char(date_trunc('month', ts), 'YYYY-MM'),
+        'charged', count(*) filter (where charged > 0),
+        'with_cost', count(*) filter (where charged > 0 and actual_cost > 0),
+        'pct', round(100.0 * count(*) filter (where charged > 0 and actual_cost > 0)
+                     / nullif(count(*) filter (where charged > 0), 0), 1)) as r
+      from base where ts is not null group by date_trunc('month', ts)) t),
   'adidas_bands', (select coalesce(json_agg(r order by r->>'band'), '[]') from (
       select json_build_object(
         'band', band, 'sos', count(*),
@@ -193,7 +239,7 @@ function fail(msg) { console.error(msg); process.exit(2); }
 // the failure mode is silent: a flag added to FEATURE_SQL but not read here
 // leaves the feature permanently off, and the only symptom is a column that
 // stays empty forever. FEATURE_ORDER is the single list both sides agree on.
-const FEATURE_ORDER = ['has_rebills', 'has_ncc', 'has_true_cost'];
+const FEATURE_ORDER = ['has_rebills', 'has_ncc', 'has_true_cost', 'has_si_freight', 'has_cost_basis'];
 
 function parseFeatures(rowText) {
   const cells = String(rowText == null ? '' : rowText).trim().split('|');
@@ -267,6 +313,52 @@ function writeSnapshot(url, m) {
     return true;
   } catch (e) {
     console.warn('[shipping-audit] snapshot skipped (is ship_audit_snapshots migrated?): '
+      + String(e.stderr || e.message).trim().split('\n')[0]);
+    return false;
+  }
+}
+
+// Recompute the order editor's shipping suggestion basis. Runs with the rest of
+// the audit so the constants behind the suggestion move as the data does; the
+// editor reads the row rather than carrying numbers in code.
+function writeCostBasis(url, coverage) {
+  const sql = `
+with item_qty as (
+  select i.so_id, i.unit_sell, ${LINE_QTY} as qty from so_items i
+),
+m as (select so_id, sum(qty) as units, sum(qty * coalesce(unit_sell,0)) as merch from item_qty group by so_id),
+scored as (
+  select coalesce(m.units,0) as units, coalesce(m.merch,0) as merch,
+         coalesce(s._shipstation_cost, s._shipping_cost) as cost
+  from sales_orders s join m on m.so_id = s.id
+  where coalesce(s._shipstation_cost, s._shipping_cost) > 0 and m.units > 0 and m.merch > 0
+)
+insert into ship_cost_basis
+  (id, sample_n, median_cost_per_unit, median_cost_pct_merch,
+   p25_cost_pct_merch, p75_cost_pct_merch, median_cost, window_start, window_end, updated_at)
+select true, count(*),
+  round(percentile_cont(0.5) within group (order by cost/units)::numeric, 3),
+  round(percentile_cont(0.5) within group (order by 100*cost/merch)::numeric, 2),
+  round(percentile_cont(0.25) within group (order by 100*cost/merch)::numeric, 2),
+  round(percentile_cont(0.75) within group (order by 100*cost/merch)::numeric, 2),
+  round(percentile_cont(0.5) within group (order by cost)::numeric, 2),
+  ${coverage.window_start ? `'${coverage.window_start}'` : 'null'},
+  ${coverage.window_end ? `'${coverage.window_end}'` : 'null'}, now()
+from scored
+on conflict (id) do update set
+  sample_n = excluded.sample_n,
+  median_cost_per_unit = excluded.median_cost_per_unit,
+  median_cost_pct_merch = excluded.median_cost_pct_merch,
+  p25_cost_pct_merch = excluded.p25_cost_pct_merch,
+  p75_cost_pct_merch = excluded.p75_cost_pct_merch,
+  median_cost = excluded.median_cost,
+  window_start = excluded.window_start, window_end = excluded.window_end,
+  updated_at = now();`;
+  try {
+    execFileSync('psql', [url, '-At', '-c', sql], { encoding: 'utf8', stdio: 'pipe' });
+    return true;
+  } catch (e) {
+    console.warn('[shipping-audit] cost basis skipped (is ship_cost_basis migrated?): '
       + String(e.stderr || e.message).trim().split('\n')[0]);
     return false;
   }
@@ -409,6 +501,53 @@ function render(m, trend) {
     L.push('_Until `ship_carrier_invoices` has rows, the margin above is an upper bound._');
     L.push('');
   }
+  if (m.ship_cohorts && m.ship_cohorts.length) {
+    L.push('### Is capture actually working? (by month shipped)');
+    L.push('');
+    L.push('| Month shipped | Packages | Cost recorded | Capture |');
+    L.push('|---|---:|---:|---:|');
+    for (const c of m.ship_cohorts) {
+      L.push(`| ${c.month} | ${num(c.shipments)} | ${num(c.with_cost)} | ${pct(c.pct)} |`);
+    }
+    L.push('');
+    L.push('**This is the number that says whether the process works.** When a package');
+    L.push('goes out through ShipStation its cost is recorded; this column shows how');
+    L.push('reliably. It is independent of how many orders are still open.');
+    L.push('');
+  }
+  if (m.order_cohorts && m.order_cohorts.length) {
+    L.push('### Coverage by month the order was created');
+    L.push('');
+    L.push('| Month ordered | Charged | With cost | Coverage |');
+    L.push('|---|---:|---:|---:|');
+    for (const c of m.order_cohorts) {
+      L.push(`| ${c.month} | ${num(c.charged)} | ${num(c.with_cost)} | ${pct(c.pct)} |`);
+    }
+    L.push('');
+    L.push('**Read this one with the lag in mind.** A recent month looks poor because most');
+    L.push('of its orders have not shipped yet, not because capture got worse — their cost');
+    L.push('lands weeks later when the package goes out. Compare against the shipped-month');
+    L.push('table above before concluding anything went backwards. The headline coverage');
+    L.push('figure at the top of this document averages over the whole window, so it is');
+    L.push('dominated by the older orders and understates where the process is now.');
+    L.push('');
+  }
+  if (m.si_freight && m.si_freight.orders > 0) {
+    L.push('### Inbound freight from Sports Inc bills');
+    L.push('');
+    L.push('| | |');
+    L.push('|---|---:|');
+    L.push(`| Orders reached by a Sports Inc bill | ${num(m.si_freight.orders)} |`);
+    L.push(`| Freight on those bills | ${money(m.si_freight.total)} |`);
+    L.push(`| Freight in \`_inbound_freight\` across all orders | ${money(m.si_freight.recorded_inbound)} |`);
+    L.push('');
+    L.push('Sports Inc documents are ingested continuously and carry freight per bill,');
+    L.push('linked to orders through the PO lines. This figure grows on its own as bills');
+    L.push('arrive — no one has to type it. Whether inbound freight belongs in product');
+    L.push('margin or shipping margin is still the accounting call for Steve and Andrea,');
+    L.push('so it is reported here rather than folded into the margin above.');
+    L.push('');
+  }
   L.push('### Trend — is the gap closing?');
   L.push('');
   if (!trend || trend.length === 0) {
@@ -478,7 +617,10 @@ function main() {
   }
 
   // --check is read-only: it must not write a snapshot row.
-  if (!argv.includes('--no-snapshot') && !argv.includes('--check')) writeSnapshot(url, metrics);
+  if (!argv.includes('--no-snapshot') && !argv.includes('--check')) {
+    writeSnapshot(url, metrics);
+    if ((metrics._features || {}).has_cost_basis) writeCostBasis(url, metrics.coverage);
+  }
 
   const block = stamp(render(metrics, readTrend(url, metrics._features)), new Date().toISOString().slice(0, 10));
   const doc = fs.readFileSync(DOC, 'utf8');

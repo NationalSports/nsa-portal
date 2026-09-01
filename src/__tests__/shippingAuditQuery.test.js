@@ -74,10 +74,17 @@ describe('invoice-corrected cost', () => {
     for (const flag of FEATURE_ORDER) expect(allTrue[flag]).toBe(true);
   });
 
+  // Derived from FEATURE_ORDER rather than a hardcoded literal: adding a flag to
+  // the probe should not break this test, but dropping one from the parse still must.
   test('a short or empty probe row leaves flags off rather than undefined', () => {
-    expect(parseFeatures('t')).toEqual({ has_rebills: true, has_ncc: false, has_true_cost: false });
-    expect(parseFeatures('')).toEqual({ has_rebills: false, has_ncc: false, has_true_cost: false });
-    expect(parseFeatures(null)).toEqual({ has_rebills: false, has_ncc: false, has_true_cost: false });
+    const allOff = Object.fromEntries(FEATURE_ORDER.map((f) => [f, false]));
+    expect(parseFeatures('')).toEqual(allOff);
+    expect(parseFeatures(null)).toEqual(allOff);
+    expect(parseFeatures(undefined)).toEqual(allOff);
+    // A row shorter than the flag list: the first flag reads, the rest stay false
+    // rather than becoming undefined and silently passing an `if (!flag)` check.
+    expect(parseFeatures('t')).toEqual({ ...allOff, [FEATURE_ORDER[0]]: true });
+    for (const f of FEATURE_ORDER) expect(typeof parseFeatures('t')[f]).toBe('boolean');
   });
 });
 
