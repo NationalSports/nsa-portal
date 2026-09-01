@@ -107,6 +107,28 @@ function dP(d, q, artFiles, cq) {
 // produce a negative committed count — negative quantities are invalid, not credits.
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
 
+// Quantities that can safely move to a replacement SKU without touching anything already
+// pulled on an IF or committed to an active PO. Cancelled PO units are open again. The maps
+// make the confirmation UI explicit about what moves and what stays on the original line.
+function unfulfilledSizes(item) {
+  const orderedMap = safeSizes(item);
+  const keys = new Set(Object.keys(orderedMap));
+  if (!keys.size && item && item.qty_only) keys.add('QTY');
+  const ordered = {}, picked = {}, po = {}, open = {};
+  keys.forEach(sz => {
+    const oq = sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz]);
+    if (!(oq > 0)) return;
+    const pq = safePicks(item).reduce((a, pk) => a + Math.max(0, safeNum(pk[sz])), 0);
+    const poq = poCommitted(safePOs(item).filter(pl => pl && pl.status !== 'cancelled'), sz);
+    const available = Math.max(0, oq - pq - poq);
+    ordered[sz] = oq;
+    if (pq > 0) picked[sz] = pq;
+    if (poq > 0) po[sz] = poq;
+    if (available > 0) open[sz] = available;
+  });
+  return { ordered, picked, po, open };
+}
+
 // ── PO over-commit check ──
 // Sizes about to go on a NEW PO for `item` that exceed what the line still has OPEN
 // (line qty − picked − already PO-committed, same math as the PO form's open counts).
@@ -1770,7 +1792,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, unfulfilledSizes, poOverCommit, billOverageQty, billLineNeed, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, jobAllRoutedOutside, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, garmentCost, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Size reductions that run into POs / picks
   planSizeCut, absorbedSizes,
   // Portal Assistant confirmed writes (shared by both editors + App.js previews)
