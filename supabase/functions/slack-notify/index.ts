@@ -144,7 +144,7 @@ function buildBlocks(
   customerName: string,
   dept: string,
   body: string,
-  portalUrl: string
+  entityUrl: string
 ) {
   const deptLabel = dept === "all" ? "" : ` · @${dept}`;
   return [
@@ -165,7 +165,7 @@ function buildBlocks(
         {
           type: "button",
           text: { type: "plain_text", text: "Open in Portal" },
-          url: `${portalUrl}/?so=${soDisplayId}`,
+          url: entityUrl,
           action_id: "open_portal",
         },
       ],
@@ -202,7 +202,23 @@ serve(async (req: Request) => {
     const authorId: string = record.author_id;
     const dept: string = record.dept || "all";
     const body: string = record.body || record.text || "";
-    const mentions: string[] = record.mentions || [];
+    const parseIds = (value: unknown): string[] => {
+      if (Array.isArray(value)) return value.filter(Boolean).map(String);
+      if (typeof value === "string") {
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : [];
+        } catch { return []; }
+      }
+      return [];
+    };
+    // The portal's canonical recipient column is tagged_members (JSONB). Some
+    // older Slack migrations used mentions (uuid[]). Read both so customer
+    // webstore replies cannot be saved successfully yet notify nobody.
+    const mentions: string[] = [...new Set([
+      ...parseIds(record.mentions),
+      ...parseIds(record.tagged_members),
+    ])];
     const entityType: string = record.entity_type || "so";
     const entityId: string = record.entity_id || soId;
     const threadId: string | null = record.thread_id || null;
@@ -222,6 +238,8 @@ serve(async (req: Request) => {
     let entityMemo = "";
     let customerId = "";
     let entityOwner = "";
+    let webstoreCustomerName = "";
+    let entityUrl = `${portalUrl}/?so=${encodeURIComponent(entityId || soId || "")}`;
 
     if (entityType === "so" || entityType === "job") {
       const lookupId = entityType === "so" ? entityId : soId;
@@ -247,6 +265,28 @@ serve(async (req: Request) => {
         entityMemo = est.memo || "";
         customerId = est.customer_id;
         entityOwner = est.created_by;
+        entityUrl = `${portalUrl}/?est=${encodeURIComponent(entityId)}`;
+      }
+    } else if (entityType === "webstore_order") {
+      const { data: order } = await supabase
+        .from("webstore_orders")
+        .select("id,buyer_name,omg_order_number,order_number,store_id")
+        .eq("id", entityId)
+        .single();
+      if (order) {
+        entityDisplayId = order.omg_order_number || order.order_number || order.id;
+        customerId = "";
+        const { data: store } = await supabase
+          .from("webstores")
+          .select("name,rep_id")
+          .eq("id", order.store_id)
+          .single();
+        entityMemo = store?.name || "Webstore";
+        entityOwner = store?.rep_id || "";
+        // The Messages page resolves the order context and opens the correct
+        // OMG/native store surface. Avoid the old invalid ?so=<order uuid> link.
+        entityUrl = `${portalUrl}/?pg=messages`;
+        webstoreCustomerName = order.buyer_name || "Customer";
       }
     }
 
@@ -259,12 +299,12 @@ serve(async (req: Request) => {
       ? await supabase.from("customers").select("name, alpha_tag").eq("id", customerId).single()
       : { data: null };
 
-    const customerName = cust?.alpha_tag || cust?.name || "Unknown";
+    const customerName = webstoreCustomerName || cust?.alpha_tag || cust?.name || "Unknown";
 
     // Get all users
     const users = await getAllUsers();
     const author = users.find((u) => u.id === authorId);
-    const authorName = author?.full_name || "Unknown";
+    const authorName = author?.full_name || record.author || (record.from_customer ? "Customer" : "Unknown");
 
     // Build recipient list (deduplicated)
     const recipientIds = new Set<string>();
@@ -303,8 +343,8 @@ serve(async (req: Request) => {
     }
 
     // Send DMs
-    const entityTypeLabel = entityType === "estimate" ? "Estimate" : entityType === "job" ? "Job" : "SO";
-    const blocks = buildBlocks(authorName, `${entityTypeLabel} ${entityDisplayId}`, entityMemo, customerName, dept, body, portalUrl);
+    const entityTypeLabel = entityType === "estimate" ? "Estimate" : entityType === "job" ? "Job" : entityType === "webstore_order" ? "Webstore order" : "SO";
+    const blocks = buildBlocks(authorName, `${entityTypeLabel} ${entityDisplayId}`, entityMemo, customerName, dept, body, entityUrl);
     const plainText = `${authorName} on ${entityTypeLabel} ${entityDisplayId}: ${body}`;
     const results: Array<{ userId: string; ok: boolean; error?: string }> = [];
 
