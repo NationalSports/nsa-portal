@@ -437,7 +437,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -25516,7 +25516,11 @@ export default function App(){
       const r=await authFetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action,sandbox:qbConfig.sandbox,...payload})});
       if(r.status===403)return null;
-      if(!r.ok&&r.status!==401&&r.status!==409){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
+      if(!r.ok&&r.status!==401&&r.status!==409){
+        const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');
+        const timedOut=r.status===504||/timed?\s*out|inactivity timeout/i.test(txt);
+        return{__qbTransportError:true,status:r.status,error:timedOut?'QBO request timed out.':'QBO API returned HTTP '+r.status+'.'};
+      }
       const d=await r.json();
       if(r.status===401||r.status===409){
         setQBConfig(prev=>({...prev,connected:false,autoSync:'manual',preflight:null,initialMigrationApproved:false,
@@ -29708,7 +29712,7 @@ export default function App(){
           let canaryReadback='';
           if(canaryMode){
             let readRes;
-            try{readRes=await qbApi('query',{query:"SELECT * FROM Bill WHERE Id = '"+String(qboBillId).replace(/'/g,"\\'")+"'"})}
+            try{readRes=await queryQBReadOnly(qbApi,"SELECT * FROM Bill WHERE Id = '"+String(qboBillId).replace(/'/g,"\\'")+"'",'supplier-bill API read-back')}
             catch(e){throw new Error('QBO Bill #'+qboBillId+' exists, but canary read-back failed: '+e.message)}
             const readFault=readRes?.Fault?.Error?.[0];
             if(readFault)throw new Error('QBO Bill #'+qboBillId+' exists, but canary read-back failed: '+(readFault.Detail||readFault.Message||'QBO query error'));
