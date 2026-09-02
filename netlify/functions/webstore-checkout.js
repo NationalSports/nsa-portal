@@ -747,7 +747,15 @@ async function placeOrder(sb, body) {
       return bad(502, 'Could not start the card payment: ' + e.message);
     }
     const { error: piErr } = await sb.from('webstore_orders').update({ stripe_pi_id: intent.id }).eq('id', order.id);
-    if (piErr) { await rollback(); return bad(502, 'Could not link the payment: ' + piErr.message); }
+    if (piErr) {
+      // The client has never received this secret, so cancel the orphan before
+      // deleting its order. Otherwise a failed DB link leaves a live, untracked
+      // PaymentIntent and a retry creates another one.
+      try { await stripe(sk).paymentIntents.cancel(intent.id); }
+      catch (cancelError) { console.error('[webstore-checkout] orphan PaymentIntent cancel failed:', intent.id, cancelError.message); }
+      await rollback();
+      return bad(502, 'Could not link the payment: ' + piErr.message);
+    }
     return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id }) };
   }
 
@@ -855,7 +863,12 @@ async function finalize(sb, body) {
 
   // Promote ONLY from a genuine pre-paid state — never from a post-paid status
   // (e.g. 'batched'), so a re-called finalize can't regress a downstream order.
-  await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).in('status', ['pending_payment', 'unpaid']);
+  const { error: paidError } = await sb.from('webstore_orders')
+    .update({ status: 'paid' }).eq('id', order.id).in('status', ['pending_payment', 'unpaid']);
+  if (paidError) {
+    console.error('[webstore-checkout] payment succeeded but paid status write failed:', order.id, paidError.message);
+    return bad(500, 'Payment was received, but the order is still finalizing. Please try again; you will not be charged twice.');
+  }
 
   // Club store order -> production conversion (migration 00204), the same
   // post-payment trigger point as stripe-webhook's teamshop conversion fallback.

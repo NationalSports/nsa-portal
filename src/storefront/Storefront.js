@@ -1872,7 +1872,12 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     if (r.alreadyPaid) {
       // Replay of an order whose payment already went through — finalize and land
       // on the confirmation instead of showing a card form for a settled intent.
-      await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      const finalized = await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      if (finalized.error || !finalized.ok) {
+        setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+        setBusy(false);
+        return;
+      }
       clearOrderRef();
       onClear(); navTo(orderPath(store, r.order));
       return;
@@ -1896,7 +1901,12 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     // to paid, and sends the confirmation email. If this call never lands (tab
     // closed, network drop), the Stripe webhook does the same — the atomic
     // confirmation_sent claim means exactly one of them sends the email.
-    await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    const finalized = await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    if (finalized.error || !finalized.ok) {
+      setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+      setBusy(false);
+      return;
+    }
     clearOrderRef();
     onClear(); navTo(orderPath(store, pendingOrder));
   };

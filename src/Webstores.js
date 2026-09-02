@@ -38,16 +38,61 @@ async function createWebstoreLabel(order, items, store, weightByPid = {}, imageB
   if (!orderId) throw new Error('ShipStation order not created');
   if (Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
   const cm = SS_CARRIERS[(store.shipstation_carrier || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+  const shipDate = new Date().toISOString().split('T')[0];
   const payload = {
     orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
-    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+    packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(items, store, weightByPid), units: 'pounds' },
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+  return {
+    labelData: res.labelData,
+    trackingNumber: res.trackingNumber,
+    carrier: cm.carrierCode,
+    service: store.shipstation_service || cm.serviceCode,
+    shipDate,
+    shipmentId: res.shipmentId || null,
+    cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null,
+  };
+}
+
+async function recordCreatedWebstoreLabel(order, items, label) {
+  const shipment = {
+    shipment_id: label.shipmentId,
+    tracking_number: label.trackingNumber,
+    carrier: label.carrier,
+    service: label.service,
+    ship_date: label.shipDate,
+    cost: label.cost,
+    items: (items || []).map((item) => ({
+      lineItemKey: item.id,
+      sku: item.sku || null,
+      name: item.name || item.sku || null,
+      qty: Number(item.qty) || 0,
+      image: item.image_url || null,
+      options: [
+        item.size && { name: 'Size', value: item.size },
+        item.player_number && { name: 'Number', value: String(item.player_number) },
+        item.player_name && { name: 'Name', value: item.player_name },
+      ].filter(Boolean),
+    })),
+  };
+  let lastError = 'Shipment recording failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: order.id, shipment, label_data: label.labelData || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment recording failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. The label was created; do not create another label.`);
 }
 
 // Printable club fundraising payout statement.
@@ -3209,6 +3254,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
   // state) with an over-refund cap before any money moves.
   const refundingRef = useRef(false);
+  const refundAttemptRef = useRef(null);
   const refundOrder = useCallback(async (order, amount, customerMessage, itemAllocations = []) => {
     if (refundingRef.current) return { error: 'A refund is already in progress' };
     refundingRef.current = true;
@@ -3220,16 +3266,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // idempotency key (attempt_id), and atomically records the refund + updates
       // refunded_amt/status via the apply_webstore_refund RPC. The browser no longer
       // writes refund state directly (RLS blocks it now; the server is the source of truth).
-      const attemptId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2));
+      const signature = JSON.stringify({ order: order.id, cents, message: (customerMessage || '').trim(), items: itemAllocations });
+      if (!refundAttemptRef.current || refundAttemptRef.current.signature !== signature) {
+        refundAttemptRef.current = {
+          signature,
+          id: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2)),
+        };
+      }
+      const attemptId = refundAttemptRef.current.id;
       let d;
       try {
         const res = await authFetch('/.netlify/functions/stripe-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, expected_refunded_cents: Math.round((Number(order.refunded_amt) || 0) * 100), attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
         });
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
       if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
+      refundAttemptRef.current = null;
+      if (d.replayed) {
+        flash(`Refund already completed: ${money(cents / 100)}${d.kind === 'card' ? ' to card' : ' credit'} — no duplicate refund or email was sent.`);
+        loadDetail(sel); return { ok: true, ...d };
+      }
       // The refund notice fires automatically server-side. Say plainly whether it
       // actually went — a refund the buyer was never told about looks identical to a
       // clean one otherwise, and the rep is the only person who can follow up.
@@ -13189,14 +13247,12 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
-        if (labelData) labels.push(labelData);
-        const shippedById = {}; const targetById = {}; const lineById = {};
-        lines.forEach((i) => { targetById[i.id] = (targetById[i.id] || 0) + (Number(i.qty) || 0); lineById[i.id] = i; });
-        plan.forEach((x) => { shippedById[x.item.id] = (shippedById[x.item.id] || 0) + x.qty; });
-        for (const [id, add] of Object.entries(shippedById)) { const i = lineById[id]; const sq = (Number(i._sourceShippedQty) || 0) + add; const done = sq >= (targetById[id] || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', id); } catch {} lines.filter((l) => l.id === id).forEach((l) => { l.shipped_qty = sq; l._sourceShippedQty = sq; if (done) l.line_status = 'shipped'; }); }
-        const allShipped = Object.keys(targetById).every((id) => (Number(lineById[id].shipped_qty) || 0) >= targetById[id]);
-        try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
+        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
+        // Keep the purchased PDF printable even if the ledger handoff needs
+        // attention; retries are idempotent and the error explicitly warns the
+        // operator not to buy a second label.
+        if (label.labelData) labels.push(label.labelData);
+        await recordCreatedWebstoreLabel(o, shipItems, label);
       } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
     // Roll the Sales Order's outbound shipping cost up = sum of its orders' label

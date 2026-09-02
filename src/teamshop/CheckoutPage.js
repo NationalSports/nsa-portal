@@ -229,12 +229,18 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
   // against the order and flips it to paid; the stripe-webhook fallback shares
   // the same atomic confirmation claim, so this is safe to lose.
   const finalizeOrder = async (order, paymentIntentId) => {
+    let finalized = null;
     try {
-      await fetch('/.netlify/functions/webstore-checkout', {
+      const res = await fetch('/.netlify/functions/webstore-checkout', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'finalize', orderId: order.id, stripePiId: paymentIntentId || order.stripe_pi_id }),
       });
-    } catch (_) { /* webhook fallback finalizes */ }
+      finalized = await res.json().catch(() => ({}));
+      if (!res.ok || !finalized.ok) throw new Error(finalized.error || 'Order finalization failed');
+    } catch (error) {
+      setErr(`Payment was received, but the order is still finalizing. ${error.message || 'Please try again.'} You will not be charged twice.`);
+      return;
+    }
     // Stage 7: kick off the order → production conversion (idempotent RPC
     // behind convert_order). Best-effort on purpose — the order is already
     // paid, and the stripe-webhook path (or a staff batch) converts it if

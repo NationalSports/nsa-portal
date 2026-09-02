@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Club-store individual-order flow — checkout branching (migration 00204 workstream).
  *
  * Club webstores (org_type='club') stamp order_source='club' + customer_id (from
@@ -13,7 +15,7 @@
  */
 process.env.STRIPE_SECRET_KEY = 'sk_test_123';
 jest.mock('stripe', () => {
-  const paymentIntents = { create: jest.fn(), retrieve: jest.fn() };
+  const paymentIntents = { create: jest.fn(), retrieve: jest.fn(), cancel: jest.fn() };
   const factory = (key) => ({ paymentIntents });
   factory.__pi = paymentIntents;
   return factory;
@@ -196,6 +198,19 @@ describe('finalize — post-payment club conversion trigger', () => {
     const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).ok).toBe(true);
+  });
+
+  test('a paid-status write failure is reported and conversion never starts', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 2000, metadata: {} });
+    const order = clubOrder({ status: 'pending_payment' });
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [order], error: null }],
+      'webstore_orders.update': [{ data: null, error: { message: 'database unavailable' } }],
+    });
+    const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).error).toMatch(/payment was received/i);
+    expect(sb.calls.some((c) => c.op === 'rpc' && c.table === 'create_club_sales_order')).toBe(false);
   });
 
   test('already-converted club order (so_id set) does not call the RPC again', async () => {

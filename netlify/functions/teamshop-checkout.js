@@ -276,7 +276,12 @@ async function placeOrder(sb, body, coach, opts) {
     return bad(502, `Could not start the ${ach ? 'bank' : 'card'} payment: ` + e.message);
   }
   const { error: piErr } = await sb.from('webstore_orders').update({ stripe_pi_id: intent.id }).eq('id', order.id);
-  if (piErr) { await ws.rollbackOrder(sb, order.id); return bad(502, 'Could not link the payment: ' + piErr.message); }
+  if (piErr) {
+    try { await stripe(sk).paymentIntents.cancel(intent.id); }
+    catch (cancelError) { console.error('[teamshop-checkout] orphan PaymentIntent cancel failed:', intent.id, cancelError.message); }
+    await ws.rollbackOrder(sb, order.id);
+    return bad(502, 'Could not link the payment: ' + piErr.message);
+  }
 
   return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id, ...(ach ? { ach: true } : {}) });
 }
