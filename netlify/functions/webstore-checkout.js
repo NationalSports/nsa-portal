@@ -1079,7 +1079,7 @@ async function trackOrder(sb, body) {
   const [{ data: sRows }, { data: itemRows }, { data: shipmentRows }, messages] = await Promise.all([
     sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
     sb.from('webstore_order_items').select(PUBLIC_ORDER_ITEM_FIELDS).eq('order_id', order.id),
-    sb.from('webstore_shipments').select('id,tracking_number,carrier,service,ship_date,items,created_at').eq('order_id', order.id).order('created_at', { ascending: true }),
+    sb.from('webstore_shipments').select('id,tracking_number,carrier,service,ship_date,items,created_at').eq('order_id', order.id).is('voided_at', null).order('created_at', { ascending: true }),
     loadThread(sb, order.id),
   ]);
   const items = itemRows || [];

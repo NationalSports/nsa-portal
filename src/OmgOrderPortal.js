@@ -31,6 +31,58 @@ const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground'
 const PDFJS_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+async function recordCreatedOmgLabel(order, plan, label) {
+  const shipment = {
+    shipment_id: label.shipmentId,
+    tracking_number: label.trackingNumber,
+    carrier: label.carrier,
+    service: label.service,
+    ship_date: label.shipDate,
+    cost: label.cost,
+    items: plan.map((entry) => ({
+      lineItemKey: entry.item.id,
+      sku: entry.item.sku || null,
+      name: entry.item.name || entry.item.sku || null,
+      qty: entry.qty,
+      image: entry.item.image_url || null,
+      options: [
+        entry.item.size && { name: 'Size', value: entry.item.size },
+        entry.item.player_number && { name: 'Number', value: String(entry.item.player_number) },
+        entry.item.player_name && { name: 'Name', value: entry.item.player_name },
+      ].filter(Boolean),
+    })),
+  };
+  let lastError = 'Shipment recording failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: order.id, shipment, label_data: label.labelData || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment recording failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. The label was created; do not create another label.`);
+}
+
+async function recordVoidedOmgLabel(orderId, shipmentId) {
+  let lastError = 'Shipment void reconciliation failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-void-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, shipment_id: String(shipmentId) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment void reconciliation failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. ShipStation already voided this label; retry local reconciliation before creating another.`);
+}
+
 // Lazy-load pdf.js from CDN (kept out of the bundle; only needed here).
 let _pdfjsPromise = null;
 function loadPdfJs() {
@@ -551,16 +603,17 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     if (!orderId) throw new Error('ShipStation order not created');
     if (store && Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
     const cm = SS_CARRIERS[((store && store.shipstation_carrier) || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+    const shipDate = new Date().toISOString().split('T')[0];
     const payload = {
       orderId, carrierCode: cm.carrierCode, serviceCode: (store && store.shipstation_service) || cm.serviceCode,
-      packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+      packageCode: 'package', confirmation: 'none', shipDate,
       weight: { value: labelWeightLbs(shipItems, store), units: 'pounds' },
       shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
       shipTo: { name: a.name || o.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: o.buyer_phone || '' },
       testLabel: false,
     };
     const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-    return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+    return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, service: payload.serviceCode, shipDate, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
   };
 
   // Set the related Sales Order's outbound shipping cost to the sum of every
@@ -606,19 +659,10 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     for (const o of eligible) {
       const plan = shipPlan(o);
       try {
-        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createOmgLabel(o, plan);
-        if (labelData) labels.push(labelData);
-        runCost += Number(cost) || 0; ok++;
-        // Optimistically advance each shipped line so a quick re-click won't
-        // double-ship; the webhook later reconciles shipped_qty from the
-        // recorded shipment, so this never double-counts.
-        for (const x of plan) {
-          const i = x.item; const sq = (Number(i.shipped_qty) || 0) + x.qty; const done = sq >= (Number(i.qty) || 0);
-          await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id);
-          i.shipped_qty = sq; if (done) i.line_status = 'shipped';
-        }
-        const fullyShipped = o.items.every((i) => (Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0));
-        await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id);
+        const label = await createOmgLabel(o, plan);
+        if (label.labelData) labels.push(label.labelData);
+        await recordCreatedOmgLabel(o, plan, label);
+        runCost += Number(label.cost) || 0; ok++;
       } catch (e) { errors.push({ order: o.omg_order_number, msg: (e && e.message) || 'Label failed' }); }
     }
     await recomputeSOCost();
@@ -644,12 +688,7 @@ export default function OmgOrderPortal({ saleCode, storeName, onStatus, soSync, 
     try {
       const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
       if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
-      // Roll back the shipped lines, drop the recorded shipments, and clear the
-      // order's ship fields. (Voids the whole order's last shipment; multi-
-      // shipment split-voids aren't tracked.)
-      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
-      await supabase.from('webstore_shipments').delete().eq('order_id', o.id);
-      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
+      await recordVoidedOmgLabel(o.id, o.shipstation_shipment_id);
       await recomputeSOCost();
       await loadOrders(store);
       flash(`Label voided for ${o.omg_order_number}.`);

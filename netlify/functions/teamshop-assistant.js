@@ -183,7 +183,7 @@ async function execFamilyLookup(admin, input, state) {
   if (order.so_id) {
     const [jobsRes, shipRes] = await Promise.all([
       admin.from('so_jobs').select('so_id,prod_status').in('so_id', [order.so_id]),
-      admin.from('webstore_shipments').select('order_id').in('order_id', [order.id]),
+      admin.from('webstore_shipments').select('order_id').in('order_id', [order.id]).is('voided_at', null),
     ]);
     if (!jobsRes.error && !shipRes.error) {
       production = { stage: summarizeProdStage(jobsRes.data || [], (shipRes.data || []).length > 0) };

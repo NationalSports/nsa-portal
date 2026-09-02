@@ -96,6 +96,22 @@ async function recordCreatedWebstoreLabel(order, items, label) {
   throw new Error(`${lastError}. The label was created; do not create another label.`);
 }
 
+async function recordVoidedWebstoreLabel(orderId, shipmentId) {
+  let lastError = 'Shipment void reconciliation failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-void-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, shipment_id: String(shipmentId) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment void reconciliation failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. ShipStation already voided this label; retry local reconciliation before creating another.`);
+}
+
 // Printable club fundraising payout statement.
 function printPayout(store, t) {
   const date = new Date().toLocaleDateString();
@@ -13688,14 +13704,9 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     try {
       const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
       if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
-      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
-      await supabase.from('webstore_shipments').delete().eq('order_id', o.id);
-      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
-      // Re-roll the Sales Order's shipping cost without this order's label.
-      if (o.so_id) { try { const { data: soOrds } = await supabase.from('webstore_orders').select('label_cost').eq('so_id', o.so_id); const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0); await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', o.so_id); } catch {} }
+      await recordVoidedWebstoreLabel(o.id, o.shipstation_shipment_id);
       o.label_data = null; o.shipstation_shipment_id = null;
-      (itemsByOrder[o.id] || []).forEach((i) => { if (i.line_status === 'shipped') { i.line_status = 'bagging'; i.shipped_qty = 0; } });
-      setTick((t) => t + 1);
+      window.location.reload();
     } catch (e) { window.alert('Void failed: ' + e.message); }
   };
   const itemsByOrder = {};

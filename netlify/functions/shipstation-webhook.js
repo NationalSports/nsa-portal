@@ -28,14 +28,14 @@ async function maybeOne(query, label) {
 async function findShipment(sb, ssShipmentId, tracking) {
   if (ssShipmentId) {
     const found = await maybeOne(
-      sb.from('webstore_shipments').select('id,emailed').eq('ss_shipment_id', ssShipmentId),
+      sb.from('webstore_shipments').select('id,emailed,voided_at').eq('ss_shipment_id', ssShipmentId),
       'Could not check existing ShipStation shipment',
     );
     if (found) return found;
   }
   if (tracking) {
     return maybeOne(
-      sb.from('webstore_shipments').select('id,emailed').eq('tracking_number', tracking),
+      sb.from('webstore_shipments').select('id,emailed,voided_at').eq('tracking_number', tracking),
       'Could not check existing tracking number',
     );
   }
@@ -71,6 +71,7 @@ async function recordShipment(sb, order, sh) {
   };
 
   let existing = await findShipment(sb, ssShipmentId, tracking);
+  if (existing && existing.voided_at) return { id: existing.id, emailed: Boolean(existing.emailed), items, tracking, voided: true };
   if (existing) {
     const { error } = await sb.from('webstore_shipments').update(patch).eq('id', existing.id);
     if (error) throw new Error(`Could not refresh shipment ${ssShipmentId || tracking || existing.id}: ${error.message}`);
@@ -86,24 +87,27 @@ async function recordShipment(sb, order, sh) {
   // before item reconciliation or notification queueing.
   existing = await findShipment(sb, ssShipmentId, tracking);
   if (!existing) throw new Error(`Shipment race could not be recovered for ${ssShipmentId || tracking || ''}`);
+  if (existing.voided_at) return { id: existing.id, emailed: Boolean(existing.emailed), items, tracking, voided: true };
   const { error: updateError } = await sb.from('webstore_shipments').update(patch).eq('id', existing.id);
   if (updateError) throw new Error(`Could not refresh raced shipment ${existing.id}: ${updateError.message}`);
   return { id: existing.id, emailed: Boolean(existing.emailed), items, tracking };
 }
 
 async function reconcileOrderTracker(sb, order, sh) {
-  const { data: allShipments, error: shipmentsError } = await sb.from('webstore_shipments').select('items').eq('order_id', order.id);
+  const { data: allShipments, error: shipmentsError } = await sb.from('webstore_shipments')
+    .select('id,items,tracking_number,carrier,ss_shipment_id,created_at').eq('order_id', order.id)
+    .is('voided_at', null).order('created_at', { ascending: true });
   if (shipmentsError) throw new Error(`Could not load shipment ledger: ${shipmentsError.message}`);
   const { data: orderItems, error: orderItemsError } = await sb.from('webstore_order_items')
     .select('id,sku,size,qty,is_bundle_parent,line_status,shipped_qty').eq('order_id', order.id);
   if (orderItemsError) throw new Error(`Could not load order items: ${orderItemsError.message}`);
 
   const lines = (orderItems || []).filter((item) => !item.is_bundle_parent && item.line_status !== 'cancelled');
-  const updates = planShipmentLineUpdates(lines, allShipments || []);
+  const updates = planShipmentLineUpdates(lines, allShipments || [], { includeZero: true });
   for (const update of updates) {
     const patch = {
       shipped_qty: update.shipped_qty,
-      ...(update.line_status === 'shipped' ? { line_status: 'shipped' } : {}),
+      line_status: update.line_status,
     };
     const { error } = await sb.from('webstore_order_items').update(patch).eq('id', update.id);
     if (error) throw new Error(`Could not update shipped line ${update.id}: ${error.message}`);
@@ -113,17 +117,18 @@ async function reconcileOrderTracker(sb, order, sh) {
 
   const fullyShipped = lines.length > 0 && lines.every((item) =>
     Number(item.shipped_qty || 0) >= Number(item.qty || 0));
+  const latest = (allShipments || [])[Math.max(0, (allShipments || []).length - 1)] || null;
   const orderPatch = {
-    tracking_number: sh.trackingNumber || null,
-    carrier: sh.carrierCode || null,
-    ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}),
+    tracking_number: sh?.trackingNumber || latest?.tracking_number || null,
+    carrier: sh?.carrierCode || latest?.carrier || null,
+    shipped_at: fullyShipped ? (order.shipped_at || new Date().toISOString()) : null,
   };
   const { error: orderError } = await sb.from('webstore_orders').update(orderPatch).eq('id', order.id);
   if (orderError) throw new Error(`Could not update order tracker: ${orderError.message}`);
 }
 
 async function reconcileOrderCosts(sb, order) {
-  const { data: shipments, error } = await sb.from('webstore_shipments').select('cost').eq('order_id', order.id);
+  const { data: shipments, error } = await sb.from('webstore_shipments').select('cost').eq('order_id', order.id).is('voided_at', null);
   if (error) throw new Error(`Could not load shipment costs: ${error.message}`);
   const actual = (shipments || []).reduce((sum, shipment) => sum + (Number(shipment.cost) || 0), 0);
   const { error: orderError } = await sb.from('webstore_orders').update({ label_cost: actual || null }).eq('id', order.id);
@@ -164,6 +169,7 @@ async function processShipStationPayload(sb, payload) {
     if (!order) throw new Error(`Webstore order ${orderId} not found`);
 
     const shipment = await recordShipment(sb, order, sh);
+    if (shipment.voided) { stats.ignored += 1; continue; }
     await reconcileOrderTracker(sb, order, sh);
     await reconcileOrderCosts(sb, order);
     const notification = await queueShipmentEmail(sb, order, shipment);
@@ -179,6 +185,7 @@ async function processShipStationPayload(sb, payload) {
 // dedupe makes that replay refresh the same ledger row.
 async function processDirectShipment(sb, order, sh) {
   const shipment = await recordShipment(sb, order, sh);
+  if (shipment.voided) return { shipment, notification: { queued: false, reason: 'shipment_voided' } };
   await reconcileOrderTracker(sb, order, sh);
   await reconcileOrderCosts(sb, order);
   const notification = await queueShipmentEmail(sb, order, shipment);
@@ -261,7 +268,7 @@ async function reconcileSoShipping(sb, order) {
     orderIds = (data || []).map((row) => row.id);
   }
   if (!soId || !orderIds.length) return;
-  const { data: shipments, error } = await sb.from('webstore_shipments').select('cost').in('order_id', orderIds);
+  const { data: shipments, error } = await sb.from('webstore_shipments').select('cost').in('order_id', orderIds).is('voided_at', null);
   if (error) throw new Error(`Could not load Sales Order shipment costs: ${error.message}`);
   const total = (shipments || []).reduce((sum, shipment) => sum + (Number(shipment.cost) || 0), 0);
   const { error: updateError } = await sb.from('sales_orders')
