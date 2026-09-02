@@ -148,7 +148,7 @@ function StoreStyles() {
            while preventing the reduced tablet/mobile logo from floating inside
            a desktop-height panel. */
         .sf-vs-hero-body{min-height:clamp(240px,33vw,380px) !important}
-        .sf-vs-logo{width:clamp(190px,26vw,300px) !important;height:clamp(190px,26vw,300px) !important}
+        .sf-vs-logo{width:clamp(200px,27.5vw,316px) !important;height:clamp(200px,27.5vw,316px) !important}
         .sf-footlink{transition:color .15s ease}
         .sf-footlink:hover{color:#fff !important}
         @media (max-width:1100px){
@@ -187,7 +187,7 @@ function StoreStyles() {
           .sf-vs-hero-body{min-height:240px !important}
           .sf-vs-word{font-size:clamp(74px,21vw,126px) !important}
           .sf-vs-word-long{font-size:clamp(74px,19vw,126px) !important}
-          .sf-vs-logo{width:190px !important;height:190px !important}
+          .sf-vs-logo{width:202px !important;height:202px !important}
           .sf-vs-edge-left{width:10% !important}
           .sf-vs-edge-right{width:13% !important}
           .sf-vs-catgrid{grid-template-columns:1fr}
@@ -855,7 +855,7 @@ function VsHero({ store, theme }) {
         </div>
         {/* The logo in front — required by the design. Falls back to the initials
             crest only when the store has no logo on file. */}
-        <div className="sf-vs-logo" style={{ position: 'relative', zIndex: 2, width: 300, height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateY(12px)', filter: `drop-shadow(0 9px 12px ${hexA(theme.band, 0.34)})` }}>
+        <div className="sf-vs-logo" style={{ position: 'relative', zIndex: 2, width: 316, height: 316, display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateY(16px)', filter: `drop-shadow(0 9px 12px ${hexA(theme.band, 0.34)})` }}>
           {store.logo_url
             ? <img src={store.logo_url} alt={store.name} style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }} />
             : <Crest store={store} theme={theme} size={280} />}
