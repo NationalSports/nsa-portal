@@ -153,7 +153,8 @@ async function placeOrder(sb, body, coach, opts) {
   const dup = await ws.findOrderByClientRef(sb, clientRef);
   if (dup) return ws.replayOrder(dup);
 
-  if (store.status !== 'open') return bad(409, 'The Team Shop isn’t open for orders right now.');
+  const windowError = ws.storeOrderWindowError(store);
+  if (windowError) return bad(409, windowError.replace('This store', 'The Team Shop'));
 
   const contact = body.contact || {};
   if (!String(contact.name || '').trim() || !/.+@.+\..+/.test(String(contact.email || ''))) {
@@ -340,7 +341,8 @@ async function placeOrderPo(sb, body, coach) {
   const dup = await ws.findOrderByClientRef(sb, clientRef);
   if (dup) return ws.replayOrder(dup);
 
-  if (store.status !== 'open') return bad(409, 'The Team Shop isn’t open for orders right now.');
+  const windowError = ws.storeOrderWindowError(store);
+  if (windowError) return bad(409, windowError.replace('This store', 'The Team Shop'));
 
   const contact = body.contact || {};
   if (!String(contact.name || '').trim() || !/.+@.+\..+/.test(String(contact.email || ''))) {
