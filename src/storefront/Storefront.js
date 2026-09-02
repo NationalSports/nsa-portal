@@ -96,8 +96,11 @@ function StoreStyles() {
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
       <style>{`
+        html,body,#root{margin:0;min-height:100%;width:100%}
+        body{padding:0}
         .sf-root *{box-sizing:border-box}
-        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;background:${NEUTRAL.cream};color:${NEUTRAL.inkText}}
+        .sf-root{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;background:${NEUTRAL.cream};color:${NEUTRAL.inkText};width:100%}
+        .sf-root img{display:block}
         .sf-root ::selection{background:var(--sf-primary,#8C1D40);color:#fff}
         html{scroll-behavior:smooth}
         .sf-btn{transition:transform .18s cubic-bezier(.4,0,.2,1), background .18s ease, box-shadow .18s ease}
@@ -147,7 +150,6 @@ function StoreStyles() {
         }
         @media (max-width:860px){
           .sf-vs-nav{display:none !important}
-          .sf-vs-wedge{display:none !important}
           .sf-vs-dots{display:none !important}
         }
         @media (max-width:860px){
@@ -166,6 +168,11 @@ function StoreStyles() {
           .sf-vs-hdr{gap:10px !important;padding-left:14px !important;padding-right:14px !important}
           .sf-vs-crest{display:none !important}
           .sf-vs-title{white-space:normal !important;font-size:16px !important;line-height:1.06 !important;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+          .sf-vs-hero-body{min-height:290px !important}
+          .sf-vs-word{font-size:clamp(74px,21vw,126px) !important}
+          .sf-vs-logo{width:190px !important;height:190px !important}
+          .sf-vs-edge-left{width:10% !important}
+          .sf-vs-edge-right{width:13% !important}
           .sf-vs-catgrid{grid-template-columns:1fr}
           .sf-vs-ribbon{font-size:10px !important;letter-spacing:.9px !important;padding:8px 12px !important}
           .sf-vs-phone{display:none !important}
@@ -610,7 +617,7 @@ export default function Storefront() {
   const categories = (() => {
     const seen = new Map();
     for (const p of groupProducts(shownProducts)) {
-      const c = (p.rep.store_category || '').trim();
+      const c = productCategory(p.rep);
       if (!c) continue;
       if (!seen.has(c)) seen.set(c, p.rep.sort_order || 0);
     }
@@ -677,10 +684,11 @@ const Wrap = ({ children }) => <div style={{ maxWidth: 1240, margin: '0 auto', p
 // the team name sits behind it, set large and ghosted.
 // ─────────────────────────────────────────────────────────────────────
 
-// Fine diagonal hatch behind the light hero panel.
-const VS_HATCH = 'repeating-linear-gradient(-58deg, rgba(20,32,26,0.05) 0 1px, transparent 1px 9px)';
+// Fine diagonal hatch behind the light hero panel. These values come directly
+// from the approved Design HTML rather than from screenshot measurements.
+const VS_HATCH = 'repeating-linear-gradient(-55deg, rgba(20,32,26,0.05) 0 2px, transparent 2px 11px)';
 // Dot-matrix block that sits in the hero's upper right, behind the art.
-const vsDots = (color) => `radial-gradient(${color} 1.4px, transparent 1.5px) 0 0/13px 13px`;
+const vsDots = (color) => `radial-gradient(${color} 1.6px, transparent 1.6px) 0 0/15px 15px`;
 
 // Store rows are almost always named "<Team> Team Store" (sometimes with a
 // season year). Printing that verbatim inside the design's own copy gives
@@ -695,6 +703,14 @@ function storeShortName(name) {
     .replace(/\s+(19|20)\d{2}$/, '')
     .trim();
   return n || raw;
+}
+
+// Reps can curate a storefront-specific category, but older/live stores often
+// only carry the catalog category. Both are shopper-facing labels, so the
+// varsity category cards use the curated value first and gracefully fall back
+// to the catalog value instead of disappearing entirely.
+function productCategory(product) {
+  return String((product && (product.store_category || product.category)) || '').trim();
 }
 
 // The word set large behind the logo: the last word of the shortened name —
@@ -714,8 +730,8 @@ function VsTopStrip({ store, theme, collapsed = false }) {
   const closes = closesLabel(store.close_at);
   const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team';
   return (
-    <div style={{ background: theme.deepest, color: 'rgba(255,255,255,0.78)', maxHeight: collapsed ? 0 : 42, overflow: 'hidden', transition: 'max-height .25s ease' }}>
-      <div className="sf-topstrip-inner" style={{ maxWidth: 1240, margin: '0 auto', padding: '9px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.5, textTransform: 'uppercase' }}>
+    <div style={{ background: theme.deepest, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 36, overflow: 'hidden', transition: 'max-height .25s ease' }}>
+      <div className="sf-topstrip-inner" style={{ maxWidth: 1240, height: 36, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, fontFamily: DISPLAY, fontSize: 14, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase' }}>
         <a className="sf-topstrip-brand" href="https://nationalsportsapparel.com" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>← National Sports Apparel</a>
         <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: closes && closes.urgent ? theme.accent : 'inherit' }}>
           <span style={{ color: theme.accent }}>★</span>{' '}{closes ? `${deliver} · ${closes.text}` : deliver}{' '}<span style={{ color: theme.accent }}>★</span>
@@ -734,15 +750,15 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
   const open = searchOpen || !!query;
   const inputRef = useRef(null);
   useEffect(() => { if (searchOpen && inputRef.current) inputRef.current.focus(); }, [searchOpen]);
-  const navStyle = { background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'rgba(255,255,255,0.88)', fontFamily: DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: 1.6, textTransform: 'uppercase' };
+  const navStyle = { background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'rgba(255,255,255,0.86)', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.1em', textTransform: 'uppercase' };
   return (
     <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
-      <div className="sf-vs-hdr" style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '10px 24px' : 'clamp(14px,2vw,40px) 24px', display: 'flex', alignItems: 'center', gap: 13, transition: 'padding .2s ease' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 13, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
-          <span className="sf-vs-crest" style={{ display: 'flex', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5 }}><Crest store={store} theme={theme} size={collapsed ? 30 : 40} /></span>
-          <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? 'clamp(16px,4vw,21px)' : 'clamp(18px,4.6vw,27px)', fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', color: '#fff', lineHeight: 1.02, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
+      <div className="sf-vs-hdr" style={{ maxWidth: 1240, height: collapsed ? 60 : 76, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 24, transition: 'height .2s ease' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
+          <span className="sf-vs-crest" style={{ width: collapsed ? 44 : 56, height: collapsed ? 44 : 56, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5, transition: 'width .2s ease,height .2s ease' }}><Crest store={store} theme={theme} size={collapsed ? 34 : 46} /></span>
+          <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? 19 : 22, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase', color: '#fff', lineHeight: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
         </div>
-        <nav className="sf-vs-nav" style={{ display: 'flex', alignItems: 'center', gap: 26 }}>
+        <nav className="sf-vs-nav" style={{ display: 'flex', alignItems: 'center', gap: 30 }}>
           <button className="sf-vs-navlink" style={navStyle} onClick={onCategories}>Shop by Category</button>
           <button className="sf-vs-navlink" style={navStyle} onClick={onAllItems}>All Items</button>
         </nav>
@@ -755,11 +771,11 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
           <SearchIcon color="rgba(255,255,255,0.88)" />
         </button>
         <button className="sf-btn" onClick={() => navTo('/shop/' + store.slug + '/cart')}
-          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.accent, color: theme.band, border: 'none', borderRadius: 2, padding: '11px 20px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 800, fontSize: 16, letterSpacing: 0.6 }}>
-          Cart · {cartCount}
+          style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 9, background: theme.accent, color: '#fff', border: 'none', borderRadius: 0, padding: '10px 16px', cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.09em', transform: 'skewX(-3deg)' }}>
+          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Cart · {cartCount}</span>
         </button>
       </div>
-      <span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 'clamp(90px,11%,200px)', height: 4, background: theme.accent }} />
+      <span aria-hidden style={{ display: 'block', height: 4, background: `linear-gradient(90deg, ${theme.accent} 0 22%, rgba(255,255,255,0.16) 22% 100%)` }} />
     </header>
   );
 }
@@ -770,47 +786,34 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
 function VsHero({ store, theme }) {
   const word = mascotWord(store.name);
   const short = storeShortName(store.name);
-  // The word behind the logo has TWO targets in the design: it spans ~80% of the
-  // viewport, and its letters stand ~27% of the hero's height. Barlow Condensed
-  // (this storefront's display face) is narrower than the face the mockup was
-  // drawn in, so those two can't both be met at natural tracking — sizing for the
-  // width alone made the letters 33% of the hero, tall enough to compete with the
-  // logo, which is the one thing this hero must not do.
-  //
-  // So: hold the HEIGHT (the ratio that decides whether the logo reads as the
-  // foreground — the design puts the logo at ~2.1x the word's cap height) and
-  // open the tracking to reach the span. Long names need no extra tracking and
-  // fall back to width-driven sizing so they never overflow.
-  const wordVw = word.length ? Math.min(13.6, 170 / word.length) : 13.6;
-  // ~0.473em per character on the loaded webfont; whatever that leaves short of
-  // the 80% span gets distributed between the letters.
-  const naturalVw = word.length * 0.473 * wordVw;
-  // Capped: a four-letter mascot would otherwise need ~13vw between letters to
-  // reach the span, which reads as broken rather than tracked. Short names simply
-  // sit narrower than the span.
-  const trackVw = word.length ? Math.min(4.8, Math.max(0, (80 - naturalVw) / word.length)) : 0;
   return (
-    <section style={{ position: 'relative', overflow: 'hidden', background: '#F1F2EF', borderBottom: `1px solid ${theme.line}` }}>
+    <section style={{ position: 'relative', overflow: 'hidden', background: '#F7F8FB', borderBottom: `1px solid ${theme.line}` }}>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: VS_HATCH, pointerEvents: 'none' }} />
-      <div aria-hidden className="sf-vs-wedge" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '19%', background: '#FFFFFF', clipPath: 'polygon(9% 0,100% 0,100% 100%,74% 100%)', pointerEvents: 'none' }} />
-      <div aria-hidden className="sf-vs-wedge" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '16%', background: theme.accent, clipPath: 'polygon(9% 0,100% 0,100% 100%,78% 100%)', pointerEvents: 'none' }} />
-      <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '18%', right: '19%', width: '13%', height: '32%', background: vsDots(hexA(theme.accent, 0.6)), pointerEvents: 'none' }} />
-      {/* The team name, set large and ghosted, sits BEHIND the logo. */}
-      <div aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-        <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: `clamp(44px,${wordVw.toFixed(1)}vw,300px)`, lineHeight: 0.8, letterSpacing: trackVw ? `${trackVw.toFixed(2)}vw` : '-0.01em', marginRight: trackVw ? `-${trackVw.toFixed(2)}vw` : 0, textTransform: 'uppercase', color: hexA(theme.band, 0.2), whiteSpace: 'nowrap' }}>{word}</span>
-      </div>
-      <div style={{ position: 'relative', zIndex: 2, padding: 'clamp(18px,2vw,28px) 24px 0 clamp(14px,1.8vw,36px)' }}>
-        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, maxWidth: '100%', background: theme.accent, color: theme.band, fontFamily: DISPLAY, fontWeight: 700, fontSize: 'clamp(11px,1.25vw,26px)', letterSpacing: 1.8, textTransform: 'uppercase', padding: 'clamp(8px,0.8vw,16px) clamp(14px,1.4vw,28px)' }}>
-          The official {short} team store · Powered by National Sports Apparel
-          <span aria-hidden style={{ opacity: 0.55, letterSpacing: 4 }}>✕✕✕</span>
+      <div aria-hidden className="sf-vs-edge-left" style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: '15%', background: 'repeating-linear-gradient(-55deg, rgba(20,32,26,0.14) 0 3px, transparent 3px 12px)', clipPath: 'polygon(0 0,88% 0,100% 8%,90% 22%,100% 40%,88% 58%,100% 74%,90% 90%,100% 100%,0 100%)', pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-edge-right" style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: '15%', background: theme.accent, opacity: 0.9, clipPath: 'polygon(12% 0,100% 0,100% 100%,10% 100%,0 88%,12% 74%,0 58%,12% 40%,0 22%,12% 8%)', pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '14%', right: '18%', width: 180, height: 200, background: vsDots(hexA(theme.accent, 0.55)), pointerEvents: 'none' }} />
+
+      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: '24px 24px 0', width: '100%' }}>
+        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', maxWidth: '100%', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: '0.14em', textTransform: 'uppercase', padding: '8px 18px', transform: 'skewX(-6deg)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14, transform: 'skewX(6deg)' }}>
+            The official {short} team store · Powered by National Sports Apparel
+            <span aria-hidden style={{ display: 'inline-flex', gap: 8, color: 'rgba(255,255,255,0.8)' }}>✕ ✕ ✕</span>
+          </span>
         </span>
       </div>
-      {/* The logo in front — required by the design. Falls back to the initials
-          crest only when the store has no logo on file. */}
-      <div style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(34px,6vw,120px) 24px clamp(40px,5.5vw,110px)' }}>
-        {store.logo_url
-          ? <img src={store.logo_url} alt={store.name} style={{ width: 'auto', height: 'clamp(170px,20vw,420px)', maxWidth: '46%', objectFit: 'contain', filter: 'drop-shadow(0 10px 26px rgba(20,32,26,0.28))' }} />
-          : <Crest store={store} theme={theme} size={300} />}
+
+      <div className="sf-vs-hero-body" style={{ position: 'relative', maxWidth: 1240, minHeight: 380, margin: '0 auto', padding: '18px 24px 8px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* The team name, set large and ghosted, sits BEHIND the logo. */}
+        <div aria-hidden style={{ position: 'absolute', inset: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', pointerEvents: 'none' }}>
+          <span className="sf-vs-word" style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(120px,21vw,340px)', letterSpacing: '-0.01em', lineHeight: 0.8, textTransform: 'uppercase', color: hexA(theme.band, 0.28), whiteSpace: 'nowrap' }}>{word}</span>
+        </div>
+        {/* The logo in front — required by the design. Falls back to the initials
+            crest only when the store has no logo on file. */}
+        <div className="sf-vs-logo" style={{ position: 'relative', zIndex: 2, width: 300, height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', filter: 'drop-shadow(0 12px 30px rgba(20,32,26,0.28))' }}>
+          {store.logo_url
+            ? <img src={store.logo_url} alt={store.name} style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }} />
+            : <Crest store={store} theme={theme} size={280} />}
+        </div>
       </div>
     </section>
   );
@@ -821,11 +824,11 @@ function VsHero({ store, theme }) {
 function VsMarquee({ theme }) {
   const items = ['Custom Uniforms', 'Sideline Gear', 'Spirit Packs', 'No Minimums'];
   return (
-    <div style={{ background: theme.ink }}>
-      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '18px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(20px,4vw,58px)', flexWrap: 'wrap' }}>
+    <div style={{ position: 'relative', background: theme.ink, borderTop: `4px solid ${theme.accent}` }}>
+      <div style={{ maxWidth: 1240, margin: '0 auto', padding: '15px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px 40px', flexWrap: 'wrap' }}>
         {items.map((t) => (
-          <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 12, fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(15px,1.8vw,21px)', letterSpacing: 1.6, textTransform: 'uppercase', color: '#fff' }}>
-            <span aria-hidden style={{ color: theme.accent, fontSize: '0.95em' }}>★</span>{t}
+          <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 14, fontFamily: DISPLAY, fontWeight: 800, fontSize: 20, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#fff' }}>
+            <span aria-hidden style={{ color: theme.accent }}>★</span>{t}
           </span>
         ))}
       </div>
@@ -1072,7 +1075,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
   // Browse filter: active category + free-text search.
   const q = query.trim().toLowerCase();
   const visible = grouped.filter((g) => {
-    const inCat = cat === 'all' || (g.rep.store_category || '').trim() === cat;
+    const inCat = cat === 'all' || productCategory(g.rep) === cat;
     const inQ = !q || [g.rep.name, g.rep.store_category, g.rep.category].filter(Boolean).some((s) => String(s).toLowerCase().includes(q));
     return inCat && inQ;
   });
@@ -1086,7 +1089,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
     if (!vs) return [];
     const m = new Map();
     for (const g of grouped) {
-      const c = (g.rep.store_category || '').trim();
+      const c = productCategory(g.rep);
       if (!c) continue;
       if (!m.has(c)) m.set(c, { label: c, count: 0, img: null, sort: g.rep.sort_order || 0 });
       const e = m.get(c);
@@ -1148,7 +1151,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
               // When filtered to one category (or searching), show a single grid; the
               // full "All Gear" view splits into the store's category sections.
               const byCat = new Map();
-              for (const g of visible) { const c = (g.rep.store_category || '').trim(); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
+              for (const g of visible) { const c = productCategory(g.rep); if (!byCat.has(c)) byCat.set(c, []); byCat.get(c).push(g); }
               const sections = [...byCat.entries()].map(([c, gs]) => ({ cat: c, gs, minSort: Math.min(...gs.map((x) => x.rep.sort_order || 0)) }));
               sections.sort((a, b) => ((a.cat === '' ? 1 : 0) - (b.cat === '' ? 1 : 0)) || (a.minSort - b.minSort));
               const useCats = !vs && !filtered && (sections.length > 1 || (sections.length === 1 && sections[0].cat));
