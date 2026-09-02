@@ -18,6 +18,7 @@ import { _fetchHistInvoiceLines } from './lib/dbEngine';
 import { applyBulkInvoiceSendHistory, buildBulkInvoiceEmailHtml, buildBulkInvoiceMessages, bulkInvoiceEmailSubject } from './lib/bulkInvoiceEmail';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices } from './lib/promoHistory';
 import { latestMonthlyProfit } from './lib/omgMonthlyProfit';
+import { normalizeOmgStoreCode, validateOmgStoreAssignment, buildOmgStoreAssignment } from './lib/omgStoreAssignment';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -135,7 +136,7 @@ function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onAppl
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,companyInfo,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,onMsg,onInv,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,onOmgStoreSaved,companyInfo,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[yF,setYF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[jSF,setJSF]=useState('open');// Jobs tab status filter: open | done | all
   const[jFil,setJFil]=useState({search:'',deco:'all',art:'all',prod:'all'});// Jobs tab: search + deco/art/product filters
@@ -154,6 +155,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[cwPrompt,setCwPrompt]=useState(null);
   const[custArtFilter,setCustArtFilter]=useState('all');
   const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[custOmgProfits,setCustOmgProfits]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
+  const[omgAssign,setOmgAssign]=useState(null);const[omgAssignSaving,setOmgAssignSaving]=useState(false);const[omgAssignError,setOmgAssignError]=useState('');
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -260,11 +262,42 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
   // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
   // show both store types in one place and jump into either.
-  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,_omg_sale_code').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,channel_type,_omg_sale_code').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
   // Monthly OMG profit snapshots preserve the customer/rep assignment that was in
   // effect at import time. Query by customer snapshot (including child accounts)
   // instead of only by today's store mapping so reassignment does not rewrite history.
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data,error}=await supabase.from('omg_store_profit_snapshots').select('id,store_id,store_code,period_month,is_cumulative,products,product_collected,item_cost,product_profit,margin_pct,refunds,omg_fees,processing_fees,invoiced_fees,net_profit,rep_id,source_mode,validation_status,imported_at').in('customer_id',_ids).order('period_month',{ascending:true});if(!cancelled)setCustOmgProfits(error?[]:(data||[]))})();return()=>{cancelled=true}},[customer.id]);
+  const openOmgAssignment=()=>{
+    const signedInRep=(REPS||[]).find(r=>r.id===cu?.id||(r.email&&cu?.email&&r.email.toLowerCase()===cu.email.toLowerCase()));
+    setOmgAssign({code:'',store_name:(customer.name||'Customer')+' 24/7 Store',rep_id:customer.primary_rep_id||signedInRep?.id||''});
+    setOmgAssignError('');
+  };
+  const saveOmgAssignment=async()=>{
+    if(!supabase){setOmgAssignError('Database connection is unavailable.');return}
+    const form={code:omgAssign?.code,storeName:omgAssign?.store_name,customerId:customer.id,repId:omgAssign?.rep_id};
+    const invalid=validateOmgStoreAssignment(form);if(invalid){setOmgAssignError(invalid);return}
+    const code=normalizeOmgStoreCode(form.code);setOmgAssignSaving(true);setOmgAssignError('');
+    try{
+      const{data:existing,error:lookupError}=await supabase.from('omg_stores').select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,channel_type,_omg_sale_code').eq('_omg_sale_code',code).maybeSingle();
+      if(lookupError)throw lookupError;
+      if(existing?.customer_id&&existing.customer_id!==customer.id){
+        const owner=(allCustomers||[]).find(c=>c.id===existing.customer_id);
+        throw new Error(code+' is already assigned to '+(owner?.name||'another customer')+'. Open that customer to change it.');
+      }
+      const assignment=buildOmgStoreAssignment({...form,existing});
+      const payload={id:assignment.id,_omg_sale_code:assignment._omg_sale_code,store_name:assignment.store_name,customer_id:assignment.customer_id,rep_id:assignment.rep_id,channel_type:assignment.channel_type,status:assignment.status,open_date:assignment.open_date};
+      const request=existing
+        ?supabase.from('omg_stores').update(payload).eq('id',existing.id)
+        :supabase.from('omg_stores').insert(payload);
+      const{data:saved,error:saveError}=await request.select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,channel_type,_omg_sale_code').single();
+      if(saveError)throw saveError;
+      const merged={...(existing||{}),...saved};
+      setCustOmgStores(prev=>prev.some(s=>s.id===merged.id)?prev.map(s=>s.id===merged.id?merged:s):[merged,...prev]);
+      onOmgStoreSaved&&onOmgStoreSaved(merged);
+      setOmgAssign(null);nf&&nf(code+' assigned to '+customer.name);
+    }catch(error){setOmgAssignError(error?.message||'Could not assign this OMG store.')}
+    finally{setOmgAssignSaving(false)}
+  };
   // Live order totals per web store (orders, gross, fundraising, units) so the Stores tab
   // can show sales/order numbers inline and in the expandable reporting row — same "real
   // demand only" filter the close-sweep uses (drop cancelled / never-paid carts).
@@ -798,9 +831,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const caret=ex=><span style={{display:'inline-block',width:12,color:'#94a3b8',fontSize:9,transform:ex?'rotate(90deg)':'none',transition:'transform .15s'}}>▶</span>;
     const metric=(label,val)=><div key={label} style={{minWidth:84}}><div style={{fontSize:9.5,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3}}>{label}</div><div style={{fontSize:15,fontWeight:800,color:'#0f172a',marginTop:1}}>{val}</div></div>;
     const detailRow=(cols,metrics)=><tr><td colSpan={cols} style={{padding:0,background:'#f8fafc',borderTop:'1px solid #eef2f7'}}><div style={{display:'flex',flexWrap:'wrap',gap:22,padding:'12px 34px'}}>{metrics.filter(Boolean)}</div></td></tr>;
-    if(!ws.length&&!omg.length)return<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet.</div></div>;
     const wsCols=8+(isP?1:0);
     return <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div className="card">
+        <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+          <div><h2>OMG 24/7 Store Assignment</h2><div style={{fontSize:11,color:'#64748b',fontWeight:500,marginTop:2}}>Add the five-character OMG code once. Monthly profit imports will automatically use this customer and sales rep.</div></div>
+          <button className="btn btn-sm btn-primary" onClick={openOmgAssignment}>Add 24/7 store</button>
+        </div>
+      </div>
+      {!ws.length&&!omg.length&&<div className="card"><div style={{padding:28,textAlign:'center',color:'#64748b',fontSize:13}}>No web stores or OMG stores for this account yet. Add the OMG code above when the 24/7 store is created.</div></div>}
       {ws.length>0&&<div className="card"><div className="card-header"><h2>Web Stores ({ws.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
         <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th>{isP&&<th style={th}>Director</th>}<th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
           {ws.map(s=>{const a=wsAgg[s.id]||{};const ex=stExpanded.has(s.id);return <React.Fragment key={s.id}>
@@ -827,7 +866,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');const snapshots=profitByStore[s.id]||[];const profit=latestMonthlyProfit(snapshots);const latest=profit.current;const shownProfit=profit.netProfit==null?(latest?.net_profit??null):profit.netProfit;const totalLabel=latest?.is_cumulative?'Cumulative':'Month';return <React.Fragment key={s.id}>
             <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
               <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
-              <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}</td>
+              <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}{s.channel_type==='24/7'&&<span style={{marginLeft:7,padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:800,background:'#ede9fe',color:'#6d28d9'}}>24/7</span>}</td>
               <td style={{...td,fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{s._omg_sale_code||'—'}</td>
               <td style={td}>{chip(s.status)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.open_date)}</td>
@@ -842,6 +881,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </tbody></table>
         <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Nightly API rows show the current calendar month directly. Manual cumulative imports use the change from the prior snapshot; the first one is a baseline.</div>
       </div></div>}
+      {omgAssign&&<div className="modal-overlay" style={{zIndex:70}} onClick={()=>!omgAssignSaving&&setOmgAssign(null)}>
+        <div className="modal" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
+          <div className="modal-header"><h2 style={{fontSize:16}}>Assign OMG 24/7 store</h2><button className="modal-close" disabled={omgAssignSaving} onClick={()=>setOmgAssign(null)}>x</button></div>
+          <div className="modal-body" style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{padding:'9px 11px',borderRadius:7,background:'#f8fafc',fontSize:11.5,color:'#475569'}}>This permanently maps the OMG code to <strong>{customer.name}</strong>. Future monthly imports use the mapping automatically.</div>
+            <label><span className="form-label">OMG store code</span><input autoFocus value={omgAssign.code} maxLength={5} onChange={e=>setOmgAssign(v=>({...v,code:normalizeOmgStoreCode(e.target.value).slice(0,5)}))} placeholder="5YP6D" style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,fontFamily:'monospace',fontWeight:800,textTransform:'uppercase'}}/></label>
+            <label><span className="form-label">Store name</span><input value={omgAssign.store_name} onChange={e=>setOmgAssign(v=>({...v,store_name:e.target.value}))} placeholder="Customer 24/7 Store" style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6}}/></label>
+            <label><span className="form-label">Sales rep</span><select value={omgAssign.rep_id} onChange={e=>setOmgAssign(v=>({...v,rep_id:e.target.value}))} style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6}}><option value="">Select rep…</option>{(REPS||[]).filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
+            {omgAssignError&&<div style={{padding:'8px 10px',borderRadius:6,background:'#fef2f2',color:'#b91c1c',fontSize:11.5,fontWeight:600}}>{omgAssignError}</div>}
+          </div>
+          <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}><button className="btn btn-primary" disabled={omgAssignSaving} onClick={saveOmgAssignment}>{omgAssignSaving?'Assigning…':'Assign store'}</button><button className="btn btn-secondary" disabled={omgAssignSaving} onClick={()=>setOmgAssign(null)}>Cancel</button></div>
+        </div>
+      </div>}
     </div>;
   })()}
   {/* PROMO DOLLARS TAB */}
