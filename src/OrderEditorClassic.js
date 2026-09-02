@@ -1285,7 +1285,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // SanMar nests image fields in productImageInfo — flatten before reading (same fields as the catalog builder).
             const raw=prodItems[0];const it={...(raw.productBasicInfo||{}),...(raw.productImageInfo||{}),...raw};
             // Prefer the full-resolution product image over the thumbnail — the mock canvas is large.
-            front=it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.thumbnailImage||it.colorSwatchImage||'';
+            front=it.frontFlat||it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.thumbnailImage||it.colorSwatchImage||'';
             back=it.colorProductImageBack||it.colorProductBackImage||it.colorProductImageBackThumbnail||'';
           }
         }catch(e){console.warn('[SM] Image fetch error for',sku,e.message)}
@@ -2110,14 +2110,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           styleName:(it.brandName||it.brand||'')+' '+(it.productTitle||it.styleName||it.description||query),
           brandName:it.brandName||it.brand||'',
           sku:sid,
-          styleImage:it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.thumbnailImage||'',
+          styleImage:it.frontFlat||it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.thumbnailImage||'',
           customerPrice:0,piecePrice:0,totalQty:0,
           colors:{},_source:'sm',_availSizes:it.availableSizes||''
         };
         const cKey=sid+'|'+color;
         if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
           colorName:color,
-          colorFrontImage:it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.colorSwatchImage||'',
+          colorFrontImage:it.frontFlat||it.colorProductImage||it.productImage||it.colorProductImageThumbnail||it.colorSwatchImage||'',
           colorBackImage:it.colorProductImageBack||it.colorProductBackImage||it.colorProductImageBackThumbnail||'',
           customerPrice:0,
           piecePrice:0,
