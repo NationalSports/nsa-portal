@@ -17,6 +17,7 @@ import { supabase } from './lib/supabase';
 import { _fetchHistInvoiceLines } from './lib/dbEngine';
 import { applyBulkInvoiceSendHistory, buildBulkInvoiceEmailHtml, buildBulkInvoiceMessages, bulkInvoiceEmailSubject } from './lib/bulkInvoiceEmail';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices } from './lib/promoHistory';
+import { latestMonthlyProfit } from './lib/omgMonthlyProfit';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -152,7 +153,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // (or create a new one). { title, onPick(cwName), onPickNew(name) }.
   const[cwPrompt,setCwPrompt]=useState(null);
   const[custArtFilter,setCustArtFilter]=useState('all');
-  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
+  const[subsCollapsed,setSubsCollapsed]=useState(true);const[custWebstores,setCustWebstores]=useState([]);const[custOmgStores,setCustOmgStores]=useState([]);const[custOmgProfits,setCustOmgProfits]=useState([]);const[wsAgg,setWsAgg]=useState({});const[stExpanded,setStExpanded]=useState(()=>new Set());
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
@@ -259,7 +260,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
   // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
   // show both store types in one place and jump into either.
-  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('omg_stores').select('id,store_name,customer_id,rep_id,status,open_date,close_date,orders,total_sales,fundraise_total,items_sold,unique_buyers,delivery_mode,_omg_sale_code').in('customer_id',_ids).order('open_date',{ascending:false});if(!cancelled&&data)setCustOmgStores(data)})();return()=>{cancelled=true}},[customer.id]);
+  // Monthly OMG profit snapshots preserve the customer/rep assignment that was in
+  // effect at import time. Query by customer snapshot (including child accounts)
+  // instead of only by today's store mapping so reassignment does not rewrite history.
+  useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data,error}=await supabase.from('omg_store_profit_snapshots').select('id,store_id,store_code,period_month,is_cumulative,products,product_collected,item_cost,product_profit,margin_pct,refunds,omg_fees,processing_fees,invoiced_fees,net_profit,rep_id,source_mode,validation_status,imported_at').in('customer_id',_ids).order('period_month',{ascending:true});if(!cancelled)setCustOmgProfits(error?[]:(data||[]))})();return()=>{cancelled=true}},[customer.id]);
   // Live order totals per web store (orders, gross, fundraising, units) so the Stores tab
   // can show sales/order numbers inline and in the expandable reporting row — same "real
   // demand only" filter the close-sweep uses (drop cancelled / never-paid carts).
@@ -784,6 +789,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const chip=(status)=>{const st=(status||'').toLowerCase();const m=st==='open'?{bg:'#dcfce7',c:'#166534'}:st==='closed'?{bg:'#fee2e2',c:'#dc2626'}:{bg:'#f1f5f9',c:'#64748b'};return <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:m.bg,color:m.c,textTransform:'capitalize'}}>{status||'—'}</span>};
     const openFirst=arr=>[...arr].sort((a,b)=>((a.status||'').toLowerCase()==='open'?0:1)-((b.status||'').toLowerCase()==='open'?0:1));
     const ws=openFirst(custWebstores||[]);const omg=openFirst(custOmgStores||[]);
+    const profitByStore=(custOmgProfits||[]).reduce((out,row)=>{(out[row.store_id]||(out[row.store_id]=[])).push(row);return out},{});
     const th={padding:'8px 12px',textAlign:'left',fontSize:10.5,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.3};
     const thR={...th,textAlign:'right'};
     const td={padding:'8px 12px'};
@@ -817,21 +823,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Sales are live order totals (excludes cancelled / unpaid carts). Open a store for full reporting.</div>
       </div></div>}
       {omg.length>0&&<div className="card"><div className="card-header"><h2>OMG Stores ({omg.length})</h2></div><div className="card-body" style={{padding:0,overflowX:'auto'}}>
-        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={thR}>Orders</th><th style={thR}>Sales</th><th style={th}></th></tr></thead><tbody>
-          {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');return <React.Fragment key={s.id}>
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr><th style={{...th,width:24}}></th><th style={th}>Store</th><th style={th}>Code</th><th style={th}>Status</th><th style={th}>Opens</th><th style={th}>Closes</th><th style={thR}>Orders</th><th style={thR}>Sales</th><th style={thR}>Latest profit</th><th style={th}></th></tr></thead><tbody>
+          {omg.map(s=>{const ex=stExpanded.has(s.id);const deliv=s.delivery_mode==='deliver_club'?'Deliver to club':s.delivery_mode==='ship_home'?'Ship to home':(s.delivery_mode||'—');const snapshots=profitByStore[s.id]||[];const profit=latestMonthlyProfit(snapshots);const latest=profit.current;const shownProfit=profit.netProfit==null?(latest?.net_profit??null):profit.netProfit;const totalLabel=latest?.is_cumulative?'Cumulative':'Month';return <React.Fragment key={s.id}>
             <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
               <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
               <td style={{...td,fontWeight:700,color:'#7c3aed'}}>{s.store_name}</td>
+              <td style={{...td,fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{s._omg_sale_code||'—'}</td>
               <td style={td}>{chip(s.status)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.open_date)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.close_date)}</td>
               <td style={{...tdR,color:'#64748b'}}>{s.orders||0}</td>
               <td style={{...tdR,fontWeight:700}}>{money(s.total_sales)}</td>
+              <td style={{...tdR,fontWeight:800,color:shownProfit==null?'#94a3b8':shownProfit>=0?'#166534':'#dc2626'}}>{shownProfit==null?'—':money(shownProfit)}{profit.baseline&&<div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>baseline</div>}</td>
               <td style={{...tdR,whiteSpace:'nowrap'}} onClick={e=>e.stopPropagation()}>{onOpenOmgStore&&<button className="btn btn-sm btn-secondary" onClick={()=>onOpenOmgStore(s.id)}>Open store →</button>}</td>
             </tr>
-            {ex&&detailRow(8,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv)])}
+            {ex&&detailRow(10,[metric('Orders',s.orders||0),metric('Items sold',s.items_sold||0),metric('Sales',money(s.total_sales)),metric('Fundraising',money(s.fundraise_total)),metric('Buyers',s.unique_buyers||0),metric('Delivery',deliv),latest?metric('Profit month',String(latest.period_month).slice(0,7)):null,latest?metric(totalLabel+' collected',money(latest.product_collected)):null,latest?metric(totalLabel+' item cost',money(latest.item_cost)):null,latest?metric(totalLabel+' product profit',money(latest.product_profit)):null,profit.netProfit!=null?metric('Monthly profit after fees',money(profit.netProfit)):null,latest?.source_mode?metric('Source',latest.source_mode==='omg_api'?'Nightly OMG API':'Manual import'):null,latest?.validation_status==='held'?metric('Commission','On hold'):null,profit.baseline?metric('Monthly calculation','Baseline saved'):null])}
           </React.Fragment>;})}
         </tbody></table>
+        <div style={{padding:'7px 14px',fontSize:11,color:'#94a3b8',borderTop:'1px solid #f1f5f9'}}>Nightly API rows show the current calendar month directly. Manual cumulative imports use the change from the prior snapshot; the first one is a baseline.</div>
       </div></div>}
     </div>;
   })()}

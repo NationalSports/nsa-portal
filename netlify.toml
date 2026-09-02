@@ -132,6 +132,12 @@
 [functions."commission-report-reminder"]
   schedule = "0 14 1 * *"
 
+# OMG profit sync — nightly at 10:30 UTC (~2:30-3:30 AM PT). Refreshes mapped
+# store profit, keeps a daily audit trail, and freezes the prior month's store
+# commission before the 1st-of-month commission review reminder runs.
+[functions."omg-profit-sync-cron"]
+  schedule = "30 10 * * *"
+
 # Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
 # recap of the prior PT day's orders across their stores (+ any that closed).
 # Reps with no activity get nothing.

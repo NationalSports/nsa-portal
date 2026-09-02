@@ -415,6 +415,7 @@ const CustDetail = lazyRetry(() => import('./CustDetail'));
 const CoachPortal = lazyRetry(() => import('./CoachPortal'));
 const Webstores = lazyRetry(() => import('./Webstores'));
 const OmgOrderPortal = lazyRetry(() => import('./OmgOrderPortal'));
+const OmgMonthlyProfitImport = lazyRetry(() => import('./OmgMonthlyProfitImport'));
 const SalesHistory = lazyRetry(() => import('./SalesHistory'));
 const MarketingPage = lazyRetry(() => import('./MarketingPage'));
 const QBPage = lazyRetry(() => import('./QBPage'));
@@ -18868,6 +18869,12 @@ export default function App(){
         <button className="btn btn-primary" style={{background:'#166534',whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 18px'}} onClick={()=>{setOmgIngestUrl('');setOmgIngestOpen(true)}} title="Paste an OMG report link to ingest its items into a new store — review & fix SKUs, then create it">📥 Ingest OMG Store</button>
         <span style={{fontSize:12,color:'#64748b'}}>Paste a shared OMG report link to pull its products into a new store — you'll review &amp; fix SKUs, then it's created.</span>
       </div>
+
+      <ComponentErrorBoundary name="OMG Monthly Profit">
+        <React.Suspense fallback={<LazyFallback/>}>
+          <OmgMonthlyProfitImport stores={omgStores} customers={cust} reps={REPS} currentUser={cu} notify={nf}/>
+        </React.Suspense>
+      </ComponentErrorBoundary>
 
       {/* Ingest modal — paste the report link */}
       {omgIngestOpen&&<div className="modal-overlay" onClick={()=>{if(!omgReportLoading)setOmgIngestOpen(false)}}>
