@@ -18,7 +18,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
 jest.mock('@supabase/supabase-js', () => ({ createClient: jest.fn() }));
 
 jest.mock('stripe', () => {
-  const paymentIntents = { create: jest.fn(), retrieve: jest.fn() };
+  const paymentIntents = { create: jest.fn(), retrieve: jest.fn(), cancel: jest.fn() };
   // Plain function, NOT jest.fn(): react-scripts runs jest with resetMocks,
   // which would wipe a mock factory's implementation before every test and
   // make stripe(sk) return undefined. The inner jest.fn()s are re-primed in
@@ -137,6 +137,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   calcTaxSpy = jest.spyOn(ws, 'calcTax').mockResolvedValue(TAX);
   stripeMock.__pi.create.mockResolvedValue({ id: 'pi_1', client_secret: 'cs_1' });
+  stripeMock.__pi.cancel.mockResolvedValue({ id: 'pi_1', status: 'canceled' });
 });
 afterEach(() => { calcTaxSpy.mockRestore(); });
 
@@ -288,6 +289,20 @@ describe('place_order', () => {
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body).error).toMatch(/card payment/i);
     expect(rollbackSpy).toHaveBeenCalledWith(expect.anything(), 'ord1');
+    rollbackSpy.mockRestore();
+  });
+
+  test('a PaymentIntent link failure cancels the orphan before rolling the order back', async () => {
+    const rollbackSpy = jest.spyOn(ws, 'rollbackOrder').mockResolvedValue(undefined);
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb({
+      ...placeScript(),
+      'webstore_orders.update': [{ data: null, error: { message: 'link write failed' } }],
+    });
+    const res = await ts.placeOrder(sb, placeBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(502);
+    expect(stripeMock.__pi.cancel).toHaveBeenCalledWith('pi_1');
+    expect(rollbackSpy).toHaveBeenCalledWith(sb, 'ord1');
     rollbackSpy.mockRestore();
   });
 

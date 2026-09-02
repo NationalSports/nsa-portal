@@ -43,6 +43,26 @@ const buildRefundItemAllocations = (amountCents, requested, itemRows) => {
 };
 exports.buildRefundItemAllocations = buildRefundItemAllocations;
 
+// Refunds are normally few, but this guard is money-facing: paginate instead
+// of assuming the first 100 rows contain every prior refund on the intent.
+const listIntentRefunds = async (client, paymentIntentId, maxPages = 20) => {
+  const all = [];
+  let startingAfter;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await client.refunds.list({
+      payment_intent: paymentIntentId,
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    const rows = (result && result.data) || [];
+    all.push(...rows);
+    if (!result || !result.has_more || !rows.length) return all;
+    startingAfter = rows[rows.length - 1].id;
+  }
+  throw new Error('Too many prior refunds to verify safely');
+};
+exports.listIntentRefunds = listIntentRefunds;
+
 // Hard ceiling on a single PaymentIntent — override with STRIPE_MAX_AMOUNT_CENTS.
 const MAX_AMOUNT_CENTS = parseInt(process.env.STRIPE_MAX_AMOUNT_CENTS || '', 10) || 5000000; // $50,000
 
@@ -298,10 +318,53 @@ exports.handler = async (event) => {
       const total = Number(order.original_total != null ? order.original_total : order.total) || 0;
       const already = Number(order.refunded_amt) || 0;
       const remainingCents = Math.round((total - already) * 100);
-      if (remainingCents <= 0) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'This order is already fully refunded.' }) };
       let cents = amount_cents != null ? Math.round(Number(amount_cents)) : remainingCents; // default: full remaining
       if (!Number.isFinite(cents) || cents <= 0) return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Enter a valid amount.' }) };
-      if (cents > remainingCents) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the refundable balance.' }) };
+
+      // Detect Stripe money that exists but has not reached our ledger before
+      // allowing another refund. New refunds carry their attempt id in Stripe
+      // metadata, so the SAME attempt can resume the DB write; a different
+      // attempt is blocked until the webhook/retry records the first one.
+      let resumedStripeRefund = null;
+      if (order.stripe_pi_id) {
+        let allStripeRefunds;
+        try { allStripeRefunds = await listIntentRefunds(client, order.stripe_pi_id); }
+        catch (e) { return { statusCode: 502, headers: corsHeaders(), body: JSON.stringify({ error: 'Could not verify prior refunds: ' + e.message }) }; }
+        const { data: recorded, error: recordedErr } = await admin.from('webstore_order_refunds')
+          .select('stripe_refund_id').eq('order_id', order.id);
+        if (recordedErr) return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: 'Could not verify the refund ledger: ' + recordedErr.message }) };
+        const recordedIds = new Set((recorded || []).map((row) => row.stripe_refund_id).filter(Boolean));
+        resumedStripeRefund = allStripeRefunds.find((refund) => refund.metadata
+          && refund.metadata.webstore_refund_attempt_id === String(attempt_id)) || null;
+        if (resumedStripeRefund && Number(resumedStripeRefund.amount) !== cents) {
+          return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'This refund attempt was already used for a different amount.' }) };
+        }
+        if (resumedStripeRefund && recordedIds.has(resumedStripeRefund.id)) {
+          return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({
+            ok: true, kind: 'card', stripe_refund_id: resumedStripeRefund.id,
+            replayed: true, notified: null,
+          }) };
+        }
+        const anotherUnrecorded = allStripeRefunds.find((refund) => !recordedIds.has(refund.id)
+          && (!resumedStripeRefund || refund.id !== resumedStripeRefund.id));
+        if (anotherUnrecorded) {
+          return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({
+            error: 'A prior Stripe refund is still being recorded. Refresh this order before issuing another refund.',
+          }) };
+        }
+      }
+
+      if (!resumedStripeRefund) {
+        const expectedCents = Math.round(Number(body.expected_refunded_cents));
+        if (!Number.isFinite(expectedCents) || expectedCents < 0) {
+          return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'expected_refunded_cents required' }) };
+        }
+        if (expectedCents !== Math.round(already * 100)) {
+          return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'Refund totals changed. Refresh the order before issuing another refund.' }) };
+        }
+        if (remainingCents <= 0) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'This order is already fully refunded.' }) };
+        if (cents > remainingCents) return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: 'Amount exceeds the refundable balance.' }) };
+      }
 
       // Item links are optional for a genuine order-level adjustment. When present,
       // each selected quantity must already be cancelled by the transactional item
@@ -329,14 +392,24 @@ exports.handler = async (event) => {
       let stripeRefundId, kind;
       if (order.stripe_pi_id) {
         kind = 'card';
-        try {
-          const refund = await client.refunds.create(
-            { payment_intent: order.stripe_pi_id, amount: cents },
-            { idempotencyKey: 'wsrefund_' + attempt_id }, // same click retried → same Stripe refund
-          );
-          stripeRefundId = refund.id;
-        } catch (e) {
-          return { statusCode: 502, headers: corsHeaders(), body: JSON.stringify({ error: 'Stripe refund failed: ' + e.message }) };
+        if (resumedStripeRefund) stripeRefundId = resumedStripeRefund.id;
+        else {
+          try {
+            const refund = await client.refunds.create(
+              {
+                payment_intent: order.stripe_pi_id,
+                amount: cents,
+                metadata: {
+                  webstore_order_id: String(order.id),
+                  webstore_refund_attempt_id: String(attempt_id),
+                },
+              },
+              { idempotencyKey: 'wsrefund_' + attempt_id }, // same click retried → same Stripe refund
+            );
+            stripeRefundId = refund.id;
+          } catch (e) {
+            return { statusCode: 502, headers: corsHeaders(), body: JSON.stringify({ error: 'Stripe refund failed: ' + e.message }) };
+          }
         }
       } else {
         kind = 'credit'; // team-tab: stable synthetic id so a retried click dedupes
@@ -354,6 +427,13 @@ exports.handler = async (event) => {
       }
       if (rpc && rpc.ok === false) {
         return { statusCode: 409, headers: corsHeaders(), body: JSON.stringify({ error: rpc.error === 'exceeds_total' ? 'Amount exceeds the refundable balance.' : (rpc.error || 'Refund rejected.'), ...rpc }) };
+      }
+
+      if (rpc && rpc.duplicate) {
+        return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({
+          ok: true, kind, stripe_refund_id: stripeRefundId, replayed: true,
+          notified: null, item_allocations: refundItems.length, ...rpc,
+        }) };
       }
 
       // Tell the family. Money moved and it's recorded, so from here everything is

@@ -173,6 +173,18 @@ async function processShipStationPayload(sb, payload) {
   return stats;
 }
 
+// Desk/bagging label creation already has the complete ShipStation response in
+// hand. Record it immediately instead of depending on an eventually-delivered
+// SHIP_NOTIFY webhook. The webhook may still arrive later; shipment-id/tracking
+// dedupe makes that replay refresh the same ledger row.
+async function processDirectShipment(sb, order, sh) {
+  const shipment = await recordShipment(sb, order, sh);
+  await reconcileOrderTracker(sb, order, sh);
+  await reconcileOrderCosts(sb, order);
+  const notification = await queueShipmentEmail(sb, order, shipment);
+  return { shipment, notification };
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return result(405, { error: 'Method not allowed' });
 
@@ -258,6 +270,10 @@ async function reconcileSoShipping(sb, order) {
 }
 
 module.exports.processShipStationPayload = processShipStationPayload;
+module.exports.processDirectShipment = processDirectShipment;
 module.exports.recordShipment = recordShipment;
+module.exports.reconcileOrderTracker = reconcileOrderTracker;
+module.exports.reconcileOrderCosts = reconcileOrderCosts;
+module.exports.queueShipmentEmail = queueShipmentEmail;
 module.exports.reconcileSoShipping = reconcileSoShipping;
 module.exports.isDuplicate = isDuplicate;
