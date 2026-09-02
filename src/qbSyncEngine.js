@@ -134,7 +134,13 @@ export function createQBSyncEngine(ctx){
     let accountCache=null;
     const requiredAccountRefs=async(keys)=>{
       if(!accountCache)accountCache=await loadQBAccounts(qbApi);
-      return resolveQBAccountRefs(accountCache,qbConfig.mapping,keys);
+      const refs=resolveQBAccountRefs(accountCache,qbConfig.mapping,keys);
+      // accountNumber is portal-only verification metadata. QBO ReferenceType
+      // write payloads accept the entity ID, but reject unknown properties such
+      // as accountNumber with validation fault 2010.
+      return Object.fromEntries(Object.entries(refs).map(([key,ref])=>[
+        key,{value:String(ref.value)},
+      ]));
     };
     // Invoices/estimates must carry an ItemRef for their income account to be
     // deterministic. This service item is the controlled fallback when a portal
