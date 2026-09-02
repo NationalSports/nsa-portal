@@ -3896,8 +3896,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Team-tab extras = the tab orders' tax/shipping/processing beyond their
     // product (+fundraise) share. The auto-invoice adds these on top of the SO's
     // product lines so the club's open balance equals the team-tab gross.
-    const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
-    const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
@@ -3906,16 +3904,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
     const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
       batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
-      // Money split for the automatic invoice+settle: Stripe-collected card total,
-      // team-tab gross still owed by the club, and the tab's tax/ship/processing extras.
-      settle: { cardTotal, tabTotal, tabExtras } });
+      // The server derives the settlement split again from these locked orders; no
+      // client-supplied money total is trusted at the accounting boundary.
+      order_ids: [...selIds] });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
-    // Idempotent link: only claim orders still unbatched, so a concurrent batch
-    // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).is('backorder_of', null).select('id');
-    if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
-    else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
-    else flash(`Created ${soId} · linked ${bOrders.length} orders`);
+    // onCreateSO now returns only after the server atomically links every selected
+    // order and records the invoice/payment + fundraising credit.
+    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded`);
     loadDetail(sel);
     }; // end proceed
 
