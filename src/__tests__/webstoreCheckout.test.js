@@ -31,6 +31,26 @@ describe('r2 rounding', () => {
   });
 });
 
+describe('storeOrderWindowError — server-authoritative order window', () => {
+  const now = Date.parse('2026-09-01T20:00:00.000Z');
+
+  test('accepts an open store inside its configured window', () => {
+    expect(checkout.storeOrderWindowError({ status: 'open', open_at: '2026-09-01T19:00:00.000Z', close_at: '2026-09-01T21:00:00.000Z' }, now)).toBeNull();
+  });
+
+  test('rejects a scheduled store even if status was prematurely set open', () => {
+    expect(checkout.storeOrderWindowError({ status: 'open', open_at: '2026-09-01T21:00:00.000Z' }, now)).toMatch(/open for orders yet/i);
+  });
+
+  test('rejects a past-close store even before the hourly close sweep flips status', () => {
+    expect(checkout.storeOrderWindowError({ status: 'open', close_at: '2026-09-01T20:00:00.000Z' }, now)).toMatch(/has closed/i);
+  });
+
+  test('keeps status itself authoritative for draft/closed stores', () => {
+    expect(checkout.storeOrderWindowError({ status: 'draft' }, now)).toMatch(/isn’t open/i);
+  });
+});
+
 describe('effFund — per-item vs store rule', () => {
   test('per-item amount always wins', () => {
     expect(checkout.effFund({ fundraise_enabled: true, fundraise_pct: 50 }, { fundraise_amount: 7, retail_price: 20 })).toBe(7);

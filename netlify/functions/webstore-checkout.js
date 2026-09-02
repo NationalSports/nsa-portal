@@ -31,6 +31,15 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const INVENTORY_RETRY_ERROR = 'We could not verify inventory right now. Please wait a moment and try checkout again.';
 const escapeIlikeLiteral = (value) => String(value).replace(/[\\%_]/g, '\\$&');
 
+function storeOrderWindowError(store, nowMs = Date.now()) {
+  if (!store || store.status !== 'open') return 'This store isn’t open for orders right now.';
+  const openMs = store.open_at ? Date.parse(store.open_at) : NaN;
+  if (Number.isFinite(openMs) && openMs > nowMs) return 'This store isn’t open for orders yet.';
+  const closeMs = store.close_at ? Date.parse(store.close_at) : NaN;
+  if (Number.isFinite(closeMs) && closeMs <= nowMs) return 'This store has closed for orders.';
+  return null;
+}
+
 // Effective per-item fundraising. Mirrors webstore_storefront_products
 // (migration 047) EXACTLY so the price charged equals the price the storefront
 // shows. A per-item fundraise_amount > 0 is the override and always wins;
@@ -563,7 +572,8 @@ async function placeOrder(sb, body) {
   const dup = await findOrderByClientRef(sb, clientRef);
   if (dup) return replayOrder(dup);
 
-  if (store.status !== 'open') return bad(409, 'This store isn’t open for orders right now.');
+  const windowError = storeOrderWindowError(store);
+  if (windowError) return bad(409, windowError);
 
   if (!buyer || !String(buyer.name || '').trim() || !/.+@.+\..+/.test(String(buyer.email || ''))) return bad(400, 'Please provide your name and a valid email.');
   const needAddr = store.delivery_mode === 'ship_home';
@@ -1166,6 +1176,7 @@ module.exports.couponDiscount = couponDiscount;
 module.exports.escapeIlikeLiteral = escapeIlikeLiteral;
 module.exports.loadCoupon = loadCoupon;
 module.exports.buildOrderItems = buildOrderItems;
+module.exports.storeOrderWindowError = storeOrderWindowError;
 module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
 module.exports.shipFee = shipFee;

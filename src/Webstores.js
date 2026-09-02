@@ -1824,7 +1824,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j && j.notified) flash('Store closed — rep notified + to-do created');
-    } catch (e) { /* close already succeeded; the to-do/email is best-effort here */ }
+      else if (!r.ok) flash('Store closed — staff notification is queued for the hourly retry');
+    } catch (e) { flash('Store closed — staff notification is queued for the hourly retry'); }
   }, [flash]);
 
   const saveStore = useCallback(async (form, existingId) => {
