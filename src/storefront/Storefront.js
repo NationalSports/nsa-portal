@@ -152,6 +152,12 @@ function StoreStyles() {
           .sf-vs-nav{display:none !important}
           .sf-vs-dots{display:none !important}
         }
+        /* Between phone and full desktop widths, long official-store ribbons
+           need a second line. Keeping the inner copy nowrap here lets it escape
+           the banner and disappear against the notched color field. */
+        @media (min-width:601px) and (max-width:923px){
+          .sf-vs-ribbon>span{white-space:normal !important}
+        }
         @media (max-width:860px){
           .sf-showcase .sf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
           .sf-hero-grid{grid-template-columns:1fr !important}
@@ -626,6 +632,7 @@ export default function Storefront() {
   })();
   // Category clicks always land on the browse grid (sub-nav is persistent chrome).
   const onCat = (c) => { setCat(c); if (route.view !== 'home') navTo('/shop/' + store.slug); else document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }); };
+  const resetBrowse = () => { setQuery(''); onCat('all'); };
   return (
     <div className={`sf-root${theme.varsity ? ' sf-vs' : ''}${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
       <StoreStyles />
@@ -637,8 +644,10 @@ export default function Storefront() {
                 Sections grid, so there is no separate category sub-nav. */}
             <VsHeader store={store} theme={theme} cartCount={cartCount(cart)} collapsed={scrolled}
               query={query} setQuery={(v) => { setQuery(v); if (v && route.view !== 'home') navTo('/shop/' + store.slug); }}
-              onAllItems={() => onCat('all')}
+              onAllItems={resetBrowse}
               onCategories={() => {
+                setQuery('');
+                setCat('all');
                 if (route.view !== 'home') navTo('/shop/' + store.slug);
                 // A store with one (or no) category renders no Featured Sections
                 // block, so fall back to the grid rather than no-op the nav item.
@@ -657,7 +666,7 @@ export default function Storefront() {
       {store.presentation_preview && <AppearancePreviewBanner mode={store.presentation_mode} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} onCat={onCat} onResetFilters={resetBrowse} query={query} />}
         {route.view === 'p' && (() => {
           const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
           const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
@@ -1086,7 +1095,7 @@ function splitHeadline(name) {
 }
 
 // ── Home: hero + grid ────────────────────────────────────────────────
-function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', onCat = null, query = '' }) {
+function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExtras = [], cat = 'all', onCat = null, onResetFilters = null, query = '' }) {
   const grouped = groupProducts(products);
   // wpById also resolves archived items kept alive only inside a package, so package
   // previews keep their custom photo/name even though those items aren't in the grid.
@@ -1157,7 +1166,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
               <div style={{ display: 'flex', alignItems: 'center', gap: 22, flexWrap: 'wrap' }}>
                 <span style={eyebrowType}>{visible.length} product{visible.length === 1 ? '' : 's'}</span>
                 {filtered && onCat && (
-                  <button onClick={() => onCat('all')} style={{ background: 'none', border: 'none', padding: '0 0 4px', cursor: 'pointer', fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', color: theme.band, borderBottom: `2px solid ${theme.accent}` }}>Show all items</button>
+                  <button onClick={() => onResetFilters ? onResetFilters() : onCat('all')} style={{ background: 'none', border: 'none', padding: '0 0 4px', cursor: 'pointer', fontFamily: DISPLAY, fontSize: 14, fontWeight: 700, letterSpacing: 1.6, textTransform: 'uppercase', color: theme.band, borderBottom: `2px solid ${theme.accent}` }}>Show all items</button>
                 )}
               </div>
             )} />
@@ -2051,7 +2060,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
   // Personalized items (a specific jersey number/name) and packs are 1-of-a-kind.
   const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name || (Array.isArray(l.option_selections) && l.option_selections.length > 0);
   const heading = <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Your Cart<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>;
-  if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Start with the Player Pack</SkewBtn></div></div>;
+  if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Browse the Store</SkewBtn></div></div>;
 
   const thumb = (img, kind) => <div style={{ width: 52, height: 52, borderRadius: 6, background: theme.warm, overflow: 'hidden', flexShrink: 0, display: 'grid', placeItems: 'center' }}>{img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={kind || 'top'} />}</div>;
   const optLabel = (parts) => parts.filter(Boolean).join(' · ');
