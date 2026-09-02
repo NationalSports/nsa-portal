@@ -833,7 +833,7 @@ function VsHero({ store, theme }) {
         </div>
         {/* The logo in front — required by the design. Falls back to the initials
             crest only when the store has no logo on file. */}
-        <div className="sf-vs-logo" style={{ position: 'relative', zIndex: 2, width: 300, height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', filter: 'drop-shadow(0 12px 30px rgba(20,32,26,0.28))' }}>
+        <div className="sf-vs-logo" style={{ position: 'relative', zIndex: 2, width: 300, height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', transform: 'translateY(12px)', filter: `drop-shadow(0 9px 12px ${hexA(theme.band, 0.34)})` }}>
           {store.logo_url
             ? <img src={store.logo_url} alt={store.name} style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }} />
             : <Crest store={store} theme={theme} size={280} />}
