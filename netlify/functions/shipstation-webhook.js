@@ -1,246 +1,263 @@
-// ShipStation shipment webhook → emails the buyer when their webstore order
-// ships, including tracking and the exact items in THAT shipment (so partial
-// shipments only list what went out). Also records the shipment and marks the
-// shipped line items.
+// ShipStation SHIP_NOTIFY webhook for webstore orders.
 //
-// Setup:
-//   In ShipStation → Settings → Integrations → Webhooks, add a webhook for
-//   "On Items Shipped" (SHIP_NOTIFY) pointing to:
-//     https://<your-site>/.netlify/functions/shipstation-webhook
-//   Requires env: SHIPSTATION_API_KEY, SHIPSTATION_API_SECRET,
-//   REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
-//   BREVO_API_KEY, and PORTAL_PUBLIC_URL (or Netlify's URL).
+// The shipment ledger, item tracker, cost roll-up, and notification obligation
+// are all made retry-safe. Any failure before the notification is durably queued
+// returns HTTP 500 so ShipStation retries. Once queued, Brevo delivery may fail
+// independently and the five-minute outbox worker resumes it.
+
 const { createClient } = require('@supabase/supabase-js');
 const { planShipmentLineUpdates } = require('./_webstoreShipment');
+const { processNotificationByDedupe } = require('./_webstoreNotifications');
 
-const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const HEADERS = { 'Content-Type': 'application/json' };
 
-function trackingUrl(carrier, num) {
-  const c = (carrier || '').toLowerCase();
-  if (!num) return '';
-  if (c.includes('fedex')) return `https://www.fedex.com/fedextrack/?trknbr=${num}`;
-  if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${num}`;
-  if (c.includes('usps') || c.includes('stamps')) return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${num}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(num)}`;
+function result(statusCode, body) {
+  return { statusCode, headers: HEADERS, body: JSON.stringify(body) };
+}
+
+function isDuplicate(error) {
+  return error && (error.code === '23505' || /duplicate|unique/i.test(error.message || ''));
+}
+
+async function maybeOne(query, label) {
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new Error(`${label}: ${error.message}`);
+  return data || null;
+}
+
+async function findShipment(sb, ssShipmentId, tracking) {
+  if (ssShipmentId) {
+    const found = await maybeOne(
+      sb.from('webstore_shipments').select('id,emailed').eq('ss_shipment_id', ssShipmentId),
+      'Could not check existing ShipStation shipment',
+    );
+    if (found) return found;
+  }
+  if (tracking) {
+    return maybeOne(
+      sb.from('webstore_shipments').select('id,emailed').eq('tracking_number', tracking),
+      'Could not check existing tracking number',
+    );
+  }
+  return null;
+}
+
+function shipmentItems(shipment) {
+  return (shipment.shipmentItems || []).map((item) => ({
+    sku: item.sku || null,
+    name: item.name || null,
+    qty: Math.max(0, Number(item.quantity) || 0),
+    image: item.imageUrl || null,
+    lineItemKey: item.lineItemKey || null,
+    options: Array.isArray(item.options) ? item.options : [],
+  }));
+}
+
+async function recordShipment(sb, order, sh) {
+  const tracking = sh.trackingNumber || null;
+  const ssShipmentId = sh.shipmentId != null ? String(sh.shipmentId) : null;
+  const items = shipmentItems(sh);
+  const cost = (Number(sh.shipmentCost) || 0) + (Number(sh.insuranceCost) || 0);
+  const patch = {
+    order_id: order.id,
+    store_id: order.store_id,
+    tracking_number: tracking,
+    ss_shipment_id: ssShipmentId,
+    carrier: sh.carrierCode || null,
+    service: sh.serviceCode || null,
+    ship_date: sh.shipDate || null,
+    items,
+    cost: cost || null,
+  };
+
+  let existing = await findShipment(sb, ssShipmentId, tracking);
+  if (existing) {
+    const { error } = await sb.from('webstore_shipments').update(patch).eq('id', existing.id);
+    if (error) throw new Error(`Could not refresh shipment ${ssShipmentId || tracking || existing.id}: ${error.message}`);
+    return { id: existing.id, emailed: Boolean(existing.emailed), items, tracking };
+  }
+
+  const { data, error } = await sb.from('webstore_shipments').insert({ ...patch, emailed: false }).select('id,emailed').single();
+  if (!error && data) return { id: data.id, emailed: Boolean(data.emailed), items, tracking };
+  if (!isDuplicate(error)) throw new Error(`Could not record shipment ${ssShipmentId || tracking || ''}: ${error && error.message}`);
+
+  // A concurrent webhook delivery won the unique-key race. Resume from its row
+  // instead of treating that as completion; the other worker may have stopped
+  // before item reconciliation or notification queueing.
+  existing = await findShipment(sb, ssShipmentId, tracking);
+  if (!existing) throw new Error(`Shipment race could not be recovered for ${ssShipmentId || tracking || ''}`);
+  const { error: updateError } = await sb.from('webstore_shipments').update(patch).eq('id', existing.id);
+  if (updateError) throw new Error(`Could not refresh raced shipment ${existing.id}: ${updateError.message}`);
+  return { id: existing.id, emailed: Boolean(existing.emailed), items, tracking };
+}
+
+async function reconcileOrderTracker(sb, order, sh) {
+  const { data: allShipments, error: shipmentsError } = await sb.from('webstore_shipments').select('items').eq('order_id', order.id);
+  if (shipmentsError) throw new Error(`Could not load shipment ledger: ${shipmentsError.message}`);
+  const { data: orderItems, error: orderItemsError } = await sb.from('webstore_order_items')
+    .select('id,sku,size,qty,is_bundle_parent,line_status,shipped_qty').eq('order_id', order.id);
+  if (orderItemsError) throw new Error(`Could not load order items: ${orderItemsError.message}`);
+
+  const lines = (orderItems || []).filter((item) => !item.is_bundle_parent && item.line_status !== 'cancelled');
+  const updates = planShipmentLineUpdates(lines, allShipments || []);
+  for (const update of updates) {
+    const patch = {
+      shipped_qty: update.shipped_qty,
+      ...(update.line_status === 'shipped' ? { line_status: 'shipped' } : {}),
+    };
+    const { error } = await sb.from('webstore_order_items').update(patch).eq('id', update.id);
+    if (error) throw new Error(`Could not update shipped line ${update.id}: ${error.message}`);
+    const line = lines.find((item) => String(item.id) === String(update.id));
+    if (line) Object.assign(line, patch);
+  }
+
+  const fullyShipped = lines.length > 0 && lines.every((item) =>
+    Number(item.shipped_qty || 0) >= Number(item.qty || 0));
+  const orderPatch = {
+    tracking_number: sh.trackingNumber || null,
+    carrier: sh.carrierCode || null,
+    ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}),
+  };
+  const { error: orderError } = await sb.from('webstore_orders').update(orderPatch).eq('id', order.id);
+  if (orderError) throw new Error(`Could not update order tracker: ${orderError.message}`);
+}
+
+async function reconcileOrderCosts(sb, order) {
+  const { data: shipments, error } = await sb.from('webstore_shipments').select('cost').eq('order_id', order.id);
+  if (error) throw new Error(`Could not load shipment costs: ${error.message}`);
+  const actual = (shipments || []).reduce((sum, shipment) => sum + (Number(shipment.cost) || 0), 0);
+  const { error: orderError } = await sb.from('webstore_orders').update({ label_cost: actual || null }).eq('id', order.id);
+  if (orderError) throw new Error(`Could not reconcile order shipping cost: ${orderError.message}`);
+  await reconcileSoShipping(sb, order);
+}
+
+async function queueShipmentEmail(sb, order, shipment) {
+  // Preserve the old emailed=true marker when replaying historical webhooks.
+  // New sends complete the outbox and this marker in one database transaction.
+  if (shipment.emailed) return { queued: false, reason: 'already_emailed' };
+  const dedupeKey = `shipment_customer_email:${shipment.id}`;
+  const { error } = await sb.from('webstore_notification_outbox').upsert({
+    kind: 'shipment_customer_email',
+    dedupe_key: dedupeKey,
+    order_id: order.id,
+    shipment_id: shipment.id,
+  }, { onConflict: 'dedupe_key', ignoreDuplicates: true });
+  if (error) throw new Error(`Could not queue shipment notification: ${error.message}`);
+
+  // Low-latency attempt; a provider failure is already durable and the sweep
+  // will retry it, so it does not need to fail the ShipStation webhook.
+  const delivery = await processNotificationByDedupe(sb, dedupeKey);
+  return { queued: true, delivery };
+}
+
+async function processShipStationPayload(sb, payload) {
+  const stats = { received: 0, processed: 0, ignored: 0, notificationsQueued: 0 };
+  for (const sh of payload.shipments || []) {
+    stats.received += 1;
+    if (sh.voided) { stats.ignored += 1; continue; }
+    const orderNumber = String(sh.orderNumber || '');
+    if (!orderNumber.startsWith('WS-')) { stats.ignored += 1; continue; }
+    const orderId = orderNumber.slice(3);
+    if (!orderId) { stats.ignored += 1; continue; }
+
+    const order = await maybeOne(sb.from('webstore_orders').select('*').eq('id', orderId), `Could not load webstore order ${orderId}`);
+    if (!order) throw new Error(`Webstore order ${orderId} not found`);
+
+    const shipment = await recordShipment(sb, order, sh);
+    await reconcileOrderTracker(sb, order, sh);
+    await reconcileOrderCosts(sb, order);
+    const notification = await queueShipmentEmail(sb, order, shipment);
+    if (notification.queued) stats.notificationsQueued += 1;
+    stats.processed += 1;
+  }
+  return stats;
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
+  if (event.httpMethod !== 'POST') return result(405, { error: 'Method not allowed' });
 
-  const KEY = process.env.SHIPSTATION_API_KEY, SECRET = process.env.SHIPSTATION_API_SECRET;
-  const url = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
-  const skey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!KEY || !SECRET || !url || !skey) return { statusCode: 500, body: 'Webhook not configured' };
+  const apiKey = process.env.SHIPSTATION_API_KEY;
+  const apiSecret = process.env.SHIPSTATION_API_SECRET;
+  const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!apiKey || !apiSecret || !supabaseUrl || !serviceKey) return result(500, { error: 'Webhook not configured' });
 
-  // Authenticate the caller. The endpoint is otherwise open to the internet, so we
-  // require a shared secret that only ShipStation's configured webhook URL carries
-  // (append ?token=<SHIPSTATION_WEBHOOK_SECRET> to the URL in ShipStation's settings).
-  // FAIL-CLOSED: an unset secret rejects every call rather than silently accepting
-  // all of them — an unauthenticated caller could otherwise drive order/shipment
-  // writes and buyer emails off forged payloads. If shipping emails ever stop after
-  // a deploy, check that SHIPSTATION_WEBHOOK_SECRET is set in Netlify AND the same
-  // token is on the webhook URL in ShipStation → Settings → Integrations → Webhooks.
-  const whSecret = process.env.SHIPSTATION_WEBHOOK_SECRET;
-  if (!whSecret) {
-    console.error('[shipstation-webhook] SHIPSTATION_WEBHOOK_SECRET not configured — rejecting all calls (fail-closed)');
-    return { statusCode: 401, body: 'Webhook secret not configured' };
+  // Fail closed: ShipStation's configured webhook URL must include the same
+  // secret stored in Netlify (…/shipstation-webhook?token=<secret>).
+  const webhookSecret = process.env.SHIPSTATION_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.error('[shipstation-webhook] SHIPSTATION_WEBHOOK_SECRET not configured');
+    return result(401, { error: 'Webhook secret not configured' });
   }
-  {
-    const q = event.queryStringParameters || {};
-    const provided = q.token || q.secret || '';
-    if (provided !== whSecret) return { statusCode: 401, body: 'Unauthorized' };
-  }
+  const query = event.queryStringParameters || {};
+  if ((query.token || query.secret || '') !== webhookSecret) return result(401, { error: 'Unauthorized' });
 
   let body;
-  try { body = JSON.parse(event.body || '{}'); } catch { return { statusCode: 400, body: 'Bad JSON' }; }
-  // Only act on shipment events.
-  if (body.resource_type && body.resource_type !== 'SHIP_NOTIFY') return { statusCode: 200, body: 'ignored' };
-  if (!body.resource_url) return { statusCode: 200, body: 'no resource_url' };
+  try { body = JSON.parse(event.body || '{}'); } catch (_) { return result(400, { error: 'Bad JSON' }); }
+  if (body.resource_type && body.resource_type !== 'SHIP_NOTIFY') return result(200, { ignored: true });
+  if (!body.resource_url) return result(400, { error: 'resource_url required' });
 
-  const auth = Buffer.from(`${KEY}:${SECRET}`).toString('base64');
-  const sb = createClient(url, skey, { auth: { autoRefreshToken: false, persistSession: false } });
-
-  // SSRF guard: resource_url is attacker-controllable, and we attach the ShipStation
-  // Basic-auth credentials to the fetch. Only ever call ShipStation's own API host,
-  // over https, and never follow a redirect off it — otherwise a caller could point
-  // resource_url at their own server (or an open redirect) and capture the credentials.
-  let apiUrl;
-  try { apiUrl = new URL(body.resource_url); } catch { return { statusCode: 400, body: 'Bad resource_url' }; }
-  if (apiUrl.protocol !== 'https:' || apiUrl.hostname.toLowerCase() !== 'ssapi.shipstation.com') {
-    return { statusCode: 400, body: 'resource_url host not allowed' };
+  // The URL is attacker-controllable and receives ShipStation Basic auth. Only
+  // fetch its exact API host over TLS, without following redirects.
+  let resourceUrl;
+  try { resourceUrl = new URL(body.resource_url); } catch (_) { return result(400, { error: 'Bad resource_url' }); }
+  if (resourceUrl.protocol !== 'https:' || resourceUrl.hostname.toLowerCase() !== 'ssapi.shipstation.com') {
+    return result(400, { error: 'resource_url host not allowed' });
   }
-  apiUrl.searchParams.set('includeShipmentItems', 'true');
+  resourceUrl.searchParams.set('includeShipmentItems', 'true');
 
+  const sb = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
+  const auth = Buffer.from(`${apiKey}:${apiSecret}`).toString('base64');
   try {
-    // Pull the shipments referenced by this event, with their line items.
-    const res = await fetch(apiUrl.toString(), { headers: { Authorization: `Basic ${auth}` }, redirect: 'error' });
-    const data = await res.json();
-    const shipments = data.shipments || [];
-
-    for (const sh of shipments) {
-      if (sh.voided) continue;
-      const orderNumber = sh.orderNumber || '';
-      if (!orderNumber.startsWith('WS-')) continue; // not one of ours
-      const orderId = orderNumber.slice(3);
-      if (!orderId) continue;
-
-      // Match back to the webstore order (orderNumber = 'WS-' + order id).
-      const { data: orders } = await sb.from('webstore_orders').select('*').eq('id', orderId).limit(1);
-      const order = orders && orders[0];
-      if (!order) continue;
-
-      const tracking = sh.trackingNumber || null;
-      // Idempotency: prefer ShipStation's own shipment id — it's present even when a
-      // shipment has NO tracking number, which the old tracking-only dedup missed,
-      // letting a webhook redelivery insert a duplicate (double cost + false shipped).
-      // Fall back to tracking for shipments/records without a shipment id.
-      const ssShipmentId = sh.shipmentId != null ? String(sh.shipmentId) : null;
-      if (ssShipmentId) {
-        const { data: existing } = await sb.from('webstore_shipments').select('id').eq('ss_shipment_id', ssShipmentId).limit(1);
-        if (existing && existing.length) continue;
-      } else if (tracking) {
-        const { data: existing } = await sb.from('webstore_shipments').select('id').eq('tracking_number', tracking).limit(1);
-        if (existing && existing.length) continue;
-      }
-
-      const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null, lineItemKey: i.lineItemKey || null }));
-      const shipmentCost = (Number(sh.shipmentCost) || 0) + (Number(sh.insuranceCost) || 0); // ShipStation's actual billed cost
-      // The unique index on ss_shipment_id is the concurrency belt: a racing
-      // redelivery's insert errors out (ignored) instead of duplicating the row.
-      const { error: shipmentInsertError } = await sb.from('webstore_shipments').insert({
-        order_id: order.id, store_id: order.store_id, tracking_number: tracking, ss_shipment_id: ssShipmentId,
-        carrier: sh.carrierCode || null, service: sh.serviceCode || null, ship_date: sh.shipDate || null,
-        items: shipItems, cost: shipmentCost || null, emailed: false,
-      });
-      if (shipmentInsertError) {
-        // A concurrent webhook delivery may have won the unique-key race. It
-        // already performed reconciliation, so do not double-email the buyer.
-        if (/duplicate|unique/i.test(shipmentInsertError.message || '')) continue;
-        throw new Error(`Could not record shipment ${ssShipmentId || tracking || ''}: ${shipmentInsertError.message}`);
-      }
-
-      // Recompute shipped quantity per line from ALL recorded shipments for this
-      // order (authoritative + idempotent even if the webhook double-fires).
-      // Match by lineItemKey — the order-item id we set when creating the order —
-      // so partial shipments, incl. the same SKU in different sizes, are exact.
-      const { data: allShips } = await sb.from('webstore_shipments').select('items').eq('order_id', order.id);
-      const { data: orderItems, error: orderItemsError } = await sb.from('webstore_order_items').select('id,sku,size,qty,is_bundle_parent,line_status,shipped_qty').eq('order_id', order.id);
-      if (orderItemsError) throw new Error(`Could not load shipment items: ${orderItemsError.message}`);
-      const lines = (orderItems || []).filter((i) => !i.is_bundle_parent);
-      const lineUpdates = planShipmentLineUpdates(lines, allShips || []);
-      for (const update of lineUpdates) {
-        const patch = { shipped_qty: update.shipped_qty, ...(update.line_status === 'shipped' ? { line_status: 'shipped' } : {}) };
-        const { error: lineError } = await sb.from('webstore_order_items').update(patch).eq('id', update.id);
-        if (lineError) throw new Error(`Could not mark shipped line ${update.id}: ${lineError.message}`);
-        const line = lines.find((i) => String(i.id) === String(update.id));
-        if (line) { line.shipped_qty = update.shipped_qty; line.line_status = update.line_status; }
-      }
-      // Stamp the order fully shipped only once every (non-bundle) line is shipped.
-      const fullyShipped = lines.length > 0 && lines.every((i) => i.line_status === 'shipped');
-      await sb.from('webstore_orders').update({ tracking_number: tracking, carrier: sh.carrierCode || null, ...(fullyShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', order.id);
-
-      // Reconcile ACTUAL shipping cost: set the order's label_cost to the sum of
-      // its recorded shipments (real billed amounts), then roll the whole Sales
-      // Order's shipping cost up from its orders.
-      const { data: ordShips } = await sb.from('webstore_shipments').select('cost').eq('order_id', order.id);
-      const orderActual = (ordShips || []).reduce((a, s) => a + (Number(s.cost) || 0), 0);
-      await sb.from('webstore_orders').update({ label_cost: orderActual || null }).eq('id', order.id);
-      await reconcileSoShipping(sb, order);
-
-      // Email the buyer.
-      if (order.buyer_email) await sendShipEmail(sb, order, sh, shipItems, tracking);
-    }
-  } catch (e) {
-    console.error('[shipstation-webhook] error:', e.message);
+    const response = await fetch(resourceUrl.toString(), {
+      headers: { Authorization: `Basic ${auth}` },
+      redirect: 'error',
+    });
+    if (!response.ok) throw new Error(`ShipStation returned HTTP ${response.status}`);
+    const payload = await response.json();
+    const stats = await processShipStationPayload(sb, payload);
+    return result(200, { received: true, ...stats });
+  } catch (error) {
+    console.error('[shipstation-webhook] error:', error.message || error);
+    // Non-2xx is intentional: ShipStation must retry any processing failure.
+    return result(500, { received: false, error: 'Shipment processing failed; retry required' });
   }
-  return { statusCode: 200, body: JSON.stringify({ received: true }) };
 };
 
-// Set the linked Sales Order's outbound shipping cost to the sum of ACTUAL
-// label costs across all of its orders. Webstore orders link via so_id; OMG
-// shadow orders link via the store's omg_sale_code -> sales_orders.omg_store_id.
+// Set the linked Sales Order's outbound shipping cost to the sum of actual
+// label costs across all webstore orders tied to that SO/store.
 async function reconcileSoShipping(sb, order) {
-  try {
-    let soId = order.so_id || null;
-    let orderIds = [];
-    if (soId) {
-      const { data } = await sb.from('webstore_orders').select('id').eq('so_id', soId);
-      orderIds = (data || []).map((o) => o.id);
-    } else {
-      const { data: stores } = await sb.from('webstores').select('source,omg_sale_code').eq('id', order.store_id).limit(1);
-      const store = stores && stores[0];
-      if (!store || store.source !== 'omg' || !store.omg_sale_code) return;
-      const { data: sos } = await sb.from('sales_orders').select('id').eq('omg_store_id', 'OMG-sale_' + store.omg_sale_code).order('created_at', { ascending: false }).limit(1);
-      if (!sos || !sos[0]) return;
-      soId = sos[0].id;
-      const { data } = await sb.from('webstore_orders').select('id').eq('store_id', order.store_id);
-      orderIds = (data || []).map((o) => o.id);
-    }
-    if (!soId || !orderIds.length) return;
-    const { data: ships } = await sb.from('webstore_shipments').select('cost').in('order_id', orderIds);
-    const total = (ships || []).reduce((a, s) => a + (Number(s.cost) || 0), 0);
-    await sb.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
-  } catch (e) {
-    console.error('[shipstation-webhook] reconcile error:', e.message);
+  let soId = order.so_id || null;
+  let orderIds = [];
+  if (soId) {
+    const { data, error } = await sb.from('webstore_orders').select('id').eq('so_id', soId);
+    if (error) throw new Error(`Could not load Sales Order webstore orders: ${error.message}`);
+    orderIds = (data || []).map((row) => row.id);
+  } else {
+    const store = await maybeOne(
+      sb.from('webstores').select('source,omg_sale_code').eq('id', order.store_id),
+      'Could not load OMG store link',
+    );
+    if (!store || store.source !== 'omg' || !store.omg_sale_code) return;
+    const { data: salesOrders, error: salesOrderError } = await sb.from('sales_orders').select('id')
+      .eq('omg_store_id', `OMG-sale_${store.omg_sale_code}`).order('created_at', { ascending: false }).limit(1);
+    if (salesOrderError) throw new Error(`Could not load linked Sales Order: ${salesOrderError.message}`);
+    if (!salesOrders || !salesOrders[0]) return;
+    soId = salesOrders[0].id;
+    const { data, error } = await sb.from('webstore_orders').select('id').eq('store_id', order.store_id);
+    if (error) throw new Error(`Could not load store orders: ${error.message}`);
+    orderIds = (data || []).map((row) => row.id);
   }
+  if (!soId || !orderIds.length) return;
+  const { data: shipments, error } = await sb.from('webstore_shipments').select('cost').in('order_id', orderIds);
+  if (error) throw new Error(`Could not load Sales Order shipment costs: ${error.message}`);
+  const total = (shipments || []).reduce((sum, shipment) => sum + (Number(shipment.cost) || 0), 0);
+  const { error: updateError } = await sb.from('sales_orders')
+    .update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', soId);
+  if (updateError) throw new Error(`Could not reconcile Sales Order shipping cost: ${updateError.message}`);
 }
 
-async function sendShipEmail(sb, order, sh, shipItems, tracking) {
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey) return;
-  const { data: stores } = await sb.from('webstores').select('name,slug,primary_color,accent_color,logo_url').eq('id', order.store_id).limit(1);
-  const store = stores && stores[0]; if (!store) return;
-
-  // Is this the whole order, or a partial shipment?
-  const { data: allItems } = await sb.from('webstore_order_items').select('sku,is_bundle_parent').eq('order_id', order.id);
-  const totalLines = (allItems || []).filter((i) => !i.is_bundle_parent).length;
-  const partial = totalLines > 0 && shipItems.length > 0 && shipItems.length < totalLines;
-
-  const rows = shipItems.map((i) => {
-    const img = i.image
-      ? `<td style="width:52px;padding:7px 10px 7px 0;border-bottom:1px solid #eef1f5"><img src="${i.image}" width="44" height="44" style="width:44px;height:44px;object-fit:cover;border-radius:6px;display:block;background:#f4f6f9"></td>`
-      : `<td style="width:52px;padding:7px 10px 7px 0;border-bottom:1px solid #eef1f5"></td>`;
-    return `<tr>${img}<td style="padding:7px 0;border-bottom:1px solid #eef1f5">${i.name || i.sku || 'Item'}</td><td style="padding:7px 0;border-bottom:1px solid #eef1f5;text-align:right;color:#64748b">×${i.qty || 1}</td></tr>`;
-  }).join('');
-  const tUrl = trackingUrl(sh.carrierCode, tracking);
-  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
-  const orderLink = `${portal}/shop/${store.slug}/order/${order.id}`;
-  const accent = store.accent_color || '#e11d2a';
-  const carrierName = (sh.carrierCode || '').toUpperCase().replace('STAMPS_COM', 'USPS');
-  const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
-  const logoBar = `<table width="100%" style="border-collapse:collapse"><tr>
-      <td align="left" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-radius:10px 0 0 0"><a href="https://nationalsportsapparel.com" style="display:block"><img src="${nsaLogo}" alt="National Sports Apparel" height="32" style="height:32px;display:block;border:none"></a></td>
-      <td align="right" style="padding:12px 20px;background:#fff;border:1px solid #eef1f5;border-bottom:none;border-left:none;border-radius:0 10px 0 0">${store.logo_url ? `<img src="${store.logo_url}" alt="${store.name}" height="40" style="height:40px;max-width:130px;object-fit:contain;display:inline-block">` : `<span style="font-weight:800;color:#0b1220">${store.name}</span>`}</td>
-    </tr></table>`;
-
-  const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
-    ${logoBar}
-    <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
-      <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
-      <div style="font-size:22px;font-weight:800;margin-top:4px">${partial ? 'Part of your order shipped' : 'Your order shipped'} 📦</div>
-    </div>
-    <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
-      <p style="margin:0 0 14px">Hi ${order.buyer_name || ''}, ${partial ? 'some of your items are on the way' : 'your order is on the way'}!</p>
-      ${tracking ? `<div style="background:#f8fafc;border:1px solid #eef1f5;border-radius:8px;padding:12px 14px;margin-bottom:16px">
-        <div style="font-size:12px;color:#64748b">${carrierName || 'Carrier'} tracking</div>
-        <div style="font-size:16px;font-weight:800;margin:2px 0 8px">${tracking}</div>
-        ${tUrl ? `<a href="${tUrl}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:10px 20px;border-radius:8px;font-weight:700">Track package</a>` : ''}
-      </div>` : ''}
-      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#64748b;margin-bottom:4px">${partial ? 'Items in this shipment' : 'Items shipped'}</div>
-      <table style="width:100%;border-collapse:collapse;font-size:14px">${rows}</table>
-      ${partial ? `<p style="font-size:13px;color:#64748b;margin-top:14px">Your remaining items will ship separately — you'll get another email when they do.</p>` : ''}
-      <p style="margin-top:18px"><a href="${orderLink}" style="color:${accent}">View your full order</a></p>
-    </div></div>`;
-
-  await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-    body: JSON.stringify({
-      sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-      to: [{ email: order.buyer_email, name: order.buyer_name || '' }],
-      subject: `${partial ? 'Part of your' : 'Your'} ${store.name} order shipped`,
-      htmlContent: html,
-    }),
-  });
-  if (tracking) await sb.from('webstore_shipments').update({ emailed: true }).eq('tracking_number', tracking);
-}
+module.exports.processShipStationPayload = processShipStationPayload;
+module.exports.recordShipment = recordShipment;
+module.exports.reconcileSoShipping = reconcileSoShipping;
+module.exports.isDuplicate = isDuplicate;

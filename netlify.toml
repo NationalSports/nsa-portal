@@ -301,3 +301,9 @@
 [functions."gmail-ai-sync"]
   schedule = "*/5 * * * *"
   timeout = 26
+
+# Durable webstore notification retry queue. Customer replies and shipment
+# emails are persisted before delivery; this sweep retries provider/API failures.
+[functions."webstore-notification-sweep"]
+  schedule = "*/5 * * * *"
+  timeout = 26
