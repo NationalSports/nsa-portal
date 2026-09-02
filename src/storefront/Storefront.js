@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, PaymentElement, ExpressCheckoutElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { webstorePublicData } from '../lib/webstorePublicData';
@@ -2227,6 +2227,26 @@ function couponDiscount(coupon, cart, shipping = 0) {
 // Elements never re-initializes and wipes the buyer's input as the tax total updates.
 const STRIPE_ADDR_OPTS = { mode: 'payment', amount: 100, currency: 'usd', appearance: { theme: 'stripe' } };
 
+// A prominent wallet surface for mobile checkout. Apple Pay is allowed on every
+// Stripe-supported Apple browser (including compatible macOS Chromium); Stripe
+// still hides it when the device, currency, account, or registered domain is not
+// eligible. Keep redirect-based methods out of this element because the webstore
+// finalizes successful PaymentIntents in place and already has a card/ACH fallback.
+const EXPRESS_CHECKOUT_OPTS = {
+  buttonHeight: 52,
+  buttonTheme: { applePay: 'black', googlePay: 'black' },
+  buttonType: { applePay: 'check-out', googlePay: 'checkout' },
+  layout: { maxColumns: 1, maxRows: 2, overflow: 'auto' },
+  paymentMethods: {
+    applePay: 'always',
+    googlePay: 'auto',
+    link: 'auto',
+    paypal: 'never',
+    amazonPay: 'never',
+    klarna: 'never',
+  },
+};
+
 // If the Stripe address widget ever fails to render/init, fall back to the plain ZIP
 // input so club-delivery checkout can never be *blocked* by this enhancement.
 class StripeFieldBoundary extends React.Component {
@@ -2515,14 +2535,25 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   );
 }
 
-function CardForm({ theme, onPaid, onProcessing }) {
+export function CardForm({ theme, onPaid, onProcessing }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const pay = async () => {
+  // null = the wallet iframe is still checking this browser; false collapses it
+  // completely when no express method is eligible, so card checkout never gains
+  // an empty placeholder on unsupported devices.
+  const [expressAvailable, setExpressAvailable] = useState(null);
+  const pay = async (submitExpress = false) => {
     if (!stripe || !elements) return;
     setBusy(true); setErr('');
+    // Express Checkout's confirm event represents a wallet authorization. Stripe
+    // requires the shared Elements group to be submitted before confirmPayment;
+    // the regular PaymentElement path continues to let confirmPayment submit it.
+    if (submitExpress) {
+      const { error: submitError } = await elements.submit();
+      if (submitError) { setErr(submitError.message || 'Payment details could not be submitted.'); setBusy(false); return; }
+    }
     const { error, paymentIntent } = await stripe.confirmPayment({ elements, redirect: 'if_required' });
     if (error) { setErr(error.message || 'Payment failed.'); setBusy(false); return; }
     if (paymentIntent && paymentIntent.status === 'succeeded') { await onPaid(paymentIntent.id); }
@@ -2540,9 +2571,18 @@ function CardForm({ theme, onPaid, onProcessing }) {
   };
   return (
     <div>
+      <div style={{ visibility: expressAvailable ? 'visible' : 'hidden', height: expressAvailable === false ? 0 : 'auto', minHeight: expressAvailable === null ? 52 : 0, overflow: 'hidden', marginBottom: expressAvailable ? 18 : 0 }}>
+        <ExpressCheckoutElement
+          options={EXPRESS_CHECKOUT_OPTS}
+          onReady={({ availablePaymentMethods }) => setExpressAvailable(!!availablePaymentMethods && Object.values(availablePaymentMethods).some(Boolean))}
+          onLoadError={() => setExpressAvailable(false)}
+          onConfirm={() => pay(true)}
+        />
+      </div>
+      {expressAvailable && <div aria-hidden style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '0 0 18px', color: '#94a3b8', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8 }}><span style={{ height: 1, background: '#e2e8f0', flex: 1 }} /><span>Or pay another way</span><span style={{ height: 1, background: '#e2e8f0', flex: 1 }} /></div>}
       <PaymentElement />
       {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 8 }}>{err}</div>}
-      <button className="sf-btn" onClick={pay} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
+      <button className="sf-btn" onClick={() => pay(false)} disabled={busy} style={{ ...cta(theme), opacity: busy ? 0.5 : 1, marginTop: 14 }}>{busy ? 'Processing…' : 'Pay now'}</button>
     </div>
   );
 }
