@@ -737,7 +737,7 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
   const navStyle = { background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'rgba(255,255,255,0.88)', fontFamily: DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: 1.6, textTransform: 'uppercase' };
   return (
     <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
-      <div className="sf-vs-hdr" style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '10px 24px' : '16px 24px', display: 'flex', alignItems: 'center', gap: 13, transition: 'padding .2s ease' }}>
+      <div className="sf-vs-hdr" style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '10px 24px' : 'clamp(14px,2vw,40px) 24px', display: 'flex', alignItems: 'center', gap: 13, transition: 'padding .2s ease' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 13, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
           <span className="sf-vs-crest" style={{ display: 'flex', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5 }}><Crest store={store} theme={theme} size={collapsed ? 30 : 40} /></span>
           <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? 'clamp(16px,4vw,21px)' : 'clamp(18px,4.6vw,27px)', fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', color: '#fff', lineHeight: 1.02, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
@@ -759,7 +759,7 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
           Cart · {cartCount}
         </button>
       </div>
-      <span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 'clamp(140px,21%,300px)', height: 4, background: theme.accent }} />
+      <span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 'clamp(90px,11%,200px)', height: 4, background: theme.accent }} />
     </header>
   );
 }
@@ -770,29 +770,34 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
 function VsHero({ store, theme }) {
   const word = mascotWord(store.name);
   const short = storeShortName(store.name);
-  // The word has to span the hero without spilling out of it, and team names run
-  // from "OWLS" to "THUNDERBIRDS" — so size it by length rather than with one
-  // fixed clamp. Barlow Condensed 800 uppercase averages ~0.72em per character,
-  // so ~120/len vw fills roughly 86% of the viewport at any word length.
-  const wordVw = word.length ? Math.min(19, 120 / word.length) : 19;
+  // The word has to span the hero the way the design draws it — about 80% of the
+  // viewport — without spilling out, and team names run from "OWLS" to
+  // "THUNDERBIRDS", so size it by length rather than with one fixed clamp.
+  // Barlow Condensed 800 uppercase advances ~0.473em per character — measured on
+  // the loaded webfont at a size the clamp was not capping, since both a fallback
+  // face and a clamped size read narrower and skew the constant. ~170/len vw lands
+  // on 80% at any length; the 30vw ceiling keeps a very short mascot ("OWLS")
+  // from outgrowing the hero's height.
+  const wordVw = word.length ? Math.min(30, 170 / word.length) : 30;
   return (
     <section style={{ position: 'relative', overflow: 'hidden', background: '#F1F2EF', borderBottom: `1px solid ${theme.line}` }}>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: VS_HATCH, pointerEvents: 'none' }} />
-      <div aria-hidden className="sf-vs-wedge" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '20%', background: theme.accent, clipPath: 'polygon(42% 0,100% 0,100% 100%,0 100%)', pointerEvents: 'none' }} />
-      <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '20%', right: '19%', width: 270, height: 180, background: vsDots(hexA(theme.accent, 0.6)), pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-wedge" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '19%', background: '#FFFFFF', clipPath: 'polygon(9% 0,100% 0,100% 100%,74% 100%)', pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-wedge" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '16%', background: theme.accent, clipPath: 'polygon(9% 0,100% 0,100% 100%,78% 100%)', pointerEvents: 'none' }} />
+      <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '18%', right: '19%', width: '13%', height: '32%', background: vsDots(hexA(theme.accent, 0.6)), pointerEvents: 'none' }} />
       {/* The team name, set large and ghosted, sits BEHIND the logo. */}
       <div aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-        <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: `clamp(56px,${wordVw.toFixed(1)}vw,250px)`, lineHeight: 0.8, letterSpacing: '-0.01em', textTransform: 'uppercase', color: hexA(theme.band, 0.2), whiteSpace: 'nowrap' }}>{word}</span>
+        <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: `clamp(60px,${wordVw.toFixed(1)}vw,560px)`, lineHeight: 0.8, letterSpacing: '-0.01em', textTransform: 'uppercase', color: hexA(theme.band, 0.2), whiteSpace: 'nowrap' }}>{word}</span>
       </div>
       <div style={{ position: 'relative', zIndex: 2, padding: 'clamp(18px,2vw,28px) 24px 0 clamp(14px,1.8vw,36px)' }}>
-        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, maxWidth: '100%', background: theme.accent, color: theme.band, fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1.8, textTransform: 'uppercase', padding: '10px 18px' }}>
+        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, maxWidth: '100%', background: theme.accent, color: theme.band, fontFamily: DISPLAY, fontWeight: 700, fontSize: 'clamp(11px,1.25vw,26px)', letterSpacing: 1.8, textTransform: 'uppercase', padding: 'clamp(8px,0.8vw,16px) clamp(14px,1.4vw,28px)' }}>
           The official {short} team store · Powered by National Sports Apparel
           <span aria-hidden style={{ opacity: 0.55, letterSpacing: 4 }}>✕✕✕</span>
         </span>
       </div>
       {/* The logo in front — required by the design. Falls back to the initials
           crest only when the store has no logo on file. */}
-      <div style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(34px,6vw,110px) 24px clamp(38px,5vw,95px)' }}>
+      <div style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(34px,6vw,120px) 24px clamp(40px,5.5vw,110px)' }}>
         {store.logo_url
           ? <img src={store.logo_url} alt={store.name} style={{ width: 'auto', height: 'clamp(170px,20vw,420px)', maxWidth: '46%', objectFit: 'contain', filter: 'drop-shadow(0 10px 26px rgba(20,32,26,0.28))' }} />
           : <Crest store={store} theme={theme} size={300} />}
