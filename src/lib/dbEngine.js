@@ -22,6 +22,7 @@ import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unacc
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 import { consolidateOmgProductRows } from './storeSkuGrouping';
+import { preserveAppliedInvoiceSummary } from './invoicePaymentReconciliation';
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -2708,7 +2709,7 @@ const _dbSaveInvoiceInner = async (inv) => {
         ||(ex.so_id??null)!==(inv.so_id??null)
         ||Math.abs(_n(ex.total)-_n(inv.total))>=0.005;
     };
-    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total').eq('id',inv.id).maybeSingle();
+    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at,customer_id,so_id,total,paid,cc_fee,status').eq('id',inv.id).maybeSingle();
     if(!_existInvErr&&_existInv&&_invDifferentDoc(_existInv)){
       const oldId=inv.id;
       // Which signal caught it — the alerts are read during incident triage, so say which.
@@ -2731,6 +2732,17 @@ const _dbSaveInvoiceInner = async (inv) => {
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice ('+_why+') — refused overwrite'});
         _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
         return false;
+      }
+    }
+    // A portal payment updates the invoice with the service role. A staff tab that loaded
+    // before that payment may later save an unrelated edit with paid=0/status=open. Keep
+    // the server's more-advanced financial tuple so the stale save cannot unapply money.
+    if(!_existInvErr&&_existInv){
+      const _protectedInvRow=preserveAppliedInvoiceSummary(invRow,_existInv);
+      if(_protectedInvRow!==invRow){
+        invRow=_protectedInvRow;
+        inv.total=invRow.total;inv.paid=invRow.paid;inv.cc_fee=invRow.cc_fee;inv.status=invRow.status;
+        console.warn('[DB] Preserved newer payment summary while saving',inv.id);
       }
     }
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});

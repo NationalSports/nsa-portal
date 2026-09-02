@@ -10,6 +10,7 @@ import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
 import { haveSameDecorations, variantGroupFields } from './lib/webstoreGrouping';
+import { reopenPatchForCloseDate } from './lib/webstoreSchedule';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
@@ -1850,12 +1851,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const saveStore = useCallback(async (form, existingId) => {
     if (existingId) {
       const prevStore = stores.find((s) => s.id === existingId);
-      const { data, error } = await supabase.from('webstores').update({ ...form, updated_at: new Date().toISOString() }).eq('id', existingId).select().single();
+      const reopenPatch = reopenPatchForCloseDate(prevStore, form.close_at);
+      const reopenedByDate = reopenPatch.status === 'open';
+      const { data, error } = await supabase.from('webstores').update({ ...form, ...reopenPatch, updated_at: new Date().toISOString() }).eq('id', existingId).select().single();
       if (error) return { error };
       setStores((prev) => prev.map((s) => (s.id === existingId ? data : s)));
       if (sel?.id === existingId) setSel(data);
-      if (prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
-      flash('Store saved'); return { data };
+      if (!reopenedByDate && prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
+      flash(reopenedByDate ? 'Store saved — reopened for shoppers' : 'Store saved'); return { data };
     }
     // New store — webstores.slug is UNIQUE, so guarantee a free one up front. A name that collides
     // with an existing store (e.g. re-importing the same OMG report, or two similarly-named teams)
@@ -2205,11 +2208,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const changeCloseDate = useCallback(async (store, newDate, newTime = DEFAULT_CLOSE_TIME) => {
     const closeIso = ptToIso(newDate, newTime);
     if (newDate && !closeIso) { flash('That close date is not valid'); return; }
-    const patch = { close_at: closeIso, updated_at: new Date().toISOString() };
-    if (store.status === 'closed' && (!closeIso || new Date(closeIso) > new Date())) {
+    // allowSameDate repairs stores whose date was extended in the full editor before
+    // that editor learned to update status too. The confirmation below keeps it explicit.
+    const reopenPatch = reopenPatchForCloseDate(store, closeIso, new Date(), true);
+    const patch = { close_at: closeIso, ...reopenPatch, updated_at: new Date().toISOString() };
+    if (reopenPatch.status === 'open') {
       if (!window.confirm(`"${store.name}" is closed. ${newDate ? 'Setting a future close date' : 'Removing the close date'} will reopen it and start taking orders again. Continue?`)) return;
-      patch.status = 'open';
-      patch.closed_notified_at = null;
     }
     const { data, error } = await supabase.from('webstores').update(patch).eq('id', store.id).select().single();
     if (error) { flash('Could not update close date: ' + error.message); return; }

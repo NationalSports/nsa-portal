@@ -12,6 +12,7 @@ import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/histor
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
+import { stripePaymentRepairCandidate } from './lib/invoicePaymentReconciliation';
 
 // The sent_history entry Brevo told us never arrived (hard bounce / blocked / spam).
 // Read from history rather than the client-only _delivery_* fields so the failure is
@@ -54,6 +55,34 @@ export default function InvoicesPage(){
     // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
     // up over a different invoice.
     const [packSlip,setPackSlip]=React.useState(null);
+
+    // Repair the exact orphan state shown by an open invoice with a covering Stripe
+    // payment in its history. finalize_invoice retrieves the PaymentIntent from Stripe
+    // and validates its invoice metadata before applying it; this client does not trust
+    // the payment-history row on its own.
+    const paymentRepair=React.useMemo(()=>{
+      if(!viewInvoice)return null;
+      return stripePaymentRepairCandidate(invs.find(i=>i.id===viewInvoice.id)||viewInvoice);
+    },[viewInvoice,invs]);
+    const paymentRepairsAttempted=React.useRef(new Set());
+    React.useEffect(()=>{
+      if(!paymentRepair)return;
+      const key=paymentRepair.invoiceId+':'+paymentRepair.intentId;
+      if(paymentRepairsAttempted.current.has(key))return;
+      paymentRepairsAttempted.current.add(key);
+      let live=true;
+      (async()=>{try{
+        const response=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'finalize_invoice',payment_intent_id:paymentRepair.intentId})});
+        const result=await response.json().catch(()=>({}));
+        if(!live||!response.ok||!result.ok||result.underpaid)return;
+        const{data,error}=await supabase.from('invoices').select('*').eq('id',paymentRepair.invoiceId).single();
+        if(!live||error||!data)return;
+        setInvs(prev=>prev.map(i=>i.id===data.id?{...i,...data}:i));
+        setViewInvoice(prev=>prev&&prev.id===data.id?{...prev,...data}:prev);
+        nf('Stripe payment applied to '+data.id);
+      }catch(e){/* best-effort recovery; the invoice remains visibly open if verification fails */}})();
+      return()=>{live=false};
+    },[paymentRepair,nf,setInvs,setViewInvoice]);
 
     // Invoices usually go to a coach plus a billing/AP contact, so the greeting names whoever
     // is checked ("Hi Cam and Hillary,"). Only the greeting line is swapped — edits below it stay.
