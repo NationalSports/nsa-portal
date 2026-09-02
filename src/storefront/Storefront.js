@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
+import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
@@ -434,28 +435,26 @@ export default function Storefront() {
 
   const load = useCallback(async (slug) => {
     setStatus('loading');
-    const { data: stores, error } = await supabase.from('webstores_public').select('*').eq('slug', slug).limit(1);
-    if (error) { if (isMissingTable(error)) setStatus('nomigration'); else { setStatus('error'); setErrMsg(error.message); } return; }
-    const s = (stores || [])[0];
-    if (!s || s.status === 'archived') { setStatus('notfound'); return; }
-    const [prodRes, bundleRes, presentation] = await Promise.all([
-      supabase.from('webstore_storefront_products').select('*').eq('store_id', s.id).order('sort_order'),
-      supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      loadShowcasePresentation(s),
-    ]);
-    const prods = applyShowcaseImages(prodRes.data || [], presentation);
+    let catalog;
+    try { catalog = await webstorePublicData('storefront', { slug }); }
+    catch (error) {
+      if (/not found/i.test(error.message || '')) setStatus('notfound');
+      else if (isMissingTable(error)) setStatus('nomigration');
+      else { setStatus('error'); setErrMsg(error.message); }
+      return;
+    }
+    const s = catalog.store;
+    const presentation = await loadShowcasePresentation(s);
+    const prods = applyShowcaseImages(catalog.products || [], presentation);
     setStore({ ...s, presentation_mode: presentation.mode, presentation_preview: presentation.preview });
     setProducts(prods);
     const bundleIds = new Set(prods.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id));
-    const bItems = (bundleRes.data || []).filter((b) => bundleIds.has(b.bundle_id));
+    const bItems = (catalog.bundleItems || []).filter((b) => bundleIds.has(b.bundle_id));
     setBundleItems(bItems);
     // Component product details (name/image/sizes) so packages show real names + photos.
     const compPids = [...new Set(bItems.map((b) => b.product_id).filter(Boolean))];
     const info = {};
-    if (compPids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,image_front_url,available_sizes,color').in('id', compPids);
-      (data || []).forEach((p) => { info[p.id] = p; });
-    }
+    (catalog.componentProducts || []).filter((p) => compPids.includes(p.id)).forEach((p) => { info[p.id] = p; });
     setCompInfo(info);
     // A package can reference an item the store owner archived (active=false) so it no
     // longer shows as its own card but still lives inside the package. Those rows are
@@ -465,8 +464,7 @@ export default function Storefront() {
     const activeWpIds = new Set(prods.map((p) => p.webstore_product_id));
     const missingWpIds = [...new Set(bItems.map((b) => b.webstore_product_id).filter((id) => id && !activeWpIds.has(id)))];
     if (missingWpIds.length) {
-      const { data: arch } = await supabase.from('webstore_products').select('id,product_id,sku,display_name,image_url,image_back_url,decorations,retail_price,fundraise_amount').in('id', missingWpIds);
-      const extras = (arch || []).map((wp) => {
+      const extras = (catalog.archivedProducts || []).filter((wp) => missingWpIds.includes(wp.id)).map((wp) => {
         const base = info[wp.product_id] || {};
         return {
           webstore_product_id: wp.id, product_id: wp.product_id, kind: 'single', sku: wp.sku,
@@ -1676,12 +1674,11 @@ async function repriceCart(store, cart) {
   try {
     const ids = [...new Set(cart.map((l) => l.webstore_product_id).filter(Boolean))];
     if (!ids.length) return cart;
-    const [{ data: prods }, { data: bitems }] = await Promise.all([
-      supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge,options')
-        .eq('store_id', store.id).in('webstore_product_id', ids),
+    const [{ rows: allProds }, { data: bitems }] = await Promise.all([
+      webstorePublicData('storefront_products', { storeId: store.id }),
       supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
     ]);
+    const prods = (allProds || []).filter((p) => ids.includes(p.webstore_product_id));
     const byId = {}; (prods || []).forEach((p) => { byId[p.webstore_product_id] = p; });
     const biById = {}; (bitems || []).forEach((b) => { biById[b.id] = b; });
     return cart.map((l) => {

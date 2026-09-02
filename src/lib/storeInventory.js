@@ -5,11 +5,12 @@
 // agree on exactly what's orderable right now.
 //
 // Same source of truth as the catalog live-look (AdidasInventory): VENDOR stock
-// (inventory_unified = adidas CLICK + Agron, keyed by SKU) merged with NSA's own
+// (the server-scoped inventory_unified feed, keyed by SKU) merged with NSA's own
 // IN-HOUSE warehouse stock (product_inventory, keyed by product_id). A size is
 // "available now" when vendor qty + in-house qty > 0.
 // ─────────────────────────────────────────────────────────
 import { supabase } from './supabase';
+import { fetchPublicInventory } from './webstorePublicData';
 
 export const SIZE_RANK_ORDER = ['3XS', '2XS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', '4XL', '5XL', '6XL', 'OSFA', 'OS', 'NS'];
 
@@ -142,7 +143,7 @@ export async function fetchStockMap(rows) {
     (await Promise.all(chunk(items, 400).map((b) => drain(() => buildReq(b))))).flat();
   const [vendRows, inhouseRows] = await Promise.all([
     skus.length
-      ? all(skus, (b) => supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty').in('sku', b).or('stock_qty.gt.0,future_delivery_qty.gt.0'))
+      ? fetchPublicInventory(skus).then((rows) => rows.filter((r) => Number(r.stock_qty) > 0 || Number(r.future_delivery_qty) > 0))
       : [],
     ids.length
       ? all(ids, (b) => supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', b).gt('quantity', 0))

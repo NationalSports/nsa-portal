@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
+import { fetchPublicInventory, fetchPublicStorefrontProducts } from './lib/webstorePublicData';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
 import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
@@ -535,7 +536,7 @@ async function fetchSkuStock(skuList) {
 }
 // One inventory_unified read, folded per-sku → { SKU: { sizes, sizeEta, sizeIncoming, eta, syncedAt } }.
 async function _skuStockRows(skus) {
-  const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
+  const data = await fetchPublicInventory(skus).catch(() => []);
   const out = {};
   (data || []).forEach((r) => {
     const e = out[r.sku] || (out[r.sku] = { sizes: {}, sizeEta: {}, sizeIncoming: {}, eta: false, syncedAt: null });
@@ -1618,10 +1619,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
+    const [catRes, bundleRes, stockRows, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,vendor_size_incoming,vendor_synced_at,name,color,category,image_front_url').eq('store_id', sid),
+      fetchPublicStorefrontProducts(sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
@@ -1633,6 +1634,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // 1000-row cap, and so did any single 300-order chunk of multi-item orders.
     const { rows: _itemRows } = await fetchOrderItemRows(supabase, (ordRes.data || []).map((o) => o.id));
     const itemRes = { data: _itemRows };
+    const stockRes = { data: stockRows || [] };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
@@ -4313,7 +4315,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
       // Fetch size stock for found products from this store's storefront view.
       if (rows.length && storeId) {
         const pids = rows.map((p) => p.id);
-        const { data: sr } = await supabase.from('webstore_storefront_products').select('product_id,size_stock,vendor_size_stock').eq('store_id', storeId).in('product_id', pids);
+        const sr = await fetchPublicStorefrontProducts(storeId, pids).catch(() => []);
         const fresh = {};
         (sr || []).forEach((r) => { fresh[r.product_id] = r; });
         setResultStock(fresh);
@@ -5517,9 +5519,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     if (!store?.id) return;
     let live = true;
     Promise.all([
-      supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,name,image_front_url,category,kind,sort_order')
-        .eq('store_id', store.id).order('sort_order'),
+      fetchPublicStorefrontProducts(store.id).then((data) => ({ data })),
       supabase.from('webstore_products')
         .select('id,display_name,image_url')
         .eq('store_id', store.id).eq('active', false),
