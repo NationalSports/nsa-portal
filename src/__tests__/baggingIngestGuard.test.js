@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Bagging Station ingest guard (BAGGING_STATION_PLAN.md step 2).
  *
  * A packing-slip re-ingest runs syncOrderItems, which deletes "leftover" rows —
@@ -16,18 +18,19 @@ const CONTENT_KEYS = ['name', 'color', 'qty', 'unit_price', 'player_name', 'imag
 
 // Minimal scripted supabase fake covering exactly the call shapes syncOrderItems
 // makes: select().eq(), update().eq(), insert(), delete().in().
-function fakeSb(existingItems) {
-  const calls = { updates: [], inserts: [], deletedIds: null };
+function fakeSb(existingItems, selectError = null) {
+  const calls = { updates: [], inserts: [], deletedIds: null, deleteCalled: false };
   const sb = {
     from(table) {
       if (table !== 'webstore_order_items') throw new Error('unexpected table ' + table);
       return {
-        select() { return { eq: async () => ({ data: existingItems, error: null }) }; },
+        select() { return { eq: async () => ({ data: existingItems, error: selectError }) }; },
         update(patch) {
           return { eq: async (_col, id) => { calls.updates.push({ id, patch }); return { error: null }; } };
         },
         insert: async (rows) => { calls.inserts.push(...rows); return { error: null }; },
         delete() {
+          calls.deleteCalled = true;
           return { in: async (_col, ids) => { calls.deletedIds = ids; return { error: null }; } };
         },
       };
@@ -64,4 +67,13 @@ test('content patch on a matched line cannot touch bagging columns', async () =>
     expect(patched).not.toContain(k);
   });
   expect(patched.sort()).toEqual([...CONTENT_KEYS].sort());
+});
+
+test('a failed current-item read aborts re-ingest without deleting or replacing rows', async () => {
+  const { sb, calls } = fakeSb([], { message: 'temporary database read failure' });
+  const incoming = [{ sku: 'A1', size: 'M', name: 'Jersey', color: 'Navy', qty: 1, unit_price: 0, player_name: 'Jimmy', image_url: null }];
+  await expect(syncOrderItems(sb, 'order-1', incoming, CONTENT_KEYS)).rejects.toThrow(/could not load existing order items/i);
+  expect(calls.deleteCalled).toBe(false);
+  expect(calls.updates).toEqual([]);
+  expect(calls.inserts).toEqual([]);
 });

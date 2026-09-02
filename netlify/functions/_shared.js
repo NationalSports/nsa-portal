@@ -361,16 +361,11 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   const { data: existingItems, error } = await sb.from('webstore_order_items')
     .select('id,sku,size,shipped_qty,missing_qty,line_status,bagged_qty,short_status').eq('order_id', orderId);
   if (error) {
-    // Can't read current items — fall back to the historical replace so we never risk
-    // double-inserting. Worst case this reverts to the old behavior, not data corruption.
-    console.warn('[syncOrderItems] item read failed, falling back to replace:', error.message);
-    await sb.from('webstore_order_items').delete().eq('order_id', orderId);
-    if (items.length) {
-      const { error: iErr } = await sb.from('webstore_order_items')
-        .insert(items.map((li) => ({ ...li, order_id: orderId })));
-      if (iErr) throw new Error(`Items insert failed: ${iErr.message}`);
-    }
-    return { matched: 0, inserted: items.length, removed: 0, fallback: true };
+    // The existing rows contain fulfillment state and are referenced by shipment
+    // lineItemKey values. If we cannot read them, there is no safe way to decide
+    // what may be replaced. Fail closed so the caller can retry without deleting
+    // received, bagged, shorted, or shipped progress.
+    throw new Error(`Could not load existing order items: ${error.message}`);
   }
   // Bucket existing rows by (sku,size); a queue tolerates the rare duplicate line.
   const queues = new Map();
