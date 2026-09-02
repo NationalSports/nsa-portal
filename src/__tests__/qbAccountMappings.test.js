@@ -12,6 +12,8 @@ import {
   getOmgFeeSource,
   indexQBNonInventoryItems,
   isDecorationVendorBill,
+  loadAllQBEntities,
+  loadQBAccounts,
   manualBillAccountKey,
   migrateQBAccountMapping,
   parseQBDateValue,
@@ -44,6 +46,39 @@ const itemRefs = {
 };
 
 describe('QuickBooks account resolution', () => {
+  test('retries one failed account read instead of treating it as an empty chart', async () => {
+    const qbApi=jest.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({QueryResponse:{Account:accounts}});
+    await expect(loadQBAccounts(qbApi)).resolves.toEqual(accounts);
+    expect(qbApi).toHaveBeenCalledTimes(2);
+  });
+
+  test('reports a repeated QBO timeout instead of claiming an account is missing', async () => {
+    const qbApi=jest.fn().mockResolvedValue({__qbTransportError:true,status:504,error:'QBO request timed out.'});
+    await expect(loadQBAccounts(qbApi)).rejects.toThrow(/account query failed after one retry.*timed out.*No transaction was sent/i);
+    expect(qbApi).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not turn a malformed entity response into a legitimate empty page', async () => {
+    const qbApi=jest.fn().mockResolvedValue({});
+    await expect(loadAllQBEntities(qbApi,'Term','Id, Name',1000))
+      .rejects.toThrow(/Term query page 1 failed after one retry.*no usable response/i);
+    expect(qbApi).toHaveBeenCalledTimes(2);
+  });
+
+  test('accepts a valid empty QBO query response without retrying', async () => {
+    const qbApi=jest.fn().mockResolvedValue({QueryResponse:{}});
+    await expect(loadAllQBEntities(qbApi,'Term','Id, Name',1000)).resolves.toEqual([]);
+    expect(qbApi).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not retry a logical QBO fault', async () => {
+    const qbApi=jest.fn().mockResolvedValue({Fault:{Error:[{Detail:'Invalid query syntax'}]}});
+    await expect(loadQBAccounts(qbApi)).rejects.toThrow('Invalid query syntax');
+    expect(qbApi).toHaveBeenCalledTimes(1);
+  });
+
   test('uses account number even when another account has a similar name', () => {
     const list = [account('wrong', '99999', 'Purchases', 'Cost of Goods Sold'), ...accounts];
     expect(resolveQBAccount(list, QB_ACCOUNT_MAPPING_DEFAULTS, 'purchases_account').value).toBe('purchases');

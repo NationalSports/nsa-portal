@@ -8,6 +8,7 @@ import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
 import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
+import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/historicalInvoiceAr';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
@@ -104,17 +105,18 @@ export default function InvoicesPage(){
     const sortIcon=(f)=>invSort.f===f?(invSort.d==='asc'?'▲':'▼'):'⇅';
 
     const recordPayment=(inv,amount,method,ref)=>{
-      // NetSuite-imported invoices live in customer_invoices and don't track
-      // a `paid` numeric. We just flip the status locally so the portal stops
-      // showing them as open; reconciliation back to NetSuite is handled there.
+      // NetSuite-imported invoices store the authoritative remaining amount in
+      // open_balance. Reduce it here as well as changing status so a partial
+      // payment cannot reappear at the invoice's full original face value.
       if(inv._hist){
-        const newStatus=amount>=safeNum(inv.total)?'paid':'partial';
+        const payment=applyHistoricalInvoicePayment(inv,amount);
+        if(payment.applied<=0){nf('This NetSuite invoice has no open balance','error');return}
         if(supabase&&inv.netsuite_internal_id){
-          (async()=>{try{await supabase.from('customer_invoices').update({status:newStatus}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
+          (async()=>{try{await supabase.from('customer_invoices').update({status:payment.status,open_balance:payment.open_balance}).eq('netsuite_internal_id',inv.netsuite_internal_id)}catch(e){console.warn('[recordPayment hist] failed:',e.message)}})();
         }
-        setHistInvs(prev=>prev.map(i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:newStatus}:i));
+        setHistInvs(prev=>prev.map(i=>i.netsuite_internal_id===inv.netsuite_internal_id?{...i,status:payment.status,open_balance:payment.open_balance}:i));
         setPayModal(null);
-        nf('Marked '+inv.id+' as '+newStatus+' (NetSuite — please mark paid in NS to keep AR in sync)');
+        nf('$'+payment.applied.toLocaleString()+' applied to '+inv.id+' — $'+payment.open_balance.toLocaleString()+' remains (please reconcile in NetSuite)');
         return;
       }
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
@@ -1432,22 +1434,25 @@ export default function InvoicesPage(){
     };
     const _openSO=(so)=>{if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}};
     // Historical rows from NetSuite — no so_id, no payments, and no due_date column.
-    // Treat status='paid' as fully paid; anything else leaves total as balance.
+    // Only explicit open statuses are collectible. Amount Remaining/open_balance
+    // wins when supplied; status-only legacy rows remain history and cannot enter
+    // Open/Past Due or collection actions until NetSuite supplies that balance.
     // Derive due_date from invoice_date + customer payment terms so aging buckets,
     // Overdue stat, and the past-due bulk-email view all work for these rows too.
     const enrichedHist=(histInvs||[]).map(i=>{
       const c2=cust.find(c=>c.id===i.customer_id);
       const baseDate=i.date||i.invoice_date;
       const age=agingDays(baseDate);
-      const paid=i.status==='paid'?safeNum(i.total):0;
-      const bal=safeNum(i.total)-paid;
+      const ar=historicalInvoiceAr(i);
+      const paid=ar.paid;
+      const bal=ar.balance;
       const derivedDue=i.due_date||_deriveDue(baseDate,c2?.payment_terms);
       const dd=dueDays(derivedDue);
-      const overdue=bal>0&&dd!==null&&dd<0;
+      const overdue=ar.collectible&&dd!==null&&dd<0;
       // Prefer the snapshot rep_name match; fall back to customer.primary_rep_id so
       // imported invoices without a recognizable rep_name still attribute to a rep.
       const rep=REPS.find(r=>r.name&&(i.rep_name||'').toLowerCase()===r.name.toLowerCase())?.id||c2?.primary_rep_id||null;
-      return{...i,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
+      return{...i,status:ar.status,paid,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_balanceBasis:ar.balanceBasis,_rep:rep,_cname:c2?.name||i.raw_customer_name||'Unknown',due_date:derivedDue,date:baseDate}});
     let fi=[...enrichedInvs,...enrichedHist];
 
     // Filters. The status and aging chips always apply. The rep filter is the one exception: when the
@@ -1644,14 +1649,14 @@ export default function InvoicesPage(){
             <td style={{color:'#166534',textAlign:'right'}}>{il(<>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</>)}</td>
             <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il('$'+inv._bal.toLocaleString())}</td>
             <td>{il(<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
-              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
-              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv.status==='unverified'?'#f1f5f9':inv._overdue?'#fecaca':'#dbeafe',
+              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv.status==='unverified'?'#64748b':inv._overdue?'#991b1b':'#1e40af'}}>
+              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv.status==='unverified'?'Unverified':inv._overdue?'Overdue':'Open'}</span>
               {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}
               {/* An unpaid invoice whose email bounced looks exactly like one the coach is
                   ignoring. Flag it in the list, where reps actually scan for what to chase. */}
               {inv.email_status==='failed'&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#fee2e2',color:'#b91c1c',marginLeft:3,verticalAlign:'middle'}} title="The last send bounced — the coach never received this invoice or its pay link.">⚠️ NOT DELIVERED</span>}</>)}</td>
-            <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv:{...inv,_bal:safeNum(inv.total)-safeNum(inv.paid),paid:safeNum(inv.paid)},amount:safeNum(inv.total)-safeNum(inv.paid),method:'check',ref:''})}>💰 Pay</button>}{inv.status==='paid'&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+            <td onClick={e=>e.stopPropagation()}>{inv._hist?<>{inv._bal>0.005&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title="Mark this NetSuite-imported invoice as paid in the portal (sync to NetSuite separately)" onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}{inv._bal<=0.005&&<span style={{fontSize:9,color:'#94a3b8',fontStyle:'italic'}}>—</span>}</>:<>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
@@ -1729,11 +1734,11 @@ export default function InvoicesPage(){
                 <td style={{fontWeight:600,textAlign:'right'}}>{il2('$'+inv.total.toLocaleString())}</td>
                 <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>{il2('$'+inv._bal.toLocaleString())}</td>
                 <td>{il2(<><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
-                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
-                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv.status==='unverified'?'#f1f5f9':inv._overdue?'#fecaca':'#dbeafe',
+                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv.status==='unverified'?'#64748b':inv._overdue?'#991b1b':'#1e40af'}}>
+                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv.status==='unverified'?'Unverified':inv._overdue?'Overdue':'Open'}</span>
                   {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</>)}</td>
-                <td onClick={e=>e.stopPropagation()}>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
+                <td onClick={e=>e.stopPropagation()}>{inv._bal>0.005&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}} title={inv._hist?'Mark this NetSuite invoice paid in portal (sync to NetSuite separately)':undefined}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
                   {canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} title={inv._hist?'Delete NetSuite invoice':'Delete invoice'} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
               </tr>)})}</tbody></table>

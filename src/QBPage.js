@@ -17,6 +17,8 @@ import {
   calculateCustomerShipping,
   loadAllQBEntities,
   loadQBAccounts,
+  queryQBReadOnly,
+  readQBWithRetry,
   manualBillAccountKey,
   normalizeVendorName,
   resolveQBAccountRefs,
@@ -70,7 +72,10 @@ export default function QBPage(){
       setQbPreflighting(true);
       const log={ts:new Date().toLocaleString(),type:'live_preflight',status:'success',details:[]};
       try{
-        const [company,accounts]=await Promise.all([qbApi('company_info',{}),loadQBAccounts(qbApi)]);
+        const [company,accounts]=await Promise.all([
+          readQBWithRetry(qbApi,'company_info',{}, {label:'company-info query',validate:response=>!!response?.CompanyInfo}),
+          loadQBAccounts(qbApi),
+        ]);
         const refs=resolveQBAccountRefs(accounts,qbConfig.mapping,Object.keys(QB_ACCOUNT_SPECS));
         const ci=company?.CompanyInfo;
         log.details.push('READ ONLY — no QuickBooks records were created or changed');
@@ -79,7 +84,7 @@ export default function QBPage(){
         const entities=['Customer','Vendor','Item','Invoice','Bill','PurchaseOrder','Payment'];
         for(const entity of entities){
           try{
-            const res=await qbApi('query',{query:'SELECT count(*) FROM '+entity});
+            const res=await queryQBReadOnly(qbApi,'SELECT count(*) FROM '+entity,entity+' count query');
             const count=res?.QueryResponse?.totalCount;
             log.details.push(entity+' records currently in QBO: '+(count==null?'count unavailable':count));
           }catch(e){log.details.push(entity+' count unavailable: '+e.message);log.status='partial'}
@@ -189,7 +194,7 @@ export default function QBPage(){
       const billId=billRes.Bill.Id;
       if(isCanary){
         try{
-          const readback=await qbApi('query',{query:"SELECT * FROM Bill WHERE Id = '"+String(billId).replace(/'/g,"\\'")+"' MAXRESULTS 1"});
+          const readback=await queryQBReadOnly(qbApi,"SELECT * FROM Bill WHERE Id = '"+String(billId).replace(/'/g,"\\'")+"' MAXRESULTS 1",'bill API read-back');
           const verified=readback?.QueryResponse?.Bill?.[0];
           if(!verified||String(verified.Id)!==String(billId)||String(verified.VendorRef?.value||'')!==String(qbVendorId)||Math.abs(safeNum(verified.TotalAmt)-amt)>=0.005||String(verified.TxnDate||'').slice(0,10)!==String(qbBillDate||'').slice(0,10))throw new Error('vendor, date, or total did not match');
           log.details.push('READ-BACK VERIFIED: QBO Bill #'+verified.Id+' · '+vendor.name+' · $'+safeNum(verified.TotalAmt).toFixed(2));
