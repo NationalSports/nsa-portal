@@ -78,4 +78,16 @@ describe('webstore shipment tracker reconciliation', () => {
       { id: 10, shipped_qty: 2, line_status: 'shipped' },
     ]);
   });
+
+  test('void reconciliation can reset only quantities no longer covered by active shipments', () => {
+    const lines = [
+      { id: 'first', sku: 'TEE', size: 'M', qty: 1, line_status: 'shipped' },
+      { id: 'second', sku: 'TEE', size: 'L', qty: 1, line_status: 'shipped' },
+    ];
+    const remainingShipments = [{ items: [{ lineItemKey: 'first', qty: 1 }] }];
+    expect(planShipmentLineUpdates(lines, remainingShipments, { includeZero: true })).toEqual([
+      { id: 'first', shipped_qty: 1, line_status: 'shipped' },
+      { id: 'second', shipped_qty: 0, line_status: 'bagging' },
+    ]);
+  });
 });

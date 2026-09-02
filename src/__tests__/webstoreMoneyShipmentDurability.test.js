@@ -36,6 +36,35 @@ describe('direct-label shipment durability', () => {
     expect(bagging).toMatch(/await processDirectShipment/);
     expect(webhook).toMatch(/await queueShipmentEmail\(sb, order, shipment\)/);
   });
+
+  test('standard and OMG label voids reconcile one shipment without deleting sibling history', () => {
+    const desk = fs.readFileSync(path.join(__dirname, '../Webstores.js'), 'utf8');
+    const omg = fs.readFileSync(path.join(__dirname, '../OmgOrderPortal.js'), 'utf8');
+    const endpoint = fs.readFileSync(path.join(__dirname, '../../netlify/functions/webstore-shipment-void-record.js'), 'utf8');
+    const migration = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902073000_void_individual_webstore_shipments.sql'), 'utf8');
+    expect(desk).toMatch(/webstore-shipment-void-record/);
+    expect(omg).toMatch(/webstore-shipment-void-record/);
+    expect(desk).not.toMatch(/from\('webstore_shipments'\)\.delete\(\)\.eq\('order_id', o\.id\)/);
+    expect(omg).not.toMatch(/from\('webstore_shipments'\)\.delete\(\)\.eq\('order_id', o\.id\)/);
+    expect(endpoint).toMatch(/mark_webstore_shipment_voided/);
+    expect(endpoint).toMatch(/await reconcileOrderTracker\(sb, order, null\)/);
+    expect(migration).toMatch(/status in \('pending', 'processing'\)/);
+    expect(migration).toMatch(/revoke all on function[\s\S]*from public, anon, authenticated/);
+    expect(migration).toMatch(/grant execute on function[\s\S]*to service_role/);
+  });
+
+  test('webhook replays cannot resurrect a voided shipment', () => {
+    const webhook = fs.readFileSync(path.join(__dirname, '../../netlify/functions/shipstation-webhook.js'), 'utf8');
+    expect(webhook.match(/if \(existing\.voided_at\) return/g)).toHaveLength(1);
+    expect(webhook).toMatch(/if \(existing && existing\.voided_at\) return/);
+    expect(webhook).toMatch(/if \(shipment\.voided\) \{ stats\.ignored/);
+  });
+
+  test('OMG label creation records the ledger before treating the label as complete', () => {
+    const omg = fs.readFileSync(path.join(__dirname, '../OmgOrderPortal.js'), 'utf8');
+    expect(omg).toMatch(/await recordCreatedOmgLabel\(o, plan, label\)/);
+    expect(omg).toMatch(/The label was created; do not create another label/);
+  });
 });
 
 describe('refund and payment recovery guards', () => {

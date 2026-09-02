@@ -190,6 +190,7 @@ async function loadPayload(admin, row) {
 
   if (row.kind === 'shipment_customer_email') {
     const shipment = await one(admin.from('webstore_shipments').select('*').eq('id', row.shipment_id), 'shipment');
+    if (shipment.voided_at) return null;
     if (!order.buyer_email) return null;
     const { data: lines, error } = await admin.from('webstore_order_items').select('qty,shipped_qty,is_bundle_parent,line_status').eq('order_id', order.id);
     if (error) throw new Error(`order items: ${error.message}`);

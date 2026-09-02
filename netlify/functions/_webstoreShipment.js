@@ -24,7 +24,7 @@ function shipmentQty(item) {
   return Math.max(0, Number(item && (item.qty != null ? item.qty : item.quantity)) || 0);
 }
 
-function planShipmentLineUpdates(orderItems, shipments) {
+function planShipmentLineUpdates(orderItems, shipments, options = {}) {
   const lines = (orderItems || []).filter((i) => !i.is_bundle_parent && i.line_status !== 'cancelled');
   const byId = new Map(lines.map((i) => [String(i.id), i]));
   const shipped = new Map(lines.map((i) => [String(i.id), 0]));
@@ -75,9 +75,11 @@ function planShipmentLineUpdates(orderItems, shipments) {
     return {
       id: line.id,
       shipped_qty: shippedQty,
-      line_status: orderedQty > 0 && shippedQty >= orderedQty ? 'shipped' : line.line_status,
+      line_status: orderedQty > 0 && shippedQty >= orderedQty
+        ? 'shipped'
+        : line.line_status === 'shipped' ? 'bagging' : line.line_status,
     };
-  }).filter((u) => u.shipped_qty > 0);
+  }).filter((u) => options.includeZero || u.shipped_qty > 0);
 }
 
 module.exports = { planShipmentLineUpdates, shipmentItemKey, shipmentItemSize };
