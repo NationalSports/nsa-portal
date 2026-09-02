@@ -28,6 +28,8 @@ const {
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const INVENTORY_RETRY_ERROR = 'We could not verify inventory right now. Please wait a moment and try checkout again.';
+const escapeIlikeLiteral = (value) => String(value).replace(/[\\%_]/g, '\\$&');
 
 // Effective per-item fundraising. Mirrors webstore_storefront_products
 // (migration 047) EXACTLY so the price charged equals the price the storefront
@@ -220,38 +222,38 @@ async function checkStock(sb, store, lines) {
   const { data, error } = await sb.from('webstore_storefront_products')
     .select('webstore_product_id,product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return { error: null, holds: [] }; // parity with the client: don't block checkout on a lookup failure
+  if (error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+  if (ids.some((id) => !byId[id])) return { error: INVENTORY_RETRY_ERROR, holds: [] };
   const need = {}; singles.forEach((l) => { const k = l.wp.id + '|' + l.size; need[k] = (need[k] || 0) + l.qty; });
 
   // Cumulative backorder claims: open needs-ledger rows (teamshop and club
   // alike, ANY store) already promise units of on-hand + incoming stock to
   // earlier orders — the sweep allocates FIFO by order date, so a new buyer
   // only truly gets what's left after those claims. Loaded once per checkout,
-  // only for products this cart backorders against; fail-open on any error
-  // (parity with the stock lookup above).
+  // only for products this cart backorders against. These reads fail closed: an
+  // unreadable or truncated claims ledger could otherwise let multiple buyers
+  // sell the same incoming units.
   const claimed = {}; // '<product_id>|<size>' -> promised qty on unfinished SOs
   const capPids = [...new Set((data || []).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
   if (capPids.length) {
     try {
       const nd = await sb.from('teamshop_auto_po_needs')
-        .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2000);
-      const rows = (!nd.error && nd.data) || [];
+        .select('product_id,size,qty_needed,so_id').gt('qty_needed', 0).in('product_id', capPids).limit(2001);
+      if (nd.error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+      const rows = nd.data || [];
+      if (rows.length > 2000) return { error: INVENTORY_RETRY_ERROR, holds: [] };
       const soIds = [...new Set(rows.map((n) => n.so_id).filter(Boolean))];
       const soRes = soIds.length ? await sb.from('sales_orders').select('id,status').in('id', soIds) : { data: [], error: null };
-      if (!soRes.error) {
-        // Statuses unreadable → count NO claims (fail-open, matching the stock
-        // lookup) rather than counting finished SOs' settled claims and
-        // over-blocking real buyers.
-        const done = new Set((soRes.data || [])
-          .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
-        rows.forEach((n) => {
-          if (done.has(n.so_id)) return; // finished SO — its claim is settled
-          const k = n.product_id + '|' + (n.size || '');
-          claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
-        });
-      }
-    } catch (_) { /* fail-open: an unreadable ledger must not block checkout */ }
+      if (soRes.error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+      const done = new Set((soRes.data || [])
+        .filter((s) => SO_DONE.includes(String(s.status || '').toLowerCase())).map((s) => s.id));
+      rows.forEach((n) => {
+        if (done.has(n.so_id)) return; // finished SO — its claim is settled
+        const k = n.product_id + '|' + (n.size || '');
+        claimed[k] = (claimed[k] || 0) + (Number(n.qty_needed) || 0);
+      });
+    } catch (_) { return { error: INVENTORY_RETRY_ERROR, holds: [] }; }
   }
   const short = []; const holds = [];
   Object.entries(need).forEach(([k, q]) => {
@@ -296,8 +298,8 @@ async function checkStock(sb, store, lines) {
 // add) or the cart was tampered — either way it's unfulfillable. Mirrors the client's
 // `needSize` rule: a product with a non-empty size scale (available_sizes) or an explicit
 // sizes_offered list requires a size. Read through the storefront view (base
-// webstore_products has no available_sizes). Fail-open on a lookup error, matching
-// checkStock — the drift/stock guards still apply.
+// webstore_products has no available_sizes). A lookup failure blocks checkout:
+// accepting an unverifiable sizeless line creates an unfulfillable order.
 async function checkSizesRequired(sb, store, lines) {
   const noSize = lines.filter((l) => l.kind === 'single' && !l.size);
   if (!noSize.length) return null;
@@ -305,8 +307,9 @@ async function checkSizesRequired(sb, store, lines) {
   const { data, error } = await sb.from('webstore_storefront_products')
     .select('webstore_product_id,name,available_sizes,sizes_offered,size_stock,vendor_size_stock,vendor_size_eta')
     .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return null;
+  if (error) return INVENTORY_RETRY_ERROR;
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+  if (ids.some((id) => !byId[id])) return INVENTORY_RETRY_ERROR;
   const nonEmpty = (a) => Array.isArray(a) && a.filter((x) => x != null && String(x).trim()).length > 0;
   // A product whose catalog scale is empty but which carries per-size stock is still a
   // SIZED product — the storefront now derives its size buttons from that stock (see
@@ -342,12 +345,30 @@ function checkNumberRange(store, lines) {
 
 async function loadCoupon(sb, store, code) {
   if (!code || !String(code).trim()) return { coupon: null };
-  const { data } = await sb.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', String(code).trim()).limit(1);
+  const { data, error } = await sb.from('webstore_coupons').select('*').eq('store_id', store.id).ilike('code', escapeIlikeLiteral(String(code).trim())).limit(1);
+  if (error) return { error: 'We could not verify that coupon right now. Please wait a moment and try again.' };
   const c = data && data[0];
   if (!c || !c.active) return { error: 'That code isn’t valid for this store.' };
   if (c.expires_at && new Date(c.expires_at) < new Date(new Date().toDateString())) return { error: 'That code has expired.' };
   if (c.max_uses != null && (c.used_count || 0) >= c.max_uses) return { error: 'That code has already been used.' };
   return { coupon: c };
+}
+
+function buildOrderItems(lines, orderPlayer, randomUUID = require('crypto').randomUUID) {
+  const items = [];
+  for (const l of lines) {
+    if (l.kind === 'bundle') {
+      const bref = randomUUID();
+      // Every parent-level upcharge belongs on the paid parent row. Components
+      // remain $0 fulfillment rows, so excluding option_extra here made the
+      // persisted item total disagree with the amount charged at checkout.
+      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0) + (Number(l.option_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
+      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
+    } else {
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2((Number(l.unit_price) || 0) + (Number(l.name_extra) || 0)), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+    }
+  }
+  return items;
 }
 
 const shipFee = (store) => store.delivery_mode === 'ship_home' ? r2(store.flat_shipping) : 0;
@@ -617,18 +638,8 @@ async function placeOrder(sb, body) {
   // name, so the player report + packing lists group parent-placed orders under
   // the actual player. It never drives decoration — that's the item's takes_name.
   const orderPlayer = String((buyer && buyer.player_name) || '').trim().slice(0, 60) || null;
-  const items = []; // no order_id yet — the transaction (or legacy path) injects it
-  for (const l of priced.lines) {
-    if (l.kind === 'bundle') {
-      const bref = require('crypto').randomUUID();
-      // Name fee rides on unit_price (NSA revenue); unit_fundraise is club raise only —
-      // batching/conversion sum unit_price + unit_fundraise, so the SO total is unchanged.
-      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, add_on_selections: l.option_selections || [], bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
-    } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, add_on_selections: l.option_selections || [], name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
-    }
-  }
+  // No order_id yet — the transaction (or legacy path) injects it.
+  const items = buildOrderItems(priced.lines, orderPlayer);
 
   // A number is one-per-player across the store. Within one checkout the same
   // number legitimately repeats across a single player's bundle components
@@ -1152,6 +1163,9 @@ module.exports.checkStock = checkStock;
 module.exports.checkSizesRequired = checkSizesRequired;
 module.exports.checkNumberRange = checkNumberRange;
 module.exports.couponDiscount = couponDiscount;
+module.exports.escapeIlikeLiteral = escapeIlikeLiteral;
+module.exports.loadCoupon = loadCoupon;
+module.exports.buildOrderItems = buildOrderItems;
 module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
 module.exports.shipFee = shipFee;

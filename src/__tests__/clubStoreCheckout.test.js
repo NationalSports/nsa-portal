@@ -87,7 +87,13 @@ const NEW_ORDER = { id: 'ord-new', status: 'unpaid', store_id: 'st-club' };
 
 const happyTables = () => ({
   'webstore_products.select': [{ data: [WP], error: null }],
-  'webstore_storefront_products.select': [{ data: [], error: null }, { data: [], error: null }],
+  // First storefront-view read supplies optional size upcharges; the second is
+  // the checkout stock guard. A priced product missing from that second read is
+  // now correctly treated as unverifiable instead of silently accepted.
+  'webstore_storefront_products.select': [
+    { data: [], error: null },
+    { data: [{ webstore_product_id: 'wp1', product_id: 'p1', name: 'Tee', size_stock: { L: 10 }, vendor_size_stock: {}, on_order_qty: 0, earliest_eta: null, vendor_eta: null, track_inventory: true, inventory_source: 'adidas' }], error: null },
+  ],
 });
 const body = (store, extra) => ({ storeSlug: store.slug, cart: CART, buyer: BUYER, payMode: 'unpaid', ...extra });
 
