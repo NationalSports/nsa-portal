@@ -30,6 +30,7 @@ pg_ctl -D /tmp/pgtest/data -o "-p 54999 -k /tmp/pgtest" start
 psql -h /tmp/pgtest -p 54999 -U postgres -v ON_ERROR_STOP=1 -f scripts/pgtest/schema_fixture.sql
 psql -h /tmp/pgtest -p 54999 -U postgres -v ON_ERROR_STOP=1 -f supabase/migrations/00171_place_webstore_order_txn.sql
 psql -h /tmp/pgtest -p 54999 -U postgres -v ON_ERROR_STOP=1 -f supabase/migrations/20260902053000_durable_unconverted_webstore_inventory_reservations.sql
+psql -h /tmp/pgtest -p 54999 -U postgres -v ON_ERROR_STOP=1 -f supabase/migrations/20260902060000_atomic_webstore_coupon_quota.sql
 psql -h /tmp/pgtest -p 54999 -U postgres -f scripts/pgtest/place_webstore_order_scenarios.sql
 ```
 
@@ -45,6 +46,8 @@ Expected output ends with `ALL_SCENARIOS_PASSED`. Scenarios covered:
 5. Duplicate client_ref aborts the transaction (idempotency backstop for 00170)
 6. Deleting the order cascades items, claims, and holds (the PaymentIntent-failure
    rollback path)
+7. Coupon quota claims are atomic/order-idempotent, and deleting a failed
+   pending card attempt releases its reservation
 
 The concurrency property (second buyer blocks on the per-(product,size) advisory
 lock until the first commits, then correctly reads the committed holds) was

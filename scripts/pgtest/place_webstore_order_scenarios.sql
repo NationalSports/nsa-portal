@@ -163,4 +163,37 @@ begin
   raise notice 'S6 cascade on rollback delete: OK';
 end $$;
 
+-- ═══ Scenario 7: coupon quota is atomic; failed pending attempts release ═══
+do $$
+declare r jsonb; oid uuid; n int;
+begin
+  perform place_webstore_order(
+    p_order => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"Coupon Winner","coupon_code":"LAST","discount_amt":2,"subtotal":20,"total":18}'::jsonb,
+    p_items => '[{"product_id":"p1","sku":"TEE","size":"S","qty":1,"unit_price":20}]'::jsonb);
+  select used_count into n from webstore_coupons where code = 'LAST';
+  if n <> 1 then raise exception 'S7: first coupon claim was not counted'; end if;
+
+  begin
+    perform place_webstore_order(
+      p_order => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"Coupon Loser","coupon_code":"LAST","discount_amt":2,"subtotal":20,"total":18}'::jsonb,
+      p_items => '[{"product_id":"p1","sku":"TEE","size":"S","qty":1,"unit_price":20}]'::jsonb);
+    raise exception 'S7: expected max-use coupon to reject the second order';
+  exception when others then
+    if sqlerrm not like 'NSA_COUPON_USED%' then raise exception 'S7: wrong coupon error: %', sqlerrm; end if;
+  end;
+
+  r := place_webstore_order(
+    p_order => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"pending_payment","payment_mode":"paid","buyer_name":"Pending Coupon","coupon_code":"PEND","discount_amt":2,"subtotal":20,"total":18}'::jsonb,
+    p_items => '[{"product_id":"p1","sku":"TEE","size":"S","qty":1,"unit_price":20}]'::jsonb);
+  oid := (r->'order'->>'id')::uuid;
+  delete from webstore_orders where id = oid;
+  select used_count into n from webstore_coupons where code = 'PEND';
+  if n <> 0 then raise exception 'S7: deleted pending reservation was not released'; end if;
+
+  perform place_webstore_order(
+    p_order => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"After Release","coupon_code":"PEND","discount_amt":2,"subtotal":20,"total":18}'::jsonb,
+    p_items => '[{"product_id":"p1","sku":"TEE","size":"S","qty":1,"unit_price":20}]'::jsonb);
+  raise notice 'S7 atomic coupon quota + pending release: OK';
+end $$;
+
 \echo ALL_SCENARIOS_PASSED

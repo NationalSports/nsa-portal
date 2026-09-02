@@ -371,19 +371,35 @@ async function sendRefundNotice(sb, order, { amount, kind, reason, message } = {
   return { sent: false, reason: last || 'unknown Brevo failure' };
 }
 
-// Compare-and-swap increment so concurrent redemptions can't under-count
-// (a plain read-add-write loses updates and lets max_uses quotas be exceeded).
-async function bumpCouponUse(sb, storeId, code) {
-  if (!code) return;
+// New orders reserve/consume their coupon atomically inside place_webstore_order.
+// This RPC turns a pending card reservation into a redemption and idempotently
+// backfills legacy orders. During a staggered deploy, fall back to the old CAS
+// counter only when the RPC genuinely has not been installed yet.
+async function bumpCouponUse(sb, storeId, code, orderId) {
+  if (!code) return true;
+  if (orderId) {
+    const { data, error } = await sb.rpc('redeem_webstore_coupon_for_order', { p_order_id: orderId });
+    if (!error) return data !== false;
+    const msg = `${error.code || ''} ${error.message || ''}`;
+    if (!/redeem_webstore_coupon_for_order/i.test(msg) || !/(function|schema cache|does not exist|PGRST202)/i.test(msg)) {
+      console.warn('[webstore] coupon redemption RPC failed for order:', orderId, error.message || error.code);
+      return false;
+    }
+  }
+
+  // Pre-migration compatibility: compare-and-swap avoids lost increments.
   for (let i = 0; i < 3; i++) {
-    const { data } = await sb.from('webstore_coupons').select('id,used_count').eq('store_id', storeId).ilike('code', code).limit(1);
+    // code came from the stored coupon row/order snapshot, so exact equality is
+    // both sufficient and avoids treating '%' or '_' as PostgREST wildcards.
+    const { data } = await sb.from('webstore_coupons').select('id,used_count').eq('store_id', storeId).eq('code', code).limit(1);
     const c = data && data[0];
-    if (!c) return;
+    if (!c) return false;
     const cur = c.used_count || 0;
     const { data: upd } = await sb.from('webstore_coupons').update({ used_count: cur + 1 }).eq('id', c.id).eq('used_count', cur).select('id');
-    if (upd && upd.length) return;
+    if (upd && upd.length) return true;
   }
   console.warn('[webstore] coupon used_count increment lost the race 3x for code:', code);
+  return false;
 }
 
 module.exports = { sendOrderConfirmation, sendPoOrderReceived, sendPoOrderApproved, sendOrderBagged, sendRefundNotice, bumpCouponUse };
