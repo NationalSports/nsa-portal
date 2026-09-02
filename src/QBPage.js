@@ -385,6 +385,9 @@ export default function QBPage(){
     };
 
     return(<>
+      {/* Deployment marker: forces a fresh lazy-loaded QBO chunk after the
+          account-reference payload hardening shipped. */}
+      <span hidden data-qb-payload-version="account-ref-v2" />
       {/* Connection Status */}
       <div className="card" style={{marginBottom:16,borderLeft:'4px solid '+(qbConfig.connected?'#22c55e':'#d97706')}}>
         <div className="card-body">
