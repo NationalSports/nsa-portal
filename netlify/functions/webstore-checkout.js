@@ -706,6 +706,8 @@ async function placeOrder(sb, body) {
     if (taken) return bad(409, `Number ${taken[1]} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: taken[1] });
     const sold = msg.match(/NSA_SOLD_OUT:(.+)/);
     if (sold) return bad(409, `Sorry — these just sold out while you were shopping: ${sold[1].trim()}. Please remove or change them and try again.`);
+    if (/NSA_COUPON_USED/.test(msg)) return bad(409, 'That code has already been used.');
+    if (/NSA_COUPON_INVALID/.test(msg)) return bad(409, 'That code is no longer valid for this store.');
     if (clientRef && /duplicate|unique/i.test(msg) && /client_ref/.test(msg)) {
       // Concurrent double-submit lost the transaction race — return the winner's order.
       const winner = await findOrderByClientRef(sb, clientRef);
@@ -795,7 +797,7 @@ async function placeOrder(sb, body) {
   }
 
   // Team-tab / comped order: count the coupon use and send the confirmation now.
-  if (coupon) await bumpCouponUse(sb, store.id, coupon.code);
+  if (coupon) await bumpCouponUse(sb, store.id, coupon.code, order.id);
   if (order.buyer_email) {
     const { data: won } = await sb.from('webstore_orders').update({ confirmation_sent: true }).eq('id', order.id).neq('confirmation_sent', true).select('id').limit(1);
     if (won && won.length) { try { await sendOrderConfirmation(sb, order); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
@@ -930,7 +932,7 @@ async function finalize(sb, body) {
   // webhook fallback) owns the coupon bump + the one confirmation email.
   const { data: won } = await sb.from('webstore_orders').update({ confirmation_sent: true }).eq('id', order.id).neq('confirmation_sent', true).select('id').limit(1);
   if (won && won.length) {
-    if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code);
+    if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code, order.id);
     if (order.buyer_email) { try { await sendOrderConfirmation(sb, { ...order, status: 'paid' }); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
   }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, orderId: order.id }) };

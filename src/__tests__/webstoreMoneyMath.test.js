@@ -48,6 +48,31 @@ describe('durable webstore inventory reservations', () => {
   });
 });
 
+describe('atomic webstore coupon quotas', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902060000_atomic_webstore_coupon_quota.sql'), 'utf8');
+
+  test('claims the coupon under a row lock in the order transaction', () => {
+    expect(sql).toMatch(/from public\.webstore_coupons[\s\S]*for update/i);
+    expect(sql).toMatch(/used_count[\s\S]*>= v_coupon\.max_uses[\s\S]*NSA_COUPON_USED/i);
+    expect(sql).toMatch(/update public\.webstore_coupons[\s\S]*used_count = coalesce\(used_count, 0\) \+ 1/i);
+    expect(sql).toMatch(/insert into public\.webstore_coupon_redemptions[\s\S]*v_order\.id/i);
+  });
+
+  test('is order-idempotent and releases only failed pending reservations', () => {
+    expect(sql).toMatch(/order_id\s+uuid primary key/i);
+    expect(sql).toMatch(/state in \('reserved', 'redeemed', 'released'\)/i);
+    expect(sql).toMatch(/old\.state = 'reserved'[\s\S]*used_count = greatest/i);
+    expect(sql).toMatch(/new\.status[\s\S]*'cancelled'[\s\S]*state = 'released'/i);
+    expect(sql).toMatch(/redeem_webstore_coupon_for_order/i);
+  });
+
+  test('keeps redemption data and functions private to service-role flows', () => {
+    expect(sql).toMatch(/alter table public\.webstore_coupon_redemptions enable row level security/i);
+    expect(sql).toMatch(/revoke all on table public\.webstore_coupon_redemptions from public, anon, authenticated/i);
+    expect(sql).toMatch(/revoke all on function public\.redeem_webstore_coupon_for_order\(uuid\)[\s\S]*public, anon, authenticated/i);
+  });
+});
+
 describe('#9 netFundraise — club fundraising net of the coupon discount', () => {
   test('no discount → full fundraise owed', () => {
     expect(netFundraise({ subtotal: 50, fundraise_amt: 10, discount_amt: 0 })).toBe(10);

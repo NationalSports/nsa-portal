@@ -136,6 +136,17 @@ describe('transactional path (place_webstore_order RPC)', () => {
     expect(JSON.parse(res.body).error).toContain('Tee (size L)');
   });
 
+  test('an atomic coupon-quota race loser gets a useful 409', async () => {
+    const sb = fakeSb({
+      ...happyTables(),
+      'webstore_coupons.select': [{ data: [{ code: 'LAST', active: true, kind: 'percent', value: 10, cover_shipping: true, expires_at: null, max_uses: 1, used_count: 0 }], error: null }],
+      'rpc.place_webstore_order': [{ data: null, error: { message: 'NSA_COUPON_USED' } }],
+    });
+    const res = await checkout.placeOrder(sb, body({ couponCode: 'LAST' }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/already been used/i);
+  });
+
   test('client_ref race inside the transaction replays the winner', async () => {
     const sb = fakeSb({
       ...happyTables(),
