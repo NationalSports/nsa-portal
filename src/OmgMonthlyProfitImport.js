@@ -16,7 +16,6 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
   const [rows, setRows] = useState([]);
   const [fileName, setFileName] = useState('');
   const [busy, setBusy] = useState(false);
-  const [syncRun, setSyncRun] = useState(null);
   const [heldCount, setHeldCount] = useState(0);
   const fileRef = useRef(null);
   const byCode = useMemo(() => {
@@ -32,32 +31,12 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
   useEffect(() => {
     if (!supabase) return;
     let cancelled = false;
-    Promise.all([
-      supabase.from('omg_profit_sync_runs').select('*').order('started_at', { ascending: false }).limit(1).maybeSingle(),
-      supabase.from('omg_store_commission_months').select('id', { count: 'exact', head: true }).eq('status', 'held'),
-    ]).then(([runResult, heldResult]) => {
+    supabase.from('omg_store_commission_months').select('id', { count: 'exact', head: true }).eq('status', 'held').then(heldResult => {
       if (cancelled) return;
-      if (!runResult.error) setSyncRun(runResult.data || null);
       if (!heldResult.error) setHeldCount(heldResult.count || 0);
     });
     return () => { cancelled = true; };
   }, []);
-
-  const triggerSync = async () => {
-    if (!supabase || busy) return;
-    setBusy(true);
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if (!token) throw new Error('Sign in with your email and password to run the sync');
-      const response = await fetch('/.netlify/functions/omg-profit-sync-background', {
-        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}',
-      });
-      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      notify?.('OMG profit sync queued. It will continue in the background.');
-    } catch (error) { notify?.(`Could not start OMG sync: ${error.message}`, 'error'); }
-    finally { setBusy(false); }
-  };
 
   const parseFile = async file => {
     if (!file) return;
@@ -143,13 +122,12 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
     <div style={{ padding: '14px 16px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div><div style={{ fontSize: 15, fontWeight: 800, color: '#6d28d9' }}>OMG Monthly Profit</div>
-          <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>Nightly API totals use the store code to assign the customer and rep. Manual import remains available as a fallback.</div>
-          <div style={{ fontSize: 10.5, color: syncRun?.status === 'complete' ? '#166534' : syncRun ? '#b45309' : '#94a3b8', marginTop: 4 }}>
-            {syncRun ? `Last sync ${String(syncRun.started_at || '').slice(0, 16).replace('T', ' ')} · ${syncRun.status} · ${syncRun.stores_synced}/${syncRun.stores_requested} stores` : 'Nightly sync has not run yet'}{heldCount ? ` · ${heldCount} commission hold${heldCount === 1 ? '' : 's'}` : ''}
+          <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2 }}>Import one cumulative OMG Margin Report snapshot each month. Store codes assign every row to its customer and rep.</div>
+          <div style={{ fontSize: 10.5, color: '#b45309', marginTop: 4 }}>
+            OMG's V1 API does not reliably return sale-filtered product costs, so automatic accounting writes are disabled.{heldCount ? ` ${heldCount} commission hold${heldCount === 1 ? '' : 's'} need review.` : ''}
           </div></div>
         <div style={{display:'flex',gap:7}}>
-          {(currentUser?.role === 'admin' || currentUser?.role === 'super_admin') && <button className="btn btn-sm btn-secondary" disabled={busy} onClick={triggerSync}>Run now</button>}
-          <button className="btn btn-sm" style={{ background: '#6d28d9', color: '#fff' }} onClick={() => setOpen(v => !v)}>{open ? 'Close' : 'Manual fallback import'}</button>
+          <button className="btn btn-sm" style={{ background: '#6d28d9', color: '#fff' }} onClick={() => setOpen(v => !v)}>{open ? 'Close' : 'Import monthly snapshot'}</button>
         </div>
       </div>
       {open && <div style={{ marginTop: 14, borderTop: '1px solid #ede9fe', paddingTop: 14 }}>
