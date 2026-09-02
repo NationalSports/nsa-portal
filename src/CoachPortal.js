@@ -1418,10 +1418,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
           {canApprove&&<button id="est-approve-btn" className="nsa-skew nsa-disp" style={{width:'100%',padding:'15px 20px',background:tAccent,color:'white',border:'none',borderRadius:4,fontSize:17,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer',marginBottom:10}} onClick={async()=>{
             const _approvedAt=new Date().toISOString();const _updatedAt=new Date().toLocaleString();
-            // Email the assigned rep when coach approves estimate. Fall back to the
-            // customer's primary rep, then a monitored admin inbox, so a rep missing
-            // an email on file never silently swallows the approval notification.
-            const _apprRep=REPS.find(r=>r.id===est.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+            // Prefer the account owner shown everywhere else in the portal. The
+            // server re-resolves this recipient (including the rep's auth email)
+            // before sending, so this browser value is only a compatibility hint.
+            const _apprRep=REPS.find(r=>r.id===customer.primary_rep_id)||REPS.find(r=>r.id===est.created_by);
             const _apprTo=_apprRep?.email||'steve@nationalsportsapparel.com';
             const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
             // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
@@ -1448,13 +1448,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const req={id:'UR-'+Date.now(),text:_reqText,from:'Coach',at:new Date().toISOString(),status:'pending'};
                 const _newReqs=[...(est.update_requests||[]),req];const _updatedAt=new Date().toLocaleString();
                 // Notify the assigned rep that the coach requested changes
-                const _urRep=REPS.find(r=>r.id===est.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                const _urRep=REPS.find(r=>r.id===customer.primary_rep_id)||REPS.find(r=>r.id===est.created_by);
+                const _urTo=_urRep?.email||'steve@nationalsportsapparel.com';
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 const _safeText=_reqText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
                 // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
                   estimates:[{id:est.id,update_requests:_newReqs,updated_at:_updatedAt}],
-                  email:_urRep?.email?{to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:_urRep.email,name:_urRep.name}}:undefined,
+                  email:{to:[{email:_urTo}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://connect.nationalsportsapparel.com/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(_urRep?.email?{replyTo:{email:_urRep.email,name:_urRep.name}}:{})},
                 });
                 if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
                 // Local state flips only after the server write commits — no phantom request.
@@ -1979,9 +1980,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // only proof with NSA_MOCKS_CHANGED even though the artist never touched the art.
                 const _pinMocks=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
                 const _sm=new Set();const _seenMocks=[..._pinMocks,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
-                // Rep to notify: creator → customer's primary rep → monitored inbox, so a rep
-                // missing an email never silently swallows the decision (mirrors the estimate path).
-                const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                // Account owner first; portal-action authoritatively resolves the
+                // address and falls back to the linked auth account when needed.
+                const rep=REPS.find(r=>r.id===customer.primary_rep_id)||REPS.find(r=>r.id===liveSO.created_by);
                 const _apprTo=rep?.email||'steve@nationalsportsapparel.com';
                 const commentHtml=coachComment?'<p style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"><strong>Coach\'s note:</strong> '+coachComment+'</p>':'';
                 // Art proofs are not a billing matter — notify the rep only. (The estimate
@@ -2021,7 +2022,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const rArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const _curJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id);
                 const _newRejections=[...((_curJob&&_curJob.rejections)||[]),rej];
-                const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                const rep=REPS.find(r=>r.id===customer.primary_rep_id)||REPS.find(r=>r.id===liveSO.created_by);
                 const _rejTo=rep?.email||'steve@nationalsportsapparel.com';
                 // Art proofs are not a billing matter — notify the rep only. (The estimate
                 // paths CC billing on purpose; art approve/change-request must not.)

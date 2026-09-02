@@ -6,7 +6,7 @@
  * complete write sets (the H1 state guard, M2 prod_files_attached clear, M4
  * self-consistent writes, L1 dual timestamp keys).
  */
-const { applyArtDecision } = require('../../netlify/functions/portal-action');
+const { applyArtDecision, resolveNotificationRep } = require('../../netlify/functions/portal-action');
 
 function fakeSb(script) {
   const calls = [];
@@ -157,5 +157,60 @@ describe('pre-00172 fallback', () => {
     const sb = fakeSb({ 'rpc.apply_coach_art_decision': [RPC_MISSING] });
     const r = await applyArtDecision(sb, { ...APPROVE, approved_status: 'shipped' }, null);
     expect(r.status).toBe(400);
+  });
+});
+
+describe('coach notification rep routing', () => {
+  const OWNER = 'rep-owner';
+  const CREATOR = 'rep-creator';
+
+  function repAdmin(rows, authUsers = {}) {
+    const updates = [];
+    return {
+      updates,
+      auth: { admin: { getUserById: async (id) => ({ data: { user: authUsers[id] || null }, error: null }) } },
+      from(table) {
+        expect(table).toBe('team_members');
+        const call = { op: 'select', payload: null, ids: [] };
+        const chain = {
+          select: () => chain,
+          in: (_col, ids) => { call.ids = ids; return Promise.resolve({ data: rows.filter(r => ids.includes(r.id)), error: null }); },
+          update: (payload) => { call.op = 'update'; call.payload = payload; return chain; },
+          eq: (_col, id) => { updates.push({ id, payload: call.payload }); return Promise.resolve({ data: null, error: null }); },
+        };
+        return chain;
+      },
+    };
+  }
+
+  test('prefers the customer primary rep over the document creator', async () => {
+    const admin = repAdmin([
+      { id: OWNER, name: 'Account Owner', email: 'owner@nsa.test', is_active: true },
+      { id: CREATOR, name: 'Order Creator', email: 'creator@nsa.test', is_active: true },
+    ]);
+    await expect(resolveNotificationRep(admin, OWNER, CREATOR)).resolves.toMatchObject({
+      id: OWNER, email: 'owner@nsa.test', source: 'team_members',
+    });
+  });
+
+  test('uses the linked auth email and repairs a blank roster email (EST-2374)', async () => {
+    const admin = repAdmin(
+      [{ id: OWNER, name: 'Chase Koissian', email: null, auth_id: 'auth-chase', is_active: true }],
+      { 'auth-chase': { email: 'Chase@NationalSportsApparel.com' } },
+    );
+    await expect(resolveNotificationRep(admin, OWNER, OWNER)).resolves.toMatchObject({
+      id: OWNER, email: 'chase@nationalsportsapparel.com', source: 'auth',
+    });
+    expect(admin.updates).toEqual([{ id: OWNER, payload: { email: 'chase@nationalsportsapparel.com' } }]);
+  });
+
+  test('uses the monitored inbox only when neither assigned rep has an address', async () => {
+    const admin = repAdmin([
+      { id: OWNER, name: 'No Email', email: null, auth_id: null, is_active: true },
+      { id: CREATOR, name: 'Also No Email', email: '', auth_id: null, is_active: true },
+    ]);
+    await expect(resolveNotificationRep(admin, OWNER, CREATOR)).resolves.toMatchObject({
+      email: 'steve@nationalsportsapparel.com', source: 'fallback',
+    });
   });
 });
