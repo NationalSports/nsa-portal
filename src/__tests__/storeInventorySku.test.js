@@ -18,17 +18,23 @@ describe('webstore vendor SKU matching', () => {
 
   test('fetchStockMap queries the alias and attaches its stock to the catalog product', async () => {
     let queriedSkus = [];
+    global.fetch = jest.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      queriedSkus = body.skus || [];
+      return {
+        ok: true,
+        json: async () => ({ rows: [{ id: 1, sku: 'ST650-TrueNavy', size: 'M', stock_qty: 500, future_delivery_date: null, future_delivery_qty: null }] }),
+      };
+    });
     mockFrom.mockImplementation((table) => {
       const query = {
         select: () => query,
-        in: (column, values) => { if (table === 'inventory_unified' && column === 'sku') queriedSkus = values; return query; },
+        in: () => query,
         or: () => query,
         gt: () => query,
         order: () => query,
         range: () => Promise.resolve({
-          data: table === 'inventory_unified'
-            ? [{ id: 1, sku: 'ST650-TrueNavy', size: 'M', stock_qty: 500, future_delivery_date: null, future_delivery_qty: null }]
-            : [],
+          data: [],
           error: null,
         }),
       };
@@ -39,6 +45,7 @@ describe('webstore vendor SKU matching', () => {
 
     expect(queriedSkus).toContain('ST650-TrueNavy');
     expect(stock.get('sm-st650-true-navy')).toMatchObject({ units: 500, sizes: ['M'], sizeStock: { M: 500 } });
+    delete global.fetch;
   });
 });
 

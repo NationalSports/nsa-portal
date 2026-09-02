@@ -66,6 +66,113 @@ function getSb() {
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
+// Exact allow-list from webstores_public. Keep this explicit so a future view
+// expansion cannot silently expose a staff-only webstores column here.
+const PUBLIC_STORE_FIELDS = 'id,slug,name,status,open_at,close_at,payment_mode,require_login,number_enabled,number_unique,number_min,number_max,fundraise_enabled,fundraise_show_parents,logo_url,banner_url,primary_color,accent_color,hero_blurb,theme,ship_home_enabled,deliver_club_enabled,delivery_mode,flat_shipping,public_listed,featured_product_ids,processing_pct,storefront_template,sport';
+const PUBLIC_INVENTORY_FIELDS = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced,source';
+const safeText = (value, max) => String(value || '').trim().slice(0, max);
+const uniqueTextList = (values, maxItems, maxLength) => [...new Set((Array.isArray(values) ? values : [])
+  .map((value) => safeText(value, maxLength)).filter(Boolean))].slice(0, maxItems);
+
+async function drainView(queryFactory, maxRows) {
+  const rows = [];
+  for (let from = 0; from < maxRows; from += 1000) {
+    const { data, error } = await queryFactory().range(from, Math.min(from + 999, maxRows - 1));
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) return rows;
+  }
+  return rows;
+}
+
+async function publicStoreSearch(sb, body) {
+  const term = safeText(body.term, 80).replace(/[%,()*:]/g, ' ').trim();
+  if (term.length < 2) return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: [] }) };
+  const allowedStatuses = new Set(['open', 'closed']);
+  const statuses = uniqueTextList(body.statuses, 2, 12).filter((s) => allowedStatuses.has(s));
+  const limit = Math.min(50, Math.max(1, Number(body.limit) || 24));
+  let query = sb.from('webstores_public').select('slug,name,status,logo_url,primary_color,accent_color,banner_url,close_at')
+    .eq('public_listed', true).or(`name.ilike.*${escapeIlikeLiteral(term)}*,slug.ilike.*${escapeIlikeLiteral(term)}*`)
+    .order('name').limit(limit);
+  query = query.in('status', statuses.length ? statuses : ['open']);
+  const { data, error } = await query;
+  if (error) throw error;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: data || [] }) };
+}
+
+async function publicStoreCount(sb) {
+  const { count, error } = await sb.from('webstores_public').select('id', { count: 'exact', head: true })
+    .eq('status', 'open').eq('public_listed', true);
+  if (error) throw error;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ count: Number(count) || 0 }) };
+}
+
+async function publicTemplates(sb) {
+  const { data, error } = await sb.from('webstore_templates_public').select('id,name').order('name').limit(250);
+  if (error) throw error;
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows: data || [] }) };
+}
+
+async function publicInventory(sb, body) {
+  const skus = uniqueTextList(body.skus, 400, 80);
+  if (!skus.length) return bad(400, 'skus are required');
+  const rows = await drainView(
+    () => sb.from('inventory_unified').select(PUBLIC_INVENTORY_FIELDS).in('sku', skus).order('sku').order('size'),
+    10000,
+  );
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows }) };
+}
+
+async function publicStorefrontProducts(sb, body) {
+  const storeId = safeText(body.storeId, 80);
+  if (!storeId) return bad(400, 'storeId is required');
+  const productIds = uniqueTextList(body.productIds, 400, 80);
+  const rows = await drainView(() => {
+    let query = sb.from('webstore_storefront_products').select('*').eq('store_id', storeId).order('sort_order');
+    if (productIds.length) query = query.in('product_id', productIds);
+    return query;
+  }, 3000);
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ rows }) };
+}
+
+async function publicStorefront(sb, body) {
+  const slug = safeText(body.slug, 120);
+  if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return bad(400, 'Invalid store slug');
+  const { data: stores, error: storeError } = await sb.from('webstores_public').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
+  if (storeError) throw storeError;
+  const store = (stores || [])[0];
+  if (!store || store.status === 'archived') return bad(404, 'Store not found');
+  const products = await drainView(
+    () => sb.from('webstore_storefront_products').select('*').eq('store_id', store.id).order('sort_order'),
+    3000,
+  );
+  const bundleIds = products.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id);
+  let bundleItems = [];
+  if (bundleIds.length) {
+    const { data, error } = await sb.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds).order('sort_order');
+    if (error) throw error;
+    bundleItems = data || [];
+  }
+  const productIds = [...new Set(bundleItems.map((item) => item.product_id).filter(Boolean))];
+  let componentProducts = [];
+  if (productIds.length) {
+    const { data, error } = await sb.from('products').select('id,sku,name,image_front_url,available_sizes,color').in('id', productIds);
+    if (error) throw error;
+    componentProducts = data || [];
+  }
+  const activeIds = new Set(products.map((p) => p.webstore_product_id));
+  const archivedIds = [...new Set(bundleItems.map((item) => item.webstore_product_id).filter((id) => id && !activeIds.has(id)))];
+  let archivedProducts = [];
+  if (archivedIds.length) {
+    const { data, error } = await sb.from('webstore_products')
+      .select('id,product_id,sku,display_name,image_url,image_back_url,decorations,retail_price,fundraise_amount')
+      .eq('store_id', store.id).in('id', archivedIds).eq('active', false);
+    if (error) throw error;
+    archivedProducts = data || [];
+  }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ store, products, bundleItems, componentProducts, archivedProducts }) };
+}
+
 // Validate shopper-entered add-ons against the product's server-side definition.
 // The browser sends only option ids + answers; labels and dollars are rebuilt here.
 function priceAddOnSelections(definitions, submitted) {
@@ -557,6 +664,12 @@ exports.handler = async (event) => {
     if (body.action === 'track_order') return await trackOrder(sb, body);
     if (body.action === 'update_ship') return await updateShip(sb, body);
     if (body.action === 'post_message') return await postMessage(sb, body);
+    if (body.action === 'store_search') return await publicStoreSearch(sb, body);
+    if (body.action === 'store_count') return await publicStoreCount(sb);
+    if (body.action === 'templates') return await publicTemplates(sb);
+    if (body.action === 'inventory') return await publicInventory(sb, body);
+    if (body.action === 'storefront_products') return await publicStorefrontProducts(sb, body);
+    if (body.action === 'storefront') return await publicStorefront(sb, body);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[webstore-checkout] error:', e);

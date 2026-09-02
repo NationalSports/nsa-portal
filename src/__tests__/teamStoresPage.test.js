@@ -1,9 +1,9 @@
 /* src/teamshop/TeamStoresPage.js — the "Team Stores" mock translated to
  * React, with the "Find your store" search wired to the REAL data path: the
- * same webstores_public query the portal's /team-stores finder uses, now
+ * same bounded store-search endpoint the portal's /team-stores finder uses, now
  * shared via src/lib/publicTeamStores.js (extracted, not duplicated). This
  * suite covers: the page renders the hero + find-your-store section, typing
- * a search queries webstores_public and renders the matching stores (open
+ * a search queries the public gateway and renders the matching stores (open
  * ones linked to their real /shop/<slug> storefront, with a close-date
  * label), closed stores render marked Closed and unlinked, the no-match
  * empty state appears, and the TeamShopApp header nav + footer "Team
@@ -12,39 +12,6 @@ import React from 'react';
 import {
   render, screen, fireEvent, within,
 } from '@testing-library/react';
-
-// ── Mock the anon supabase client (what publicTeamStores.js queries) ────────
-// Chainable builder, plain functions per CRA's resetMocks:true. The or()
-// ilike filter is honored against the in-memory rows so tests exercise the
-// same "server filters by name/slug" behavior the real view provides.
-jest.mock('../lib/supabase', () => ({
-  supabase: {
-    from: (table) => {
-      global.__lastTable = table;
-      const state = { statuses: null, term: '' };
-      const c = {
-        select: () => c,
-        in: (col, vals) => { if (col === 'status') state.statuses = vals; return c; },
-        eq: () => c,
-        or: (expr) => {
-          const m = /name\.ilike\.\*(.*?)\*/.exec(expr || '');
-          state.term = (m ? m[1] : '').toLowerCase();
-          return c;
-        },
-        order: () => c,
-        limit: () => c,
-        then: (resolve, reject) => {
-          const rows = (global.__stores || []).filter((s) => (
-            (!state.statuses || state.statuses.includes(s.status))
-            && (`${s.name} ${s.slug}`.toLowerCase().includes(state.term))
-          ));
-          return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
-        },
-      };
-      return c;
-    },
-  },
-}));
 
 // ── Mocks so TeamShopApp itself can render for the nav/footer test ───────────
 jest.mock('../lib/supabaseCoach', () => ({
@@ -88,10 +55,19 @@ const STORES = [
 
 beforeEach(() => {
   global.__stores = STORES;
+  global.fetch = jest.fn(async (_url, options) => {
+    const body = JSON.parse(options.body || '{}');
+    const statuses = body.statuses || ['open'];
+    const term = String(body.term || '').toLowerCase();
+    const rows = (global.__stores || []).filter((s) => statuses.includes(s.status)
+      && `${s.name} ${s.slug}`.toLowerCase().includes(term));
+    return { ok: true, json: async () => ({ rows }) };
+  });
 });
 
 afterEach(() => {
   delete global.__stores;
+  delete global.fetch;
   window.localStorage.clear();
 });
 

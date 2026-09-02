@@ -12,6 +12,7 @@ import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, res
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
+import { fetchPublicInventory } from './lib/webstorePublicData';
 import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -904,8 +905,7 @@ const aggregateAdidasRows = (rows) => {
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
-    const { data, error } = await supabase.from('inventory_unified').select('*').eq('sku', sku);
-    if (error) { console.warn('[Adidas B2B] Fetch error:', error.message); return { sizes: {}, lastSynced: null }; }
+    const data = await fetchPublicInventory([sku]);
     if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
     return aggregateAdidasRows(data);
   } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
@@ -939,9 +939,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
       // while every OTHER inventory_unified caller (SO editor, webstores) is collaterally throttled too.
       if (i) await new Promise(r => setTimeout(r, 350));
       const results = await Promise.all(batches.slice(i, i + POOL).map(batch =>
-        supabase.from('inventory_unified').select('*').in('sku', batch)
-          .then(r => { if (r.error) { console.warn('[Adidas B2B] Bulk fetch error:', r.error.message); return []; } return r.data || []; })
-          .catch(e => { console.warn('[Adidas B2B] Bulk fetch batch failed:', e?.message || e); return []; })
+        fetchPublicInventory(batch).catch(e => { console.warn('[Adidas B2B] Bulk fetch batch failed:', e?.message || e); return []; })
       ));
       results.forEach(rows => rows.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); }));
     }
@@ -5745,8 +5743,7 @@ export default function App(){
       const skuVariants = [...new Set([...rawSkus, ...rawSkus.map(s => s.toUpperCase())])];
       if (supabase && skuVariants.length) {
         try {
-          const { data } = await supabase.from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_qty,future_delivery_date').in('sku', skuVariants);
+          const data = await fetchPublicInventory(skuVariants);
           (data||[]).forEach(r => { const k = String(r.sku||'').toUpperCase(); (adidasBySku[k] = adidasBySku[k] || []).push(r); });
         } catch (e) { console.log('[OMG stock] inventory_unified query failed:', e.message); }
       }
@@ -36411,7 +36408,7 @@ export default function App(){
     // Live vendor stock by sku (per colorway), batched.
     const skus=[...new Set(rows.map(p=>p.sku).filter(Boolean))].slice(0,600);
     const stockBySku={};
-    for(let i=0;i<skus.length;i+=300){const batch=skus.slice(i,i+300);try{const{data:inv}=await supabase.from('inventory_unified').select('sku,stock_qty,future_delivery_date,future_delivery_qty').in('sku',batch);(inv||[]).forEach(r=>{const k=r.sku;if(!stockBySku[k])stockBySku[k]={total:0,nextDate:null};const s=stockBySku[k];s.total+=(Number(r.stock_qty)||0);const fq=Number(r.future_delivery_qty)||0;if(r.future_delivery_date&&fq>0){if(!s.nextDate||r.future_delivery_date<s.nextDate)s.nextDate=r.future_delivery_date;}});}catch(e){}}
+    for(let i=0;i<skus.length;i+=300){const batch=skus.slice(i,i+300);try{const inv=await fetchPublicInventory(batch);(inv||[]).forEach(r=>{const k=r.sku;if(!stockBySku[k])stockBySku[k]={total:0,nextDate:null};const s=stockBySku[k];s.total+=(Number(r.stock_qty)||0);const fq=Number(r.future_delivery_qty)||0;if(r.future_delivery_date&&fq>0){if(!s.nextDate||r.future_delivery_date<s.nextDate)s.nextDate=r.future_delivery_date;}});}catch(e){}}
     const otherStems=words.slice(0,-1).map(stemOf).filter(Boolean);
     const scoreOf=(name,cat)=>{const hay=((name||'')+' '+(cat||'')).toLowerCase();return otherStems.reduce((a,w)=>a+(hay.includes(w)?1:0),0);};
     // Collapse colorways of the same style into ONE card (name is identical across colors).
@@ -36725,8 +36722,8 @@ export default function App(){
     ];
     return B.map(b=>{const s=b.money?{...b.spec,aggregate:{op:'sum',field:b.money}}:b.spec;let r;try{r=runPortalSearch(s)}catch(e){r={total:0}}return{label:b.label,count:r.total||0,total:b.money&&r.aggregate?_nlMoney(r.aggregate.value):null,spec:b.spec}});
   }
-  // Vendor B2B stock lookup — reads the inventory_unified view (Adidas/Agron/UA/Nike) with the
-  // user's Supabase session (RLS allows read). Resolves a SKU or description to a product first.
+  // Vendor B2B stock lookup — reads the allowlisted inventory gateway
+  // (Adidas/Agron/UA/Nike). Resolves a SKU or description to a product first.
   async function handleAssistantVendorStock(query){
     const q=String(query||'').trim();
     if(!q)return {error:'no_query'};
@@ -36735,7 +36732,7 @@ export default function App(){
     const sku=p?p.sku:q;
     if(!supabase)return {error:'no_db'};
     let rows=[];
-    try{const{data}=await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',[sku,String(sku).toUpperCase()]);rows=data||[];}catch(e){rows=[];}
+    try{rows=await fetchPublicInventory([sku,String(sku).toUpperCase()]);}catch(e){rows=[];}
     if(!rows.length)return {error:'no_stock',sku,name:p?p.name:null};
     const sizes={};let nextDate=null,nextQty=0,onHand=0,lastSynced=null;
     rows.forEach(r=>{const sz=r.size||'?';const qty=Number(r.stock_qty)||0;const fq=Number(r.future_delivery_qty)||0;onHand+=qty;const s=sizes[sz]||(sizes[sz]={qty:0,futureQty:0,futureDate:null});s.qty+=qty;s.futureQty+=fq;if(r.future_delivery_date&&fq>0){if(!s.futureDate||r.future_delivery_date<s.futureDate)s.futureDate=r.future_delivery_date;if(!nextDate||r.future_delivery_date<nextDate)nextDate=r.future_delivery_date;nextQty+=fq;}if(r.last_synced&&(!lastSynced||r.last_synced>lastSynced))lastSynced=r.last_synced;});
