@@ -19257,12 +19257,33 @@ export default function App(){
   // Calibration behind the order editor's shipping suggestion. One row, refreshed
   // by scripts/shipping-audit.js, so the suggestion tracks the data rather than
   // hardcoded constants. Loaded once and passed to both editors.
+  //
+  // WAIT FOR THE SESSION BEFORE ASKING. ship_cost_basis is readable only by an
+  // authenticated staff member (see its migration), and Supabase restores the
+  // session asynchronously on first load - the same lag the auth guard below
+  // allows ~9s for. A fetch fired at mount goes out under the anon key, RLS
+  // matches no rows, and maybeSingle() reports that as {data:null,error:null}:
+  // indistinguishable from "no calibration exists". The suggestion then never
+  // appears for the whole life of the page, with nothing logged. So poll for a
+  // live session first, and say something when we still come away empty.
   const[shipCostBasis,setShipCostBasis]=useState(null);
   useEffect(()=>{
     if(!supabase)return;
     let alive=true;
-    supabase.from('ship_cost_basis').select('*').limit(1).maybeSingle()
-      .then(({data,error})=>{if(alive&&!error&&data)setShipCostBasis(data)});
+    (async()=>{
+      for(let i=0;i<30&&alive;i++){
+        let session=null;
+        try{const r=await supabase.auth.getSession();session=r?.data?.session||null}catch(_){}
+        if(_isLiveSession(session))break;
+        await new Promise(r=>setTimeout(r,300));
+      }
+      if(!alive)return;
+      const{data,error}=await supabase.from('ship_cost_basis').select('*').limit(1).maybeSingle();
+      if(!alive)return;
+      if(data){setShipCostBasis(data);return}
+      console.warn('[ship] no shipping cost basis - the editor will not suggest a charge. '
+        +(error?error.message:'No row visible: either the audit has never run, or this account is not an active team_members row (ship_cost_basis RLS).'));
+    })();
     return()=>{alive=false};
   },[]);
   const[shipCartons,setShipCartons]=useState([]);

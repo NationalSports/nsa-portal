@@ -89,4 +89,36 @@ describe('both editors show the suggestion', () => {
     expect(src).toContain("supabase.from('ship_cost_basis')");
     expect(src).toContain('shipCostBasis={shipCostBasis}');
   });
+
+  // THE BUG THIS PINS. ship_cost_basis is readable only by an authenticated staff
+  // member, and Supabase restores the session asynchronously on first load. The
+  // original loader fired the query at mount with no gate, so on a cold load it
+  // went out under the anon key, RLS matched nothing, and maybeSingle() returned
+  // {data:null,error:null} — a silent, permanent "no calibration" for the life of
+  // the page. Nothing rendered and nothing was logged.
+  //
+  // Asserting the two strings are merely present would pass on the broken code,
+  // so this pins their ORDER inside the effect: the session gate must come first.
+  test('the calibration load waits for a live session before querying', () => {
+    const src = read('App.js');
+    const start = src.indexOf('const[shipCostBasis,setShipCostBasis]=useState(null);');
+    expect(start).toBeGreaterThan(-1);
+    const effect = src.slice(start, src.indexOf('const[shipCartons,setShipCartons]', start));
+
+    const gate = effect.indexOf('_isLiveSession(session)');
+    const query = effect.indexOf("supabase.from('ship_cost_basis')");
+    expect(gate).toBeGreaterThan(-1);
+    expect(query).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(query);
+
+    // ...and the helper it leans on is actually imported, not a stray identifier.
+    expect(src).toContain('_isLiveSession,');
+  });
+
+  // An empty result here is indistinguishable from "the audit never ran". Whichever
+  // it is, the rep sees no suggestion and no reason why, so it has to reach a log.
+  test('coming away with no calibration is reported, not swallowed', () => {
+    const src = read('App.js');
+    expect(src).toContain('[ship] no shipping cost basis');
+  });
 });
