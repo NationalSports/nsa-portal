@@ -235,6 +235,15 @@ async function syncStore(sb, store, customers, reps, linkedSalesOrders, runId, n
 exports.handler = async event => {
   const auth = await verifyUserOrInternal(event);
   if (!auth.ok) return { statusCode: auth.status, body: auth.error };
+  // OMG's V1 order filters are not sale-scoped: the API can return the same
+  // global rows for different sale ids. Never write accounting or commission
+  // data unless the account has explicitly opted into a verified API mode.
+  if (process.env.OMG_PROFIT_API_SYNC_ENABLED !== 'true') {
+    return {
+      statusCode: 503,
+      body: 'Automatic OMG profit sync is disabled because sale-filtered order costs are not reliable. Import the monthly Margin Report snapshot instead.',
+    };
+  }
   if (!API_KEY) return { statusCode: 500, body: 'OMG_API_KEY is not configured' };
   const sb = getSupabaseAdmin();
   const now = new Date().toISOString();
