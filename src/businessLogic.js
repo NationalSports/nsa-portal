@@ -114,17 +114,29 @@ function unfulfilledSizes(item) {
   const orderedMap = safeSizes(item);
   const keys = new Set(Object.keys(orderedMap));
   if (!keys.size && item && item.qty_only) keys.add('QTY');
+  // A stale/misaligned IF can carry a quantity under a neighboring size (for example 2/XL
+  // while the order line says 2/L). Per-size subtraction alone would then invent 2 open L
+  // units even though the IF covers the entire line in total. Cap the sum of movable sizes by
+  // the line-level remainder so fully committed lines never expose a phantom SKU move.
+  const commitmentKeys = new Set([...keys, ...safeArr(item?.available_sizes)]);
+  if (item && item.qty_only) commitmentKeys.add('QTY');
+  const activePOs = safePOs(item).filter(pl => pl && pl.status !== 'cancelled');
+  const totalOrdered = [...keys].reduce((a, sz) => a + (sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz])), 0);
+  const totalPicked = [...commitmentKeys].reduce((a, sz) => a + safePicks(item).reduce((n, pk) => n + Math.max(0, safeNum(pk[sz])), 0), 0);
+  const totalPO = [...commitmentKeys].reduce((a, sz) => a + poCommitted(activePOs, sz), 0);
+  let remainingOpen = Math.max(0, totalOrdered - totalPicked - totalPO);
   const ordered = {}, picked = {}, po = {}, open = {};
   keys.forEach(sz => {
     const oq = sz === 'QTY' && !Object.keys(orderedMap).length ? safeNum(item.est_qty) : safeNum(orderedMap[sz]);
     if (!(oq > 0)) return;
     const pq = safePicks(item).reduce((a, pk) => a + Math.max(0, safeNum(pk[sz])), 0);
-    const poq = poCommitted(safePOs(item).filter(pl => pl && pl.status !== 'cancelled'), sz);
+    const poq = poCommitted(activePOs, sz);
     const available = Math.max(0, oq - pq - poq);
     ordered[sz] = oq;
     if (pq > 0) picked[sz] = pq;
     if (poq > 0) po[sz] = poq;
-    if (available > 0) open[sz] = available;
+    const movable = Math.min(available, remainingOpen);
+    if (movable > 0) { open[sz] = movable; remainingOpen -= movable }
   });
   return { ordered, picked, po, open };
 }

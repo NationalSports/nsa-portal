@@ -127,6 +127,14 @@ describe('Unfulfilled quantities for SKU moves', () => {
       po_lines: [{ po_id: '58103', status: 'cancelled', XL: 6 }],
     }).open).toEqual({ XL: 6 });
   });
+
+  test('does not invent open units when an IF covers the line total under a mismatched size', () => {
+    expect(BL.unfulfilledSizes({
+      sizes: { S: 0, M: 1, L: 2, XL: 0, '2XL': 6 },
+      available_sizes: ['S', 'M', 'L', 'XL', '2XL'],
+      pick_lines: [{ pick_id: 'IF-1162', status: 'pick', M: 1, XL: 2, '2XL': 6 }],
+    }).open).toEqual({});
+  });
 });
 
 // ═══════════════════════════════════════════════
