@@ -12,7 +12,7 @@
  * pure logic over its arguments + module state.
  */
 import {
-  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp, _buildInvMergeRows,
+  _diffCmp, _soDiffCmp, _estDiffCmp, _prodDiffCmp, _invDiffCmp, _buildInvMergeRows,
   _sanitizeArtRow, _unionArtFiles, _mergeArtConflict, _resolveArtRows, _adoptResolvedArtRow,
   _matchRestoreItem, _queuedEntitySave, _isNetErr, _retryNet,
   _lsSet, _setOnCacheFullChange, _setLsQuotaWarned,
@@ -29,6 +29,15 @@ describe('diff comparators (phantom-save guards)', () => {
     const b = { id: 'X', memo: 'hi', _version: 9, updated_at: 'today' };
     expect(_diffCmp(a)).toBe(_diffCmp(b));
     expect(_diffCmp(a)).not.toBe(_diffCmp({ ...a, memo: 'edited' }));
+  });
+
+  test('_invDiffCmp ignores attached credit memo history but sees invoice edits', () => {
+    const invoice = { id: 'INV-1', memo: 'original', credit_memos: [] };
+    expect(_invDiffCmp(invoice)).toBe(_invDiffCmp({
+      ...invoice,
+      credit_memos: [{ id: 'CM-1001', amount: 20 }],
+    }));
+    expect(_invDiffCmp(invoice)).not.toBe(_invDiffCmp({ ...invoice, memo: 'changed' }));
   });
 
   test('_soDiffCmp ignores per-item session scalars but sees item content', () => {
