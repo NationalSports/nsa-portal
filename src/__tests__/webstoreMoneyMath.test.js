@@ -24,6 +24,30 @@ describe('paid-order quantity entitlement — database backstop', () => {
   });
 });
 
+describe('durable webstore inventory reservations', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902053000_durable_unconverted_webstore_inventory_reservations.sql'), 'utf8');
+
+  test('serializes by the shared product+size resource and counts accepted unconverted demand', () => {
+    expect(sql).toMatch(/pg_advisory_xact_lock[\s\S]*v_product_id[\s\S]*size/i);
+    expect(sql).toMatch(/gross_max_avail/i);
+    expect(sql).toMatch(/left join public\.sales_orders/i);
+    expect(sql).toMatch(/o\.status[\s\S]*in \('paid', 'unpaid', 'batched'\)/i);
+    expect(sql).toMatch(/so\.status[\s\S]*not in[\s\S]*'complete'[\s\S]*'archived'/i);
+    expect(sql).toMatch(/v_active \+ v_reserved \+ v_qty > v_max/i);
+  });
+
+  test('pending holds and accepted item demand are mutually exclusive, avoiding double-counting', () => {
+    expect(sql).toMatch(/ho\.status[\s\S]*in \('pending', 'pending_payment'\)/i);
+    expect(sql).toMatch(/i\.line_status[\s\S]*not in \('cancelled', 'canceled'\)/i);
+    expect(sql).toMatch(/iwp\.track_inventory[\s\S]*ip\.inventory_source[\s\S]*<> 'manual'/i);
+  });
+
+  test('validates the webstore product belongs to the new order store', () => {
+    expect(sql).toMatch(/wp\.store_id = v_order\.store_id/i);
+    expect(sql).toMatch(/NSA_INVENTORY_UNVERIFIABLE/i);
+  });
+});
+
 describe('#9 netFundraise — club fundraising net of the coupon discount', () => {
   test('no discount → full fundraise owed', () => {
     expect(netFundraise({ subtotal: 50, fundraise_amt: 10, discount_amt: 0 })).toBe(10);

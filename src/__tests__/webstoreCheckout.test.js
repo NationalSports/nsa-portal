@@ -246,7 +246,7 @@ describe('checkStock — demand for the same product+size is summed across cart 
   test('sanity check: the same total (5) as a single line passes and produces one merged hold', async () => {
     const r = await checkout.checkStock(sb(sfRow()), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 5 }]);
     expect(r.error).toBeNull();
-    expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 5, max_avail: 5, label: 'Tee (size M)' }]);
+    expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 5, max_avail: 5, gross_max_avail: 5, label: 'Tee (size M)' }]);
   });
 
   test('fails closed when current inventory cannot be loaded', async () => {
@@ -262,10 +262,11 @@ describe('checkStock — demand for the same product+size is summed across cart 
   });
 
   test('backorder against a KNOWN incoming qty is capped at on-hand + on-order', async () => {
-    // 5 on hand + 10 on order = 15 sellable; 12 passes (no hold — backorder), 16 blocks.
+    // 5 on hand + 10 on order = 15 sellable; 12 passes with a finite-pool
+    // reservation, while 16 blocks.
     const okR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
     expect(okR.error).toBeNull();
-    expect(okR.holds).toEqual([]);
+    expect(okR.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 12, max_avail: 15, gross_max_avail: 15, label: 'Tee (size M)' }]);
     const bigR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 16 }]);
     expect(bigR.error).toMatch(/sold out/i);
   });
@@ -296,7 +297,7 @@ describe('checkStock — demand for the same product+size is summed across cart 
     });
     const r = await checkout.checkStock(client, store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
     expect(r.error).toBeNull();
-    expect(r.holds).toEqual([]);
+    expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 12, max_avail: 15, gross_max_avail: 15, label: 'Tee (size M)' }]);
   });
 
   test('fails closed when existing backorder claims cannot be loaded', async () => {

@@ -9,9 +9,20 @@ do $$ begin create role service_role nologin; exception when duplicate_object th
 
 -- FK stubs
 create table webstores (id uuid primary key default gen_random_uuid(), slug text, name text);
-create table products (id text primary key);
-create table sales_orders (id text primary key);
-create table webstore_products (id uuid primary key default gen_random_uuid());
+create table products (
+  id text primary key,
+  inventory_source text
+);
+create table sales_orders (
+  id text primary key,
+  status text
+);
+create table webstore_products (
+  id uuid primary key default gen_random_uuid(),
+  store_id uuid,
+  product_id text references products(id),
+  track_inventory boolean default true
+);
 
 -- Real definitions (migration 011)
 create table webstore_orders (
@@ -82,5 +93,6 @@ create table webstore_number_claims (
 
 -- seed
 insert into webstores (id, slug, name) values ('00000000-0000-0000-0000-000000000001', 'tigers', 'Tigers');
-insert into products (id) values ('p1');
-insert into webstore_products (id) values ('00000000-0000-0000-0000-0000000000aa');
+insert into products (id, inventory_source) values ('p1', 'sanmar');
+insert into webstore_products (id, store_id, product_id, track_inventory)
+values ('00000000-0000-0000-0000-0000000000aa', '00000000-0000-0000-0000-000000000001', 'p1', true);
