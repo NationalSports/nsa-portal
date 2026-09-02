@@ -162,6 +162,13 @@ describe('quote_totals', () => {
     expect(calcTaxSpy).toHaveBeenCalledWith(STORE, SHIP, SUBTOTAL, null);
   });
 
+  test('a tax provider outage returns retryable 503 instead of quoting zero tax', async () => {
+    calcTaxSpy.mockResolvedValueOnce({ error: ws.TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' });
+    const res = await ts.quoteTotals(fakeSb(quoteScript()), { customer_id: 'custA', lines: LINES, ship: SHIP }, COACH);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'tax_unavailable', error: ws.TAX_RETRY_ERROR });
+  });
+
   test('stale quote_hash → 409 totals_changed with the fresh quote', async () => {
     const res = await ts.quoteTotals(fakeSb(quoteScript()), { customer_id: 'custA', lines: LINES, quote_hash: 'stale-hash' }, COACH);
     expect(res.statusCode).toBe(409);
@@ -182,6 +189,17 @@ describe('quote_totals', () => {
 });
 
 describe('place_order', () => {
+  test('a tax provider outage stops the order before any write or Stripe call', async () => {
+    const { quote_hash } = await freshQuote();
+    calcTaxSpy.mockResolvedValueOnce({ error: ws.TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' });
+    const sb = fakeSb(placeScript());
+    const res = await ts.placeOrder(sb, placeBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('tax_unavailable');
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'insert')).toHaveLength(0);
+    expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+  });
+
   test('happy path: order row + items carry the Team Shop fields; Stripe charges the SERVER total', async () => {
     const { quote_hash } = await freshQuote();
     const sb = fakeSb(placeScript());

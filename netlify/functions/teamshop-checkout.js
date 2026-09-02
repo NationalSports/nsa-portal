@@ -106,6 +106,7 @@ async function requoteAndVerify(sb, customerId, body) {
 async function computeTotals(store, quote, ship) {
   const shipping = ws.shipFee(store);
   const taxRes = await ws.calcTax(store, ship || {}, quote.subtotal, null);
+  if (taxRes.error) return { error: taxRes.error };
   const total = r2(quote.subtotal + shipping + taxRes.tax);
   return { subtotal: quote.subtotal, shipping, tax: taxRes.tax, tax_state: taxRes.state || '', total };
 }
@@ -125,6 +126,7 @@ async function quoteTotals(sb, body, coach) {
   if (rq.resp) return rq.resp;
 
   const totals = await computeTotals(st.store, rq.quote, body.ship);
+  if (totals.error) return bad(503, totals.error, { code: 'tax_unavailable' });
   return ok({ ok: true, quote: rq.quote, quote_hash: rq.quote.quote_hash, totals });
 }
 
@@ -174,6 +176,7 @@ async function placeOrder(sb, body, coach, opts) {
   const quote = rq.quote;
 
   const totals = await computeTotals(store, quote, ship);
+  if (totals.error) return bad(503, totals.error, { code: 'tax_unavailable' });
   if (Math.round(totals.total * 100) < 50) return bad(409, (ach ? 'Payments' : 'Card payments') + ' must be at least $0.50.');
 
   // Order row — webstore-checkout's field set (so every downstream reader:
@@ -383,6 +386,7 @@ async function placeOrderPo(sb, body, coach) {
   if (rq.resp) return rq.resp;
   const quote = rq.quote;
   const totals = await computeTotals(store, quote, ship);
+  if (totals.error) return bad(503, totals.error, { code: 'tax_unavailable' });
 
   // Order row — place_order's field set with the card-specific values swapped:
   // status 'unpaid' (pending staff PO verification; 00199 refuses to convert

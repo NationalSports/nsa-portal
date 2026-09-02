@@ -31,6 +31,77 @@ describe('r2 rounding', () => {
   });
 });
 
+describe('sales tax availability — fail closed where NSA is registered', () => {
+  const originalFetch = global.fetch;
+  const originalStates = process.env.TAX_COLLECT_STATES;
+  const originalUrl = process.env.REACT_APP_SUPABASE_URL;
+  const originalServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (originalStates == null) delete process.env.TAX_COLLECT_STATES;
+    else process.env.TAX_COLLECT_STATES = originalStates;
+    if (originalUrl == null) delete process.env.REACT_APP_SUPABASE_URL;
+    else process.env.REACT_APP_SUPABASE_URL = originalUrl;
+    if (originalServiceKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = originalServiceKey;
+  });
+
+  test('a failed California rate lookup returns a retry error, never a guessed fallback rate', async () => {
+    process.env.TAX_COLLECT_STATES = 'CA';
+    global.fetch = jest.fn().mockResolvedValue({ ok: false });
+    const r = await checkout.calcTax(
+      { delivery_mode: 'ship_home' },
+      { street1: '1 Main St', city: 'Fresno', state: 'CA', zip: '93703' },
+      100,
+      null,
+    );
+    expect(r).toMatchObject({ error: checkout.TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' });
+    expect(r.tax).toBeUndefined();
+  });
+
+  test('a failed TaxCloud lookup in another registered state returns a retry error, never zero tax', async () => {
+    process.env.TAX_COLLECT_STATES = 'CA,TX';
+    process.env.REACT_APP_SUPABASE_URL = 'https://test.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false }) });
+    const r = await checkout.calcTax(
+      { delivery_mode: 'ship_home' },
+      { street1: '1 Congress Ave', city: 'Austin', state: 'TX', zip: '78701' },
+      100,
+      null,
+    );
+    expect(r).toMatchObject({ error: checkout.TAX_RETRY_ERROR, state: 'TX', source: 'taxcloud_unavailable' });
+    expect(r.tax).toBeUndefined();
+  });
+
+  test('a valid zero TaxCloud apparel rate remains a successful zero-tax quote', async () => {
+    process.env.TAX_COLLECT_STATES = 'CA,TX';
+    process.env.REACT_APP_SUPABASE_URL = 'https://test.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, tax_rate: 0 }) });
+    const r = await checkout.calcTax(
+      { delivery_mode: 'ship_home' },
+      { street1: '1 Congress Ave', city: 'Austin', state: 'TX', zip: '78701' },
+      100,
+      null,
+    );
+    expect(r).toEqual({ tax: 0, rate: 0, state: 'TX', source: 'taxcloud' });
+  });
+
+  test('a non-California pickup requires enough billing address data to source tax', async () => {
+    process.env.TAX_COLLECT_STATES = 'CA,TX';
+    global.fetch = jest.fn();
+    const r = await checkout.calcTax(
+      { delivery_mode: 'club_delivery' },
+      {},
+      100,
+      { zip: '78701' },
+    );
+    expect(r).toMatchObject({ error: checkout.TAX_RETRY_ERROR, source: 'missing_destination_state' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('storeOrderWindowError — server-authoritative order window', () => {
   const now = Date.parse('2026-09-01T20:00:00.000Z');
 

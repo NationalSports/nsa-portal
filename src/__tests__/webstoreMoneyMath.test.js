@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* Unit tests for the webstore "money math" fixes (#6–#9).
  *
  * The club-fundraising proration (netFundraise) is the shared rule behind the payout
@@ -6,6 +7,22 @@
  * exported from _webstoreClose so the exact formula is pinned here. The order-edit total
  * re-derivation (#6) is replicated as a spec so its intended numeric behavior is guarded. */
 const { netFundraise } = require('../../netlify/functions/_webstoreClose');
+const fs = require('fs');
+const path = require('path');
+
+describe('paid-order quantity entitlement — database backstop', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902050000_block_unpaid_paid_order_quantity_increases.sql'), 'utf8');
+
+  test('blocks uncharged increases on paid/card orders at the table boundary', () => {
+    expect(sql).toMatch(/before update of qty on public\.webstore_order_items/i);
+    expect(sql).toMatch(/stripe_pi_id is not null/i);
+    expect(sql).toMatch(/NSA_PAID_ORDER_QUANTITY_INCREASE/i);
+  });
+
+  test('restoration entitlement subtracts already-refunded units', () => {
+    expect(sql).toMatch(/old\.qty[\s\S]*old\.cancelled_qty[\s\S]*old\.refunded_qty/i);
+  });
+});
 
 describe('#9 netFundraise — club fundraising net of the coupon discount', () => {
   test('no discount → full fundraise owed', () => {

@@ -407,14 +407,11 @@ function taxableBaseAfterDiscount(subtotal, discount, cartTotal, shipping, coupo
 // (metered) TaxCloud edge function, which applies the apparel TIC + each state's
 // exemptions. We only collect where NSA is registered — TAX_COLLECT_STATES (default
 // "CA"); a destination state not on that list is taxed at $0 (we can't remit it).
-// Pickup / team-delivery orders source to NSA's origin (possession happens there).
+// Pickup / team-delivery orders source to the buyer's billing address. Never guess
+// a registered-state rate: a transient lookup failure must stop checkout rather
+// than silently turn a taxable order into a $0-tax order.
 const taxCollectStates = () => (process.env.TAX_COLLECT_STATES || 'CA').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-const TAX_ORIGIN = {
-  street1: process.env.NSA_ORIGIN_ADDRESS || '',
-  city: process.env.NSA_ORIGIN_CITY || '',
-  state: (process.env.NSA_ORIGIN_STATE || 'CA').toUpperCase(),
-  zip: (process.env.NSA_ORIGIN_ZIP || '').slice(0, 5),
-};
+const TAX_RETRY_ERROR = 'We could not verify sales tax right now. Please wait a moment and try again.';
 
 // CDTFA free rate-by-address lookup (California only). Returns a decimal rate or null.
 async function cdtfaRate({ street1, city, zip }) {
@@ -442,7 +439,9 @@ async function taxcloudRate({ street1, city, state, zip }) {
     });
     const data = await res.json().catch(() => ({}));
     const rate = data && data.ok ? Number(data.tax_rate) : NaN;
-    return Number.isFinite(rate) && rate > 0 ? rate : null;
+    // A registered state can legitimately exempt apparel, producing a zero rate.
+    // data.ok distinguishes that valid result from an unavailable lookup.
+    return Number.isFinite(rate) && rate >= 0 ? rate : null;
   } catch (e) { console.warn('[webstore-checkout] TaxCloud lookup failed:', e.message); return null; }
 }
 
@@ -454,25 +453,30 @@ async function calcTax(store, ship, taxableBase, billing) {
   let dest;
   if (isPickup) {
     // Club-delivery: tax at the BUYER's home ZIP (their address), not NSA's origin.
-    // CA buyers pay their local rate; a ZIP outside CA's range is treated as out-of-state
-    // (we only collect where registered). No ZIP → can't source tax, so $0.
+    // CA buyers pay their local rate. Outside CA, retain the state collected by
+    // Stripe's billing AddressElement so registered-state nexus is evaluated.
     const zip = String((billing && billing.zip) || '').replace(/\D/g, '').slice(0, 5);
-    if (!zip) return { tax: 0, rate: 0, state: '', source: 'no_buyer_zip' };
+    if (!zip) return { error: TAX_RETRY_ERROR, state: '', source: 'missing_buyer_zip' };
     const zn = Number(zip);
     const isCaZip = zn >= 90001 && zn <= 96162;
-    dest = { street1: '', city: '', state: isCaZip ? 'CA' : String((billing && billing.state) || '').toUpperCase(), zip };
+    dest = {
+      street1: String((billing && billing.street1) || ''),
+      city: String((billing && billing.city) || ''),
+      state: isCaZip ? 'CA' : String((billing && billing.state) || '').toUpperCase(),
+      zip,
+    };
   } else {
     dest = { street1: ship.street1 || '', city: ship.city || '', state: String(ship.state || '').toUpperCase(), zip: String(ship.zip || '').slice(0, 5) };
   }
-  if (!dest.state || !taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
+  if (!dest.state) return { error: TAX_RETRY_ERROR, state: '', source: 'missing_destination_state' };
+  if (!taxCollectStates().includes(dest.state)) return { tax: 0, rate: 0, state: dest.state, source: 'not_registered' };
   if (dest.state === 'CA') {
-    let rate = await cdtfaRate(dest);
-    let source = 'cdtfa';
-    if (rate == null) { rate = Number(process.env.CA_DEFAULT_TAX_RATE) || 0.0775; source = 'cdtfa_fallback'; }
-    return { tax: r2(base * rate), rate, state: 'CA', source };
+    const rate = await cdtfaRate(dest);
+    if (rate == null) return { error: TAX_RETRY_ERROR, state: 'CA', source: 'cdtfa_unavailable' };
+    return { tax: r2(base * rate), rate, state: 'CA', source: 'cdtfa' };
   }
   const rate = await taxcloudRate(dest);
-  if (rate == null) return { tax: 0, rate: 0, state: dest.state, source: 'taxcloud_unavailable' };
+  if (rate == null) return { error: TAX_RETRY_ERROR, state: dest.state, source: 'taxcloud_unavailable' };
   return { tax: r2(base * rate), rate, state: dest.state, source: 'taxcloud' };
 }
 
@@ -612,7 +616,10 @@ async function placeOrder(sb, body) {
   // When a coupon fully covers the pre-tax total the order is comped — charge no tax
   // either, so we never create an "unpaid" order carrying tax that is never collected
   // (and never email a buyer a total they weren't charged).
-  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
+  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), {
+    street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state,
+  }) : { tax: 0 };
+  if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
   const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax, total };
@@ -853,6 +860,7 @@ async function quoteTotals(sb, body) {
   const processing = procFee(store, priced.feeBase);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
   const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), billing);
+  if (taxRes.error) return bad(503, taxRes.error, { code: 'tax_unavailable' });
   const total = r2(preTax + taxRes.tax);
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
 }
@@ -1146,10 +1154,27 @@ async function updateShip(sb, body) {
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
   if (order.shipped_at || order.status === 'shipped' || order.status === 'complete') return bad(409, 'This order has already shipped — contact us to change the address.');
+  const current = order.ship_address && typeof order.ship_address === 'object' ? order.ship_address : null;
+  if (!current || !current.street1 || !current.city || !current.state || !current.zip) {
+    return bad(409, 'Please message our team to change this order’s shipping address.');
+  }
+  const normText = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const normState = (v) => String(v || '').trim().toUpperCase();
+  const normZip = (v) => String(v || '').replace(/\D/g, '').slice(0, 5);
+  const jurisdictionChanged = normText(ship.street1) !== normText(current.street1)
+    || normText(ship.city) !== normText(current.city)
+    || normState(ship.state) !== normState(current.state)
+    || normZip(ship.zip) !== normZip(current.zip);
+  if (jurisdictionChanged) {
+    return bad(409, 'To change the street, city, state, or ZIP after checkout, message our team so we can verify tax and shipping before updating it.');
+  }
   const addr = {
     name: String(ship.name || '').slice(0, 120),
-    street1: String(ship.street1).slice(0, 200), street2: String(ship.street2 || '').slice(0, 200),
-    city: String(ship.city).slice(0, 120), state: String(ship.state).slice(0, 40), zip: String(ship.zip).slice(0, 20),
+    // Keep every tax/routing field exactly as charged. Buyer self-service may
+    // correct the recipient name or apartment/suite only; staff handle anything
+    // that can change jurisdiction or carrier cost.
+    street1: String(current.street1).slice(0, 200), street2: String(ship.street2 || '').slice(0, 200),
+    city: String(current.city).slice(0, 120), state: String(current.state).slice(0, 40), zip: String(current.zip).slice(0, 20),
   };
   const { data: updated, error: upErr } = await sb.from('webstore_orders').update({ ship_address: addr })
     .eq('id', order.id)
@@ -1195,6 +1220,7 @@ module.exports.PUBLIC_ORDER_ITEM_FIELDS = PUBLIC_ORDER_ITEM_FIELDS;
 // rollback compensation, or clientRef idempotency — one implementation for
 // both order sources. Export-only additions: no behavior change here.
 module.exports.calcTax = calcTax;
+module.exports.TAX_RETRY_ERROR = TAX_RETRY_ERROR;
 module.exports.rollbackOrder = rollbackOrder;
 module.exports.validClientRef = validClientRef;
 module.exports.findOrderByClientRef = findOrderByClientRef;
