@@ -770,15 +770,25 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
 function VsHero({ store, theme }) {
   const word = mascotWord(store.name);
   const short = storeShortName(store.name);
-  // The word has to span the hero the way the design draws it — about 80% of the
-  // viewport — without spilling out, and team names run from "OWLS" to
-  // "THUNDERBIRDS", so size it by length rather than with one fixed clamp.
-  // Barlow Condensed 800 uppercase advances ~0.473em per character — measured on
-  // the loaded webfont at a size the clamp was not capping, since both a fallback
-  // face and a clamped size read narrower and skew the constant. ~170/len vw lands
-  // on 80% at any length; the 30vw ceiling keeps a very short mascot ("OWLS")
-  // from outgrowing the hero's height.
-  const wordVw = word.length ? Math.min(30, 170 / word.length) : 30;
+  // The word behind the logo has TWO targets in the design: it spans ~80% of the
+  // viewport, and its letters stand ~27% of the hero's height. Barlow Condensed
+  // (this storefront's display face) is narrower than the face the mockup was
+  // drawn in, so those two can't both be met at natural tracking — sizing for the
+  // width alone made the letters 33% of the hero, tall enough to compete with the
+  // logo, which is the one thing this hero must not do.
+  //
+  // So: hold the HEIGHT (the ratio that decides whether the logo reads as the
+  // foreground — the design puts the logo at ~2.1x the word's cap height) and
+  // open the tracking to reach the span. Long names need no extra tracking and
+  // fall back to width-driven sizing so they never overflow.
+  const wordVw = word.length ? Math.min(13.6, 170 / word.length) : 13.6;
+  // ~0.473em per character on the loaded webfont; whatever that leaves short of
+  // the 80% span gets distributed between the letters.
+  const naturalVw = word.length * 0.473 * wordVw;
+  // Capped: a four-letter mascot would otherwise need ~13vw between letters to
+  // reach the span, which reads as broken rather than tracked. Short names simply
+  // sit narrower than the span.
+  const trackVw = word.length ? Math.min(4.8, Math.max(0, (80 - naturalVw) / word.length)) : 0;
   return (
     <section style={{ position: 'relative', overflow: 'hidden', background: '#F1F2EF', borderBottom: `1px solid ${theme.line}` }}>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: VS_HATCH, pointerEvents: 'none' }} />
@@ -787,7 +797,7 @@ function VsHero({ store, theme }) {
       <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '18%', right: '19%', width: '13%', height: '32%', background: vsDots(hexA(theme.accent, 0.6)), pointerEvents: 'none' }} />
       {/* The team name, set large and ghosted, sits BEHIND the logo. */}
       <div aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-        <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: `clamp(60px,${wordVw.toFixed(1)}vw,560px)`, lineHeight: 0.8, letterSpacing: '-0.01em', textTransform: 'uppercase', color: hexA(theme.band, 0.2), whiteSpace: 'nowrap' }}>{word}</span>
+        <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: `clamp(44px,${wordVw.toFixed(1)}vw,300px)`, lineHeight: 0.8, letterSpacing: trackVw ? `${trackVw.toFixed(2)}vw` : '-0.01em', marginRight: trackVw ? `-${trackVw.toFixed(2)}vw` : 0, textTransform: 'uppercase', color: hexA(theme.band, 0.2), whiteSpace: 'nowrap' }}>{word}</span>
       </div>
       <div style={{ position: 'relative', zIndex: 2, padding: 'clamp(18px,2vw,28px) 24px 0 clamp(14px,1.8vw,36px)' }}>
         <span className="sf-vs-ribbon" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, maxWidth: '100%', background: theme.accent, color: theme.band, fontFamily: DISPLAY, fontWeight: 700, fontSize: 'clamp(11px,1.25vw,26px)', letterSpacing: 1.8, textTransform: 'uppercase', padding: 'clamp(8px,0.8vw,16px) clamp(14px,1.4vw,28px)' }}>
