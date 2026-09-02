@@ -5106,12 +5106,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const cur=o.shipping_type==='pct'?safeNum(o.shipping_value):(totals.rev>0?100*safeNum(o.shipping_value)/totals.rev:0);
           const low=cur>0&&cur<sug.pct*0.75;
           return<div style={{fontSize:11,color:'#64748b',marginTop:4,display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-            <button type="button" title={`Est. cost $${sug.estCost.toFixed(2)} from ${sug.sampleN} orders with a recorded cost, plus ${sug.marginPct}% target margin. Typical spread ${sug.lowPct}%–${sug.highPct}% of order total — treat as a starting point.`}
+            <button type="button" title={`Est. cost $${sug.estCost.toFixed(2)} — the median actual cost of the ${sug.sampleN} orders ${sug.basedOn==='size'?'of about this many units':'with a recorded cost'} — plus ${sug.marginPct}% target margin. Half of those cost between $${sug.lowCost.toFixed(2)} and $${sug.highCost.toFixed(2)}, so treat this as a starting point, not a quote.`}
               onClick={()=>{sv('shipping_type','pct');sv('shipping_value',sug.pct)}}
               style={{fontSize:11,fontWeight:700,color:'#1e40af',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:4,padding:'2px 8px',cursor:'pointer'}}>
               Suggest {sug.pct}% (≈${sug.dollars.toFixed(2)})
             </button>
-            <span>est. cost ${sug.estCost.toFixed(2)} · {sug.sampleN} orders · spread {sug.lowPct}–{sug.highPct}%</span>
+            <span>est. cost ${sug.estCost.toFixed(2)} · {sug.sampleN} {sug.basedOn==='size'?'similar-size orders':'orders'} · typical ${sug.lowCost.toFixed(2)}–${sug.highCost.toFixed(2)}</span>
             {low&&<span style={{color:'#b45309',fontWeight:700}}>current looks low</span>}
           </div>;
         })()}

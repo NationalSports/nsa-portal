@@ -82,7 +82,10 @@ const FEATURE_SQL = `select
            and column_name='margin_true_pct') as has_true_cost,
   (to_regclass('public.si_documents') is not null
    and to_regclass('public.so_item_po_lines') is not null) as has_si_freight,
-  (to_regclass('public.ship_cost_basis') is not null) as has_cost_basis;`;
+  (to_regclass('public.ship_cost_basis') is not null) as has_cost_basis,
+  exists(select 1 from information_schema.columns
+         where table_schema='public' and table_name='ship_cost_basis'
+           and column_name='size_buckets') as has_size_buckets;`;
 
 const buildSql = (feat = {}) => `
 with item_qty as (
@@ -239,7 +242,7 @@ function fail(msg) { console.error(msg); process.exit(2); }
 // the failure mode is silent: a flag added to FEATURE_SQL but not read here
 // leaves the feature permanently off, and the only symptom is a column that
 // stays empty forever. FEATURE_ORDER is the single list both sides agree on.
-const FEATURE_ORDER = ['has_rebills', 'has_ncc', 'has_true_cost', 'has_si_freight', 'has_cost_basis'];
+const FEATURE_ORDER = ['has_rebills', 'has_ncc', 'has_true_cost', 'has_si_freight', 'has_cost_basis', 'has_size_buckets'];
 
 function parseFeatures(rowText) {
   const cells = String(rowText == null ? '' : rowText).trim().split('|');
@@ -321,7 +324,8 @@ function writeSnapshot(url, m) {
 // Recompute the order editor's shipping suggestion basis. Runs with the rest of
 // the audit so the constants behind the suggestion move as the data does; the
 // editor reads the row rather than carrying numbers in code.
-function writeCostBasis(url, coverage) {
+function writeCostBasis(url, coverage, feat = {}) {
+  const curveCols = feat.has_size_buckets;
   const sql = `
 with item_qty as (
   select i.so_id, i.unit_sell, ${LINE_QTY} as qty from so_items i
@@ -333,21 +337,46 @@ scored as (
   from sales_orders s join m on m.so_id = s.id
   where coalesce(s._shipstation_cost, s._shipping_cost) > 0 and m.units > 0 and m.merch > 0
 )
+-- The cost-vs-size curve the editor actually reads. Shipping cost tracks BOX
+-- COUNT, not garment count, so a single global $/unit rate overestimates large
+-- orders badly; these edges give each size class its own observed median.
+-- width_bucket returns 0 for units below the first edge, so bucket 0 is the
+-- "< first edge" class and the labels below must stay in step with EDGES.
+bucketed as (
+  select width_bucket(units, array[10,25,50,100,200]) as b, units, cost from scored
+),
+curve as (
+  select jsonb_agg(x order by x_min) as buckets from (
+    select (array[0,10,25,50,100,200])[b+1]                       as x_min,
+           (array[9,24,49,99,199,null])[b+1]                      as x_max,
+           jsonb_build_object(
+             'min_units',   (array[0,10,25,50,100,200])[b+1],
+             'max_units',   (array[9,24,49,99,199,null])[b+1],
+             'n',           count(*),
+             'median_cost', round(percentile_cont(0.50) within group (order by cost)::numeric, 2),
+             'p25_cost',    round(percentile_cont(0.25) within group (order by cost)::numeric, 2),
+             'p75_cost',    round(percentile_cont(0.75) within group (order by cost)::numeric, 2)
+           ) as x
+    from bucketed group by b
+  ) q(x_min, x_max, x)
+)
 insert into ship_cost_basis
   (id, sample_n, median_cost_per_unit, median_cost_pct_merch,
-   p25_cost_pct_merch, p75_cost_pct_merch, median_cost, window_start, window_end, updated_at)
+   p25_cost_pct_merch, p75_cost_pct_merch, median_cost,${curveCols ? ' size_buckets,' : ''}
+   window_start, window_end, updated_at)
 select true, count(*),
   round(percentile_cont(0.5) within group (order by cost/units)::numeric, 3),
   round(percentile_cont(0.5) within group (order by 100*cost/merch)::numeric, 2),
   round(percentile_cont(0.25) within group (order by 100*cost/merch)::numeric, 2),
   round(percentile_cont(0.75) within group (order by 100*cost/merch)::numeric, 2),
   round(percentile_cont(0.5) within group (order by cost)::numeric, 2),
+  ${curveCols ? '(select buckets from curve),' : ''}
   ${coverage.window_start ? `'${coverage.window_start}'` : 'null'},
   ${coverage.window_end ? `'${coverage.window_end}'` : 'null'}, now()
 from scored
 on conflict (id) do update set
   sample_n = excluded.sample_n,
-  median_cost_per_unit = excluded.median_cost_per_unit,
+  median_cost_per_unit = excluded.median_cost_per_unit,${curveCols ? '\n  size_buckets = excluded.size_buckets,' : ''}
   median_cost_pct_merch = excluded.median_cost_pct_merch,
   p25_cost_pct_merch = excluded.p25_cost_pct_merch,
   p75_cost_pct_merch = excluded.p75_cost_pct_merch,
@@ -619,7 +648,7 @@ function main() {
   // --check is read-only: it must not write a snapshot row.
   if (!argv.includes('--no-snapshot') && !argv.includes('--check')) {
     writeSnapshot(url, metrics);
-    if ((metrics._features || {}).has_cost_basis) writeCostBasis(url, metrics.coverage);
+    if ((metrics._features || {}).has_cost_basis) writeCostBasis(url, metrics.coverage, metrics._features);
   }
 
   const block = stamp(render(metrics, readTrend(url, metrics._features)), new Date().toISOString().slice(0, 10));

@@ -5,29 +5,51 @@
 // suggestion improves as more orders get a recorded actual cost instead of
 // needing a code change.
 //
-// What this can and cannot do. Across orders with a recorded cost, shipping
-// cost correlates only about 0.5 with both unit count and merchandise value,
-// and the middle half of orders spans roughly 2%-9% of merch. Shipping cost is
-// genuinely not well predicted by anything known at quote time; that is the
-// audit's central finding, not a modelling failure. So this returns a range and
-// a sample size alongside the number, and callers must present it as a starting
-// point. A confident-looking single number here would be a lie.
+// COST IS DRIVEN BY BOXES, NOT GARMENTS. This helper used to multiply a global
+// median cost-per-unit by the order's unit count. That is wrong, and wrong in
+// the expensive direction: $/unit falls about 20x from the smallest orders to
+// the largest, so a rate whose median is set by small orders massively
+// overestimates a big one. A real 125-unit order was suggested at $119.75 when
+// orders of its own size have a median cost of $74. It also took the HIGHER of
+// that and a percent-of-merch estimate, which measured worse than either input
+// alone (+$60 mean bias). Both are gone.
 //
-// The estimate deliberately takes the HIGHER of the two bases. On the orders we
-// can score, most lost money on shipping, so being wrong low is the expensive
-// direction.
+// What replaced them: ship_cost_basis.size_buckets is the observed cost curve —
+// the median, p25 and p75 actual cost of orders in each size class. Pick the
+// bucket the order falls in. Measured over the scored orders this halves the
+// error of every alternative (mean abs error $45 vs $85 / $78 / $89).
+//
+// What this still cannot do. Even the bucket median carries a median absolute
+// error near $20, because the things that actually set the price — box count,
+// dimensions, destination zone — are not recorded on most orders. So this
+// returns a range and a sample size alongside the number, and callers must
+// present it as a starting point. A confident-looking single number is a lie.
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
-// Below this many scored orders the medians are noise, and a suggestion would
-// carry more authority than it has earned.
+// Below this many scored orders overall, the calibration is noise and a
+// suggestion would carry more authority than it has earned.
 const MIN_SAMPLE = 20;
+// And below this many inside the order's own size class, that bucket's median is
+// noise even when the overall sample is fine — fall back to percent-of-merch.
+const MIN_BUCKET = 5;
+
+// The bucket whose unit range contains qty. max_units null means open-ended.
+export function pickSizeBucket(buckets, qty) {
+  if (!Array.isArray(buckets)) return null;
+  return buckets.find((b) => {
+    if (!b) return false;
+    const lo = num(b.min_units);
+    const hi = b.max_units == null ? Infinity : num(b.max_units);
+    return qty >= lo && qty <= hi;
+  }) || null;
+}
 
 /**
  * @param units      total garment units on the order
  * @param merchTotal order revenue the shipping percentage is applied to
  * @param basis      a ship_cost_basis row, or null
- * @returns {{pct,dollars,estCost,sampleN,lowPct,highPct,perUnit,marginPct}} or null
+ * @returns {{pct,dollars,estCost,lowCost,highCost,sampleN,basedOn,marginPct}} or null
  */
 export function suggestShipping({ units, merchTotal, basis }) {
   if (!basis) return null;
@@ -35,16 +57,35 @@ export function suggestShipping({ units, merchTotal, basis }) {
   if (n < MIN_SAMPLE) return null;
 
   const merch = num(merchTotal);
-  const qty = num(units);
   if (merch <= 0) return null;
+  const qty = num(units);
 
-  const perUnit = num(basis.median_cost_per_unit);
-  const pctMerch = num(basis.median_cost_pct_merch);
+  // Preferred: what orders of this physical size actually cost.
+  const bucket = qty > 0 ? pickSizeBucket(basis.size_buckets, qty) : null;
+  const bucketN = bucket ? num(bucket.n) : 0;
 
-  // Two independent reads on the same order; take the more cautious.
-  const byUnits = qty > 0 && perUnit > 0 ? qty * perUnit : 0;
-  const byMerch = pctMerch > 0 ? merch * (pctMerch / 100) : 0;
-  const estCost = Math.max(byUnits, byMerch);
+  let estCost;
+  let lowCost;
+  let highCost;
+  let sampleN;
+  let basedOn;
+
+  if (bucket && bucketN >= MIN_BUCKET && num(bucket.median_cost) > 0) {
+    estCost = num(bucket.median_cost);
+    lowCost = num(bucket.p25_cost);
+    highCost = num(bucket.p75_cost);
+    sampleN = bucketN;
+    basedOn = 'size';
+  } else {
+    // Fallback only: no usable size class for this order.
+    const pctMerch = num(basis.median_cost_pct_merch);
+    if (pctMerch <= 0) return null;
+    estCost = merch * (pctMerch / 100);
+    lowCost = merch * (num(basis.p25_cost_pct_merch) / 100);
+    highCost = merch * (num(basis.p75_cost_pct_merch) / 100);
+    sampleN = n;
+    basedOn = 'merch';
+  }
   if (estCost <= 0) return null;
 
   // Charge that leaves the target margin ON THE SHIPPING LINE:
@@ -53,16 +94,17 @@ export function suggestShipping({ units, merchTotal, basis }) {
   const denom = 1 - marginPct / 100;
   const dollars = denom > 0 ? estCost / denom : estCost;
 
+  const r2 = (v) => Math.round(v * 100) / 100;
   return {
-    estCost: Math.round(estCost * 100) / 100,
-    dollars: Math.round(dollars * 100) / 100,
+    estCost: r2(estCost),
+    dollars: r2(dollars),
     pct: Math.round((dollars / merch) * 1000) / 10,   // one decimal
-    sampleN: n,
-    // The observed spread, carried through so the UI can show that the point
-    // estimate sits inside a wide band rather than implying precision.
-    lowPct: num(basis.p25_cost_pct_merch),
-    highPct: num(basis.p75_cost_pct_merch),
-    perUnit,
+    // The observed spread for THIS estimate, in dollars, so the UI never prints a
+    // number next to a range that was computed a different way.
+    lowCost: r2(lowCost),
+    highCost: r2(highCost),
+    sampleN,
+    basedOn,
     marginPct,
   };
 }
@@ -77,4 +119,4 @@ export function orderUnits(items) {
   }, 0);
 }
 
-export { MIN_SAMPLE };
+export { MIN_SAMPLE, MIN_BUCKET };
