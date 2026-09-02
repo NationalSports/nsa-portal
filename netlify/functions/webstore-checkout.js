@@ -20,6 +20,11 @@ const { createClient } = require('@supabase/supabase-js');
 const { planShipmentLineUpdates } = require('./_webstoreShipment');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
 const { SO_DONE } = require('./backorder-ready-sweep'); // one definition of "SO finished"
+const {
+  staffRecipientIds,
+  staffEmailRecipients,
+  processNotificationByDedupe,
+} = require('./_webstoreNotifications');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -968,19 +973,10 @@ async function loadThread(sb, orderId) {
     .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 }
 
-function staffRecipientIds(csrId, repId) {
-  return [...new Set([csrId, repId].filter(Boolean).map(String))];
-}
-
-function staffEmailRecipients(assigned) {
-  const recipients = [...(assigned || []), { email: 'stores@nationalsportsapparel.com', name: 'Webstore Team' }];
-  return recipients.filter((person, index, all) => person && person.email &&
-    all.findIndex((candidate) => candidate && String(candidate.email).toLowerCase() === String(person.email).toLowerCase()) === index);
-}
-
 // A shopper posts a reply from their portal page. Token-gated (no account):
-// the secret status_token is the only credential. Inserts a customer message
-// into the shared thread and notifies the webstore team, CSR, and owning rep.
+// the secret status_token is the only credential. The message and its outbox
+// obligation are inserted in one database transaction; email delivery can fail
+// without losing the notification and is retried by the scheduled worker.
 async function postMessage(sb, body) {
   const { token } = body;
   const text = String(body.text || '').trim().slice(0, 4000);
@@ -992,9 +988,9 @@ async function postMessage(sb, body) {
   if (!order) return bad(404, 'Order not found');
 
   // Resolve the store, its owning rep, and the rep's primary CSR so the reply
-  // routes to the right person's inbox (tagged_members) and email.
+  // routes to the right person's inbox (tagged_members). The durable worker
+  // reloads those tagged profiles immediately before sending email.
   const tagged = [];
-  let notifyRecipients = [];
   try {
     const { data: store } = await sb.from('webstores').select('id,name,rep_id,csr_id,omg_sale_code').eq('id', order.store_id).maybeSingle();
     let repId = store && store.rep_id;
@@ -1015,23 +1011,20 @@ async function postMessage(sb, body) {
     // rep. The former CSR-only behavior created a single point of failure and
     // left the rep's Messages inbox empty even though the order was theirs.
     tagged.push(...staffRecipientIds(csrId, repId));
-    const ids = [csrId, repId].filter(Boolean).map(String);
-    if (ids.length) {
-      const { data: people } = await sb.from('user_profiles').select('id,email,full_name').in('id', ids);
-      notifyRecipients = (people || []).filter((p) => p.email).map((p) => ({ email: p.email, name: p.full_name || '' }));
-    }
     // The webstore response team opts in through the existing notify_depts
     // preference. Tag every active `store` subscriber in the in-app Messages
     // inbox as a redundant safety net, independent of per-store assignments.
     const { data: storeTeam } = await sb.from('user_profiles')
-      .select('id,email,full_name').eq('is_active', true).contains('notify_depts', ['store']);
+      .select('id').eq('is_active', true).contains('notify_depts', ['store']);
     for (const person of storeTeam || []) {
       const sid = String(person.id);
       if (!tagged.includes(sid)) tagged.push(sid);
-      if (person.email) notifyRecipients.push({ email: person.email, name: person.full_name || '' });
     }
-    var storeName = (store && store.name) || 'your store';
-  } catch (e) { var storeName = 'your store'; }
+  } catch (e) {
+    // The shared webstore mailbox remains a recipient even when assignment
+    // lookup is unavailable; do not reject the customer's message for routing.
+    console.error('[webstore-checkout] customer reply routing lookup failed:', e.message);
+  }
 
   const now = new Date();
   const msg = {
@@ -1041,51 +1034,31 @@ async function postMessage(sb, body) {
     text, ts: now.toLocaleString(), dept: 'store',
     tagged_members: tagged, from_customer: true, read_by_staff: false,
   };
-  const { error: insErr } = await sb.from('messages').insert(msg);
+  const { error: insErr } = await sb.rpc('post_webstore_customer_message', {
+    p_order_id: order.id,
+    p_message: msg,
+  });
   if (insErr) return bad(502, 'Could not post your message: ' + insErr.message);
 
-  // Email the assigned CSR/rep (best-effort — never blocks the post).
+  // Try now for fast delivery. Failure leaves a pending outbox row for the
+  // scheduled retry worker; the customer message itself is already durable.
+  let delivery = { ok: true, claimed: false };
   try {
-    await notifyStaffOfReply({
-      recipients: staffEmailRecipients(notifyRecipients),
-      order, storeName, text,
-    });
+    delivery = await processNotificationByDedupe(sb, `customer_staff_reply:${msg.id}`);
   } catch (e) {
-    console.error('[webstore-checkout] customer reply staff email failed:', e.message);
+    delivery = { ok: false, queued: true, error: e.message };
+    console.error('[webstore-checkout] customer reply immediate delivery failed:', e.message);
   }
 
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, messages: await loadThread(sb, order.id) }) };
-}
-
-async function notifyStaffOfReply({ recipients, order, storeName, text }) {
-  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey || !recipients || !recipients.length) return;
-  const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
-  const adminLink = `${portal}/?omg=1`;
-  const safe = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-  const html = `<div style="font-family:'Source Sans 3',-apple-system,Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
-    <div style="background:#0b1f3a;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0">
-      <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${safe(storeName)}</div>
-      <div style="font-size:21px;font-weight:800;margin-top:4px">💬 New customer reply</div>
-    </div>
-    <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px">
-      <p style="margin:0 0 6px"><b>${safe(order.buyer_name || 'A customer')}</b> replied on order ${order.omg_order_number ? '#' + safe(order.omg_order_number) : ''}:</p>
-      <blockquote style="margin:8px 0;padding:12px 14px;background:#f8fafc;border-left:3px solid #e11d2a;border-radius:6px;font-size:15px">${safe(text)}</blockquote>
-      <p style="font-size:13px;color:#64748b">Open the order in OMG Stores to reply — your reply emails the customer their portal link.</p>
-      <div style="margin:18px 0"><a href="${adminLink}" style="display:inline-block;background:#e11d2a;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-weight:700">Open OMG Stores →</a></div>
-    </div></div>`;
-  const emailRes = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+  return {
+    statusCode: 200,
+    headers: HEADERS,
     body: JSON.stringify({
-      sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
-      to: recipients,
-      replyTo: order.buyer_email ? { email: order.buyer_email, name: order.buyer_name || '' } : undefined,
-      subject: `💬 ${order.buyer_name || 'Customer'} replied — ${storeName} order${order.omg_order_number ? ' #' + order.omg_order_number : ''}`,
-      htmlContent: html,
+      ok: true,
+      notification: delivery.ok ? (delivery.claimed ? 'sent' : 'already_processing') : 'queued_for_retry',
+      messages: await loadThread(sb, order.id),
     }),
-  });
-  if (!emailRes.ok) throw new Error(`Brevo returned HTTP ${emailRes.status}`);
+  };
 }
 
 // ── Buyer self-service shipping-address edit (before the order ships) ──

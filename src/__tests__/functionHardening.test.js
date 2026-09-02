@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* WS2 function hardening — guards that must hold BEFORE any network/credential use.
  * These cases all short-circuit before the outbound fetch, so no fetch mock is needed.
  *
