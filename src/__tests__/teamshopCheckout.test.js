@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Team Shop checkout (Stage 6) — the money path.
  *
  * teamshop-checkout.js must never price anything itself: quotes/hashes come
@@ -508,18 +510,18 @@ describe('decodePoPdf — size boundary', () => {
 // The RPC re-guards everything inside its transaction; these tests pin the
 // function-level pre-guards (paid + teamshop + replay) and the retry contract.
 describe('convert_order', () => {
-  const PAID = { id: 'ord1', status: 'paid', order_source: 'teamshop', so_id: null };
+  const PAID = { id: 'ord1', status: 'paid', order_source: 'teamshop', so_id: null, coach_id: COACH.id };
 
   test('unpaid order → 409 rejected, RPC never invoked', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, status: 'pending_payment' }], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(409);
     expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
   });
 
   test('non-teamshop (storefront) order → 409 rejected, RPC never invoked', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, order_source: null }], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(409);
     expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
   });
@@ -529,7 +531,7 @@ describe('convert_order', () => {
       'webstore_orders.select': [{ data: [PAID], error: null }],
       'rpc.create_teamshop_sales_order': [{ data: { so_id: 'SO-1001', replayed: false, jobs: 1 }, error: null }],
     });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(200);
     const out = JSON.parse(res.body);
     expect(out.so_id).toBe('SO-1001');
@@ -541,7 +543,7 @@ describe('convert_order', () => {
 
   test('already converted (so_id set) → replayed:true without invoking the RPC', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, so_id: 'SO-1001' }], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(200);
     const out = JSON.parse(res.body);
     expect(out.so_id).toBe('SO-1001');
@@ -554,7 +556,7 @@ describe('convert_order', () => {
       'webstore_orders.select': [{ data: [PAID], error: null }],
       'rpc.create_teamshop_sales_order': [{ data: null, error: { message: 'boom' } }],
     });
-    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, COACH);
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body).error).toMatch(/boom/);
     // No compensation writes: convert is read + rpc only — nothing to roll back,
@@ -565,8 +567,15 @@ describe('convert_order', () => {
 
   test('unknown order → 404', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [], error: null }] });
-    const res = await ts.convertOrder(sb, { order_id: 'nope' });
+    const res = await ts.convertOrder(sb, { order_id: 'nope' }, COACH);
     expect(res.statusCode).toBe(404);
+  });
+
+  test('a different coach cannot convert another coach\'s paid order', async () => {
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [PAID], error: null }] });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' }, { ...COACH, id: 'coach2' });
+    expect(res.statusCode).toBe(403);
+    expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
   });
 });
 

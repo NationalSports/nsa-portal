@@ -459,6 +459,7 @@ exports.handler = async (event) => {
     if (body.action === 'quote') return await quoteTotals(sb, body);
     if (body.action === 'finalize') return await finalize(sb, body);
     if (body.action === 'check_coupon') return await checkCoupon(sb, body);
+    if (body.action === 'settings') return await publicSettings(sb);
     if (body.action === 'get_order') return await getOrder(sb, body);
     if (body.action === 'roster_lookup') return await rosterLookup(sb, body);
     if (body.action === 'track_order') return await trackOrder(sb, body);
@@ -902,48 +903,86 @@ async function checkCoupon(sb, body) {
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ coupon: { code: c.code, kind: c.kind, value: c.value, cover_shipping: c.cover_shipping } }) };
 }
 
-// ── Order status (tokenless, by order id) ────────────────────────────
-// The post-checkout status page knows the order's UUID (122 bits of entropy,
-// the same bearer model the emailed status_token uses). Returns the buyer their
-// own order + line items — no anon access to the tables themselves.
-async function getOrder(sb, body) {
-  const { orderId } = body;
-  if (!orderId) return bad(400, 'orderId required');
-  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('id', orderId).limit(1);
+// Allow-list the one public storefront setting through the service endpoint so
+// internal placement memory does not require anonymous table access.
+async function publicSettings(sb) {
+  const { data, error } = await sb.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle();
   if (error) return bad(500, error.message);
-  const order = orders && orders[0];
-  if (!order) return bad(404, 'Order not found');
-  const { data: items } = await sb.from('webstore_order_items').select('*').eq('order_id', order.id);
-  const rows = items || [];
-  // Enrich items that have no stored image_url with catalog fallback images.
-  const needImg = rows.filter((i) => !i.image_url);
-  if (needImg.length) {
-    const imgByPid = {};
-    const { data: cat } = await sb.from('webstore_products').select('id,product_id,image_url').eq('store_id', order.store_id);
-    (cat || []).forEach((c) => { if (c.image_url) { if (c.product_id) imgByPid[c.product_id] = c.image_url; imgByPid['wp:' + c.id] = c.image_url; } });
-    const pids = [...new Set(needImg.map((i) => i.product_id).filter((p) => p && !imgByPid[p]))];
-    if (pids.length) { const { data: prods } = await sb.from('products').select('id,image_front_url').in('id', pids); (prods || []).forEach((p) => { if (p.image_front_url) imgByPid[p.id] = p.image_front_url; }); }
-    rows.forEach((i) => { if (!i.image_url) i.image_url = imgByPid[i.product_id] || (i.bundle_product_id ? imgByPid['wp:' + i.bundle_product_id] : null) || null; });
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ checkout_message: (data && data.checkout_message) || '' }) };
+}
+
+const PUBLIC_ORDER_FIELDS = [
+  'id', 'store_id', 'status', 'buyer_name', 'ship_method', 'ship_address',
+  'subtotal', 'fundraise_amt', 'shipping_fee', 'processing_fee',
+  'discount_amt', 'tax', 'total', 'payment_mode', 'coupon_code', 'created_at',
+  'shipped_at', 'tracking_number', 'carrier',
+  'omg_order_number', 'order_number', 'status_token',
+].join(',');
+const PUBLIC_ORDER_ITEM_FIELDS = [
+  'id', 'order_id', 'product_id', 'bundle_product_id', 'bundle_ref',
+  'is_bundle_parent', 'sku', 'name', 'size', 'color', 'variant_label', 'qty',
+  'unit_price', 'line_status', 'shipped_qty', 'missing_qty', 'image_url',
+  'player_name', 'player_number',
+].join(',');
+
+async function enrichOrderImages(sb, order, rows) {
+  const needImage = (rows || []).filter((item) => !item.image_url);
+  if (!needImage.length) return rows;
+  const imageByProduct = {};
+  const { data: catalog } = await sb.from('webstore_products')
+    .select('id,product_id,image_url').eq('store_id', order.store_id);
+  (catalog || []).forEach((item) => {
+    if (!item.image_url) return;
+    if (item.product_id) imageByProduct[item.product_id] = item.image_url;
+    imageByProduct[`wp:${item.id}`] = item.image_url;
+  });
+  const missingProductIds = [...new Set(needImage.map((item) => item.product_id)
+    .filter((id) => id && !imageByProduct[id]))];
+  if (missingProductIds.length) {
+    const { data: products } = await sb.from('products').select('id,image_front_url').in('id', missingProductIds);
+    (products || []).forEach((product) => {
+      if (product.image_front_url) imageByProduct[product.id] = product.image_front_url;
+    });
   }
-  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, items: rows }) };
+  (rows || []).forEach((item) => {
+    if (!item.image_url) item.image_url = imageByProduct[item.product_id]
+      || (item.bundle_product_id ? imageByProduct[`wp:${item.bundle_product_id}`] : null) || null;
+  });
+  return rows;
+}
+
+// ── Legacy order status action ───────────────────────────────────────
+// Old storefront builds used a bare order UUID as a bearer credential. UUIDs
+// are identifiers, not authorization. Keep the action name during rollout, but
+// require the order's dedicated status token and verify both values agree.
+async function getOrder(sb, body) {
+  const orderId = String(body.orderId || '').trim();
+  const token = String(body.token || '').trim();
+  if (!orderId || !token) return bad(403, 'Order token required');
+  const tracked = await trackOrder(sb, { token });
+  if (tracked.statusCode !== 200) return tracked;
+  const payload = JSON.parse(tracked.body || '{}');
+  if (!payload.order || String(payload.order.id) !== orderId) return bad(404, 'Order not found');
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order: payload.order, items: payload.items || [] }) };
 }
 
 // ── Order tracking (by emailed status_token) ─────────────────────────
 async function trackOrder(sb, body) {
   const { token } = body;
   if (!token) return bad(400, 'token required');
-  const { data: orders, error } = await sb.from('webstore_orders').select('*').eq('status_token', token).limit(1);
+  const { data: orders, error } = await sb.from('webstore_orders').select(PUBLIC_ORDER_FIELDS).eq('status_token', token).limit(1);
   if (error) return bad(500, error.message);
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
   const [{ data: sRows }, { data: itemRows }, { data: shipmentRows }, messages] = await Promise.all([
     sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
-    sb.from('webstore_order_items').select('*').eq('order_id', order.id),
-    sb.from('webstore_shipments').select('*').eq('order_id', order.id).order('created_at', { ascending: true }),
+    sb.from('webstore_order_items').select(PUBLIC_ORDER_ITEM_FIELDS).eq('order_id', order.id),
+    sb.from('webstore_shipments').select('id,tracking_number,carrier,service,ship_date,items,created_at').eq('order_id', order.id).order('created_at', { ascending: true }),
     loadThread(sb, order.id),
   ]);
   const items = itemRows || [];
   const shipments = shipmentRows || [];
+  await enrichOrderImages(sb, order, items);
 
   // Self-heal shipments recorded by an older webhook run whose item updates
   // failed or could not be matched. Opening the tracker should never continue
@@ -1063,10 +1102,12 @@ async function postMessage(sb, body) {
 
 // ── Buyer self-service shipping-address edit (before the order ships) ──
 async function updateShip(sb, body) {
-  const { orderId, ship } = body;
-  if (!orderId || !ship) return bad(400, 'orderId and ship required');
+  const token = String(body.token || '').trim();
+  const { ship } = body;
+  if (!token || !ship) return bad(400, 'token and ship required');
   if (!ship.street1 || !ship.city || !ship.state || !ship.zip) return bad(400, 'Please complete street, city, state and ZIP.');
-  const { data: orders, error } = await sb.from('webstore_orders').select('id,ship_address,shipped_at,status').eq('id', orderId).limit(1);
+  const { data: orders, error } = await sb.from('webstore_orders')
+    .select('id,ship_address,shipped_at,status').eq('status_token', token).limit(1);
   if (error) return bad(500, error.message);
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
@@ -1076,8 +1117,14 @@ async function updateShip(sb, body) {
     street1: String(ship.street1).slice(0, 200), street2: String(ship.street2 || '').slice(0, 200),
     city: String(ship.city).slice(0, 120), state: String(ship.state).slice(0, 40), zip: String(ship.zip).slice(0, 20),
   };
-  const { error: upErr } = await sb.from('webstore_orders').update({ ship_address: addr }).eq('id', order.id);
+  const { data: updated, error: upErr } = await sb.from('webstore_orders').update({ ship_address: addr })
+    .eq('id', order.id)
+    .eq('status_token', token)
+    .is('shipped_at', null)
+    .not('status', 'in', '("shipped","complete")')
+    .select('id');
   if (upErr) return bad(502, 'Could not save the address: ' + upErr.message);
+  if (!updated || !updated.length) return bad(409, 'This order is already shipping — contact us to change the address.');
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, ship_address: addr }) };
 }
 
@@ -1098,6 +1145,12 @@ module.exports.shipFee = shipFee;
 module.exports.r2 = r2;
 module.exports.staffRecipientIds = staffRecipientIds;
 module.exports.staffEmailRecipients = staffEmailRecipients;
+module.exports.getOrder = getOrder;
+module.exports.trackOrder = trackOrder;
+module.exports.updateShip = updateShip;
+module.exports.publicSettings = publicSettings;
+module.exports.PUBLIC_ORDER_FIELDS = PUBLIC_ORDER_FIELDS;
+module.exports.PUBLIC_ORDER_ITEM_FIELDS = PUBLIC_ORDER_ITEM_FIELDS;
 
 // ── Team Shop checkout reuse (Stage 6) ───────────────────────────────
 // teamshop-checkout.js REQUIRES these instead of forking the tax math,
