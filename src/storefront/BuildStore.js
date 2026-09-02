@@ -12,11 +12,12 @@
 // that pre-selects those chips. coach-store-submit re-validates the pool, locks
 // prices, drops dead stock, and files a draft for staff (see supabase/functions).
 //
-// Anon RLS reality (migration 00116): the public can read `products`,
-// `coach_store_config`, and the inventory views directly, but NOT `webstores` —
-// so the public mode uses the allow-list catalog pool only (no staff templates).
+// Public mode uses the allow-list catalog pool only (no staff templates).
+// Owner-privileged public views are not browser-readable; the small template
+// list and inventory snapshots come through bounded server actions.
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { webstorePublicData } from '../lib/webstorePublicData';
 import { fetchStockMap } from '../lib/storeInventory';
 import { CatalogKitStyles, KitScope, DISPLAY } from '../ui/catalogKit';
 import { computeFacets, filterPool, mapSpecToFacets, FacetBar } from '../ui/storeBuilderFilters';
@@ -348,7 +349,7 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
     let cancel = false;
     (async () => {
       const [tplRes, cfgRes] = await Promise.all([
-        supabase.from('webstore_templates_public').select('id,name').order('name'),
+        webstorePublicData('templates').then(({ rows }) => ({ data: rows || [] })),
         supabase.from('coach_store_config').select('max_fundraise').eq('id', 1).maybeSingle(),
       ]);
       if (cancel) return;

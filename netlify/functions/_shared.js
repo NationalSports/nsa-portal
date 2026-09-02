@@ -209,18 +209,22 @@ async function resolveCustomerFamily(admin, alphaTag) {
   if (hit && Date.now() - hit.at < FAMILY_TTL_MS) return { fam: hit.fam };
 
   const esc = tag.replace(/([%_\\])/g, '\\$1'); // ilike without wildcards = case-insensitive exact
-  let { data: parents, error } = await admin.from('customers').select('id').ilike('alpha_tag', esc);
+  let { data: parents, error } = await admin.from('customers').select('id,parent_id').ilike('alpha_tag', esc);
   if (error) return { error: error.message };
   if (!parents || !parents.length) {
-    const { data: all, error: e2 } = await admin.from('customers').select('id,alpha_tag').not('alpha_tag', 'is', null);
+    const { data: all, error: e2 } = await admin.from('customers').select('id,parent_id,alpha_tag').not('alpha_tag', 'is', null);
     if (e2) return { error: e2.message };
     parents = (all || []).filter((c) => String(c.alpha_tag || '').trim().toLowerCase() === norm);
   }
   if (!parents.length) return { error: 'Unknown portal tag', notFound: true };
   const parentIds = parents.map((p) => p.id);
+  const directParentIds = parents.map((p) => p.parent_id).filter(Boolean);
   const { data: kids, error: e3 } = await admin.from('customers').select('id').in('parent_id', parentIds);
   if (e3) return { error: e3.message }; // a failed kids lookup must be a retryable 500, not a shrunken family
-  const fam = new Set([...parentIds, ...(kids || []).map((k) => k.id)]);
+  // A department tag sees its direct teams; a team tag sees its own record and
+  // the direct parent store, matching CoachPortal's existing navigation scope.
+  // It does not gain sibling-team access.
+  const fam = new Set([...parentIds, ...directParentIds, ...(kids || []).map((k) => k.id)]);
   if (_familyCache.size >= FAMILY_CACHE_MAX) { const oldest = _familyCache.keys().next().value; _familyCache.delete(oldest); }
   _familyCache.set(norm, { at: Date.now(), fam });
   return { fam };
@@ -357,16 +361,11 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   const { data: existingItems, error } = await sb.from('webstore_order_items')
     .select('id,sku,size,shipped_qty,missing_qty,line_status,bagged_qty,short_status').eq('order_id', orderId);
   if (error) {
-    // Can't read current items — fall back to the historical replace so we never risk
-    // double-inserting. Worst case this reverts to the old behavior, not data corruption.
-    console.warn('[syncOrderItems] item read failed, falling back to replace:', error.message);
-    await sb.from('webstore_order_items').delete().eq('order_id', orderId);
-    if (items.length) {
-      const { error: iErr } = await sb.from('webstore_order_items')
-        .insert(items.map((li) => ({ ...li, order_id: orderId })));
-      if (iErr) throw new Error(`Items insert failed: ${iErr.message}`);
-    }
-    return { matched: 0, inserted: items.length, removed: 0, fallback: true };
+    // The existing rows contain fulfillment state and are referenced by shipment
+    // lineItemKey values. If we cannot read them, there is no safe way to decide
+    // what may be replaced. Fail closed so the caller can retry without deleting
+    // received, bagged, shorted, or shipped progress.
+    throw new Error(`Could not load existing order items: ${error.message}`);
   }
   // Bucket existing rows by (sku,size); a queue tolerates the rare duplicate line.
   const queues = new Map();

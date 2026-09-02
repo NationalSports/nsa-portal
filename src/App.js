@@ -12,6 +12,7 @@ import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, res
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
+import { fetchPublicInventory } from './lib/webstorePublicData';
 import { startDeployReloadWatcher } from './deployReload';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -904,8 +905,7 @@ const aggregateAdidasRows = (rows) => {
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
-    const { data, error } = await supabase.from('inventory_unified').select('*').eq('sku', sku);
-    if (error) { console.warn('[Adidas B2B] Fetch error:', error.message); return { sizes: {}, lastSynced: null }; }
+    const data = await fetchPublicInventory([sku]);
     if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
     return aggregateAdidasRows(data);
   } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
@@ -939,9 +939,7 @@ const fetchAdidasInventoryBulk = async (skus) => {
       // while every OTHER inventory_unified caller (SO editor, webstores) is collaterally throttled too.
       if (i) await new Promise(r => setTimeout(r, 350));
       const results = await Promise.all(batches.slice(i, i + POOL).map(batch =>
-        supabase.from('inventory_unified').select('*').in('sku', batch)
-          .then(r => { if (r.error) { console.warn('[Adidas B2B] Bulk fetch error:', r.error.message); return []; } return r.data || []; })
-          .catch(e => { console.warn('[Adidas B2B] Bulk fetch batch failed:', e?.message || e); return []; })
+        fetchPublicInventory(batch).catch(e => { console.warn('[Adidas B2B] Bulk fetch batch failed:', e?.message || e); return []; })
       ));
       results.forEach(rows => rows.forEach(row => { (bySku[row.sku] || (bySku[row.sku] = [])).push(row); }));
     }
@@ -5745,8 +5743,7 @@ export default function App(){
       const skuVariants = [...new Set([...rawSkus, ...rawSkus.map(s => s.toUpperCase())])];
       if (supabase && skuVariants.length) {
         try {
-          const { data } = await supabase.from('inventory_unified')
-            .select('sku,size,stock_qty,future_delivery_qty,future_delivery_date').in('sku', skuVariants);
+          const data = await fetchPublicInventory(skuVariants);
           (data||[]).forEach(r => { const k = String(r.sku||'').toUpperCase(); (adidasBySku[k] = adidasBySku[k] || []).push(r); });
         } catch (e) { console.log('[OMG stock] inventory_unified query failed:', e.message); }
       }
@@ -6563,7 +6560,7 @@ export default function App(){
     setCust(prev=>prev.map(cc=>cc.id===customerId?{...cc,credits:[...(cc.credits||[]),credit]}:cc));
     return credit;
   };
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle,batch_label,batch_cutoff})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,batch_label,batch_cutoff,order_ids})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -6606,18 +6603,47 @@ export default function App(){
       const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
       if(_bn&&_bn.webstore_batch_no!=null){newSO.webstore_batch_no=_bn.webstore_batch_no;setSOs(prev=>prev.map(s=>s.id===id?{...s,webstore_batch_no:_bn.webstore_batch_no}:s));}
     }catch{}
-    // Club fundraising from this batch becomes Fundraiser Dollars on the customer —
-    // a cash credit line, spendable dollar-for-dollar via Apply Credit. Per-batch, and
-    // the batch's fundraise total is already net of coupon discounts, so multiple
-    // batches from one store never double-credit.
-    if(Number(fundraise_cost)>0&&customer_id)addFundraiseCredit(customer_id,fundraise_cost,'Webstore fundraising — '+(memo||'store'),id,'so_'+id);
-    // Webstore money is already collected via Stripe by batch time, so invoice
-    // + settle immediately — paid in full when the card funds cover it, else
-    // partial with exactly the team-tab gross left as the club's open balance.
-    if(settle){try{createAndSettleWebstoreInvoice(newSO,settle)}catch(e){console.warn('[Webstore] auto-invoice failed:',e.message)}}
+    // Claim the selected customer orders and record invoice/payment + fundraising
+    // credit in ONE database transaction. A closed browser can no longer interrupt
+    // the accounting half after production has been created. The RPC is idempotent,
+    // so retry once; after an ambiguous error, verify the committed records directly.
+    let finalized=null;let finalizeErr=null;
+    for(let attempt=0;attempt<2&&!finalized?.ok;attempt++){
+      try{
+        const{data,error}=await supabase.rpc('finalize_webstore_batch',{p_so_id:id,p_order_ids:Array.isArray(order_ids)?order_ids:[]});
+        if(error){finalizeErr=error;continue}
+        finalized=data;finalizeErr=null;
+        if(data&&!data.ok)break;
+      }catch(e){finalizeErr=e}
+    }
+    if(!finalized?.ok&&finalizeErr){
+      try{
+        const[{count:_linked},{data:_inv},{data:_credit}]=await Promise.all([
+          supabase.from('webstore_orders').select('id',{count:'exact',head:true}).in('id',Array.isArray(order_ids)?order_ids:[]).eq('so_id',id),
+          supabase.from('invoices').select('id').eq('so_id',id).limit(1).maybeSingle(),
+          Number(fundraise_cost)>0?supabase.from('customer_credits').select('id').eq('id','cr_fund_so_'+id).maybeSingle():Promise.resolve({data:{id:'none'}})
+        ]);
+        if(_linked===(order_ids||[]).length&&_inv&&_credit)finalized={ok:true,invoice_id:_inv.id,linked_count:_linked};
+      }catch{}
+    }
+    if(!finalized?.ok){
+      const why=finalized?.reason==='order_claim_changed'?'Some selected orders changed or were batched by another session.':'The server could not confirm the order links and accounting records.';
+      // A returned business rejection proves the RPC committed no links/accounting,
+      // so the just-created SO is safe to remove. A transport/SQL error is ambiguous:
+      // leave the SO intact and require reload rather than risk deleting a committed batch.
+      if(finalized){
+        try{await _dbDeleteSO(id)}catch{}
+        setSOs(prev=>prev.filter(s=>s.id!==id));
+        nf('Batch stopped safely. '+why+' No customer orders were linked; reload and try again.','error');
+      }else{
+        nf('Sales Order '+id+' was saved, but batch finalization could not be verified. Reload before doing anything else; do not create a second batch for these orders.','error');
+      }
+      console.error('[Webstore] atomic batch finalization failed:',finalizeErr||finalized);
+      return null;
+    }
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
-    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s)');
+    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s) · invoice '+(finalized.invoice_id||'recorded'));
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
@@ -15165,7 +15191,7 @@ export default function App(){
   // from webstore_orders sums for queue-driven backlog settles. All amounts
   // are clamped so a data surprise can only under-apply (visible partial),
   // never overpay. Idempotent: any-invoice guard + the 'WEB <so id>' ref.
-  const createAndSettleWebstoreInvoice=(so,settle)=>{
+  const createAndSettleWebstoreInvoice=async(so,settle)=>{
     if(!so||so.omg_store_id)return null;
     if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
     if(!acquireOmgCreationGuard(webstoreInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
@@ -15198,10 +15224,15 @@ export default function App(){
       items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
       payments:applied>0?[{amount:applied,method:'store',ref,date:payDate,cc_fee:0}]:[],
       created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
-    setInvs(prev=>[inv,...prev]);
-    logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
-    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
-    return inv;
+    try{
+      const ok=await _dbSaveInvoice(inv);
+      if(!ok){nf('Invoice for '+so.id+' did not finish saving — it remains in the retry queue.','error');return null}
+      setInvs(prev=>prev.some(i=>i.id===inv.id||i.so_id===so.id)?prev:[inv,...prev]);
+      logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
+      nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
+      return inv;
+    }catch(e){console.error('[Webstore] invoice save failed:',e);nf('Invoice for '+so.id+' failed to save: '+(e.message||e),'error');return null}
+    finally{webstoreInvoiceCreating.current.delete(so.id)}
   };
 
 ;
@@ -36377,7 +36408,7 @@ export default function App(){
     // Live vendor stock by sku (per colorway), batched.
     const skus=[...new Set(rows.map(p=>p.sku).filter(Boolean))].slice(0,600);
     const stockBySku={};
-    for(let i=0;i<skus.length;i+=300){const batch=skus.slice(i,i+300);try{const{data:inv}=await supabase.from('inventory_unified').select('sku,stock_qty,future_delivery_date,future_delivery_qty').in('sku',batch);(inv||[]).forEach(r=>{const k=r.sku;if(!stockBySku[k])stockBySku[k]={total:0,nextDate:null};const s=stockBySku[k];s.total+=(Number(r.stock_qty)||0);const fq=Number(r.future_delivery_qty)||0;if(r.future_delivery_date&&fq>0){if(!s.nextDate||r.future_delivery_date<s.nextDate)s.nextDate=r.future_delivery_date;}});}catch(e){}}
+    for(let i=0;i<skus.length;i+=300){const batch=skus.slice(i,i+300);try{const inv=await fetchPublicInventory(batch);(inv||[]).forEach(r=>{const k=r.sku;if(!stockBySku[k])stockBySku[k]={total:0,nextDate:null};const s=stockBySku[k];s.total+=(Number(r.stock_qty)||0);const fq=Number(r.future_delivery_qty)||0;if(r.future_delivery_date&&fq>0){if(!s.nextDate||r.future_delivery_date<s.nextDate)s.nextDate=r.future_delivery_date;}});}catch(e){}}
     const otherStems=words.slice(0,-1).map(stemOf).filter(Boolean);
     const scoreOf=(name,cat)=>{const hay=((name||'')+' '+(cat||'')).toLowerCase();return otherStems.reduce((a,w)=>a+(hay.includes(w)?1:0),0);};
     // Collapse colorways of the same style into ONE card (name is identical across colors).
@@ -36691,8 +36722,8 @@ export default function App(){
     ];
     return B.map(b=>{const s=b.money?{...b.spec,aggregate:{op:'sum',field:b.money}}:b.spec;let r;try{r=runPortalSearch(s)}catch(e){r={total:0}}return{label:b.label,count:r.total||0,total:b.money&&r.aggregate?_nlMoney(r.aggregate.value):null,spec:b.spec}});
   }
-  // Vendor B2B stock lookup — reads the inventory_unified view (Adidas/Agron/UA/Nike) with the
-  // user's Supabase session (RLS allows read). Resolves a SKU or description to a product first.
+  // Vendor B2B stock lookup — reads the allowlisted inventory gateway
+  // (Adidas/Agron/UA/Nike). Resolves a SKU or description to a product first.
   async function handleAssistantVendorStock(query){
     const q=String(query||'').trim();
     if(!q)return {error:'no_query'};
@@ -36701,7 +36732,7 @@ export default function App(){
     const sku=p?p.sku:q;
     if(!supabase)return {error:'no_db'};
     let rows=[];
-    try{const{data}=await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',[sku,String(sku).toUpperCase()]);rows=data||[];}catch(e){rows=[];}
+    try{rows=await fetchPublicInventory([sku,String(sku).toUpperCase()]);}catch(e){rows=[];}
     if(!rows.length)return {error:'no_stock',sku,name:p?p.name:null};
     const sizes={};let nextDate=null,nextQty=0,onHand=0,lastSynced=null;
     rows.forEach(r=>{const sz=r.size||'?';const qty=Number(r.stock_qty)||0;const fq=Number(r.future_delivery_qty)||0;onHand+=qty;const s=sizes[sz]||(sizes[sz]={qty:0,futureQty:0,futureDate:null});s.qty+=qty;s.futureQty+=fq;if(r.future_delivery_date&&fq>0){if(!s.futureDate||r.future_delivery_date<s.futureDate)s.futureDate=r.future_delivery_date;if(!nextDate||r.future_delivery_date<nextDate)nextDate=r.future_delivery_date;nextQty+=fq;}if(r.last_synced&&(!lastSynced||r.last_synced>lastSynced))lastSynced=r.last_synced;});

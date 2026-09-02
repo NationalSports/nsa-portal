@@ -64,7 +64,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -285,6 +285,10 @@ export default function QBPage(){
       if(!selectedCanaryProduct)return;
       if(!window.confirm('Create or update exactly ONE QBO NonInventory item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales account: 40000\nPurchase account: 51300\n\nNo size/color quantities or inventory value will be sent. The item will be verified by API read-back.')){nf('QBO item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
+    };
+    const runPortalSalesItemCanary=async()=>{
+      if(!window.confirm('Create or repair exactly ONE required QBO service item?\n\nName: NSA Portal Sales\nType: Service\nSales account: 40000 Sales\n\nThis item carries portal invoice totals and customer-billed shipping. No invoice, payment, quantity, cost, or inventory value will be sent. The item will be verified by API read-back.')){nf('NSA Portal Sales test cancelled — nothing was sent');return}
+      await syncPortalSalesItemCanary();
     };
     const runSalesOrderCanary=async()=>{
       if(!selectedCanarySO||soCanaryBlock)return;
@@ -778,6 +782,12 @@ export default function QBPage(){
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
             Creates one NonInventory item per SKU using 40000 Sales and 51300 Purchases. QBO does not receive size/color on-hand quantities or inventory valuation; those remain in the portal.
+          </div>
+          <div style={{padding:'12px 14px',background:'#ecfdf5',borderBottom:'1px solid #a7f3d0'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Required invoice service item</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates, repairs, or verifies exactly one shared QBO item named NSA Portal Sales, mapped only to 40000 Sales. It creates no invoice or payment and sends no quantity, cost, or inventory value.</div>
+            <button className="btn btn-primary btn-sm" style={{background:'#047857'}} disabled={qbSyncing||!livePreflightReady} onClick={runPortalSalesItemCanary}>{qbSyncing?'Testing...':'Test NSA Portal Sales Item'}</button>
+            {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO item</div>

@@ -15,25 +15,36 @@ exports.handler = async () => {
   const nowIso = new Date().toISOString();
   try {
     // Open, real (non-OMG) stores whose close date has passed.
-    const { data: due, error } = await admin.from('webstores')
+    const { data: dueOpen, error } = await admin.from('webstores')
       .select('*').eq('status', 'open').eq('source', 'webstore')
       .not('close_at', 'is', null).lte('close_at', nowIso);
     if (error) { console.error('[close-sweep] query failed:', error.message); return { statusCode: 500, body: error.message }; }
-    if (!due || !due.length) return { statusCode: 200, body: 'No stores due to close' };
+    // A prior run may have closed the store but failed while creating the to-do,
+    // sending email, or stamping completion. Keep those rows eligible until the
+    // shared handler completes every obligation.
+    const { data: dueRetry, error: retryError } = await admin.from('webstores')
+      .select('*').eq('status', 'closed').eq('source', 'webstore')
+      .is('closed_notified_at', null).not('close_at', 'is', null).lte('close_at', nowIso);
+    if (retryError) { console.error('[close-sweep] retry query failed:', retryError.message); return { statusCode: 500, body: retryError.message }; }
+    const due = [...(dueOpen || []), ...(dueRetry || [])]
+      .filter((store, index, all) => store.approval_status !== 'rejected' && all.findIndex((candidate) => candidate.id === store.id) === index);
+    if (!due.length) return { statusCode: 200, body: 'No stores due to close or retry' };
 
-    let closed = 0, notified = 0;
+    let closed = 0, retried = 0, notified = 0;
     for (const store of due) {
-      // Flip to closed first so the storefront stops taking orders even if notify fails.
-      const { error: uErr } = await admin.from('webstores').update({ status: 'closed', updated_at: nowIso }).eq('id', store.id).eq('status', 'open');
-      if (uErr) { console.error('[close-sweep] close failed for', store.id, uErr.message); continue; }
-      closed++;
+      if (store.status === 'open') {
+        // Flip to closed first so the storefront stops taking orders even if notify fails.
+        const { error: uErr } = await admin.from('webstores').update({ status: 'closed', updated_at: nowIso }).eq('id', store.id).eq('status', 'open');
+        if (uErr) { console.error('[close-sweep] close failed for', store.id, uErr.message); continue; }
+        closed++;
+      } else retried++;
       try {
         const r = await notifyStoreClosed(admin, { ...store, status: 'closed' });
         if (r && r.notified) notified++;
       } catch (e) { console.error('[close-sweep] notify failed for', store.id, e.message); }
     }
-    console.log(`[close-sweep] closed ${closed}, notified ${notified} of ${due.length} due`);
-    return { statusCode: 200, body: `Closed ${closed}, notified ${notified}` };
+    console.log(`[close-sweep] closed ${closed}, retried ${retried}, notified ${notified} of ${due.length} due`);
+    return { statusCode: 200, body: `Closed ${closed}, retried ${retried}, notified ${notified}` };
   } catch (e) {
     console.error('[close-sweep]', e);
     return { statusCode: 500, body: e.message };

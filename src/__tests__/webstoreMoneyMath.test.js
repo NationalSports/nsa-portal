@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* Unit tests for the webstore "money math" fixes (#6–#9).
  *
  * The club-fundraising proration (netFundraise) is the shared rule behind the payout
@@ -6,6 +7,71 @@
  * exported from _webstoreClose so the exact formula is pinned here. The order-edit total
  * re-derivation (#6) is replicated as a spec so its intended numeric behavior is guarded. */
 const { netFundraise } = require('../../netlify/functions/_webstoreClose');
+const fs = require('fs');
+const path = require('path');
+
+describe('paid-order quantity entitlement — database backstop', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902050000_block_unpaid_paid_order_quantity_increases.sql'), 'utf8');
+
+  test('blocks uncharged increases on paid/card orders at the table boundary', () => {
+    expect(sql).toMatch(/before update of qty on public\.webstore_order_items/i);
+    expect(sql).toMatch(/stripe_pi_id is not null/i);
+    expect(sql).toMatch(/NSA_PAID_ORDER_QUANTITY_INCREASE/i);
+  });
+
+  test('restoration entitlement subtracts already-refunded units', () => {
+    expect(sql).toMatch(/old\.qty[\s\S]*old\.cancelled_qty[\s\S]*old\.refunded_qty/i);
+  });
+});
+
+describe('durable webstore inventory reservations', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902053000_durable_unconverted_webstore_inventory_reservations.sql'), 'utf8');
+
+  test('serializes by the shared product+size resource and counts accepted unconverted demand', () => {
+    expect(sql).toMatch(/pg_advisory_xact_lock[\s\S]*v_product_id[\s\S]*size/i);
+    expect(sql).toMatch(/gross_max_avail/i);
+    expect(sql).toMatch(/left join public\.sales_orders/i);
+    expect(sql).toMatch(/o\.status[\s\S]*in \('paid', 'unpaid', 'batched'\)/i);
+    expect(sql).toMatch(/so\.status[\s\S]*not in[\s\S]*'complete'[\s\S]*'archived'/i);
+    expect(sql).toMatch(/v_active \+ v_reserved \+ v_qty > v_max/i);
+  });
+
+  test('pending holds and accepted item demand are mutually exclusive, avoiding double-counting', () => {
+    expect(sql).toMatch(/ho\.status[\s\S]*in \('pending', 'pending_payment'\)/i);
+    expect(sql).toMatch(/i\.line_status[\s\S]*not in \('cancelled', 'canceled'\)/i);
+    expect(sql).toMatch(/iwp\.track_inventory[\s\S]*ip\.inventory_source[\s\S]*<> 'manual'/i);
+  });
+
+  test('validates the webstore product belongs to the new order store', () => {
+    expect(sql).toMatch(/wp\.store_id = v_order\.store_id/i);
+    expect(sql).toMatch(/NSA_INVENTORY_UNVERIFIABLE/i);
+  });
+});
+
+describe('atomic webstore coupon quotas', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/20260902060000_atomic_webstore_coupon_quota.sql'), 'utf8');
+
+  test('claims the coupon under a row lock in the order transaction', () => {
+    expect(sql).toMatch(/from public\.webstore_coupons[\s\S]*for update/i);
+    expect(sql).toMatch(/used_count[\s\S]*>= v_coupon\.max_uses[\s\S]*NSA_COUPON_USED/i);
+    expect(sql).toMatch(/update public\.webstore_coupons[\s\S]*used_count = coalesce\(used_count, 0\) \+ 1/i);
+    expect(sql).toMatch(/insert into public\.webstore_coupon_redemptions[\s\S]*v_order\.id/i);
+  });
+
+  test('is order-idempotent and releases only failed pending reservations', () => {
+    expect(sql).toMatch(/order_id\s+uuid primary key/i);
+    expect(sql).toMatch(/state in \('reserved', 'redeemed', 'released'\)/i);
+    expect(sql).toMatch(/old\.state = 'reserved'[\s\S]*used_count = greatest/i);
+    expect(sql).toMatch(/new\.status[\s\S]*'cancelled'[\s\S]*state = 'released'/i);
+    expect(sql).toMatch(/redeem_webstore_coupon_for_order/i);
+  });
+
+  test('keeps redemption data and functions private to service-role flows', () => {
+    expect(sql).toMatch(/alter table public\.webstore_coupon_redemptions enable row level security/i);
+    expect(sql).toMatch(/revoke all on table public\.webstore_coupon_redemptions from public, anon, authenticated/i);
+    expect(sql).toMatch(/revoke all on function public\.redeem_webstore_coupon_for_order\(uuid\)[\s\S]*public, anon, authenticated/i);
+  });
+});
 
 describe('#9 netFundraise — club fundraising net of the coupon discount', () => {
   test('no discount → full fundraise owed', () => {

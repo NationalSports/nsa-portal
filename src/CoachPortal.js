@@ -36,6 +36,20 @@ const CP_LIVELOOK_URL = CP_EMBEDDED ? `${CP_MARKETING}/livelook` : '/adidas';
 // storefront/TeamStores.js.
 const cpShopHref = (slug) => CP_EMBEDDED ? `${CP_MARKETING}/shop/${slug}` : `/shop/${slug}`;
 
+// Coach team-store data is intentionally unavailable through the public
+// Supabase role. The portal tag is sent to this server gateway, which resolves
+// it to a customer family and returns only that family's curated tracking data.
+const coachWebstoreCall = async (alphaTag, action, payload = {}) => {
+  const response = await fetch('/.netlify/functions/coach-webstore-access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alpha_tag: alphaTag, action, payload }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+};
+
 // Read-only team-store view for the coach: headline order/fundraising/batch
 // summary up top, with the per-player order list as a searchable, collapsible
 // section below. No editing.
@@ -212,7 +226,7 @@ function cpTeamTheme(customer, supplement) {
   return { primary, accent };
 }
 
-function CoachStore({ customer, storeIds }) {
+function CoachStore({ customer, storeIds, alphaTag }) {
   const [stores, setStores] = useState([]);
   const [data, setData] = useState({}); // storeId -> {orders, items, roster}
   const [loaded, setLoaded] = useState(false);
@@ -225,26 +239,26 @@ function CoachStore({ customer, storeIds }) {
     (async () => {
       const ids = _storeIdKey ? _storeIdKey.split(',') : [];
       if (!ids.length) { setLoaded(true); return; }
-      const { data: ws, error } = await supabase.from('coach_webstores').select('*').in('customer_id', ids);
+      let snapshot;
+      try { snapshot = await coachWebstoreCall(alphaTag, 'snapshot'); } catch { if (!cancel) setLoaded(true); return; }
       if (cancel) return;
-      if (error || !ws || !ws.length) { setLoaded(true); return; }
+      const wanted = new Set(ids);
+      const ws = (snapshot.stores || []).filter((store) => wanted.has(String(store.customer_id)));
+      if (!ws.length) { setLoaded(true); return; }
       setStores(ws);
       const out = {};
       for (const s of ws) {
-        const [o, r] = await Promise.all([
-          supabase.from('coach_webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
-          supabase.from('webstore_roster').select('*').eq('store_id', s.id),
-        ]);
-        const orders = o.data || [];
+        const orders = (snapshot.orders || []).filter((order) => order.store_id === s.id);
         const orderIds = orders.map((x) => x.id);
-        let items = [];
-        if (orderIds.length) { const it = await supabase.from('coach_webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
-        out[s.id] = { orders, items, roster: r.data || [] };
+        const orderSet = new Set(orderIds);
+        const items = (snapshot.items || []).filter((item) => orderSet.has(item.order_id));
+        const roster = (snapshot.roster || []).filter((player) => player.store_id === s.id);
+        out[s.id] = { orders, items, roster };
       }
       if (!cancel) { setData(out); setLoaded(true); }
     })();
     return () => { cancel = true; };
-  }, [_storeIdKey]);
+  }, [_storeIdKey, alphaTag]);
 
   if (!loaded) return null;
   // The coach sees their own submissions as "pending review"; staff work-in-
@@ -265,16 +279,16 @@ function CoachStore({ customer, storeIds }) {
           <span style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.05em', color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 999, padding: '4px 12px', whiteSpace: 'nowrap' }}>Pending review</span>
         </div>
       ))}
-      {live.map((s) => <CoachStoreCard key={s.id} store={s} d={data[s.id] || { orders: [], items: [], roster: [] }} />)}
+      {live.map((s) => <CoachStoreCard key={s.id} store={s} d={data[s.id] || { orders: [], items: [], roster: [] }} alphaTag={alphaTag} />)}
     </div>
   );
 }
 
 // Coach-facing roster manager — set up players (type, paste, or upload a
 // template), hand each their own store link, and track who's opened / ordered.
-// Runs on the coach's authenticated session, so it reads/writes webstore_roster
-// directly (same RLS access as staff); emails go through the roster-invite fn.
-function CoachRosterManager({ store, initialRoster }) {
+// Reads and writes go through the same portal-token-scoped server gateway;
+// emails go through the separately ownership-checked roster-invite function.
+function CoachRosterManager({ store, initialRoster, alphaTag }) {
   const [roster, setRoster] = useState(initialRoster || []);
   const [open, setOpen] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -294,29 +308,31 @@ function CoachRosterManager({ store, initialRoster }) {
   const flash = (m) => { setNote(m); setTimeout(() => setNote(''), 3500); };
 
   const reload = async () => {
-    const { data } = await supabase.from('webstore_roster').select('*').eq('store_id', store.id).order('player_name');
-    if (data) setRoster(data);
+    try {
+      const result = await coachWebstoreCall(alphaTag, 'roster_list', { store_id: store.id });
+      setRoster(result.roster || []);
+    } catch (error) { flash('Could not refresh roster: ' + error.message); }
   };
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [store.id]);
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [store.id, alphaTag]);
 
-  const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
   const normPos = (v) => { const x = String(v || '').trim().toLowerCase(); if (['gk', 'goalie', 'goalkeeper', 'keeper'].includes(x)) return 'gk'; if (['field', 'fielder', 'outfield', 'player'].includes(x)) return 'field'; return null; };
 
   const addPlayers = async (players) => {
     const rows = (players || [])
       .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null, position: normPos(p.position) }))
-      .filter((p) => p.player_name)
-      .map((p) => ({ ...p, store_id: store.id, token: tok(), ordered: false }));
+      .filter((p) => p.player_name);
     if (!rows.length) { flash('Enter at least one player name.'); return false; }
     setBusy(true);
-    const { error } = await supabase.from('webstore_roster').insert(rows);
+    let error;
+    try { await coachWebstoreCall(alphaTag, 'roster_insert', { store_id: store.id, players: rows }); }
+    catch (err) { error = err; }
     setBusy(false);
     if (error) { flash('Could not add players: ' + error.message); return false; }
     await reload(); flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); setOpen(true);
     return true;
   };
-  const updatePlayer = async (id, fields) => { const { error } = await supabase.from('webstore_roster').update(fields).eq('id', id); if (error) { flash('Error: ' + error.message); return; } reload(); };
-  const removePlayer = async (r) => { if (!window.confirm(`Remove ${r.player_name}?`)) return; const { error } = await supabase.from('webstore_roster').delete().eq('id', r.id); if (error) { flash('Error: ' + error.message); return; } reload(); };
+  const updatePlayer = async (id, fields) => { try { await coachWebstoreCall(alphaTag, 'roster_update', { id, fields }); } catch (error) { flash('Error: ' + error.message); return; } reload(); };
+  const removePlayer = async (r) => { if (!window.confirm(`Remove ${r.player_name}?`)) return; try { await coachWebstoreCall(alphaTag, 'roster_delete', { id: r.id }); } catch (error) { flash('Error: ' + error.message); return; } reload(); };
 
   const addSingle = async () => { if (!single.player_name.trim()) { flash('Enter a player name.'); return; } const ok = await addPlayers([single]); if (ok) setSingle({ player_name: '', player_number: '', parent_email: '', position: single.position }); };
   const addBulk = async () => {
@@ -359,7 +375,7 @@ function CoachRosterManager({ store, initialRoster }) {
     if (!ids.length) { flash('No players with an email address to send to.'); return; }
     if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
     setBusy(true);
-    try { const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: store.id, player_ids: ids }) }); const dj = await res.json().catch(() => ({})); if (!res.ok || !dj.ok) flash('Email failed: ' + (dj.error || res.status)); else { flash(`Emailed ${dj.sent} link${dj.sent === 1 ? '' : 's'}${(dj.skipped || []).length ? ` · ${dj.skipped.length} skipped` : ''}`); reload(); } }
+    try { const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alpha_tag: alphaTag, store_id: store.id, player_ids: ids }) }); const dj = await res.json().catch(() => ({})); if (!res.ok || !dj.ok) flash('Email failed: ' + (dj.error || res.status)); else { flash(`Emailed ${dj.sent} link${dj.sent === 1 ? '' : 's'}${(dj.skipped || []).length ? ` · ${dj.skipped.length} skipped` : ''}`); reload(); } }
     catch (err) { flash('Email failed: ' + err.message); }
     setBusy(false);
   };
@@ -521,7 +537,7 @@ const cpRosBtn = (bg, fg, outline) => ({ background: bg, color: fg, border: outl
 // manager (a separate coach tool) renders below. All data is live; fields with
 // no backing value degrade quietly (no goal → no goal bar, no tracking → no
 // Track link).
-function CoachStoreCard({ store: s, d }) {
+function CoachStoreCard({ store: s, d, alphaTag }) {
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   // Open dropdowns, keyed by order id. All orders start collapsed so the ledger
@@ -785,7 +801,7 @@ function CoachStoreCard({ store: s, d }) {
       </div>
 
       {/* Roster & player links — set up players, hand out links, track who's ordered */}
-      <CoachRosterManager store={s} initialRoster={d.roster || []} />
+      <CoachRosterManager store={s} initialRoster={d.roster || []} alphaTag={alphaTag} />
     </div>
   );
 }
@@ -911,9 +927,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   useEffect(()=>{let cancel=false;(async()=>{
     const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
     if(!sIds.length){if(!cancel)setCpStores([]);return;}
-    const{data}=await supabase.from('coach_webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
-    if(!cancel)setCpStores(data||[]);
-  })();return()=>{cancel=true;};},[_cpStoreKey]);
+    try {
+      const data=await coachWebstoreCall(customer.alpha_tag,'stores');
+      const wanted=new Set(sIds);
+      if(!cancel)setCpStores((data.stores||[]).filter(store=>wanted.has(String(store.customer_id))));
+    } catch { if(!cancel)setCpStores([]); }
+  })();return()=>{cancel=true;};},[_cpStoreKey,customer.alpha_tag]);
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
   const hasStore=cpVisibleStores.length>0;
   const openStoreCount=cpStores.filter(s=>s.status==='open').length;
@@ -2952,7 +2971,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {page==='store'&&<div>
           <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Team Store Tracking</div>
           <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Live orders, fundraising and production status for your team store{cpVisibleStores.length>1?'s':''}.</div>
-          <CoachStore customer={customer} storeIds={cpStoreCustomerIds}/>
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} alphaTag={customer.alpha_tag}/>
         </div>}
 
         {/* Roster orders — spreadsheet-style season kit ordering per team */}
@@ -3104,7 +3123,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Catalogs &amp; Stores</div>
 
           {/* Team Stores — inline (CoachStore renders existing stores) */}
-          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} />
+          <CoachStore customer={customer} storeIds={cpStoreCustomerIds} alphaTag={customer.alpha_tag} />
 
           {/* Custom & Catalog Gear tile */}
           <a href={CP_MARKETING+'/design-lab'} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'22px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.06)',marginBottom:14}}>

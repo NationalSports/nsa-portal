@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
+import { fetchPublicInventory, fetchPublicStorefrontProducts } from './lib/webstorePublicData';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb, _withTimeout, fetchWithTimeout } from './utils';
 import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
@@ -25,6 +26,7 @@ import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
+import { allocateMoneyCents } from './lib/bundleMoney';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -38,16 +40,77 @@ async function createWebstoreLabel(order, items, store, weightByPid = {}, imageB
   if (!orderId) throw new Error('ShipStation order not created');
   if (Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
   const cm = SS_CARRIERS[(store.shipstation_carrier || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+  const shipDate = new Date().toISOString().split('T')[0];
   const payload = {
     orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
-    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+    packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(items, store, weightByPid), units: 'pounds' },
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+  return {
+    labelData: res.labelData,
+    trackingNumber: res.trackingNumber,
+    carrier: cm.carrierCode,
+    service: store.shipstation_service || cm.serviceCode,
+    shipDate,
+    shipmentId: res.shipmentId || null,
+    cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null,
+  };
+}
+
+async function recordCreatedWebstoreLabel(order, items, label) {
+  const shipment = {
+    shipment_id: label.shipmentId,
+    tracking_number: label.trackingNumber,
+    carrier: label.carrier,
+    service: label.service,
+    ship_date: label.shipDate,
+    cost: label.cost,
+    items: (items || []).map((item) => ({
+      lineItemKey: item.id,
+      sku: item.sku || null,
+      name: item.name || item.sku || null,
+      qty: Number(item.qty) || 0,
+      image: item.image_url || null,
+      options: [
+        item.size && { name: 'Size', value: item.size },
+        item.player_number && { name: 'Number', value: String(item.player_number) },
+        item.player_name && { name: 'Name', value: item.player_name },
+      ].filter(Boolean),
+    })),
+  };
+  let lastError = 'Shipment recording failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: order.id, shipment, label_data: label.labelData || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment recording failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. The label was created; do not create another label.`);
+}
+
+async function recordVoidedWebstoreLabel(orderId, shipmentId) {
+  let lastError = 'Shipment void reconciliation failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-void-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, shipment_id: String(shipmentId) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment void reconciliation failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. ShipStation already voided this label; retry local reconciliation before creating another.`);
 }
 
 // Printable club fundraising payout statement.
@@ -473,7 +536,7 @@ async function fetchSkuStock(skuList) {
 }
 // One inventory_unified read, folded per-sku → { SKU: { sizes, sizeEta, sizeIncoming, eta, syncedAt } }.
 async function _skuStockRows(skus) {
-  const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku', skus);
+  const data = await fetchPublicInventory(skus).catch(() => []);
   const out = {};
   (data || []).forEach((r) => {
     const e = out[r.sku] || (out[r.sku] = { sizes: {}, sizeEta: {}, sizeIncoming: {}, eta: false, syncedAt: null });
@@ -1556,10 +1619,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
     const sid = store.id;
-    const [catRes, bundleRes, stockRes, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
+    const [catRes, bundleRes, stockRows, ordRes, rosterRes, claimRes, transferRes, couponRes] = await Promise.all([
       supabase.from('webstore_products').select('*').eq('store_id', sid).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      supabase.from('webstore_storefront_products').select('webstore_product_id,product_id,size_stock,on_order_qty,earliest_eta,vendor_size_stock,vendor_on_hand,available_sizes,vendor_eta,vendor_size_eta,vendor_size_incoming,vendor_synced_at,name,color,category,image_front_url').eq('store_id', sid),
+      fetchPublicStorefrontProducts(sid),
       supabase.from('webstore_orders').select('*').eq('store_id', sid).order('created_at', { ascending: false }),
       supabase.from('webstore_roster').select('*').eq('store_id', sid).order('player_name'),
       supabase.from('webstore_number_claims').select('*').eq('store_id', sid).order('player_number'),
@@ -1571,6 +1634,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // 1000-row cap, and so did any single 300-order chunk of multi-item orders.
     const { rows: _itemRows } = await fetchOrderItemRows(supabase, (ordRes.data || []).map((o) => o.id));
     const itemRes = { data: _itemRows };
+    const stockRes = { data: stockRows || [] };
     const catalog = catRes.data || [];
     // Cost per product (for staff margin at review). Clearance items cost less.
     const pidList = [...new Set(catalog.map((c) => c.product_id).filter(Boolean))];
@@ -1779,7 +1843,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j && j.notified) flash('Store closed — rep notified + to-do created');
-    } catch (e) { /* close already succeeded; the to-do/email is best-effort here */ }
+      else if (!r.ok) flash('Store closed — staff notification is queued for the hourly retry');
+    } catch (e) { flash('Store closed — staff notification is queued for the hourly retry'); }
   }, [flash]);
 
   const saveStore = useCallback(async (form, existingId) => {
@@ -2160,7 +2225,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const taken = new Set(stores.map((s) => s.slug));
     let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
-    const { id, created_at, updated_at, ...rest } = src;
     // A template is a separate is_template store carrying the ITEMS and packages only —
     // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
     // codes from the source team). is_template makes it show in the Templates tab and
@@ -2176,52 +2240,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // over — every trace of the source team's branding strips, and the new team's colors
     // and logos are applied fresh. So template paths also drop the banner, hero blurb and
     // the curated store_art library (the source team's logos).
-    const tplPath = opts.asTemplate || opts.startFromTemplate;
-    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, featured_product_ids: null, closed_notified_at: null, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null, coach_contact_email: null } : {}), ...(tplPath ? { banner_url: null, hero_blurb: null, store_art: [] } : {}) };
     flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
-    const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
-    if (error) { flash('Could not duplicate: ' + error.message); return null; }
-
-    // opts.itemIds limits the copy to those catalog rows (Save as template's picks, or
-    // start-from-template's verbatim set); absent = whole catalog. Filter in the query —
-    // no point pulling 200 rows to keep 5. An empty list means "copy no catalog".
-    let srcProducts = [];
-    if (!opts.itemIds || opts.itemIds.length) {
-      let q = supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
-      if (opts.itemIds) q = q.in('id', opts.itemIds);
-      srcProducts = (await q).data || [];
+    const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source_id: src.id,
+        clone_name: cloneName,
+        slug,
+        as_template: !!opts.asTemplate,
+        start_from_template: !!opts.startFromTemplate,
+        rebrand: !!opts.rebrand,
+        // null = all products; [] = deliberately no products.
+        item_ids: opts.itemIds == null ? null : opts.itemIds,
+      }),
+    });
+    const cloned = await cloneRes.json().catch(() => ({}));
+    if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
+      flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+      return null;
     }
-    const idMap = {}; // old webstore_product id -> new id
-    for (const p of (srcProducts || [])) {
-      const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
-      // Template paths carry the ITEM, not the source team's branding: custom mockups
-      // (which show the old team's logo on the garment), art placements and transfer
-      // links strip; the new team decorates fresh. Plain Duplicate keeps everything.
-      const row = tplPath ? { ...prest, image_url: null, image_back_url: null, decorations: [], transfer_codes: [], num_transfer_sets: [] } : prest;
-      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...row, store_id: store.id }).select('id').single();
-      if (pe) { flash('Catalog copy failed: ' + pe.message); break; }
-      idMap[pid] = np.id;
-    }
-    const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
-    if (bundleIds.length) {
-      const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
-      // Remap the component's webstore_product_id link too — carrying the SOURCE store's
-      // row id makes the package show (and the storefront fetch) another store's item.
-      // Null when the linked single wasn't copied: components then resolve by product_id.
-      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, webstore_product_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id], webstore_product_id: idMap[webstore_product_id] || null, ...(tplPath ? { decoration_id: null } : {}) }; }).filter((r) => r.bundle_id);
-      if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
-    }
-    // Transfer setup (heat-press codes: the team's names/numbers/logos) is source-team
-    // branding — it copies on plain Duplicate / Clone & Rebrand but never on template
-    // paths, where the new team's transfers get set up fresh.
-    if (!tplPath) {
-      const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
-      if ((srcTransfers || []).length) {
-        const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
-        const { error: te } = await supabase.from('webstore_transfers').insert(trows);
-        if (te) flash('Transfer setup copy failed: ' + te.message);
-      }
-    }
+    const store = cloned.store;
     setStores((prev) => [store, ...prev]);
     flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
@@ -3170,7 +3209,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const ids = (playerIds || []).filter(Boolean);
     if (!ids.length) { flash('No players to email.'); return { error: true }; }
     try {
-      const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
+      const res = await authFetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
       const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.ok) { flash('Email failed: ' + (d.error || res.status)); return { error: true }; }
       const skipped = (d.skipped || []).length;
@@ -3209,6 +3248,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
   // state) with an over-refund cap before any money moves.
   const refundingRef = useRef(false);
+  const refundAttemptRef = useRef(null);
   const refundOrder = useCallback(async (order, amount, customerMessage, itemAllocations = []) => {
     if (refundingRef.current) return { error: 'A refund is already in progress' };
     refundingRef.current = true;
@@ -3220,16 +3260,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // idempotency key (attempt_id), and atomically records the refund + updates
       // refunded_amt/status via the apply_webstore_refund RPC. The browser no longer
       // writes refund state directly (RLS blocks it now; the server is the source of truth).
-      const attemptId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2));
+      const signature = JSON.stringify({ order: order.id, cents, message: (customerMessage || '').trim(), items: itemAllocations });
+      if (!refundAttemptRef.current || refundAttemptRef.current.signature !== signature) {
+        refundAttemptRef.current = {
+          signature,
+          id: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2)),
+        };
+      }
+      const attemptId = refundAttemptRef.current.id;
       let d;
       try {
         const res = await authFetch('/.netlify/functions/stripe-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, expected_refunded_cents: Math.round((Number(order.refunded_amt) || 0) * 100), attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
         });
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
       if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
+      refundAttemptRef.current = null;
+      if (d.replayed) {
+        flash(`Refund already completed: ${money(cents / 100)}${d.kind === 'card' ? ' to card' : ' credit'} — no duplicate refund or email was sent.`);
+        loadDetail(sel); return { ok: true, ...d };
+      }
       // The refund notice fires automatically server-side. Say plainly whether it
       // actually went — a refund the buyer was never told about looks identical to a
       // clean one otherwise, and the rep is the only person who can follow up.
@@ -3601,8 +3653,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     Object.values(bundleGroups).forEach((g) => {
       if (!g.kids.length || g.parentVal <= 0) return;
       const weights = g.kids.map((c) => retailByPid[c.product_id] || 0);
-      const wsum = weights.reduce((a, b) => a + b, 0);
-      g.kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(g.parentVal * weights[idx] / wsum) : r2(g.parentVal / g.kids.length); });
+      const allocated = allocateMoneyCents(g.parentVal, weights);
+      g.kids.forEach((c, idx) => { allocById[c.id] = allocated[idx]; });
     });
     const collectedForLine = (i) => allocById[i.id] != null
       ? allocById[i.id]
@@ -3836,8 +3888,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Team-tab extras = the tab orders' tax/shipping/processing beyond their
     // product (+fundraise) share. The auto-invoice adds these on top of the SO's
     // product lines so the club's open balance equals the team-tab gross.
-    const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
-    const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
@@ -3846,16 +3896,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
     const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
       batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
-      // Money split for the automatic invoice+settle: Stripe-collected card total,
-      // team-tab gross still owed by the club, and the tab's tax/ship/processing extras.
-      settle: { cardTotal, tabTotal, tabExtras } });
+      // The server derives the settlement split again from these locked orders; no
+      // client-supplied money total is trusted at the accounting boundary.
+      order_ids: [...selIds] });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
-    // Idempotent link: only claim orders still unbatched, so a concurrent batch
-    // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).is('backorder_of', null).select('id');
-    if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
-    else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
-    else flash(`Created ${soId} · linked ${bOrders.length} orders`);
+    // onCreateSO now returns only after the server atomically links every selected
+    // order and records the invoice/payment + fundraising credit.
+    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded`);
     loadDetail(sel);
     }; // end proceed
 
@@ -4268,7 +4315,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
       // Fetch size stock for found products from this store's storefront view.
       if (rows.length && storeId) {
         const pids = rows.map((p) => p.id);
-        const { data: sr } = await supabase.from('webstore_storefront_products').select('product_id,size_stock,vendor_size_stock').eq('store_id', storeId).in('product_id', pids);
+        const sr = await fetchPublicStorefrontProducts(storeId, pids).catch(() => []);
         const fresh = {};
         (sr || []).forEach((r) => { fresh[r.product_id] = r; });
         setResultStock(fresh);
@@ -5472,9 +5519,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     if (!store?.id) return;
     let live = true;
     Promise.all([
-      supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,name,image_front_url,category,kind,sort_order')
-        .eq('store_id', store.id).order('sort_order'),
+      fetchPublicStorefrontProducts(store.id).then((data) => ({ data })),
       supabase.from('webstore_products')
         .select('id,display_name,image_url')
         .eq('store_id', store.id).eq('active', false),
@@ -13189,14 +13234,12 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
-        if (labelData) labels.push(labelData);
-        const shippedById = {}; const targetById = {}; const lineById = {};
-        lines.forEach((i) => { targetById[i.id] = (targetById[i.id] || 0) + (Number(i.qty) || 0); lineById[i.id] = i; });
-        plan.forEach((x) => { shippedById[x.item.id] = (shippedById[x.item.id] || 0) + x.qty; });
-        for (const [id, add] of Object.entries(shippedById)) { const i = lineById[id]; const sq = (Number(i._sourceShippedQty) || 0) + add; const done = sq >= (targetById[id] || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', id); } catch {} lines.filter((l) => l.id === id).forEach((l) => { l.shipped_qty = sq; l._sourceShippedQty = sq; if (done) l.line_status = 'shipped'; }); }
-        const allShipped = Object.keys(targetById).every((id) => (Number(lineById[id].shipped_qty) || 0) >= targetById[id]);
-        try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
+        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
+        // Keep the purchased PDF printable even if the ledger handoff needs
+        // attention; retries are idempotent and the error explicitly warns the
+        // operator not to buy a second label.
+        if (label.labelData) labels.push(label.labelData);
+        await recordCreatedWebstoreLabel(o, shipItems, label);
       } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
     // Roll the Sales Order's outbound shipping cost up = sum of its orders' label
@@ -13635,14 +13678,9 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     try {
       const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
       if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
-      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
-      await supabase.from('webstore_shipments').delete().eq('order_id', o.id);
-      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
-      // Re-roll the Sales Order's shipping cost without this order's label.
-      if (o.so_id) { try { const { data: soOrds } = await supabase.from('webstore_orders').select('label_cost').eq('so_id', o.so_id); const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0); await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', o.so_id); } catch {} }
+      await recordVoidedWebstoreLabel(o.id, o.shipstation_shipment_id);
       o.label_data = null; o.shipstation_shipment_id = null;
-      (itemsByOrder[o.id] || []).forEach((i) => { if (i.line_status === 'shipped') { i.line_status = 'bagging'; i.shipped_qty = 0; } });
-      setTick((t) => t + 1);
+      window.location.reload();
     } catch (e) { window.alert('Void failed: ' + e.message); }
   };
   const itemsByOrder = {};
@@ -13870,6 +13908,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   const billedTotal = Number(order.original_total != null ? order.original_total : order.total) || 0;
   const remaining = Math.max(0, billedTotal - (Number(order.refunded_amt) || 0));
   const fullyRefunded = Number(order.refunded_amt) > 0 && remaining <= 0.005;
+  const moneySettled = order.payment_mode === 'paid' || !!order.stripe_pi_id;
 
   // The coupon discount scales with the merchandise pot it was a percentage of, so a
   // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
@@ -13882,6 +13921,11 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
   const hasChanges = rows.some((r, i) => r._removed !== initRows[i]?._initialRemoved || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
+  // A settled card amount covers the originally purchased, not-yet-refunded
+  // units only. Restoring a cancelled-but-unrefunded unit is safe; adding a new
+  // unit is not, because no new payment is collected by this editor.
+  const hasUnpaidIncrease = moneySettled && rows.some((r, i) => !r._removed && Number(r.qty) > Math.max(0,
+    Number(initRows[i]?.qty || 0) + Number(initRows[i]?.cancelled_qty || 0) - Number(initRows[i]?.refunded_qty || 0)));
   // Bundle parents hold the package price (components are $0) and aren't editable, so
   // seed the recompute with their value — otherwise the New total drops every package.
   const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
@@ -14024,9 +14068,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
               // obvious and removes an action that can never legitimately succeed.
               const refundLocked = r._removed && Number(r.refunded_qty) > 0;
               const editLocked = fullyRefunded || r._removed;
-              const maxActiveQty = Number(r.refunded_qty) > 0
-                ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty))
-                : undefined;
+              const maxActiveQty = moneySettled
+                ? Math.max(0, Number(initRows[idx]?.qty || 0) + Number(initRows[idx]?.cancelled_qty || 0) - Number(initRows[idx]?.refunded_qty || 0))
+                : (Number(r.refunded_qty) > 0 ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty)) : undefined);
               return (
                 <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -14037,7 +14081,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                   {sizes.length > 0
                     ? <select value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
                     : <input value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                  <input type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <input aria-label={`Quantity for ${r.name || r.sku || 'item'}`} type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
                   <button disabled={fullyRefunded || refundLocked} onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: fullyRefunded || refundLocked ? '#94a3b8' : r._removed ? '#2563eb' : '#b91c1c', cursor: fullyRefunded || refundLocked ? 'default' : 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{fullyRefunded || refundLocked ? 'refunded' : r._removed ? 'undo' : 'remove'}</button>
                 </div>
               );
@@ -14051,7 +14095,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
+          {hasUnpaidIncrease && <div role="alert" style={{ background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', borderRadius: 8, padding: '9px 12px', marginBottom: 12, fontSize: 12 }}>A paid order can’t be increased here because this editor does not collect the additional card payment. Create a separate order for the added unit.</div>}
+
+          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded || hasUnpaidIncrease} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
           {hasChanges && owed > 0.005 && <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 7 }}>Saves the order, then opens the refund review. Nothing is refunded until you confirm.</div>}
 
           {/* Refund controls remain available for stand-alone/manual refunds. Item

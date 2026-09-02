@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
+import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
@@ -341,6 +342,11 @@ function parsePath() {
   return { slug: segs[1] || '', view: segs[2] || 'home', id: segs[3] || null };
 }
 function navTo(path) { window.history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); window.scrollTo(0, 0); }
+function orderPath(store, order, suffix = '') {
+  const token = String(order && order.status_token || '');
+  if (!token) throw new Error('Order tracking token missing');
+  return `/shop/${store.slug}/order/${encodeURIComponent(token)}${suffix}`;
+}
 
 function useTheme(store) {
   return useMemo(() => {
@@ -550,28 +556,26 @@ export default function Storefront() {
 
   const load = useCallback(async (slug) => {
     setStatus('loading');
-    const { data: stores, error } = await supabase.from('webstores_public').select('*').eq('slug', slug).limit(1);
-    if (error) { if (isMissingTable(error)) setStatus('nomigration'); else { setStatus('error'); setErrMsg(error.message); } return; }
-    const s = (stores || [])[0];
-    if (!s || s.status === 'archived') { setStatus('notfound'); return; }
-    const [prodRes, bundleRes, presentation] = await Promise.all([
-      supabase.from('webstore_storefront_products').select('*').eq('store_id', s.id).order('sort_order'),
-      supabase.from('webstore_bundle_items').select('*').order('sort_order'),
-      loadShowcasePresentation(s),
-    ]);
-    const prods = applyShowcaseImages(prodRes.data || [], presentation);
+    let catalog;
+    try { catalog = await webstorePublicData('storefront', { slug }); }
+    catch (error) {
+      if (/not found/i.test(error.message || '')) setStatus('notfound');
+      else if (isMissingTable(error)) setStatus('nomigration');
+      else { setStatus('error'); setErrMsg(error.message); }
+      return;
+    }
+    const s = catalog.store;
+    const presentation = await loadShowcasePresentation(s);
+    const prods = applyShowcaseImages(catalog.products || [], presentation);
     setStore({ ...s, presentation_mode: presentation.mode, presentation_preview: presentation.preview });
     setProducts(prods);
     const bundleIds = new Set(prods.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id));
-    const bItems = (bundleRes.data || []).filter((b) => bundleIds.has(b.bundle_id));
+    const bItems = (catalog.bundleItems || []).filter((b) => bundleIds.has(b.bundle_id));
     setBundleItems(bItems);
     // Component product details (name/image/sizes) so packages show real names + photos.
     const compPids = [...new Set(bItems.map((b) => b.product_id).filter(Boolean))];
     const info = {};
-    if (compPids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,image_front_url,available_sizes,color').in('id', compPids);
-      (data || []).forEach((p) => { info[p.id] = p; });
-    }
+    (catalog.componentProducts || []).filter((p) => compPids.includes(p.id)).forEach((p) => { info[p.id] = p; });
     setCompInfo(info);
     // A package can reference an item the store owner archived (active=false) so it no
     // longer shows as its own card but still lives inside the package. Those rows are
@@ -581,8 +585,7 @@ export default function Storefront() {
     const activeWpIds = new Set(prods.map((p) => p.webstore_product_id));
     const missingWpIds = [...new Set(bItems.map((b) => b.webstore_product_id).filter((id) => id && !activeWpIds.has(id)))];
     if (missingWpIds.length) {
-      const { data: arch } = await supabase.from('webstore_products').select('id,product_id,sku,display_name,image_url,image_back_url,decorations,retail_price,fundraise_amount').in('id', missingWpIds);
-      const extras = (arch || []).map((wp) => {
+      const extras = (catalog.archivedProducts || []).filter((wp) => missingWpIds.includes(wp.id)).map((wp) => {
         const base = info[wp.product_id] || {};
         return {
           webstore_product_id: wp.id, product_id: wp.product_id, kind: 'single', sku: wp.sku,
@@ -675,7 +678,7 @@ export default function Storefront() {
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
-        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
+        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderToken={route.id} /></Wrap>}
       </main>
       {theme.varsity ? <VsFooter store={store} theme={theme} /> : <Footer store={store} theme={theme} />}
     </div>
@@ -2166,12 +2169,11 @@ async function repriceCart(store, cart) {
   try {
     const ids = [...new Set(cart.map((l) => l.webstore_product_id).filter(Boolean))];
     if (!ids.length) return cart;
-    const [{ data: prods }, { data: bitems }] = await Promise.all([
-      supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge,options')
-        .eq('store_id', store.id).in('webstore_product_id', ids),
+    const [{ rows: allProds }, { data: bitems }] = await Promise.all([
+      webstorePublicData('storefront_products', { storeId: store.id }),
       supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
     ]);
+    const prods = (allProds || []).filter((p) => ids.includes(p.webstore_product_id));
     const byId = {}; (prods || []).forEach((p) => { byId[p.webstore_product_id] = p; });
     const biById = {}; (bitems || []).forEach((b) => { biById[b.id] = b; });
     return cart.map((l) => {
@@ -2220,31 +2222,36 @@ const STRIPE_ADDR_OPTS = { mode: 'payment', amount: 100, currency: 'usd', appear
 class StripeFieldBoundary extends React.Component {
   constructor(p) { super(p); this.state = { failed: false }; }
   static getDerivedStateFromError() { return { failed: true }; }
-  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain ZIP:', err && err.message); } catch (e) {} }
+  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain address fields:', err && err.message); } catch (e) {} }
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-function BillingAddressInner({ onZip }) {
+function BillingAddressInner({ onAddress }) {
   return (
     <AddressElement
       options={{ mode: 'billing', fields: { phone: 'never' } }}
       onChange={(e) => {
-        const pc = e && e.value && e.value.address && e.value.address.postal_code;
-        if (pc) onZip(String(pc).replace(/\D/g, '').slice(0, 5));
+        const address = e && e.value && e.value.address;
+        if (address) onAddress({
+          billing_street1: String(address.line1 || '').trim().slice(0, 200),
+          billing_city: String(address.city || '').trim().slice(0, 120),
+          zip: String(address.postal_code || '').replace(/\D/g, '').slice(0, 5),
+          state: String(address.state || '').trim().toUpperCase().slice(0, 2),
+        });
       }}
     />
   );
 }
 
-// Renders the Stripe billing address (its postal drives the sales-tax quote), or the
-// plain ZIP `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
+// Renders the Stripe billing address (it drives the sales-tax quote), or the
+// plain-field `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
 // isn't available, or if the widget errors.
-function BillingZip({ stripePromise, disabled, onZip, fallback }) {
+function BillingZip({ stripePromise, disabled, onAddress, fallback }) {
   if (disabled || !stripePromise) return fallback;
   return (
     <StripeFieldBoundary fallback={fallback}>
       <Elements stripe={stripePromise} options={STRIPE_ADDR_OPTS}>
-        <BillingAddressInner onZip={onZip} />
+        <BillingAddressInner onAddress={onAddress} />
       </Elements>
     </StripeFieldBoundary>
   );
@@ -2258,7 +2265,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // player_name = who the gear is for (often a parent buys for their kid). On
   // club/team stores it's required so every order tags to a player for the
   // player report + bagging; pre-filled from the roster link when present.
-  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', billing_street1: '', billing_city: '', zip: '', state: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
@@ -2276,19 +2283,19 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // charges the original amount, or switch to team-tab and mint a duplicate order.
   const locked = !!clientSecret;
   const [checkoutMsg, setCheckoutMsg] = useState('');
-  useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
+  useEffect(() => { checkoutCall({ action: 'settings' }).then((data) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
   const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
-  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ('pickup|' + (buyer.zip || ''));
+  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ['pickup', buyer.billing_street1 || '', buyer.billing_city || '', buyer.state || '', buyer.zip || ''].join('|');
   const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.option_selections || null]));
   useEffect(() => {
     if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
-    if (!needAddr && (buyer.zip || '').length < 5) { setTaxInfo(null); return; }
+    if (!needAddr && (!(buyer.billing_street1 || '').trim() || !(buyer.billing_city || '').trim() || (buyer.state || '').length !== 2 || (buyer.zip || '').length < 5)) { setTaxInfo(null); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
-      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { zip: buyer.zip }, couponCode: coupon ? coupon.code : null });
+      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state }, couponCode: coupon ? coupon.code : null });
       if (!cancelled && r && r.totals) setTaxInfo(r.totals);
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
@@ -2316,7 +2323,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
-    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : (((buyer.zip || '').length === 5) && (buyer.player_name || '').trim()));
+    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.billing_street1 || '').trim() && (buyer.billing_city || '').trim() && ((buyer.zip || '').length === 5) && ((buyer.state || '').length === 2) && (buyer.player_name || '').trim()));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const processing = procFeeAmt(store, cart);
@@ -2341,13 +2348,13 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   };
 
   const submitUnpaid = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
     setBusy(false);
     if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+    onClear(); navTo(orderPath(store, r.order));
   };
 
   // Order-first: the server re-prices the cart, persists the order as
@@ -2355,23 +2362,28 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
     if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     if (r.alreadyPaid) {
       // Replay of an order whose payment already went through — finalize and land
       // on the confirmation instead of showing a card form for a settled intent.
-      await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      const finalized = await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      if (finalized.error || !finalized.ok) {
+        setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+        setBusy(false);
+        return;
+      }
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+      onClear(); navTo(orderPath(store, r.order));
       return;
     }
     if (r.paymentProcessing) {
       // Replay of an order whose ACH debit is mid-settlement (or awaiting micro-deposit
       // verification) — the money is already in motion, so never re-show a payment form.
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}${r.bankVerify ? '?bankverify=1' : ''}`);
+      onClear(); navTo(orderPath(store, r.order, r.bankVerify ? '?bankverify=1' : ''));
       return;
     }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
@@ -2386,9 +2398,14 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     // to paid, and sends the confirmation email. If this call never lands (tab
     // closed, network drop), the Stripe webhook does the same — the atomic
     // confirmation_sent claim means exactly one of them sends the email.
-    await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    const finalized = await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    if (finalized.error || !finalized.ok) {
+      setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+      setBusy(false);
+      return;
+    }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+    onClear(); navTo(orderPath(store, pendingOrder));
   };
 
   // Bank (ACH) debit initiated but not yet settled — no finalize (the server
@@ -2399,7 +2416,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const confirmProcessing = async (paymentIntentId, verifying) => {
     if (!pendingOrder) { setErr('Order reference lost — your bank payment was submitted. Please contact us and we’ll confirm your order.'); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}${verifying ? '?bankverify=1' : ''}`);
+    onClear(); navTo(orderPath(store, pendingOrder, verifying ? '?bankverify=1' : ''));
   };
 
   return (
@@ -2428,7 +2445,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
         <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
-        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onZip={(z) => setBuyer((b) => ({ ...b, zip: z }))} fallback={<input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} />} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
+        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onAddress={(a) => setBuyer((b) => ({ ...b, ...a }))} fallback={<div style={{ display: 'grid', gap: 8 }}><input aria-label="Billing street" style={inp} value={buyer.billing_street1 || ''} disabled={locked} maxLength={200} placeholder="Street address" onChange={(e) => setBuyer({ ...buyer, billing_street1: e.target.value })} /><input aria-label="Billing city" style={inp} value={buyer.billing_city || ''} disabled={locked} maxLength={120} placeholder="City" onChange={(e) => setBuyer({ ...buyer, billing_city: e.target.value })} /><div style={{ display: 'flex', gap: 8 }}><input aria-label="Billing state" style={{ ...inp, maxWidth: 82 }} value={buyer.state || ''} disabled={locked} maxLength={2} placeholder="State" onChange={(e) => setBuyer({ ...buyer, state: e.target.value.replace(/[^a-z]/gi, '').toUpperCase().slice(0, 2) })} /><input aria-label="Billing ZIP" style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="ZIP" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /></div></div>} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
       )}
 
       {/* Coupon / scholarship code */}
@@ -2520,19 +2537,19 @@ function CardForm({ theme, onPaid, onProcessing }) {
   );
 }
 
-// ── Order status (tokenless lookup by id; emailed link comes later) ──
-function OrderStatusPage({ store, theme, orderId }) {
+// ── Order status (private bearer token) ──────────────────────────────
+function OrderStatusPage({ store, theme, orderToken }) {
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
   const [status, setStatus] = useState('loading');
   useEffect(() => {
     (async () => {
-      const r = await checkoutCall({ action: 'get_order', orderId });
+      const r = await checkoutCall({ action: 'track_order', token: orderToken });
       if (r.error || !r.order) { setStatus('notfound'); return; }
       setOrder(r.order);
       setItems(r.items || []); setStatus('ok');
     })();
-  }, [orderId]);
+  }, [orderToken]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Order not found.</Splash></div>;
 
@@ -2807,7 +2824,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         )}
       </div>
 
-      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} token={orderToken} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
 
       {/* What's next */}
       <div style={{ background: WARM, border: `1px solid ${LINE}`, borderRadius: 8, padding: '20px 24px', marginBottom: 22 }}>
@@ -2830,8 +2847,9 @@ function OrderStatusPage({ store, theme, orderId }) {
   );
 }
 
-// Shows the order's shipping address and — until it ships — lets the buyer fix it.
-function ShippingBlock({ theme, order, shipped, onSaved }) {
+// Shows the order's shipping address and — until it ships — lets the buyer
+// correct tax-neutral recipient details. Jurisdiction/routing changes go to staff.
+function ShippingBlock({ theme, order, token, shipped, onSaved }) {
   const a = order.ship_address || {};
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ name: a.name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
@@ -2840,7 +2858,7 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
   const save = async () => {
     if (!f.street1 || !f.city || !f.state || !f.zip) { setMsg('Please complete street, city, state and ZIP.'); return; }
     setBusy(true); setMsg('');
-    const r = await checkoutCall({ action: 'update_ship', orderId: order.id, ship: f });
+    const r = await checkoutCall({ action: 'update_ship', token, ship: f });
     setBusy(false);
     if (r.error) { setMsg(r.error.message || 'Could not save — please try again.'); return; }
     onSaved(r.ship_address || { ...a, ...f }); setEditing(false);
@@ -2849,18 +2867,13 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
     <div style={{ marginTop: 22, borderTop: '1px solid #eef1f5', paddingTop: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b' }}>Shipping to</div>
-        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit address</button>}
+        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit recipient / unit</button>}
       </div>
       {editing ? (
         <div>
           <Field label="Name"><input style={inp} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-          <Field label="Street"><input style={inp} value={f.street1} onChange={(e) => setF({ ...f, street1: e.target.value })} /></Field>
           <Field label="Apt / unit (optional)"><input style={inp} value={f.street2} onChange={(e) => setF({ ...f, street2: e.target.value })} /></Field>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <Field label="City"><input style={inp} value={f.city} onChange={(e) => setF({ ...f, city: e.target.value })} /></Field>
-            <Field label="State"><input style={inp} value={f.state} onChange={(e) => setF({ ...f, state: e.target.value })} /></Field>
-            <Field label="ZIP"><input style={inp} value={f.zip} onChange={(e) => setF({ ...f, zip: e.target.value })} /></Field>
-          </div>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#475569', marginBottom: 12 }}>To change the street, city, state, or ZIP, message our team so we can verify tax and shipping first.</div>
           {msg && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 8 }}>{msg}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="sf-btn" onClick={save} disabled={busy} style={{ ...cta(theme), width: 'auto', padding: '12px 28px', fontSize: 14 }}>{busy ? 'Saving…' : 'Save address'}</button>

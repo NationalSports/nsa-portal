@@ -1584,7 +1584,7 @@ export default function InvoicesPage(){
                   {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
                 {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{
                   if(p.act!=='invoice'||!p.so){setPg('omg');return}
-                  if(p.source==='web'){const a=p._agg||{};createAndSettleWebstoreInvoice(p.so,{cardTotal:a.prepaid||0,tabTotal:a.teamTab||0,tabExtras:Math.max(0,Math.round(((a.teamTab||0)-(a.tabProduct||0))*100)/100)});}
+                  if(p.source==='web'){const a=p._agg||{};void createAndSettleWebstoreInvoice(p.so,{cardTotal:a.prepaid||0,tabTotal:a.teamTab||0,tabExtras:Math.max(0,Math.round(((a.teamTab||0)-(a.tabProduct||0))*100)/100)});}
                   else createAndSettleOmgInvoice(p.so);
                 }}>
                   {p.act==='invoice'?'Invoice & Settle':'OMG Page'}</button>}

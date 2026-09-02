@@ -72,7 +72,7 @@ async function listOrders(admin, body, coach) {
     admin.from('webstore_order_items')
       .select('order_id,product_id,sku,name,qty,size,image_url')
       .in('order_id', orderIds),
-    admin.from('webstore_shipments').select('order_id').in('order_id', orderIds),
+    admin.from('webstore_shipments').select('order_id').in('order_id', orderIds).is('voided_at', null),
     soIds.length
       ? admin.from('so_jobs').select('so_id,prod_status').in('so_id', soIds)
       : Promise.resolve({ data: [], error: null }),
