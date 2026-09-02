@@ -38,6 +38,13 @@ describe('QuickBooks purchase-order grouping', () => {
     expect(groups[0].entries).toHaveLength(2);
   });
 
+  test('uses the vendor saved on the PO line instead of the product brand', () => {
+    const groups=groupPortalPurchaseOrders([
+      so('SO-1',[{po_id:'PO 58993 WVCSOC',S:36,vendor:'Agron',created_at:'2026-09-02'}]),
+    ],{});
+    expect(groups[0]).toMatchObject({poId:'PO 58993 WVCSOC',vendor:'Agron',invalidReason:''});
+  });
+
   test('blocks a shared PO number that mixes vendors', () => {
     const groups=groupPortalPurchaseOrders([
       so('SO-1',[{po_id:'PO MIXED',S:1,vendor:'Champro'}]),

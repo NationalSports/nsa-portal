@@ -81,7 +81,10 @@ export function groupPortalPurchaseOrders(sos = [], poMap = {}) {
   const groups = new Map();
   (sos || []).forEach(so => safeItems(so).forEach(it => (it.po_lines || []).forEach(pl => {
     if (!pl?.po_id || poMap[pl.po_id]) return;
-    const vendor = pl.deco_vendor || D_V.find(v => v.id === it.vendor_id)?.name || it.brand || '';
+    // The saved PO line is the accounting source of truth for who received the
+    // order. A product's catalog vendor or brand can change later and must not
+    // silently reroute an existing PO in QBO.
+    const vendor = pl.vendor || pl.deco_vendor || D_V.find(v => v.id === it.vendor_id)?.name || it.brand || '';
     const accountKey = pl.po_type === 'outside_deco' ? 'deco_account' : 'purchases_account';
     let group = groups.get(pl.po_id);
     if (!group) {
