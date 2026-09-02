@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* Unit tests for the server-side webstore checkout math.
  *
  * priceCart is the money path: the browser never sets a price, so every dollar is
@@ -88,6 +89,26 @@ describe('couponDiscount — percent only', () => {
   });
 });
 
+describe('coupon code matching', () => {
+  test('escapes PostgREST ILIKE wildcard characters so codes match literally', () => {
+    expect(checkout.escapeIlikeLiteral('TEAM%_\\VIP')).toBe('TEAM\\%\\_\\\\VIP');
+    expect(checkout.escapeIlikeLiteral('save10')).toBe('save10');
+  });
+
+  test('passes the escaped literal to ILIKE and fails closed on a lookup error', async () => {
+    let pattern = null;
+    const result = { data: null, error: { message: 'temporary database error' } };
+    const chain = {
+      select: () => chain, eq: () => chain, limit: () => chain,
+      ilike: (_column, value) => { pattern = value; return chain; },
+      then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
+    };
+    const r = await checkout.loadCoupon({ from: () => chain }, { id: 's1' }, 'TEAM%_VIP');
+    expect(pattern).toBe('TEAM\\%\\_VIP');
+    expect(r.error).toMatch(/could not verify that coupon/i);
+  });
+});
+
 describe('checkNumberRange', () => {
   const store = { number_min: 0, number_max: 99 };
   test('passes in-range numbers (singles and bundle components)', () => {
@@ -137,6 +158,18 @@ describe('checkStock — demand for the same product+size is summed across cart 
     expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 5, max_avail: 5, label: 'Tee (size M)' }]);
   });
 
+  test('fails closed when current inventory cannot be loaded', async () => {
+    const client = fakeSb({ webstore_storefront_products: { data: null, error: { message: 'temporary database error' } } });
+    const r = await checkout.checkStock(client, store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 1 }]);
+    expect(r.error).toMatch(/could not verify inventory/i);
+    expect(r.holds).toEqual([]);
+  });
+
+  test('fails closed when an expected storefront inventory row is missing', async () => {
+    const r = await checkout.checkStock(fakeSb({ webstore_storefront_products: { data: [], error: null } }), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 1 }]);
+    expect(r.error).toMatch(/could not verify inventory/i);
+  });
+
   test('backorder against a KNOWN incoming qty is capped at on-hand + on-order', async () => {
     // 5 on hand + 10 on order = 15 sellable; 12 passes (no hold — backorder), 16 blocks.
     const okR = await checkout.checkStock(sb(sfRow({ on_order_qty: 10 })), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 12 }]);
@@ -174,6 +207,16 @@ describe('checkStock — demand for the same product+size is summed across cart 
     expect(r.error).toBeNull();
     expect(r.holds).toEqual([]);
   });
+
+  test('fails closed when existing backorder claims cannot be loaded', async () => {
+    const client = fakeSb({
+      webstore_storefront_products: { data: [sfRow({ product_id: 'p1', on_order_qty: 10 })], error: null },
+      teamshop_auto_po_needs: { data: null, error: { message: 'temporary database error' } },
+    });
+    const r = await checkout.checkStock(client, store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 6 }]);
+    expect(r.error).toMatch(/could not verify inventory/i);
+    expect(r.holds).toEqual([]);
+  });
 });
 
 describe('checkSizesRequired — a sized item must carry a size', () => {
@@ -198,10 +241,10 @@ describe('checkSizesRequired — a sized item must carry a size', () => {
     const r = await checkout.checkSizesRequired(sb(viewRow({ available_sizes: null, sizes_offered: ['8', '9', '10'] })), store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
     expect(r).toMatch(/choose a size/i);
   });
-  test('fails open on a lookup error (never blocks checkout on a DB blip)', async () => {
+  test('fails closed on a lookup error rather than accepting an unverifiable sizeless line', async () => {
     const sbErr = fakeSb({ webstore_storefront_products: { data: null, error: { message: 'boom' } } });
     const r = await checkout.checkSizesRequired(sbErr, store, [{ kind: 'single', size: null, wp: { id: 'wp1' } }]);
-    expect(r).toBeNull();
+    expect(r).toMatch(/could not verify inventory/i);
   });
   // An empty catalog scale used to read as "one-size" here, so a sizeless line for one of
   // the ~1,100 empty-scale CLICK styles sailed through and became an unfulfillable order
@@ -391,6 +434,30 @@ describe('priceCart — bundle component qty is catalog-authoritative (fulfillme
     });
     const r = await checkout.priceCart(sb, store, [{ webstore_product_id: 'wpB', qty: 1, components: [{ product_id: 'c1', size: 'M' }] }]);
     expect(r.lines[0].components[0].qty).toBe(1);
+  });
+});
+
+describe('buildOrderItems — persisted money matches checkout pricing', () => {
+  test('stores bundle option and name upcharges on the paid parent row', () => {
+    const lines = [{
+      kind: 'bundle', unit_price: 60, name_extra: 6, option_extra: 4, fundraise: 8,
+      option_selections: [{ id: 'patch', value: true, upcharge: 4 }],
+      wp: { id: 'wpB' }, name: 'Bundle', image: null,
+      components: [{ product_id: 'p1', sku: 'SKU1', size: 'M', qty: 1, player_name: null, player_number: null, name: 'Tee', image: null }],
+    }];
+    const items = checkout.buildOrderItems(lines, 'Player Name', () => 'bundle-ref');
+    expect(items[0]).toMatchObject({ is_bundle_parent: true, unit_price: 70, unit_fundraise: 8, bundle_ref: 'bundle-ref' });
+    expect(items[0].add_on_selections).toEqual(lines[0].option_selections);
+    expect(items[1]).toMatchObject({ is_bundle_parent: false, unit_price: 0, player_name: 'Player Name', bundle_ref: 'bundle-ref' });
+  });
+
+  test('does not double-count a single-item option upcharge already included in unit_price', () => {
+    const items = checkout.buildOrderItems([{
+      kind: 'single', unit_price: 24, name_extra: 5, option_extra: 4, fundraise: 2,
+      wp: { product_id: 'p1', sku: 'SKU1' }, size: 'M', qty: 2,
+      player_name: null, player_number: null, option_selections: [], name: 'Tee', color: null, variant_label: null, image: null,
+    }], 'Player Name', () => 'unused');
+    expect(items[0].unit_price).toBe(29);
   });
 });
 
