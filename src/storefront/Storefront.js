@@ -174,7 +174,8 @@ function StoreStyles() {
           .sf-vs-edge-left{width:10% !important}
           .sf-vs-edge-right{width:13% !important}
           .sf-vs-catgrid{grid-template-columns:1fr}
-          .sf-vs-ribbon{font-size:10px !important;letter-spacing:.9px !important;padding:8px 12px !important}
+          .sf-vs-ribbon{max-width:100% !important;font-size:10px !important;letter-spacing:.9px !important;padding:8px 12px !important}
+          .sf-vs-ribbon>span{white-space:normal !important}
           .sf-vs-phone{display:none !important}
           .sf-topstrip-brand{display:none !important}
           .sf-topstrip-inner{justify-content:center !important}
@@ -713,6 +714,23 @@ function productCategory(product) {
   return String((product && (product.store_category || product.category)) || '').trim();
 }
 
+// The reference header is built around a short school name ("Cal Poly
+// Mustangs"), while real store names regularly run past 35 characters. Keep
+// the same 22px display size for short names, then step down only as needed so
+// the whole identity remains visible without changing the header's 76px rhythm.
+function varsityTitleSize(name) {
+  const len = storeShortName(name).length;
+  return len > 34 ? 19 : len > 26 ? 20 : 22;
+}
+
+// The gold/red hero ribbon should finish before the 15% edge field. Long store
+// names get a small, bounded type adjustment rather than overflowing onto the
+// wedge or wrapping the desktop ribbon to a second line.
+function varsityRibbonSize(name) {
+  const len = storeShortName(name).length;
+  return len > 34 ? 12 : len > 26 ? 13 : 14;
+}
+
 // The word set large behind the logo: the last word of the shortened name —
 // the mascot ("Cal Poly Mustangs" → MUSTANGS) or, for the many stores named
 // after a program, the sport ("Orange Lutheran Football" → FOOTBALL).
@@ -749,20 +767,25 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
   const [searchOpen, setSearchOpen] = useState(false);
   const open = searchOpen || !!query;
   const inputRef = useRef(null);
+  const titleSize = varsityTitleSize(store.name);
   useEffect(() => { if (searchOpen && inputRef.current) inputRef.current.focus(); }, [searchOpen]);
   const navStyle = { background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'rgba(255,255,255,0.86)', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: '0.1em', textTransform: 'uppercase' };
   return (
     <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
       <div className="sf-vs-hdr" style={{ maxWidth: 1240, height: collapsed ? 60 : 76, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', gap: 24, transition: 'height .2s ease' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
-          <span className="sf-vs-crest" style={{ width: collapsed ? 44 : 56, height: collapsed ? 44 : 56, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5, transition: 'width .2s ease,height .2s ease' }}><Crest store={store} theme={theme} size={collapsed ? 34 : 46} /></span>
-          <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? 19 : 22, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase', color: '#fff', lineHeight: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
+          <span className="sf-vs-crest" style={{ height: collapsed ? 44 : 56, minWidth: collapsed ? 40 : 46, maxWidth: collapsed ? 58 : 76, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5, transition: 'height .2s ease' }}>
+            {store.logo_url
+              ? <img src={store.logo_url} alt="" style={{ height: collapsed ? 34 : 46, width: 'auto', maxWidth: collapsed ? 48 : 66, objectFit: 'contain' }} />
+              : <Crest store={store} theme={theme} size={collapsed ? 34 : 46} />}
+          </span>
+          <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? Math.min(19, titleSize) : titleSize, fontWeight: 800, letterSpacing: '0.03em', textTransform: 'uppercase', color: '#fff', lineHeight: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
         </div>
         <nav className="sf-vs-nav" style={{ display: 'flex', alignItems: 'center', gap: 30 }}>
           <button className="sf-vs-navlink" style={navStyle} onClick={onCategories}>Shop by Category</button>
           <button className="sf-vs-navlink" style={navStyle} onClick={onAllItems}>All Items</button>
         </nav>
-        <div className={'sf-vs-search' + (open ? ' sf-vs-search-open' : '')} style={{ display: 'flex', alignItems: 'center', gap: 8, background: open ? 'rgba(255,255,255,0.12)' : 'transparent', border: open ? '1px solid rgba(255,255,255,0.28)' : 'none', borderRadius: 2, padding: open ? '0 11px' : 0, height: 36, width: open ? 210 : 0, opacity: open ? 1 : 0, overflow: 'hidden', transition: 'width .2s ease, opacity .2s ease' }}>
+        <div className={'sf-vs-search' + (open ? ' sf-vs-search-open' : '')} style={{ display: open ? 'flex' : 'none', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.28)', borderRadius: 2, padding: '0 11px', height: 36, width: 210, overflow: 'hidden' }}>
           <SearchIcon color="rgba(255,255,255,0.8)" />
           <input ref={inputRef} className="sf-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the store"
             style={{ border: 'none', background: 'transparent', outline: 'none', fontFamily: BODY, fontSize: 14, color: '#fff', width: '100%' }} />
@@ -786,6 +809,7 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
 function VsHero({ store, theme }) {
   const word = mascotWord(store.name);
   const short = storeShortName(store.name);
+  const ribbonSize = varsityRibbonSize(store.name);
   return (
     <section style={{ position: 'relative', overflow: 'hidden', background: '#F7F8FB', borderBottom: `1px solid ${theme.line}` }}>
       <div aria-hidden style={{ position: 'absolute', inset: 0, background: VS_HATCH, pointerEvents: 'none' }} />
@@ -794,8 +818,8 @@ function VsHero({ store, theme }) {
       <div aria-hidden className="sf-vs-dots" style={{ position: 'absolute', top: '14%', right: '18%', width: 180, height: 200, background: vsDots(hexA(theme.accent, 0.55)), pointerEvents: 'none' }} />
 
       <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: '24px 24px 0', width: '100%' }}>
-        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', maxWidth: '100%', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, letterSpacing: '0.14em', textTransform: 'uppercase', padding: '8px 18px', transform: 'skewX(-6deg)' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14, transform: 'skewX(6deg)' }}>
+        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', maxWidth: 'calc(85% - 24px)', background: theme.accent, color: '#fff', fontFamily: DISPLAY, fontWeight: 700, fontSize: ribbonSize, letterSpacing: '0.14em', textTransform: 'uppercase', padding: '8px 18px', transform: 'skewX(-6deg)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 14, transform: 'skewX(6deg)', minWidth: 0, whiteSpace: 'nowrap' }}>
             The official {short} team store · Powered by National Sports Apparel
             <span aria-hidden style={{ display: 'inline-flex', gap: 8, color: 'rgba(255,255,255,0.8)' }}>✕ ✕ ✕</span>
           </span>
