@@ -6,6 +6,7 @@ const { aggregateStoreOrders, commissionCloseout, monthStart, previousMonthStart
 
 const API_BASE = (process.env.OMG_API_BASE_URL || 'https://app.ordermygear.com/v1').replace(/\/+$/, '');
 const API_KEY = process.env.OMG_API_KEY || '';
+const API_ACCOUNTING_WRITES_DISABLED = true;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const apiPath = link => {
@@ -237,8 +238,9 @@ exports.handler = async event => {
   if (!auth.ok) return { statusCode: auth.status, body: auth.error };
   // OMG's V1 order filters are not sale-scoped: the API can return the same
   // global rows for different sale ids. Never write accounting or commission
-  // data unless the account has explicitly opted into a verified API mode.
-  if (process.env.OMG_PROFIT_API_SYNC_ENABLED !== 'true') {
+  // data. This is a code-level guard rather than an environment flag so a
+  // stale Netlify setting cannot accidentally re-enable unsafe writes.
+  if (API_ACCOUNTING_WRITES_DISABLED) {
     return {
       statusCode: 503,
       body: 'Automatic OMG profit sync is disabled because sale-filtered order costs are not reliable. Import the monthly Margin Report snapshot instead.',
