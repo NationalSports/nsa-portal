@@ -140,6 +140,10 @@ function StoreStyles() {
         .sf-vs-catgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
         .sf-vs-cat{transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease}
         .sf-vs-cat:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(20,32,26,.13);border-color:var(--sf-accent,#B6985A) !important}
+        /* Keep long sport names fully inside the ghost-word mask. Shorter mascot
+           names retain the larger reference treatment; words such as BASKETBALL
+           and VOLLEYBALL get a slightly tighter responsive scale. */
+        .sf-vs-word-long{font-size:clamp(120px,20vw,260px) !important}
         .sf-footlink{transition:color .15s ease}
         .sf-footlink:hover{color:#fff !important}
         @media (max-width:1100px){
@@ -177,6 +181,7 @@ function StoreStyles() {
           .sf-vs-title{white-space:normal !important;font-size:16px !important;line-height:1.06 !important;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
           .sf-vs-hero-body{min-height:290px !important}
           .sf-vs-word{font-size:clamp(74px,21vw,126px) !important}
+          .sf-vs-word-long{font-size:clamp(74px,19vw,126px) !important}
           .sf-vs-logo{width:190px !important;height:190px !important}
           .sf-vs-edge-left{width:10% !important}
           .sf-vs-edge-right{width:13% !important}
@@ -841,7 +846,7 @@ function VsHero({ store, theme }) {
       <div className="sf-vs-hero-body" style={{ position: 'relative', maxWidth: 1240, minHeight: 380, margin: '0 auto', padding: '18px 24px 8px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {/* The team name, set large and ghosted, sits BEHIND the logo. */}
         <div aria-hidden style={{ position: 'absolute', inset: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', pointerEvents: 'none' }}>
-          <span className="sf-vs-word" style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(120px,21vw,340px)', letterSpacing: '-0.01em', lineHeight: 0.8, textTransform: 'uppercase', color: hexA(theme.band, 0.28), whiteSpace: 'nowrap' }}>{word}</span>
+          <span className={'sf-vs-word' + (word.length >= 9 ? ' sf-vs-word-long' : '')} style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 'clamp(120px,21vw,340px)', letterSpacing: '-0.01em', lineHeight: 0.8, textTransform: 'uppercase', color: hexA(theme.band, 0.28), whiteSpace: 'nowrap' }}>{word}</span>
         </div>
         {/* The logo in front — required by the design. Falls back to the initials
             crest only when the store has no logo on file. */}
