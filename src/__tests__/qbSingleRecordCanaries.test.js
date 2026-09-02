@@ -63,9 +63,9 @@ describe('QuickBooks one-record canaries', () => {
     expect(setters.setInvs).not.toHaveBeenCalled();
   });
 
-  test('creates and reads back exactly one NonInventory SKU with approved accounts', async() => {
+  test('creates and reads back exactly one zero-quantity Inventory SKU with approved accounts', async() => {
     const product={id:'P1',sku:'SKU-1',name:'Test Jersey',is_active:true,nsa_cost:12,retail_price:20};
-    const readback={Id:'I-1',Sku:'SKU-1',Type:'NonInventory',IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('51300')}};
+    const readback={Id:'I-1',Sku:'SKU-1',Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:0,IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('50000')},AssetAccountRef:{value:accountId('12000')}};
     const qbApi=jest.fn(async(action,{query,item}={})=>{
       if(action==='query'&&query.includes('FROM Account'))return accountResponse;
       if(action==='query'&&query.includes('FROM Item STARTPOSITION'))return{QueryResponse:{Item:[]}};
@@ -78,8 +78,34 @@ describe('QuickBooks one-record canaries', () => {
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
     const itemPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
     expect(itemPayload.IncomeAccountRef).toEqual({value:accountId('40000')});
-    expect(itemPayload.ExpenseAccountRef).toEqual({value:accountId('51300')});
+    expect(itemPayload.ExpenseAccountRef).toEqual({value:accountId('50000')});
+    expect(itemPayload.AssetAccountRef).toEqual({value:accountId('12000')});
+    expect(itemPayload).toEqual(expect.objectContaining({Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:0,InvStartDate:'2026-09-01'}));
     expect(getConfig().prodQBMap.P1).toBe('I-1');
+  });
+
+  test('reconciles exactly one small portal manual adjustment to a linked QBO Inventory item', async() => {
+    const product={id:'P1',sku:'SKU-1',name:'Test Jersey',is_active:true,nsa_cost:12,_inv:{M:1}};
+    const adjustment={id:'ADJ-1',product_id:'P1',sku:'SKU-1',size:'M',qty_change:1,adjustment_type:'manual'};
+    const before={Id:'I-1',SyncToken:'0',Sku:'SKU-1',Type:'Inventory',Active:true,QtyOnHand:0,IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('50000')},AssetAccountRef:{value:accountId('12000')}};
+    const after={...before,SyncToken:'1',QtyOnHand:1};
+    const qbApi=jest.fn(async(action,args={})=>{
+      if(action==='query'&&args.query.includes('FROM Account'))return accountResponse;
+      if(action==='read'&&args.entity==='item'&&args.id==='I-1')return{Item:before};
+      if(action==='upsert_item')return{Item:{...after,...args.item}};
+      if(action==='query'&&args.query.includes("FROM Item WHERE Id = 'I-1'"))return{QueryResponse:{Item:[after]}};
+      throw new Error('Unexpected QBO call: '+action+' '+args.query);
+    });
+    let config={
+      realm_id:'9341',preflight:{status:'success',realm_id:'9341'},initialMigrationApproved:false,
+      mapping:{...QB_ACCOUNT_MAPPING_DEFAULTS},custQBMap:{},prodQBMap:{P1:'I-1'},qbSOMap:{},qbPOMap:{},syncLog:[],
+    };
+    const engine=createQBSyncEngine({
+      cust:[],sos:[],invs:[],prod:[product],vend:[],invAdjLog:[adjustment],invPOs:[],submittedBatches:[],qbApi,qbConfig:config,nf:jest.fn(),dP:jest.fn(()=>({sell:0})),
+      setQBConfig:updater=>{config=typeof updater==='function'?updater(config):updater},setQbSyncing:jest.fn(),setInvs:jest.fn(),setInvPOs:jest.fn(),setSOs:jest.fn(),setSubmittedBatches:jest.fn(),setVend:jest.fn(),
+    });
+    await expect(engine.syncInventoryAdjustmentCanary('ADJ-1')).resolves.toEqual(expect.objectContaining({status:'awaiting_account_review',beforeQty:0,targetQty:1,qtyDelta:1}));
+    expect(qbApi).toHaveBeenCalledWith('upsert_item',{item:{Id:'I-1',SyncToken:'0',sparse:true,QtyOnHand:1}});
   });
 
   test('unlinks exactly one inactive QBO item only after confirmation and API read-back', async() => {

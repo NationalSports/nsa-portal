@@ -26,6 +26,9 @@ import {
 
 const QB_MAPPING_FIELDS = [
   ['income_account', 'Customer sales + shipping'],
+  ['inventory_asset_account', 'Inventory asset'],
+  ['cogs_account', 'Inventory COGS'],
+  ['inventory_loss_account', 'Inventory loss / corrections'],
   ['discount_account', 'Customer discounts'],
   ['purchases_account', 'SKU purchases + supplies'],
   ['freight_account', 'Vendor freight in'],
@@ -57,6 +60,7 @@ export default function QBPage(){
   const [qbCanaryCustomerId,setQbCanaryCustomerId]=useState('');
   const [qbCanaryInvoiceId,setQbCanaryInvoiceId]=useState('');
   const [qbCanaryProductId,setQbCanaryProductId]=useState('');
+  const [qbCanaryInventoryAdjustmentId,setQbCanaryInventoryAdjustmentId]=useState('');
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
   const [qbPreflighting,setQbPreflighting]=useState(false);
@@ -64,7 +68,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryAdjustmentCanary,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -256,6 +260,8 @@ export default function QBPage(){
     const canaryPOs=[...unsyncedPOGroups].sort((a,b)=>String(a.poId).localeCompare(String(b.poId),undefined,{numeric:true}));
     const selectedCanaryInvoice=canaryInvoices.find(inv=>String(inv.id)===String(qbCanaryInvoiceId));
     const selectedCanaryProduct=canaryProducts.find(p=>String(p.id)===String(qbCanaryProductId));
+    const canaryInventoryAdjustments=invAdjLog.filter(row=>safeNum(row.qty_change)!==0&&String(row.adjustment_type||'manual')!=='po_receive').slice(0,200);
+    const selectedCanaryInventoryAdjustment=canaryInventoryAdjustments.find(row=>String(row.id)===String(qbCanaryInventoryAdjustmentId));
     const selectedCanarySO=canarySOs.find(so=>String(so.id)===String(qbCanarySOId));
     const selectedCanaryPO=canaryPOs.find(group=>String(group.poId)===String(qbCanaryPOId));
     const selectedInvoiceCustomer=selectedCanaryInvoice&&cust.find(c=>c.id===selectedCanaryInvoice.customer_id);
@@ -283,8 +289,16 @@ export default function QBPage(){
     };
     const runProductCanary=async()=>{
       if(!selectedCanaryProduct)return;
-      if(!window.confirm('Create or update exactly ONE QBO NonInventory item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales account: 40000\nPurchase account: 51300\n\nNo size/color quantities or inventory value will be sent. The item will be verified by API read-back.')){nf('QBO item canary cancelled — nothing was sent');return}
+      if(!window.confirm('Create exactly ONE zero-quantity QBO Inventory item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales: 40000\nCOGS: 50000\nInventory Asset: 12000\nStart date: 09/01/2026\n\nOpening quantity is zero, so this creates no inventory value. The item and accounts will be verified by API read-back.')){nf('QBO Inventory item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
+    };
+    const runInventoryAdjustmentCanary=async()=>{
+      if(!selectedCanaryInventoryAdjustment)return;
+      const sku=String(selectedCanaryInventoryAdjustment.sku||'').trim().toUpperCase();
+      const linkedProduct=prod.find(p=>String(p.sku||'').trim().toUpperCase()===sku&&_prodQBMap[p.id]);
+      const targetQty=prod.filter(p=>String(p.sku||'').trim().toUpperCase()===sku).reduce((sum,p)=>sum+Object.values(p._inv||{}).reduce((n,value)=>n+safeNum(value),0),0);
+      if(!window.confirm('Reconcile exactly ONE linked QBO Inventory item to the portal total?\n\nPortal adjustment: '+selectedCanaryInventoryAdjustment.id+'\nSKU: '+sku+'\nType: '+(selectedCanaryInventoryAdjustment.adjustment_type||'manual')+'\nPortal change: '+(safeNum(selectedCanaryInventoryAdjustment.qty_change)>0?'+':'')+safeNum(selectedCanaryInventoryAdjustment.qty_change)+' '+(selectedCanaryInventoryAdjustment.size||'')+'\nQBO target quantity: '+targetQty+'\nLinked QBO item: '+(_prodQBMap[linkedProduct?.id]||'none')+'\n\nThis may create a real QBO quantity-adjustment accounting entry. The API will reject a delta over five units. Afterward we must confirm the generated entry uses 52400 Inventory Loss.')){nf('Inventory adjustment canary cancelled — nothing was sent');return}
+      await syncInventoryAdjustmentCanary(selectedCanaryInventoryAdjustment.id);
     };
     const runInactiveProductLinkCleanup=async()=>{
       if(!selectedCanaryProduct||!_prodQBMap[selectedCanaryProduct.id])return;
@@ -467,7 +481,7 @@ export default function QBPage(){
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInvoices()}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={syncPaidFromQB}>Sync Paid</button>
                 <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncPurchaseOrders()}>POs</button>
-                <button className="btn btn-secondary" disabled={qbSyncing||!migrationUnlocked} onClick={()=>syncInventory()}>QBO Items</button>
+                <button className="btn btn-secondary" disabled title="Locked until legacy inventory cutover is approved">QBO Inventory Locked</button>
               </div>
             </div>
           </div>
@@ -480,7 +494,7 @@ export default function QBPage(){
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — total quantity per SKU plus outside-decoration lines</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — parsed portal vendor bills push to QBO only after account, item, total, and duplicate checks</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bill direction</strong> — the initial migration does not auto-pull QBO bills back into portal POs</div>
-              <div>&#8226; <strong>Products</strong> — one QBO NonInventory item per SKU; size/color inventory remains in the portal</div>
+              <div>&#8226; <strong>Inventory</strong> — one aggregate QBO Inventory item per SKU; portal size/color totals remain authoritative; manual adjustment batches stay locked pending canary review</div>
             </div>
           </div>
         </div>
@@ -789,10 +803,10 @@ export default function QBPage(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>QBO Product Items (One per SKU)</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing||!migrationUnlocked} title={!migrationUnlocked?'Locked until canary approval':''} onClick={()=>syncInventory()}>{qbSyncing?'Syncing...':'Sync NonInventory Items'}</button>
+            <button className="btn btn-primary btn-sm" disabled title="Locked until the legacy QBO inventory cutover and opening balances are approved">Inventory Batch Locked</button>
           </div>
           <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
-            Creates one NonInventory item per SKU using 40000 Sales and 51300 Purchases. QBO does not receive size/color on-hand quantities or inventory valuation; those remain in the portal.
+            The portal is the inventory source of truth. QBO will receive one aggregate Inventory item per SKU using 40000 Sales, 50000 COGS, and 12000 Inventory Asset. Bulk migration remains locked until the legacy QBO items and opening balances are approved.
           </div>
           <div style={{padding:'12px 14px',background:'#ecfdf5',borderBottom:'1px solid #a7f3d0'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:4}}>Required invoice service item</div>
@@ -801,8 +815,8 @@ export default function QBPage(){
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
           <div style={{padding:'12px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one QBO item</div>
-            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates or updates one SKU only, verifies NonInventory type plus 40000/51300 account routing, and saves the portal link only after API read-back.</div>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e3a8a',marginBottom:4}}>Test exactly one zero-quantity QBO Inventory item</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Creates one SKU with zero opening quantity, verifies Inventory type plus 40000/50000/12000 routing, and saves the portal link only after API read-back.</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               <select className="form-input" aria-label="Product SKU to test in QuickBooks" style={{minWidth:420,maxWidth:700}} value={qbCanaryProductId} onChange={e=>setQbCanaryProductId(e.target.value)}>
                 <option value="">Select one active SKU...</option>
@@ -813,9 +827,21 @@ export default function QBPage(){
             </div>
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>
+          <div style={{padding:'12px 14px',background:'#fff7ed',borderBottom:'1px solid #fdba74'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#9a3412',marginBottom:4}}>Test exactly one manual quantity adjustment</div>
+            <div style={{fontSize:11,color:'#475569',marginBottom:8}}>Reconciles one linked QBO Inventory item to the portal's current aggregate SKU quantity, then verifies it by API read-back. Limited to a five-unit difference. Automatic adjustment sync stays locked until the QBO-generated entry is confirmed against 52400 Inventory Loss.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <select className="form-input" aria-label="Portal inventory adjustment to test in QuickBooks" style={{minWidth:420,maxWidth:800}} value={qbCanaryInventoryAdjustmentId} onChange={e=>setQbCanaryInventoryAdjustmentId(e.target.value)}>
+                <option value="">Select one manual adjustment...</option>
+                {canaryInventoryAdjustments.map(row=><option key={row.id} value={row.id}>{row.id} — {row.sku} — {safeNum(row.qty_change)>0?'+':''}{safeNum(row.qty_change)} {row.size||''} — {row.adjustment_type||'manual'}{(qbConfig._inventoryAdjustmentCanary?.adjustmentId===String(row.id))?' — tested':''}</option>)}
+              </select>
+              <button className="btn btn-primary btn-sm" style={{background:'#c2410c'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryInventoryAdjustment} onClick={runInventoryAdjustmentCanary}>{qbSyncing?'Testing...':'Test 1 Qty Sync'}</button>
+            </div>
+            {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
+          </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
-              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Portal Qty (not sent)</th><th style={{textAlign:'right'}}>Portal Value (not sent)</th><th>QB Status</th></tr></thead>
+              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Portal Qty</th><th style={{textAlign:'right'}}>Portal Value</th><th>QB Status</th></tr></thead>
               <tbody>
                 {prod.filter(p=>p.is_active!==false).map(p=>{
                   const inv=p._inv||{};
@@ -915,7 +941,7 @@ export default function QBPage(){
           <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
           <div>&#8226; <strong>Invoices</strong> &#8594; QB Invoices (total amount as single line, payments applied)</div>
           <div>&#8226; <strong>Vendor Bills</strong> &#8594; Upload bills with PDF/image attachments directly into QB</div>
-          <div>&#8226; <strong>Products</strong> &#8594; One QBO NonInventory Item per SKU; inventory quantities and valuation stay in Portal</div>
+          <div>&#8226; <strong>Inventory</strong> &#8594; One aggregate QBO Inventory Item per SKU using 12000 / 40000 / 50000; portal size/color totals are the source of truth</div>
         </div>
       </div>}
     </>);

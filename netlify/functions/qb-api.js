@@ -242,15 +242,6 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
-    // ── INVENTORY ADJUSTMENT ──
-    if (action === 'inventory_adjustment') {
-      const { adjustment } = body;
-      // adjustment: { Line: [{ ItemRef, QtyDiff }], AdjustmentAccountRef }
-      // Note: QBO uses InventoryAdjustment entity — create one per adjustment
-      const res = await qbRequest('POST', `${basePath}/inventoryadjustment`, access_token, adjustment, sandbox);
-      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
-    }
-
     // ── RECORD PAYMENT ──
     if (action === 'upsert_payment') {
       const { payment } = body;
