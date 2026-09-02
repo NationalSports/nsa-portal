@@ -42,6 +42,8 @@ describe('QuickBooks one-record canaries', () => {
     const{engine,setters}=makeEngine({qbApi,cust:[{id:'C1',name:'Test Customer'}],invs:[invoice]});
     await expect(engine.syncInvoices({}, {}, {canaryInvoiceId:'INV-1'})).resolves.toEqual({status:'success',synced:1});
     expect(qbApi).toHaveBeenCalledWith('upsert_invoice',{invoice:expect.objectContaining({DocNumber:'INV-1',CustomerRef:{value:'C-QB'},SalesTermRef:{value:'T30',name:'Net 30'}})});
+    const invoicePayload=qbApi.mock.calls.find(([action])=>action==='upsert_invoice')[1].invoice;
+    expect(invoicePayload.ARAccountRef).toEqual({value:accountId('11000')});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_invoice')).toHaveLength(1);
     expect(setters.setInvs).toHaveBeenCalledTimes(1);
   });
@@ -74,6 +76,9 @@ describe('QuickBooks one-record canaries', () => {
     const{engine,getConfig}=makeEngine({qbApi,prod:[product]});
     await engine.syncInventory({canaryProductId:'P1'});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
+    const itemPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
+    expect(itemPayload.IncomeAccountRef).toEqual({value:accountId('40000')});
+    expect(itemPayload.ExpenseAccountRef).toEqual({value:accountId('51300')});
     expect(getConfig().prodQBMap.P1).toBe('I-1');
   });
 
@@ -90,6 +95,8 @@ describe('QuickBooks one-record canaries', () => {
     await expect(engine.syncPortalSalesItemCanary()).resolves.toEqual({status:'success',itemId:'SALES-1'});
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
     expect(qbApi).toHaveBeenCalledWith('upsert_item',{item:expect.objectContaining({Name:'NSA Portal Sales',Type:'Service',IncomeAccountRef:expect.objectContaining({value:accountId('40000')})})});
+    const portalSalesPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
+    expect(portalSalesPayload.IncomeAccountRef).toEqual({value:accountId('40000')});
     expect(getConfig()._portalSalesItemId).toBe('SALES-1');
   });
 
