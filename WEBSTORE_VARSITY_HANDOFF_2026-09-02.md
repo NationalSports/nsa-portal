@@ -4,129 +4,67 @@
 **Branch:** `claude/web-team-stores-redesign-mz8umt`
 **PR:** [NationalSports/nsa-portal#2104](https://github.com/NationalSports/nsa-portal/pull/2104) — open, CI green, mergeable
 **Preview:** https://deploy-preview-2104--nsa-portal.netlify.app/shop/sjmgirlsbball2026
-**Diff:** 1 file, +502 / −39 — all in `src/storefront/Storefront.js`
+**Diff:** 1 file, ~+505 / −100 — all in `src/storefront/Storefront.js`
+
+> **Status: the banner is done.** An earlier revision of this doc said the design
+> HTML had never been read and that the hero was the open problem. That was true
+> when written and is no longer. Steve applied the approved Design HTML directly
+> in `59dd7d6` ("Finish varsity storefront redesign"), which settled it. The
+> history below is kept only because the traps it records will bite anyone who
+> measures this page again.
 
 ---
 
-## Read this first
+## What is in the branch
 
-**The hero banner is not matching the mockup, and after three rounds it was not
-converging.** Everything in this branch was reverse-engineered from four
-screenshots. The design HTML was never obtained (see *The blocker* below). The
-rest of the page — header, categories, product grid, product page, footer — is
-in good shape. The banner is the open problem.
+The public team/web store at `/shop/:slug` gets a new look ("varsity"):
+top strip, team-color header, hero with the team logo in front of the team name,
+starred marquee, Featured Sections category grid, flat All Items grid, restyled
+product cards, product-page chrome, deep team-color footer.
 
-If you are picking this up: **get the HTML before writing any more CSS.** Three
-rounds of measuring screenshots produced three "matches the numbers, still looks
-wrong" results, which is the signature of a spec that can't be recovered from
-pixels — specifically the typeface (see *The typeface trap*).
+**Chrome only.** Every varsity component reads the same store/product rows and
+calls the same `navTo` / cart / stock / decoration helpers as the existing looks.
+Pricing, inventory, size logic, personalization and checkout are untouched.
+`ProductPage` was deliberately **not** forked — its size/stock/cart logic is the
+money path, so the varsity treatment is conditional styling inside it.
 
----
-
-## The blocker: the design HTML was never read
-
-The design was delivered as two Dropbox Transfer links:
-
-- `https://www.dropbox.com/t/cs3TLj2Xw5ZKQiyB`
-- `https://www.dropbox.com/t/SrJi8Al37kpBqZyK` (the HTML)
-
-Neither could be read from the agent sandbox. What was tried:
-
-| Attempt | Result |
-|---|---|
-| `curl` the transfer URL | 200, but the file list is client-rendered — not in the HTML |
-| Guessed Dropbox transfer API paths (`/transfer/api/transfers/<key>`, `/details`, `/view`) | 404 |
-| Headless Chromium, direct | `ERR_CONNECTION_RESET` — the sandbox proxy resets browser tunnels |
-| Headless Chromium with all traffic forwarded through Node (works for every other host) | Page renders fully: *"Steve Peterson sent you 1 item · 0 bytes"* — but the file row stays a permanent grey skeleton. The app never fires the request that populates it. `fp.dropbox.com` (fingerprinting) and a `POST /log/blocked` in the trace point at bot detection. |
-
-**This is a bot wall, not a bug to fix.** Ways to unblock:
-
-1. Paste the HTML into the chat.
-2. Commit the file into the repo (anywhere) and name the path.
-3. Any non-Dropbox host that serves raw files.
-
-The transfer key extracted from the page, in case it is useful:
-`AAAAACiZc0AGXFK7ch7GNif0yG021sSeW6TJ9jo-EqxnvASrJVbG2vo`
+Verified: 255 test files / 4319 tests pass, `lint:undef` clean, no horizontal
+overflow at 2000 / 1440 / 390px, legacy look unchanged via `?look=open`.
 
 ---
 
-## The typeface trap — why the banner keeps missing
+## Code map
 
-This is the single most important technical finding.
-
-The storefront's display face is **Barlow Condensed** (already the NSA design
-system font, used by the classic look too). The mockup was drawn in a
-**noticeably wider face**. Measured on the loaded webfont, Barlow Condensed 800
-uppercase advances **~0.473em per character**.
-
-That difference makes two of the mockup's targets mutually exclusive:
-
-- Team name spans **~80% of the viewport** (mockup)
-- Team name letters stand **~27% of the hero's height** (mockup)
-
-With a wider face you get both. With Barlow Condensed, sizing for the width
-pushes the letters to **33%** of the hero — tall enough to compete with the
-logo, which breaks the whole point of the hero ("logo in front, team name
-behind", the user's one hard requirement).
-
-Current resolution (commit `319a6a9`): hold the **height** at the mockup ratio
-and open **letter-spacing** to reach the span. This is a guess at intent. The
-real answer is in the HTML — it may specify a different font entirely, in which
-case all of this sizing logic should be replaced, not tuned.
-
-### Two measurement bugs that produced wrong numbers along the way
-
-Both are worth knowing because they silently corrupt any harness you build:
-
-1. **Blocking Google Fonts.** An early harness aborted `fonts.googleapis.com`
-   along with analytics. Every width measured against the fallback face was
-   wrong, and the word-sizing constant was tuned to that wrong value. Numbers
-   reported to the user in two messages had to be retracted.
-2. **`clip-path` parsing.** Chrome normalises `0` to `0px` in computed
-   `clip-path`, so a percent-only regex silently drops a coordinate. This read
-   the wedge's bottom edge as `0` and reported a fixed wedge as still broken.
-
----
-
-## Where the code is
-
-Everything is in `src/storefront/Storefront.js` (the public store at
-`/shop/:slug`). Line numbers as of `319a6a9`:
+`src/storefront/Storefront.js`, line numbers as of `59dd7d6`:
 
 | Line | Symbol | Purpose |
 |---|---|---|
-| 198 | `hexA` | hex → rgba, for the ghosted word |
-| 208 | `luminance` | sRGB luminance |
-| 221 | `bandColor` | darkens a light team primary until white type is legible |
-| 229 | `lookOverride` | reads `?look=` |
-| 331 | `useTheme` | resolves the look; varsity token overrides |
-| 681 | `VS_HATCH`, `vsDots` | hero background textures |
-| 690 | `storeShortName` | strips the "Team Store" / year tail |
-| 703 | `mascotWord` | the word set behind the logo |
-| 713 | `VsTopStrip` | near-black utility bar |
-| 732 | `VsHeader` | team-color band, nav, search, cart |
-| **770** | **`VsHero`** | **the banner — this is the open problem** |
-| 821 | `VsMarquee` | starred selling-point band |
-| 838 | `VsSectionHead` | eyebrow + two-tone headline + rule |
-| 855 | `VsCategoryCard` | Featured Sections tile |
-| 875 | `VsFooter` | deep team-color footer |
-| 921 | `VsCrumbs` | product-page breadcrumb |
-| 1062 | `Home` | varsity branch: hero, marquee, categories, grid |
-| 1457 | `Card` | `vs` flag branches the card styling |
-| 1627 | `ProductPage` | `theme.varsity` branches the chrome |
-| 2910–2914 | `sizeBtn` / `thumbBtn` / `cta` | branch on `t.varsity` |
-
-**Architectural note:** this is chrome only. Every varsity component reads the
-same store/product rows and calls the same `navTo` / cart / stock / decoration
-helpers as the existing looks. Pricing, inventory, size logic, personalization
-and checkout are untouched. `ProductPage` was deliberately **not** forked —
-its ~200 lines of size/stock/cart logic are the money path, so the varsity
-treatment is conditional styling inside the existing component.
+| ~198 | `hexA` | hex → rgba, for the ghosted word |
+| ~208 | `luminance` | sRGB luminance |
+| ~221 | `bandColor` | darkens a light team primary until white type is legible |
+| ~229 | `lookOverride` | reads `?look=` |
+| ~331 | `useTheme` | resolves the look; varsity token overrides |
+| ~687 | `VS_HATCH`, `vsDots` | hero textures — **values come from the Design HTML** |
+| ~697 | `storeShortName` | strips the "Team Store" / season-year tail |
+| ~708 | `productCategory` | curated `store_category`, falling back to catalog `category` |
+| ~717 | `mascotWord` | the word set behind the logo |
+| ~727 | `VsTopStrip` | near-black utility bar (fixed 36px) |
+| ~746 | `VsHeader` | team-color band, nav, search, cart (fixed 76/60px) |
+| ~786 | `VsHero` | the banner |
+| ~824 | `VsMarquee` | starred selling-point band |
+| ~841 | `VsSectionHead` | eyebrow + two-tone headline + rule |
+| ~858 | `VsCategoryCard` | Featured Sections tile |
+| ~878 | `VsFooter` | deep team-color footer |
+| ~924 | `VsCrumbs` | product-page breadcrumb |
+| ~1065 | `Home` | varsity branch: hero, marquee, categories, grid |
+| ~1460 | `Card` | `vs` flag branches the card styling |
+| ~1630 | `ProductPage` | `theme.varsity` branches the chrome |
+| ~2913 | `sizeBtn` / `thumbBtn` / `cta` | branch on `t.varsity` |
 
 ### How the look is selected
 
 ```js
-// useTheme(), ~line 331
+// useTheme()
 const pinned = store?.hero_look === 'bold' ? 'bold'
              : store?.hero_look === 'open' ? 'open'
              : 'varsity';
@@ -134,135 +72,133 @@ const look = lookOverride() || pinned;
 ```
 
 `?look=varsity|open|bold` on any store URL renders that look for comparison
-without touching the store row. Useful for A/B during review.
+without touching the store row.
 
 ---
 
-## Open decisions (business, not code)
+## Open decisions — these are still open
 
 ### 1. Rollout is all-or-nothing today
 
 **`hero_look` is not a column on `webstores`.** The read above always yields
 `undefined`, so **every store flips to varsity the moment this merges**, with no
-per-store way back. (This is also why the older `bold` look has never been
-reachable for any store — pre-existing dead code.)
-
-`?look=` is per-visit — fine for comparing, useless for holding a school on the
-old design.
+per-store way back. (Also why the older `bold` look has never been reachable —
+pre-existing dead code.) `?look=` is per-visit, so it's fine for comparing and
+useless for holding a school on the old design.
 
 **To make rollout incremental:** add `hero_look text` to `webstores`, expose it
-in the `webstores_public` view, and add a toggle in the store builder. The code
-switch is already in place — that's the only work needed. Roughly a half-hour.
+in the `webstores_public` view, add a toggle in the store builder. The code
+switch is already in place — that's the only work needed.
 
 ### 2. Nav items in the mockup that are features, not styling
 
 The mockup's header shows `TEAMS ▾`, `ATHLETES ▾`, `ATHLETE SIGN UP ↗` and a
-wishlist heart. These were **deliberately not built** — they'd have been dead
-controls. The nav ships as *Shop by Category / All Items / search / cart*.
+wishlist heart. Not built — they'd be dead controls. The nav ships as
+*Shop by Category / All Items / search / cart*. Someone needs to decide whether
+to build a teams dropdown, athlete accounts + sign-up, and a wishlist.
 
-Someone needs to decide whether to build: a teams dropdown, athlete accounts +
-sign-up, a wishlist.
-
-### 3. Other deliberate deviations from the mockup
+### 3. Other deviations from the mockup
 
 | Mockup | Shipped | Why |
 |---|---|---|
-| "Size guide" link on PDP | omitted | No size chart exists. (The classic look's "Size guide" label has never done anything either — pre-existing dead control.) |
+| "Size guide" link on PDP | omitted | No size chart exists. (The classic look's "Size guide" label has never done anything either.) |
 | "FREE SHIPPING ON TEAM ORDERS $150+" | store's real delivery mode + close date | Can't honour a blanket claim per-store |
-| Brand name on product cards ("ADIDAS") | store category | **No brand column on `products`.** `inventory_source` is the *distributor* (sanmar, momentec, click, ss_activewear, agron) — "SANMAR" on a card would be wrong. Adding a real brand column is the fix. |
+| Brand name on cards ("ADIDAS") | store category | **No brand column on `products`.** `inventory_source` is the *distributor* (sanmar, momentec, click, ss_activewear, agron) — "SANMAR" on a card would be wrong. A real `brand` column is the fix. |
 
 ---
 
-## What is done and verified
+## Behaviour changes worth knowing
 
-- Top strip, header, marquee, Featured Sections grid, All Items grid, product
-  cards, product page chrome, footer.
-- `bandColor()` — a light team primary (vegas gold, columbia blue) is stepped
-  down until white type on it is legible, so the header band never ships
-  white-on-yellow.
+- **`productCategory()` fallback.** Category grouping now uses the curated
+  `store_category` and falls back to the catalog `category`. This fixed stores
+  that showed **no** Featured Sections at all — `sjmgirlsbball2026` went from 0
+  category cards to 4. Note it also applies to the classic look's category
+  sub-nav and sectioning, so a store pinned to `?look=open` will show category
+  sections where it previously showed one flat grid.
 - **White plate behind the header/footer logo.** A dark logo on the team's own
   dark band disappears — San Joaquin Memorial's navy "M" on navy was invisible
   in both. The Cal Poly mockup couldn't reveal this because its mark is light.
-- `storeShortName()` — nearly every store is named `<Team> Team Store`. Without
-  stripping that tail the ribbon read *"the official Orange Lutheran Football
-  Team Store team store"*, the footer read *"Team Store Team Store"*, and the
-  word behind the logo read **STORE** instead of **FOOTBALL**.
-- `useTheme` spreads `NEUTRAL` first so team tokens actually win. `ink_color`
-  was previously clobbered by the spread — no behaviour change today since that
-  column doesn't exist, but the latent bug is fixed.
-- Verified at 2000px / 1440px / 390px with the webfont loaded. No horizontal
-  overflow at any width. Legacy look confirmed unchanged via `?look=open`.
-- **255 test files / 4319 tests pass.** `lint:undef` clean.
+- **`storeShortName()`.** Nearly every store is named `<Team> Team Store`.
+  Without stripping that tail the ribbon read *"the official Orange Lutheran
+  Football Team Store team store"* and the word behind the logo read **STORE**
+  instead of **FOOTBALL**.
+- **`useTheme` spreads `NEUTRAL` first** so team tokens win. `ink_color` was
+  previously clobbered by the spread — latent bug, no behaviour change today
+  since that column doesn't exist.
 
-### Current banner measurements (1440px, vs mockup)
+---
 
-| | Mockup | Current |
-|---|---|---|
-| Angled edge, top | 85.0% | 85.2% |
-| Angled edge, bottom | 96.5% | 96.1% |
-| Team name width | 80.3% | 79.1% |
-| Team name height ÷ hero | 26.8% | 26.7% |
-| Logo height ÷ hero | 56.3% | 54.6% |
-| Logo : name height | 2.1× | 2.04× |
-| Header height | 6.5% | 6.5% |
+## Traps — read before measuring this page again
 
-**Every number matches and the user still says it's wrong.** That is the
-evidence that the remaining gap is not proportional — it's typeface, texture,
-colour, or a detail only the HTML carries.
+Three rounds of matching the hero to screenshots produced "the numbers match,
+it still looks wrong." Two of those rounds were corrupted by harness bugs, and
+the third was chasing a spec that pixels can't carry. If you build a
+render-and-measure harness:
+
+1. **Never block `fonts.googleapis.com`.** An early harness aborted it along
+   with analytics. Every width was then measured against a fallback face, and a
+   sizing constant got tuned to that wrong value. Numbers reported to the user
+   had to be retracted.
+2. **`clip-path` parsing.** Chrome normalises `0` to `0px` in computed
+   `clip-path`, so a percent-only regex silently drops a coordinate — this read
+   a fixed wedge's bottom edge as `0` and reported it as still broken.
+3. **Measure the character advance at an unclamped size.** A `clamp()` that is
+   capping the font makes the face read narrower and skews the constant.
+4. **Proportions were never the gap.** Every ratio matched the mockup — wedge
+   angle, name width, name height, logo-to-name — and it still read wrong. The
+   real differences were in the Design HTML: the edge treatment is a **notched
+   zigzag on both sides**, not a plain diagonal wedge; the ghosted word is far
+   more opaque (0.28) and much larger; the ribbon and cart are skewed −6°/−3°;
+   the header accent rule is a full-width gradient, not a short bar. None of
+   that is recoverable from a screenshot. **Get the source, don't measure the
+   picture.**
+
+### Getting the design source
+
+The design was delivered as Dropbox Transfer links. Those could not be read from
+the agent sandbox — the page renders but the file list stays a permanent
+skeleton (`fp.dropbox.com` fingerprinting plus a `POST /log/blocked` in the
+trace: bot detection, not a bug to fix). If you need design files in a sandbox,
+paste them into chat or commit them to the repo.
 
 ---
 
 ## Reproducing the verification harness
 
-This is the useful part to inherit. It renders the **real component against
-production data** and measures it, with no database writes.
+Renders the **real component against production data** and measures it, with no
+database writes. Sandbox constraints:
 
-**Constraints in this sandbox:**
-- The headless browser's own tunnels through the agent proxy get reset. Every
-  external request must be forwarded through Node (`https` +
-  `HttpsProxyAgent` with `/root/.ccr/ca-bundle.crt`) and fulfilled back into the
-  page via `page.route`.
-- Playwright's bundled Chromium version doesn't match `/opt/pw-browsers`; launch
-  with `executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'`.
+- The headless browser's own tunnels through the agent proxy get reset. Forward
+  every external request through Node (`https` + `HttpsProxyAgent` with
+  `/root/.ccr/ca-bundle.crt`) and fulfil it back into the page via `page.route`.
+- Playwright's bundled Chromium doesn't match `/opt/pw-browsers`; launch with
+  `executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'`.
 - Follow redirects **inside** the forwarder — Chromium does not re-route a 3xx
-  you hand back, and the follow-up request escapes to the real network.
-- **Never abort `fonts.googleapis.com`.** See *the typeface trap*.
+  you hand back, and the follow-up escapes to the real network.
+- Dev server needs `.env.local` (gitignored) with `REACT_APP_SUPABASE_URL` and
+  `REACT_APP_SUPABASE_ANON_KEY` (publishable anon key, via Supabase MCP
+  `get_publishable_keys`).
 
-**Cal Poly substitution** (for comparing against the mockup — Cal Poly is not a
-real store): intercept the `webstores_public` REST response and overwrite
-`name`, `primary_color`, `accent_color` before fulfilling. Everything downstream
-is the real component and real products. Note the logo will be whatever store
-you borrowed, so logo *width* ratios aren't comparable — only height.
-
-**Dev server:** needs `.env.local` (gitignored) with
-`REACT_APP_SUPABASE_URL` and `REACT_APP_SUPABASE_ANON_KEY` (the publishable anon
-key, retrievable via the Supabase MCP `get_publishable_keys`).
+**Substituting a school** (e.g. to compare against a Cal Poly mockup when Cal
+Poly isn't a real store): intercept the `webstores_public` REST response and
+overwrite `name`, `primary_color`, `accent_color` before fulfilling. Everything
+downstream is the real component and real products. The logo stays whatever
+store you borrowed, so logo *width* ratios aren't comparable — only height.
 
 **Good test stores:**
 
 | Slug | Why |
 |---|---|
-| `sjmgirlsbball2026` | open; navy logo on navy — the contrast case; 10-letter mascot word |
-| `orange-lutheran-football-team-store` | 14 products across 9 categories — exercises Featured Sections |
-| `san-marcos-hs-field-hockey-team-store` | open, 39 products, no categories — the flat-grid path |
+| `sjmgirlsbball2026` | open; navy logo on navy — the contrast case; exercises the `productCategory` fallback |
+| `orange-lutheran-football-team-store` | 14 products across 9 curated categories |
+| `san-marcos-hs-field-hockey-team-store` | open, 39 products — larger grid |
 
 ---
 
-## Suggested order of work
-
-1. **Get the HTML.** Everything below is guesswork until then.
-2. Diff the HTML's hero against `VsHero` (line 770) — especially the font stack,
-   the ghosted word's colour/opacity, the hatch, and the wedge geometry.
-3. Decide the rollout question (§Open decisions 1). If incremental, add the
-   `hero_look` column before merging.
-4. Decide on the nav features (§Open decisions 2).
-5. Consider a `brand` column on `products` so cards can show "ADIDAS" as drawn.
-
-## Things not to redo
+## Don't redo
 
 - Don't fork `ProductPage` — the varsity treatment is intentionally conditional
   styling inside it, because that component owns size/stock/cart correctness.
-- Don't re-derive the character-advance constant from a screenshot. Measure it
-  in the browser with the webfont loaded, at a size the `clamp()` is not
-  capping (a clamped size reads narrower and skews the constant).
-- Don't chase Dropbox. It's a bot wall.
+- Don't re-derive hero geometry from screenshots. The values in `VsHero`,
+  `VS_HATCH` and `vsDots` come from the approved Design HTML.
+- Don't chase Dropbox Transfer from a sandbox. It's a bot wall.
