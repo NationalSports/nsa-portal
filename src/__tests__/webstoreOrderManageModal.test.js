@@ -93,7 +93,7 @@ test('a paid order cannot add an uncharged unit', async () => {
   const onSave = jest.fn();
   await renderModal({ onSave });
 
-  fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '2' } });
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Quantity for Training Pant' }), { target: { value: '2' } });
 
   expect(screen.getByRole('alert').textContent).toMatch(/does not collect the additional card payment/i);
   expect(screen.getByRole('button', { name: 'Save item changes' }).disabled).toBe(true);
@@ -104,7 +104,7 @@ test('a team-tab order may increase quantity because no settled card amount is b
   const onSave = jest.fn(async () => ({ ok: true, owed: 0, pending_items: [] }));
   await renderModal({ order: { payment_mode: 'unpaid', stripe_pi_id: null }, onSave });
 
-  fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '2' } });
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Quantity for Training Pant' }), { target: { value: '2' } });
   const save = screen.getByRole('button', { name: 'Save item changes' });
   expect(save.disabled).toBe(false);
   fireEvent.click(save);

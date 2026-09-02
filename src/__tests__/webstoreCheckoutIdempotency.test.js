@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* place_order idempotency (client_ref, migration 00170) and the transactional
  * write path (place_webstore_order RPC + stock holds, migration 00171).
  *
@@ -65,7 +66,9 @@ const STORE = {
 };
 const WP = { id: 'wp1', store_id: 'st1', kind: 'single', active: true, retail_price: 20, sku: 'TEE', product_id: 'p1', display_name: 'Tee', takes_name: false, takes_number: false };
 const CART = [{ webstore_product_id: 'wp1', qty: 1, size: 'L' }];
-const BUYER = { name: 'Pat', email: 'pat@example.com' };
+// Pickup tax is sourced from billing. Use a complete non-nexus address so these
+// idempotency/gating tests never depend on an external tax provider.
+const BUYER = { name: 'Pat', email: 'pat@example.com', billing_street1: '1 Main St', billing_city: 'Reno', state: 'NV', zip: '89501' };
 const EXISTING = {
   id: 'ord-existing', status: 'unpaid', store_id: 'st1', buyer_email: 'pat@example.com',
   subtotal: 20, fundraise_amt: 0, shipping_fee: 0, processing_fee: 0, discount_amt: 0, tax: 0, total: 20,
