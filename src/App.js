@@ -77,6 +77,12 @@ const parseDate=d=>{if(!d)return null;try{const m=typeof d==='string'?d.match(/^
 const _isSystemAssignedTodo=t=>/^(completed_uninvoiced|past_due_current|past_due_weekly|ar_data_quality):/.test(String(t?.source||''));
 const todoCreatorLabel=(t,reps)=>_isSystemAssignedTodo(t)?'NSA System':(reps.find(r=>r.id===t?.created_by)?.name||'Team');
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
+// Inventory adjustment IDs become QBO idempotency keys. They must remain unique
+// across browsers and after the capped change log reaches its maximum length.
+const _newInventoryAdjustmentId=()=>{
+  const uuid=globalThis.crypto?.randomUUID?.();
+  return 'ADJ-'+(uuid||Date.now()+'-'+Math.random().toString(36).slice(2,10));
+};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
 // PO-wide status for global search: a PO can span multiple line items (SKUs/colors). The per-line
 // `status` field reflects only that one line, so aggregate received/open across every line sharing
@@ -4504,7 +4510,7 @@ export default function App(){
   // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
   // so hourly/daily auto-sync silently did nothing until someone opened the QB page
   // that session — and afterwards synced the stale snapshot from the last render.
-  React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
+  React.useEffect(()=>{_qbSyncCtxRef.current=storedUserCanManageQuickBooks()?{cust,sos,invs,prod,vend,invAdjLog,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}:null});
   React.useEffect(()=>{
     if(!storedUserCanManageQuickBooks()||!qbConfig.connected||qbConfig.autoSync==='manual'||qbConfig.initialMigrationApproved!==true)return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
@@ -7045,8 +7051,8 @@ export default function App(){
     if(deltas&&p){
       const entries=Object.entries(deltas).filter(([,v])=>v!==0);
       if(entries.length>0){
-        const logs=entries.map(([sz,delta])=>({id:'ADJ-'+(invAdjLog.length+1001+entries.indexOf([sz,delta])),product_id:pid,sku:p.sku,product_name:p.name,color:p.color||'',size:sz,qty_change:delta,prev_qty:p._inv?.[sz]||0,new_qty:Math.max(0,(p._inv?.[sz]||0)+delta),reason:reason||'',adjustment_type:adjType||'manual',performed_by:cu?.name||'Unknown',created_at:new Date().toLocaleString()}));
-        setInvAdjLog(prev=>[...logs.map((l,i)=>({...l,id:'ADJ-'+(prev.length+1001+i)})),...prev].slice(0,2000));
+        const logs=entries.map(([sz,delta])=>({id:_newInventoryAdjustmentId(),product_id:pid,sku:p.sku,product_name:p.name,color:p.color||'',size:sz,qty_change:delta,prev_qty:p._inv?.[sz]||0,new_qty:Math.max(0,(p._inv?.[sz]||0)+delta),reason:reason||'',adjustment_type:adjType||'manual',performed_by:cu?.name||'Unknown',created_at:new Date().toLocaleString()}));
+        setInvAdjLog(prev=>[...logs,...prev].slice(0,2000));
         logChange('inventory_adjustment','Product',pid,entries.map(([sz,d2])=>(d2>0?'+':'')+d2+' '+sz).join(', ')+(reason?' — '+reason:''));
       }
     }
@@ -12318,7 +12324,7 @@ export default function App(){
       setProd(pp=>pp.map(x=>x.id===p2.id?{...x,_inv:newInv}:x));
     });
     if(adjLogs.length>0){
-      setInvAdjLog(prev=>[...adjLogs.map((l,i)=>({...l,id:'ADJ-'+(prev.length+1001+i)})),...prev].slice(0,2000));
+      setInvAdjLog(prev=>[...adjLogs.map(l=>({...l,id:_newInventoryAdjustmentId()})),...prev].slice(0,2000));
       logChange('po_received','Inventory PO',po.po_number,adjLogs.map(l=>'+'+l.qty_change+' '+l.size+' '+l.sku).join(', '));
     }
     nf('PO '+po.po_number+' items received — inventory updated');

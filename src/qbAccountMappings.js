@@ -4,6 +4,9 @@
 
 export const QB_ACCOUNT_SPECS = Object.freeze({
   income_account: Object.freeze({ number: '40000', name: 'Sales', types: ['Income'] }),
+  inventory_asset_account: Object.freeze({ number: '12000', name: 'Inventory Asset', types: ['Other Current Asset'] }),
+  cogs_account: Object.freeze({ number: '50000', name: 'Cost of Goods Sold', types: ['Cost of Goods Sold'] }),
+  inventory_loss_account: Object.freeze({ number: '52400', name: 'Inventory Loss', types: ['Cost of Goods Sold'] }),
   discount_account: Object.freeze({ number: '40200', name: 'Sales:Discounts', types: ['Income'] }),
   purchases_account: Object.freeze({ number: '51300', name: 'Purchases', types: ['Cost of Goods Sold'] }),
   freight_account: Object.freeze({ number: '51000', name: 'Cost of Goods Sold:Freight In', types: ['Cost of Goods Sold'] }),
@@ -41,6 +44,9 @@ export const QB_ACCOUNT_MAPPING_DEFAULTS = Object.freeze(
 const LEGACY_MAPPING_VALUES = Object.freeze({
   Sales: '40000',
   'Sales of Product Income': '40000',
+  'Inventory Asset': '12000',
+  'Cost of Goods Sold': '50000',
+  'Inventory Loss': '52400',
   Discounts: '40200',
   Purchases: '51300',
   'Shipping and delivery expense': '51000',
