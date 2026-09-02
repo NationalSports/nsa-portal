@@ -23,10 +23,11 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
+import { resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
@@ -870,6 +871,8 @@ let _lastFullSyncAt=0;
 const adidasCanonSize = (raw) => {
   if (!raw) return raw;
   let s = String(raw).trim();
+  const footwearSize = normalizeFootwearSize(s);
+  if (footwearSize !== s) return footwearSize;
   // Strip a trailing inseam/length token ("S 3\"", "XL3\"", "2XS4", "M11\"") — but
   // only when an alpha size prefix survives, so purely numeric sizes (28, 200, 8.5)
   // are left untouched.
@@ -6314,41 +6317,46 @@ export default function App(){
     admin:Array.from(RESTRICTED_PAGES),
     rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','salesmap','import'],
     csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
-    accounting:['dashboard','invoices','customers','reports','qb','import'],
+    accounting:['dashboard','orders','invoices','customers','reports','qb','import'],
     warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
     prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
     prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
     production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
     artist:['dashboard','orders','art','jobs','production'],
   }),[RESTRICTED_PAGES]);
+  // Use the freshly loaded team row immediately. Waiting for the effect above to copy it
+  // into `cu` leaves one render where a deep link is judged with stale cached access; the
+  // redirect effect then throws the user back to Dashboard before the correct access lands.
+  const accessUser=useMemo(()=>resolveAccessUser(cu,REPS,!dbLoading),[cu,REPS,dbLoading]);
   const effectiveAccess=useMemo(()=>{
-    if(!cu)return[];
-    if(cu.role==='admin'||cu.role==='super_admin')return Array.from(RESTRICTED_PAGES);
-    if(Array.isArray(cu.access)&&cu.access.length>0)return cu.access;
-    return DEFAULT_ACCESS_BY_ROLE[cu.role]||['dashboard'];
-  },[cu,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
+    if(!accessUser)return[];
+    if(accessUser.role==='admin'||accessUser.role==='super_admin')return Array.from(RESTRICTED_PAGES);
+    if(Array.isArray(accessUser.access)&&accessUser.access.length>0)return accessUser.access;
+    return DEFAULT_ACCESS_BY_ROLE[accessUser.role]||['dashboard'];
+  },[accessUser,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
   const canAccess=useCallback((pageId)=>{
-    if(!cu)return false;
+    if(!accessUser)return false;
     // QBO is an accounting system, not a delegable portal page. Legacy access
     // arrays that contain `qb` must not expose it to reps or other operations roles.
     // Financials is identity-restricted even among admins. Never let an admin
     // role or editable access array override the owner allowlist.
-    if(pageId==='financials')return canViewFinancials(cu);
-    if(pageId==='qb')return canManageQuickBooksRole(cu.role);
-    if(cu.role==='admin'||cu.role==='super_admin')return true;
+    if(pageId==='financials')return canViewFinancials(accessUser);
+    if(pageId==='qb')return canManageQuickBooksRole(accessUser.role);
+    if(accessUser.role==='admin'||accessUser.role==='super_admin')return true;
     // Import is always on for reps and CSRs regardless of their stored access array
-    if(pageId==='import'&&(cu.role==='rep'||cu.role==='csr'))return true;
+    if(pageId==='import'&&(accessUser.role==='rep'||accessUser.role==='csr'))return true;
     if(!RESTRICTED_PAGES.has(pageId))return true; // purchase_orders / issues / settings gated only by role in `nav`
     return effectiveAccess.includes(pageId);
-  },[cu,RESTRICTED_PAGES,effectiveAccess]);
+  },[accessUser,RESTRICTED_PAGES,effectiveAccess]);
   // Redirect if programmatic setPg() landed the user on a page they no longer have access to.
-  React.useEffect(()=>{
-    if(!cu)return;
+  // Layout timing prevents the one-frame "Access Denied" flash before the fallback applies.
+  React.useLayoutEffect(()=>{
+    if(!accessUser)return;
     if(!canAccess(pg)){
       const fallback=effectiveAccess[0]||'dashboard';
       if(pg!==fallback)setPg(fallback);
     }
-  },[pg,cu,canAccess,effectiveAccess]);
+  },[pg,accessUser,canAccess,effectiveAccess]);
 
   // ─── MOBILE PORTAL DETECTION & TOGGLE ───
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
@@ -33384,7 +33392,7 @@ export default function App(){
       admin:ALL_PAGES.map(p=>p.id),
       rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
-      accounting:['dashboard','invoices','customers','reports','qb','import'],
+      accounting:['dashboard','orders','invoices','customers','reports','qb','import'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
       prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
       prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],

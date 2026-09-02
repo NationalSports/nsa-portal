@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, artStatusForFile, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, normalizeFootwearSizeList, normalizeFootwearSizeQtyMap, sizeBreakdownStr, SC, SO_STATUS_LABELS, SHIPPABLE_STATUSES, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA, isServiceLine } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, legacyMockKeyOf, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostRows, manualPoCostTotal, normalizePoPaymentMethod, poPaymentMethodLabel, soItemKey, skusMissingMockups, missingMockupsMsg, skusMissingRevColorWays, missingRevColorWaysMsg, realInkLines, garmentsNeedingMockCheck, applyMockLink, squashMockLinks, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, removeMockFromArtFiles, markArtFieldEdit, markArtChanges, soLineKey, scopeSoItemsToInvoice, buildInvoicedQtyMap, staleInvoiceQtyConflicts, invoicedLineOrphans, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobArtFileIds, jobHasUnresolvedArt, healOrphanArtRequest, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, nnMockCounts, poIdMissingFromOrder } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, $Txt, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, getBillAddrs, resolveOrderBillTo, orderBillToSub, billToIdFor, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -78,8 +78,7 @@ const orderLineSizes=(catalogSizes,qtySizes=[])=>{
   // run padded with extras). If the run IS already the core — or has no core overlap at all
   // (youth/OSFA/numeric/footwear) — keep it verbatim.
   const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
-  return [...new Set([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)])]
-    .sort((a,b)=>szRank(a)-szRank(b));
+  return normalizeFootwearSizeList([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)]);
 };
 
 // Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
@@ -2418,10 +2417,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // sparse, hard-to-fill grid. Default shoe runs to the standard 7–12 half-size set so the
     // grid is usable out of the box; trust the catalog only when it already carries half
     // sizes (a curated run). Staff can +Size for outliers either way.
-    const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
-    const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
+    const fwAvail=isFw?normalizeFootwearSizeList(p.available_sizes||[]):[];
+    const fwCatHasHalves=fwAvail.some(s=>String(s).includes('.5'));
+    const avail=isFw?(fwCatHasHalves?fwAvail:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
-  const multiCatalogItem=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));const fwHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));const avail=isFw?(fwHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);return{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw,_multiInv:Object.fromEntries(avail.map(sz=>[sz,availInv(p,sz)]))}};
+  const multiCatalogItem=p=>{const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';const clr=p.is_clearance&&p.clearance_cost!=null;const cost=catalogRepCost(p);const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(cost*(o.default_markup||1.65));const fwAvail=isFw?normalizeFootwearSizeList(p.available_sizes||[]):[];const fwHalves=fwAvail.some(s=>String(s).includes('.5'));const avail=isFw?(fwHalves?fwAvail:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);return{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),_is_clearance:p.is_clearance||false,...(!clr&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw,_multiInv:Object.fromEntries(avail.map(sz=>[sz,availInv(p,sz)]))}};
   const multiVendorItem=(style,color,source)=>{const isSM=source==='sm',isMT=source==='mt',isRS=source==='rs';const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');const cost=color.customerPrice||color.piecePrice||0;const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);const apiSizes=(color.sizes||[]).map(s=>s.sizeName).filter(Boolean);const catSizes=catMatch?.available_sizes||[];const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];let avail=[...new Set([...apiSizes,...catSizes,...smSizes,...((isRS||apiSizes.length||catSizes.length||smSizes.length)?[]:['S','M','L','XL','2XL'])])].sort((a,b)=>szRank(a)-szRank(b));if(!avail.length)avail=isRS?['OSFA']:['S','M','L','XL','2XL'];const inv={};const sizeCost={};(color.sizes||[]).forEach(s=>{inv[s.sizeName]=(inv[s.sizeName]||0)+safeNum(s.qty);sizeCost[s.sizeName]=s.price||cost});const mk=o.default_markup||1.65;return{product_id:catMatch?.id||null,sku:style.sku,name:nameWithBrand(style.styleName,style.brandName),brand:style.brandName,vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:catMatch?.retail_price||0,unit_sell:rQ(cost*mk),available_sizes:avail,sizes:{},qty_only:false,decorations:[],no_deco:true,is_custom:false,[isRS?'_rs_live':isMT?'_mt_live':isSM?'_sm_live':'_ss_live']:true,_colorImage:color.colorFrontImage||style.styleImage||'',_colorBackImage:color.colorBackImage||'',_sizeCosts:sizeCost,_sizeSells:Object.fromEntries(Object.entries(sizeCost).map(([sz,c])=>[sz,rQ(c*mk)])),_multiInv:inv,...(isMT&&style._mtId?{_mtId:style._mtId}:{}),...(isMT&&color.sku?{_mt_style:style.sku,_mt_color:color.colorCode||'',_mt_sku:color.sku,_mt_skus:Object.fromEntries((color.sizes||[]).map(s=>[s.sizeName,`${color.sku}.${s.sizeName}`]).filter(([sz])=>sz))}:{})}};
   const multiCatalogResults=useCallback(q=>{const toks=(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);if((q||'').trim().length<2)return[];return products.filter(p=>!p.is_archived&&toks.every(t=>(p.sku||'').toLowerCase().includes(t)||(p.name||'').toLowerCase().includes(t)||(p.brand||'').toLowerCase().includes(t)||(p.color||'').toLowerCase().includes(t))).slice(0,18).map(p=>({key:'cat-'+p.id,sku:p.sku,label:(p.sku||'')+' · '+nameWithBrand(p.name,p.brand),sub:p.color||'',source:'catalog',sourceLabel:'CATALOG',item:multiCatalogItem(p)}))},[products,o.default_markup,cust,reservedInvMap]);
   const multiVendorResults=useMemo(()=>[['ss',ssResults,'S&S'],['sm',smResults,'SANMAR'],['mt',mtResults,'MOMENTEC'],['rs',rsResults,'RICHARDSON']].flatMap(([source,styles,label])=>(styles||[]).flatMap((style,si)=>(style.colors||[]).slice(0,8).map((color,ci)=>({key:source+'-'+style.sku+'-'+(color.colorName||ci),sku:style.sku,label:style.sku+' · '+nameWithBrand(style.styleName,style.brandName),sub:(color.colorName||'')+' · '+safeNum(color.totalQty).toLocaleString()+' available',source,sourceLabel:label,item:multiVendorItem(style,color,source)})))).slice(0,40),[ssResults,smResults,mtResults,rsResults,o.default_markup,products,vendorList]);
@@ -2955,7 +2955,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=safeItems(oRef.current||o)[i];if(!item)return;
-    const cur=safeSizes(item)[sz]||0;
+    if(item.is_footwear)sz=normalizeFootwearSize(sz);
+    const curSizes=item.is_footwear?normalizeFootwearSizeQtyMap(safeSizes(item)):safeSizes(item);
+    const cur=curSizes[sz]||0;
     if(n===cur)return;// no-op: value unchanged, skip render + side effects
     const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
     const poQty=poCommitted(item.po_lines,sz);
@@ -2965,7 +2967,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _applySizes=(po_lines,note)=>{
       setO(e=>{const next={...e,items:safeItems(e).map((it,x)=>{
         if(x!==i)return it;
-        const next={...it,sizes:{...it.sizes,[sz]:n}};
+        const nextSizes=it.is_footwear?normalizeFootwearSizeQtyMap(safeSizes(it)):{...safeSizes(it)};nextSizes[sz]=n;
+        const next={...it,sizes:nextSizes};
         if(po_lines)next.po_lines=po_lines;
         if(it.est_qty&&Object.values(next.sizes).reduce((a,v2)=>a+safeNum(v2),0)>0)next.est_qty=0;
         return next;
@@ -3025,7 +3028,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     _applySizes(null);
   };
-  const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];if(!cur.includes(sz))uI(i,'available_sizes',[...cur,sz])};
+  const addSzToItem=(i,sz)=>{const it=o.items[i];const cur=it.available_sizes||[];const next=it.is_footwear?normalizeFootwearSizeList([...cur,sz]):[...cur,sz];if(!cur.includes(sz)||next.length!==cur.length)uI(i,'available_sizes',next)};
   // Total units already committed on POs for an item, summed across every size bucket (any positive
   // numeric key that isn't PO metadata). Used to warn before a re-size orphans an existing PO's
   // bucket — the PO keeps its old OSFA/QTY/size keys, so the item's new sizes won't line up against
@@ -3053,7 +3056,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     return true;
   };
-  const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>s!==sz))};
+  const removeSzFromItem=(i,sz)=>{const it=o.items[i];const same=s=>it.is_footwear?normalizeFootwearSize(s)===normalizeFootwearSize(sz):s===sz;const qty=Object.entries(safeSizes(it)).filter(([s])=>same(s)).reduce((a,[,v])=>a+safeNum(v),0);if(qty>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...safeSizes(it)};Object.keys(newSizes).filter(same).forEach(s=>delete newSizes[s]);uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>!same(s)))};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
   const _withDecoDeleteIntent=(e,ii,nextCount)=>{const from=safeDecos(safeItems(e)[ii]).length;if(nextCount>=from)return{};const prior=e._decoDeleteIntents?.[ii];return{_decoDeleteIntents:{...(e._decoDeleteIntents||{}),[ii]:{from:Number.isFinite(prior?.from)?prior.from:from,to:nextCount}}}};
@@ -5215,7 +5218,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
       return<>
       {/* Items toolbar moved into the tabs row (Sort by Decoration / Short Pulls / Collapse All) */}
-      {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
+      {safeItems(o).map((item,idx)=>{const lineSizes=item.is_footwear?normalizeFootwearSizeQtyMap(safeSizes(item)):safeSizes(item);const szQty=Object.values(lineSizes).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
       // Display-only swatch: best-effort hex for the garment color name (falls back to neutral).
       const _swHex=(c=>{const n=(c||'').toLowerCase();const m={navy:'#192853',black:'#1A1A1A',white:'#FFFFFF',graphite:'#5A6075',charcoal:'#374151',grey:'#6B7280',gray:'#6B7280',silver:'#C4C9D4',red:'#B91C1C',scarlet:'#B91C1C',cardinal:'#9F1239',maroon:'#7F1D1D',royal:'#1D4ED8',columbia:'#93C5FD',carolina:'#93C5FD',blue:'#1E40AF',forest:'#14532D',kelly:'#15803D',green:'#166534',gold:'#CA8A04',yellow:'#EAB308',orange:'#EA580C',purple:'#6D28D9',pink:'#EC4899',brown:'#78350F',tan:'#D6BC8A',khaki:'#BDB76B',cream:'#F5F0E1'};const hit=Object.keys(m).find(k=>n.includes(k));return hit?m[hit]:'#E8ECF6'})(item.color);
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
@@ -5253,15 +5256,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const sizePool=item.is_footwear?FOOTWEAR_SIZES:(isBallItem?BALL_SIZES:APPAREL_SIZES);
       // Keep any size the item actually declares — including custom/ball labels not in SZ_ORD — rather
       // than dropping it. Known sizes order by SZ_ORD; unknown/custom labels sort to the end.
-      const szs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)||(item.available_sizes||[]).includes(s)).sort((a,b)=>szRank(a)-szRank(b));
+      const rawSzs=((item.available_sizes&&item.available_sizes.length)?item.available_sizes:defaultSzList).filter(s=>SZ_ORD.includes(s)||(item.available_sizes||[]).includes(s));
+      const szs=item.is_footwear?normalizeFootwearSizeList(rawSzs):rawSzs.sort((a,b)=>szRank(a)-szRank(b));
       // Size quantities, read through safeSizes: an item can legitimately reach this render with NO
       // sizes object at all — a DB-restored line (dbEngine's item revive) carries whatever the row
       // held, and a sparse row's sizes column is null. Reading item.sizes[sz] directly on such a line
       // threw "Cannot read properties of undefined (reading 'S')" and took the whole OrderEditor down
       // with it (SO-1971, 2026-08-14), so one bad line blanked the entire order instead of one grid.
-      const _iSz=safeSizes(item);
-      const addable=sizePool.filter(s=>!(item.available_sizes||[]).includes(s));
-      const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
+      const _iSz=lineSizes;
+      const normalizedAvail=item.is_footwear?normalizeFootwearSizeList(item.available_sizes||[]):(item.available_sizes||[]);
+      const addable=sizePool.filter(s=>!normalizedAvail.includes(s));
+      const removable=sizePool.filter(s=>normalizedAvail.includes(s));
       // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
       if(collapsedItems[idx]){
         return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
@@ -5274,7 +5279,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:700,fontSize:15,color:'#2A2F3E'}}>{item.name}</span>
                 {item.color&&<span className="badge badge-gray" style={{fontSize:10}}>{item.color}</span>}
                 {item.brand&&<span style={{fontSize:12,color:'#9aa0ad'}}>{item.brand}</span>}
-                {(()=>{const _cs=Object.entries(safeSizes(item)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
+                {(()=>{const _cs=Object.entries(lineSizes).filter(([,v])=>safeNum(v)>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
               </div>
               {/* Collapsed-row deco strip: see + change selected artwork, and the PO#(s) this line is ordered on, without expanding. */}
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:4}} onClick={e=>e.stopPropagation()}>
@@ -5505,7 +5510,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
             {isQtyOnly&&safeNum(item.est_qty)>0&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>Custom — no size breakdown</span>}
             {isSO&&!isQtyOnly&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
-              const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+              const szList=Object.entries(lineSizes).filter(([,v])=>v>0).sort((a,b)=>szRank(a[0])-szRank(b[0]));
               const anyUnassigned=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);return v-picked-po>0});
               if(!anyUnassigned)return<span style={{fontSize:12,color:'#1E7A46',fontWeight:700,background:'#EAF6EE',border:'1px solid #C9E7D4',padding:'3px 9px',borderRadius:20,whiteSpace:'nowrap'}}>✓ All assigned</span>;
               const hasInv=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=availInv(p,sz);return v-picked-po>0&&inv>0});

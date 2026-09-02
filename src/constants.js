@@ -545,7 +545,7 @@ export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','
 // 19). Neither form is in SZ_ORD, so both landed in the unknown-label bucket and piled up at the
 // end of a size row — a shoe grid read 4,7,8,…,12,4-,5-,…,14-,18,19 instead of by number. Rank
 // those numerically inside the footwear block so a run reads 9, 9-, 10, 10-, 11 … left to right.
-// Ordering only: unrecognized labels still sort last, and nothing here changes size membership.
+// szRank only controls ordering; the footwear helpers below canonicalize those aliases for display.
 const _FW_NUM=/^(\d{1,2})(\.5|-|½)?$/;
 const _I17=SZ_ORD.indexOf('17');
 export const szRank=(s)=>{
@@ -561,12 +561,27 @@ export const szRank=(s)=>{
   return 999;
 };
 const _szCompare=(a,b)=>szRank(a)-szRank(b);
+// Adidas represents half shoe sizes with a trailing dash ("10-"), while catalog/order data may
+// already contain the normal decimal spelling ("10.5"). Keep one internal display spelling so a
+// mixed feed cannot render duplicate columns. The fraction form is accepted for the same reason.
+export const normalizeFootwearSize=(size)=>{
+  const s=String(size??'').trim();
+  const m=/^(\d{1,2})(-|½)$/.exec(s);
+  return m?String(Number(m[1])+0.5):s;
+};
+export const normalizeFootwearSizeList=(sizes)=>[...new Set((Array.isArray(sizes)?sizes:[]).map(normalizeFootwearSize).filter(Boolean))].sort(_szCompare);
+// Quantity maps need collision handling too: if legacy data contains both 10- and 10.5, preserve
+// every ordered unit under the single canonical 10.5 key rather than hiding or dropping either.
+export const normalizeFootwearSizeQtyMap=(sizes)=>Object.entries(sizes||{}).reduce((out,[size,qty])=>{
+  const key=normalizeFootwearSize(size);const n=Number(qty)||0;
+  out[key]=(out[key]||0)+n;return out;
+},{});
 // Union of the size labels present across one or more size maps (pass their flattened keys),
 // ordered for display with custom/unrecognized labels last.
 export const orderedSizeKeys=(keys)=>[...new Set(keys)].sort(_szCompare);
 // "qty size" breakdown string for a line item's sizes map, e.g. "1 S, 5 M, 3 L, 2 Womens X-Large".
 // Footwear renders "qty/size" (e.g. "2/10.5"); apparel renders "qty size". Custom labels are kept.
-export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(sizes||{})
+export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(isFootwear?normalizeFootwearSizeQtyMap(sizes):(sizes||{}))
   .filter(([,v])=>Number(v)>0)
   .sort((a,b)=>_szCompare(a[0],b[0]))
   .map(([sz,v])=>v+(isFootwear?'/':' ')+sz).join(', ');
