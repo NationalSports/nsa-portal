@@ -64,7 +64,7 @@ export default function QBPage(){
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
     // auto-sync builds the same engine from fresh state, no page visit required.
-    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
+    const {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll}=createQBSyncEngine({cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend});
 
     // Read-only live-company inspection. This is the mandatory first step and
     // performs no QBO create/update calls.
@@ -285,6 +285,14 @@ export default function QBPage(){
       if(!selectedCanaryProduct)return;
       if(!window.confirm('Create or update exactly ONE QBO NonInventory item?\n\nSKU: '+selectedCanaryProduct.sku+'\nProduct: '+selectedCanaryProduct.name+'\nSales account: 40000\nPurchase account: 51300\n\nNo size/color quantities or inventory value will be sent. The item will be verified by API read-back.')){nf('QBO item canary cancelled — nothing was sent');return}
       await syncInventory({canaryProductId:selectedCanaryProduct.id});
+    };
+    const runInactiveProductLinkCleanup=async()=>{
+      if(!selectedCanaryProduct||!_prodQBMap[selectedCanaryProduct.id])return;
+      const result=await clearInactiveProductLink(selectedCanaryProduct.id);
+      if(result?.status!=='needs_confirmation')return;
+      const approved=window.confirm('Remove exactly ONE stale portal-to-QBO product link?\n\nSKU: '+result.sku+'\nQBO item: #'+result.itemId+'\n\nQBO API read-back verified this item is inactive. This removes only the portal link; it does not change or delete the QBO item.');
+      if(!approved){nf('Inactive-link cleanup cancelled — no portal link was removed');return}
+      await clearInactiveProductLink(selectedCanaryProduct.id,{allowUnlink:true});
     };
     const runPortalSalesItemCanary=async()=>{
       if(!window.confirm('Create or repair exactly ONE required QBO service item?\n\nName: NSA Portal Sales\nType: Service\nSales account: 40000 Sales\n\nThis item carries portal invoice totals and customer-billed shipping. No invoice, payment, quantity, cost, or inventory value will be sent. The item will be verified by API read-back.')){nf('NSA Portal Sales test cancelled — nothing was sent');return}
@@ -801,6 +809,7 @@ export default function QBPage(){
                 {canaryProducts.map(p=><option key={p.id} value={p.id}>{p.sku} — {p.name}{_prodQBMap[p.id]?' — linked QB #'+_prodQBMap[p.id]:''}</option>)}
               </select>
               <button className="btn btn-primary btn-sm" style={{background:'#0369a1'}} disabled={qbSyncing||!livePreflightReady||!selectedCanaryProduct} onClick={runProductCanary}>{qbSyncing?'Testing...':'Test 1 QBO Item'}</button>
+              {selectedCanaryProduct&&_prodQBMap[selectedCanaryProduct.id]&&<button className="btn btn-sm" style={{background:'#fff7ed',border:'1px solid #fdba74',color:'#9a3412'}} disabled={qbSyncing||!livePreflightReady} onClick={runInactiveProductLinkCleanup}>{qbSyncing?'Checking...':'Clear Inactive Link'}</button>}
             </div>
             {!livePreflightReady&&<div style={{fontSize:11,color:'#92400e',marginTop:7,fontWeight:600}}>Button disabled: open Overview and run Read-Only Live Preflight.</div>}
           </div>

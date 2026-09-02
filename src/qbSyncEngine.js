@@ -783,6 +783,56 @@ export function createQBSyncEngine(ctx){
       return prodQBMap;
     };
 
+    // Remove only a stale portal link whose exact QBO item has already been
+    // made inactive. The first call is read-only and asks the UI for explicit
+    // confirmation; the confirmed call reads QBO again immediately before the
+    // link is removed. Active or mismatched items are never unlinked here.
+    const clearInactiveProductLink=async(canaryProductId,options={})=>{
+      if(!canaryPreflightReady())return{status:'blocked'};
+      const product=prod.find(p=>String(p.id)===String(canaryProductId));
+      const sku=String(product?.sku||'').trim().toUpperCase();
+      if(!product||!sku){nf('Choose exactly one active portal SKU','error');return{status:'blocked'}}
+      const productIds=prod.filter(p=>String(p.sku||'').trim().toUpperCase()===sku).map(p=>String(p.id));
+      const mappedIds=[...new Set(productIds.map(id=>String((qbConfig.prodQBMap||{})[id]||'')).filter(Boolean))];
+      if(mappedIds.length!==1){
+        nf(mappedIds.length?'Inactive-link cleanup blocked — this SKU has conflicting QBO links':'This SKU has no saved QBO link','error');
+        return{status:'blocked'};
+      }
+      const itemId=mappedIds[0];
+      setQbSyncing(true);
+      try{
+        const response=await qbApi('read',{entity:'item',id:itemId});
+        const item=response?.Item;
+        if(!item||String(item.Id)!==itemId)throw new Error('QBO item #'+itemId+' was not returned by API read-back.');
+        const itemSku=String(item.Sku||item.Name||'').trim().toUpperCase();
+        if(itemSku!==sku)throw new Error('QBO item #'+itemId+' does not match portal SKU '+sku+'.');
+        if(item.Active!==false)throw new Error('QBO item #'+itemId+' is still active; its portal link was not removed.');
+        if(options.allowUnlink!==true){
+          setQbSyncing(false);
+          return{status:'needs_confirmation',sku,itemId,productName:product.name||sku};
+        }
+        const log={ts:new Date().toLocaleString(),type:'item_link_cleanup',status:'success',details:[
+          'UNLINKED INACTIVE QBO ITEM: '+sku+' → QBO Item #'+itemId,
+          productIds.length+' portal product record'+(productIds.length===1?'':'s')+' cleared after API read-back verified Active=false',
+        ]};
+        setQBConfig(prev=>{
+          const prodQBMap={...(prev.prodQBMap||{})};
+          productIds.forEach(id=>{if(String(prodQBMap[id]||'')===itemId)delete prodQBMap[id]});
+          return{...prev,prodQBMap,syncLog:[log,...(prev.syncLog||[])].slice(0,100),lastSync:new Date().toLocaleString()};
+        });
+        nf('Cleared inactive QBO link for '+sku,'success');
+        setQbSyncing(false);
+        return{status:'success',sku,itemId};
+      }catch(e){
+        const message=e.message||'Inactive QBO link could not be verified';
+        const log={ts:new Date().toLocaleString(),type:'item_link_cleanup',status:'error',details:[message]};
+        setQBConfig(prev=>({...prev,syncLog:[log,...(prev.syncLog||[])].slice(0,100)}));
+        nf('Inactive-link cleanup blocked — '+message,'error');
+        setQbSyncing(false);
+        return{status:'blocked'};
+      }
+    };
+
 
     // ── SYNC: Sales Orders (as QB Estimates) ──
     const syncSalesOrders=async(custQBMap={},prodQBMap={},options={})=>{
@@ -1037,5 +1087,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
 }

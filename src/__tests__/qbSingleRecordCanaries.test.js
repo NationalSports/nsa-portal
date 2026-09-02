@@ -82,6 +82,33 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().prodQBMap.P1).toBe('I-1');
   });
 
+  test('unlinks exactly one inactive QBO item only after confirmation and API read-back', async() => {
+    const product={id:'P1',sku:'SKU-1',name:'Test Jersey',is_active:true};
+    const qbApi=jest.fn(async(action,{entity,id}={})=>{
+      if(action==='read'&&entity==='item'&&id==='I-1')return{Item:{Id:'I-1',Sku:'SKU-1',Active:false}};
+      throw new Error('Unexpected QBO call: '+action);
+    });
+    const{engine,getConfig}=makeEngine({qbApi,prod:[product]});
+    getConfig().prodQBMap.P1='I-1';
+    await expect(engine.clearInactiveProductLink('P1')).resolves.toEqual(expect.objectContaining({status:'needs_confirmation',sku:'SKU-1',itemId:'I-1'}));
+    expect(getConfig().prodQBMap.P1).toBe('I-1');
+    await expect(engine.clearInactiveProductLink('P1',{allowUnlink:true})).resolves.toEqual({status:'success',sku:'SKU-1',itemId:'I-1'});
+    expect(getConfig().prodQBMap.P1).toBeUndefined();
+    expect(getConfig().syncLog[0]).toEqual(expect.objectContaining({type:'item_link_cleanup',status:'success'}));
+  });
+
+  test('refuses to unlink a QBO item that is still active', async() => {
+    const product={id:'P1',sku:'SKU-1',name:'Test Jersey',is_active:true};
+    const qbApi=jest.fn(async(action,{entity,id}={})=>{
+      if(action==='read'&&entity==='item'&&id==='I-1')return{Item:{Id:'I-1',Sku:'SKU-1',Active:true}};
+      throw new Error('Unexpected QBO call: '+action);
+    });
+    const{engine,getConfig}=makeEngine({qbApi,prod:[product]});
+    getConfig().prodQBMap.P1='I-1';
+    await expect(engine.clearInactiveProductLink('P1',{allowUnlink:true})).resolves.toEqual({status:'blocked'});
+    expect(getConfig().prodQBMap.P1).toBe('I-1');
+  });
+
   test('creates and verifies the one required NSA Portal Sales service item', async() => {
     const readback={Id:'SALES-1',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('40000')}};
     const qbApi=jest.fn(async(action,{query,item}={})=>{
