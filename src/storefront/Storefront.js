@@ -737,12 +737,12 @@ function VsHeader({ store, theme, cartCount = 0, collapsed = false, query, setQu
   const navStyle = { background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'rgba(255,255,255,0.88)', fontFamily: DISPLAY, fontWeight: 700, fontSize: 15, letterSpacing: 1.6, textTransform: 'uppercase' };
   return (
     <header style={{ position: 'relative', background: theme.band, boxShadow: '0 2px 18px rgba(0,0,0,0.18)' }}>
-      <div className="sf-vs-hdr" style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '10px 24px' : '16px 24px', display: 'flex', alignItems: 'center', gap: 16, transition: 'padding .2s ease' }}>
+      <div className="sf-vs-hdr" style={{ maxWidth: 1240, margin: '0 auto', padding: collapsed ? '10px 24px' : '16px 24px', display: 'flex', alignItems: 'center', gap: 13, transition: 'padding .2s ease' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 13, cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => navTo('/shop/' + store.slug)}>
-          <span className="sf-vs-crest" style={{ display: 'flex', flexShrink: 0 }}><Crest store={store} theme={theme} size={collapsed ? 32 : 44} /></span>
+          <span className="sf-vs-crest" style={{ display: 'flex', flexShrink: 0, background: '#fff', borderRadius: 2, padding: 5 }}><Crest store={store} theme={theme} size={collapsed ? 30 : 40} /></span>
           <div className="sf-vs-title" style={{ fontFamily: DISPLAY, fontSize: collapsed ? 'clamp(16px,4vw,21px)' : 'clamp(18px,4.6vw,27px)', fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', color: '#fff', lineHeight: 1.02, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{storeShortName(store.name)}</div>
         </div>
-        <nav className="sf-vs-nav" style={{ display: 'flex', alignItems: 'center', gap: 30 }}>
+        <nav className="sf-vs-nav" style={{ display: 'flex', alignItems: 'center', gap: 26 }}>
           <button className="sf-vs-navlink" style={navStyle} onClick={onCategories}>Shop by Category</button>
           <button className="sf-vs-navlink" style={navStyle} onClick={onAllItems}>All Items</button>
         </nav>
@@ -784,18 +784,18 @@ function VsHero({ store, theme }) {
       <div aria-hidden style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
         <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: `clamp(56px,${wordVw.toFixed(1)}vw,250px)`, lineHeight: 0.8, letterSpacing: '-0.01em', textTransform: 'uppercase', color: hexA(theme.band, 0.2), whiteSpace: 'nowrap' }}>{word}</span>
       </div>
-      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1240, margin: '0 auto', padding: '18px 24px 0' }}>
-        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, background: theme.accent, color: theme.band, fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1.8, textTransform: 'uppercase', padding: '10px 18px' }}>
+      <div style={{ position: 'relative', zIndex: 2, padding: 'clamp(18px,2vw,28px) 24px 0 clamp(14px,1.8vw,36px)' }}>
+        <span className="sf-vs-ribbon" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, maxWidth: '100%', background: theme.accent, color: theme.band, fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 1.8, textTransform: 'uppercase', padding: '10px 18px' }}>
           The official {short} team store · Powered by National Sports Apparel
           <span aria-hidden style={{ opacity: 0.55, letterSpacing: 4 }}>✕✕✕</span>
         </span>
       </div>
       {/* The logo in front — required by the design. Falls back to the initials
           crest only when the store has no logo on file. */}
-      <div style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(26px,4.5vw,58px) 24px clamp(38px,5.5vw,70px)' }}>
+      <div style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'clamp(34px,6vw,110px) 24px clamp(38px,5vw,95px)' }}>
         {store.logo_url
-          ? <img src={store.logo_url} alt={store.name} style={{ width: 'auto', height: 'clamp(150px,24vw,300px)', maxWidth: '76%', objectFit: 'contain', filter: 'drop-shadow(0 10px 26px rgba(20,32,26,0.28))' }} />
-          : <Crest store={store} theme={theme} size={220} />}
+          ? <img src={store.logo_url} alt={store.name} style={{ width: 'auto', height: 'clamp(170px,20vw,420px)', maxWidth: '46%', objectFit: 'contain', filter: 'drop-shadow(0 10px 26px rgba(20,32,26,0.28))' }} />
+          : <Crest store={store} theme={theme} size={300} />}
       </div>
     </section>
   );
@@ -830,7 +830,7 @@ function VsSectionHead({ theme, eyebrow, head, tail, right, id }) {
         </h2>
         <span aria-hidden style={{ display: 'block', width: 74, height: 4, background: theme.accent, marginTop: 15 }} />
       </div>
-      {right}
+      {right && <div style={{ paddingBottom: 19 }}>{right}</div>}
     </div>
   );
 }
@@ -869,7 +869,7 @@ function VsFooter({ store, theme }) {
     <footer style={{ background: theme.ink, color: 'rgba(255,255,255,0.78)', marginTop: 'auto' }}>
       <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,60px) 24px 30px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 40 }}>
         <div>
-          <Crest store={store} theme={theme} size={54} />
+          <span style={{ display: 'inline-flex', background: '#fff', borderRadius: 2, padding: 7 }}><Crest store={store} theme={theme} size={50} /></span>
           <p style={{ fontSize: 15.5, lineHeight: 1.65, margin: '18px 0 0', maxWidth: 330 }}>
             The official team store for {short || 'your team'} — stocked, decorated, and {deliver} by National Sports Apparel.
           </p>
@@ -1095,7 +1095,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
       {firstBundle && !filtered && <PackPromo store={store} theme={theme} bundle={firstBundle} bundleItems={bundleItems} onClick={goBundle} />}
 
       {vs && !q && catCards.length > 1 && (
-        <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(38px,4.5vw,60px) 24px 0' }}>
+        <div style={{ maxWidth: 1240, margin: '0 auto', padding: 'clamp(40px,5vw,92px) 24px 0' }}>
           <VsSectionHead id="shop-cats" theme={theme} eyebrow="Shop by Category" head="Featured" tail="Sections" />
           <div className="sf-vs-catgrid">
             {catCards.map((c) => (
@@ -1106,7 +1106,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
         </div>
       )}
 
-      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: vs ? 'clamp(38px,4.5vw,60px) 24px clamp(52px,6.5vw,84px)' : 'clamp(24px,3vw,40px) 24px clamp(48px,6vw,72px)', scrollMarginTop: 132 }}>
+      <div id="shop-grid" style={{ maxWidth: 1240, margin: '0 auto', padding: vs ? 'clamp(40px,5vw,92px) 24px clamp(52px,6.5vw,84px)' : 'clamp(24px,3vw,40px) 24px clamp(48px,6vw,72px)', scrollMarginTop: 132 }}>
         {vs && products.length > 0 && (
           <VsSectionHead theme={theme}
             eyebrow={q ? 'Search results' : cat !== 'all' ? 'Section' : 'The full store'}
