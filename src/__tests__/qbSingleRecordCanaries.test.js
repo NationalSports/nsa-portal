@@ -77,6 +77,61 @@ describe('QuickBooks one-record canaries', () => {
     expect(getConfig().prodQBMap.P1).toBe('I-1');
   });
 
+  test('creates and verifies the one required NSA Portal Sales service item', async() => {
+    const readback={Id:'SALES-1',Name:'NSA Portal Sales',Type:'Service',Active:true,IncomeAccountRef:{value:accountId('40000')}};
+    const qbApi=jest.fn(async(action,{query,item}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[]}};
+      if(action==='upsert_item')return{Item:{Id:'SALES-1',...item}};
+      if(action==='query'&&query.includes("FROM Item WHERE Id = 'SALES-1'"))return{QueryResponse:{Item:[readback]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig}=makeEngine({qbApi});
+    await expect(engine.syncPortalSalesItemCanary()).resolves.toEqual({status:'success',itemId:'SALES-1'});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
+    expect(qbApi).toHaveBeenCalledWith('upsert_item',{item:expect.objectContaining({Name:'NSA Portal Sales',Type:'Service',IncomeAccountRef:expect.objectContaining({value:accountId('40000')})})});
+    expect(getConfig()._portalSalesItemId).toBe('SALES-1');
+  });
+
+  test('verifies an existing ready NSA Portal Sales item without writing it', async() => {
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      if(action==='query'&&query.includes("FROM Item WHERE Id = 'SALES-ITEM'"))return{QueryResponse:{Item:[portalSalesItem]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine}=makeEngine({qbApi});
+    await expect(engine.syncPortalSalesItemCanary()).resolves.toEqual({status:'success',itemId:'SALES-ITEM'});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(0);
+  });
+
+  test('repairs and verifies one inactive or misrouted NSA Portal Sales item', async() => {
+    const existing={...portalSalesItem,Active:false,SyncToken:'3',IncomeAccountRef:{value:'WRONG-ACCOUNT'}};
+    const readback={...portalSalesItem,Active:true,SyncToken:'4',IncomeAccountRef:{value:accountId('40000')}};
+    const qbApi=jest.fn(async(action,{query,item}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[existing]}};
+      if(action==='upsert_item')return{Item:{...item,Id:'SALES-ITEM'}};
+      if(action==='query'&&query.includes("FROM Item WHERE Id = 'SALES-ITEM'"))return{QueryResponse:{Item:[readback]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine}=makeEngine({qbApi});
+    await expect(engine.syncPortalSalesItemCanary()).resolves.toEqual({status:'success',itemId:'SALES-ITEM'});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
+    expect(qbApi).toHaveBeenCalledWith('upsert_item',{item:expect.objectContaining({Id:'SALES-ITEM',SyncToken:'3',sparse:true,Active:true,IncomeAccountRef:expect.objectContaining({value:accountId('40000')})})});
+  });
+
+  test('blocks duplicate NSA Portal Sales items without writing either one', async() => {
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='query'&&query.includes("FROM Item WHERE Name = 'NSA Portal Sales'"))return{QueryResponse:{Item:[portalSalesItem,{...portalSalesItem,Id:'SALES-ITEM-2'}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine}=makeEngine({qbApi});
+    await expect(engine.syncPortalSalesItemCanary()).resolves.toEqual({status:'blocked'});
+    expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(0);
+  });
+
   test('creates and reads back exactly one non-posting estimate', async() => {
     const so={id:'SO-1',customer_id:'C1',created_at:'2026-09-01',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',unit_sell:25,sizes:{S:2},decorations:[]}]};
     const readback={Id:'E-1',DocNumber:'SO-1',CustomerRef:{value:'C-QB'},TotalAmt:50,TxnDate:'2026-09-01'};

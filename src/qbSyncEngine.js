@@ -154,7 +154,7 @@ export function createQBSyncEngine(ctx){
     const requireExistingPortalSalesItem=async(incomeAccountRef)=>{
       const qRes=await queryQBReadOnly(qbApi,"SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 2",'portal sales item query');
       const matches=qRes?.QueryResponse?.Item||[];
-      if(matches.length!==1)throw new Error(matches.length?'Multiple QBO items are named NSA Portal Sales; no record was sent.':'QBO item "NSA Portal Sales" is missing; test one QBO item first.');
+      if(matches.length!==1)throw new Error(matches.length?'Multiple QBO items are named NSA Portal Sales; no record was sent.':'QBO item "NSA Portal Sales" is missing; open QBO Items and run Test NSA Portal Sales Item first.');
       const item=matches[0];
       if(item.Active===false||String(item.IncomeAccountRef?.value||'')!==String(incomeAccountRef.value))throw new Error('QBO item "NSA Portal Sales" is inactive or not mapped to 40000 Sales; no record was sent.');
       return String(item.Id);
@@ -168,6 +168,56 @@ export function createQBSyncEngine(ctx){
       if(expected.total!=null&&Math.abs(safeNum(row.TotalAmt)-safeNum(expected.total))>=0.005)throw new Error(entity+' total did not match on API read-back.');
       if(expected.sku!=null&&String(row.Sku||'').trim().toUpperCase()!==String(expected.sku).trim().toUpperCase())throw new Error(entity+' SKU did not match on API read-back.');
       return row;
+    };
+
+    const syncPortalSalesItemCanary=async()=>{
+      if(!canaryPreflightReady())return{status:'blocked'};
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'portal_sales_item_canary',status:'success',details:[]};
+      try{
+        const refs=await requiredAccountRefs(['income_account']);
+        const incomeAccountRef=refs.income_account;
+        const query="SELECT * FROM Item WHERE Name = 'NSA Portal Sales' MAXRESULTS 2";
+        const qRes=await queryQBReadOnly(qbApi,query,'portal sales item canary query');
+        const matches=qRes?.QueryResponse?.Item||[];
+        if(matches.length>1)throw new Error('Multiple QBO items are named NSA Portal Sales; no item was changed.');
+        const existing=matches[0];
+        const existingType=String(existing?.Type||'').toLowerCase();
+        if(existing&&existingType!=='service'&&existingType!=='noninventory'){
+          throw new Error('Existing QBO item "NSA Portal Sales" has type '+(existing.Type||'unknown')+'; no item was changed.');
+        }
+        const alreadyReady=existing?.Id&&existing.Active!==false
+          &&String(existing.IncomeAccountRef?.value||'')===String(incomeAccountRef.value);
+        let itemId=existing?.Id;
+        if(!alreadyReady){
+          const item=existing?.Id
+            ?{Id:existing.Id,SyncToken:existing.SyncToken,sparse:true,Name:'NSA Portal Sales',Active:true,IncomeAccountRef:incomeAccountRef}
+            :{Name:'NSA Portal Sales',Type:'Service',Description:'Portal sales and customer-billed shipping — 40000 Sales',IncomeAccountRef:incomeAccountRef};
+          const res=await qbApi('upsert_item',{item});
+          if(!res?.Item?.Id)throw new Error(res?.Fault?.Error?.[0]?.Detail||'Could not create or repair the NSA Portal Sales item');
+          itemId=String(res.Item.Id);
+          log.details.push((existing?'REPAIRED':'CREATED')+' ONE QBO ITEM: NSA Portal Sales → QBO Item #'+itemId);
+        }else{
+          log.details.push('FOUND ONE READY QBO ITEM: NSA Portal Sales → QBO Item #'+itemId);
+        }
+        const verified=await verifyCanaryReadback('Item',itemId);
+        const verifiedType=String(verified.Type||'').toLowerCase();
+        if(String(verified.Name||'')!=='NSA Portal Sales')throw new Error('QBO item name did not match on API read-back.');
+        if(verified.Active===false)throw new Error('QBO item was inactive on API read-back.');
+        if(verifiedType!=='service'&&verifiedType!=='noninventory')throw new Error('QBO item type was not Service or NonInventory on API read-back.');
+        if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAccountRef.value))throw new Error('QBO item was not mapped to 40000 Sales on API read-back.');
+        log.details.push('READ-BACK VERIFIED: NSA Portal Sales · QBO Item #'+itemId+' · '+verified.Type+' · 40000 Sales');
+        setQBConfig(prev=>({...prev,_portalSalesItemId:itemId,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+        nf('Verified NSA Portal Sales in QBO','success');
+        setQbSyncing(false);
+        return{status:'success',itemId};
+      }catch(e){
+        log.status='error';log.details.push(e.message||'NSA Portal Sales item test failed');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+        nf('NSA Portal Sales test blocked — '+(e.message||'QBO item setup error'),'error');
+        setQbSyncing(false);
+        return{status:'blocked'};
+      }
     };
 
     const buildQBCustomerPayload=(c,{qbId='',syncToken='',termRef}={})=>{
@@ -981,5 +1031,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncSalesOrders,syncPurchaseOrders,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
 }
