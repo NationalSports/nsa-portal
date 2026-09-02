@@ -267,14 +267,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   // effect at import time. Query by customer snapshot (including child accounts)
   // instead of only by today's store mapping so reassignment does not rewrite history.
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data,error}=await supabase.from('omg_store_profit_snapshots').select('id,store_id,store_code,period_month,is_cumulative,products,product_collected,item_cost,product_profit,margin_pct,refunds,omg_fees,processing_fees,invoiced_fees,net_profit,rep_id,source_mode,validation_status,imported_at').in('customer_id',_ids).order('period_month',{ascending:true});if(!cancelled)setCustOmgProfits(error?[]:(data||[]))})();return()=>{cancelled=true}},[customer.id]);
+  const accountRepId=customer.primary_rep_id||'';
+  const accountRep=(REPS||[]).find(r=>r.id===accountRepId);
   const openOmgAssignment=()=>{
-    const signedInRep=(REPS||[]).find(r=>r.id===cu?.id||(r.email&&cu?.email&&r.email.toLowerCase()===cu.email.toLowerCase()));
-    setOmgAssign({code:'',store_name:(customer.name||'Customer')+' 24/7 Store',rep_id:customer.primary_rep_id||signedInRep?.id||''});
+    setOmgAssign({code:'',store_name:(customer.name||'Customer')+' 24/7 Store'});
     setOmgAssignError('');
   };
   const saveOmgAssignment=async()=>{
     if(!supabase){setOmgAssignError('Database connection is unavailable.');return}
-    const form={code:omgAssign?.code,storeName:omgAssign?.store_name,customerId:customer.id,repId:omgAssign?.rep_id};
+    const form={code:omgAssign?.code,storeName:omgAssign?.store_name,customerId:customer.id,repId:accountRepId};
     const invalid=validateOmgStoreAssignment(form);if(invalid){setOmgAssignError(invalid);return}
     const code=normalizeOmgStoreCode(form.code);setOmgAssignSaving(true);setOmgAssignError('');
     try{
@@ -888,10 +889,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{padding:'9px 11px',borderRadius:7,background:'#f8fafc',fontSize:11.5,color:'#475569'}}>This permanently maps the OMG code to <strong>{customer.name}</strong>. Future monthly imports use the mapping automatically.</div>
             <label><span className="form-label">OMG store code</span><input autoFocus value={omgAssign.code} maxLength={5} onChange={e=>setOmgAssign(v=>({...v,code:normalizeOmgStoreCode(e.target.value).slice(0,5)}))} placeholder="5YP6D" style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,fontFamily:'monospace',fontWeight:800,textTransform:'uppercase'}}/></label>
             <label><span className="form-label">Store name</span><input value={omgAssign.store_name} onChange={e=>setOmgAssign(v=>({...v,store_name:e.target.value}))} placeholder="Customer 24/7 Store" style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6}}/></label>
-            <label><span className="form-label">Sales rep</span><select value={omgAssign.rep_id} onChange={e=>setOmgAssign(v=>({...v,rep_id:e.target.value}))} style={{width:'100%',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6}}><option value="">Select rep…</option>{(REPS||[]).filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
+            <label><span className="form-label">Sales rep</span><div style={{width:'100%',padding:'8px 10px',border:'1px solid '+(accountRepId?'#cbd5e1':'#fecaca'),borderRadius:6,background:'#f8fafc',fontSize:13,fontWeight:600,color:accountRepId?'#0f172a':'#b91c1c'}}>{accountRep?.name||(accountRepId?'Assigned account rep':'No sales rep assigned to this customer')}</div><div style={{fontSize:10.5,color:'#64748b',marginTop:4}}>Automatically uses the sales rep assigned on this customer account.</div></label>
             {omgAssignError&&<div style={{padding:'8px 10px',borderRadius:6,background:'#fef2f2',color:'#b91c1c',fontSize:11.5,fontWeight:600}}>{omgAssignError}</div>}
           </div>
-          <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}><button className="btn btn-primary" disabled={omgAssignSaving} onClick={saveOmgAssignment}>{omgAssignSaving?'Assigning…':'Assign store'}</button><button className="btn btn-secondary" disabled={omgAssignSaving} onClick={()=>setOmgAssign(null)}>Cancel</button></div>
+          <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}><button className="btn btn-primary" disabled={omgAssignSaving||!accountRepId} onClick={saveOmgAssignment}>{omgAssignSaving?'Assigning…':'Assign store'}</button><button className="btn btn-secondary" disabled={omgAssignSaving} onClick={()=>setOmgAssign(null)}>Cancel</button></div>
         </div>
       </div>}
     </div>;
