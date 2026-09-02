@@ -248,6 +248,11 @@ function parsePath() {
   return { slug: segs[1] || '', view: segs[2] || 'home', id: segs[3] || null };
 }
 function navTo(path) { window.history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); window.scrollTo(0, 0); }
+function orderPath(store, order, suffix = '') {
+  const token = String(order && order.status_token || '');
+  if (!token) throw new Error('Order tracking token missing');
+  return `/shop/${store.slug}/order/${encodeURIComponent(token)}${suffix}`;
+}
 
 function useTheme(store) {
   return useMemo(() => {
@@ -532,7 +537,7 @@ export default function Storefront() {
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
-        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
+        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderToken={route.id} /></Wrap>}
       </main>
       <Footer store={store} theme={theme} />
     </div>
@@ -1781,7 +1786,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // charges the original amount, or switch to team-tab and mint a duplicate order.
   const locked = !!clientSecret;
   const [checkoutMsg, setCheckoutMsg] = useState('');
-  useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
+  useEffect(() => { checkoutCall({ action: 'settings' }).then((data) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
@@ -1852,7 +1857,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     setBusy(false);
     if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+    onClear(); navTo(orderPath(store, r.order));
   };
 
   // Order-first: the server re-prices the cart, persists the order as
@@ -1869,14 +1874,14 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       // on the confirmation instead of showing a card form for a settled intent.
       await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+      onClear(); navTo(orderPath(store, r.order));
       return;
     }
     if (r.paymentProcessing) {
       // Replay of an order whose ACH debit is mid-settlement (or awaiting micro-deposit
       // verification) — the money is already in motion, so never re-show a payment form.
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}${r.bankVerify ? '?bankverify=1' : ''}`);
+      onClear(); navTo(orderPath(store, r.order, r.bankVerify ? '?bankverify=1' : ''));
       return;
     }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
@@ -1893,7 +1898,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     // confirmation_sent claim means exactly one of them sends the email.
     await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+    onClear(); navTo(orderPath(store, pendingOrder));
   };
 
   // Bank (ACH) debit initiated but not yet settled — no finalize (the server
@@ -1904,7 +1909,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const confirmProcessing = async (paymentIntentId, verifying) => {
     if (!pendingOrder) { setErr('Order reference lost — your bank payment was submitted. Please contact us and we’ll confirm your order.'); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}${verifying ? '?bankverify=1' : ''}`);
+    onClear(); navTo(orderPath(store, pendingOrder, verifying ? '?bankverify=1' : ''));
   };
 
   return (
@@ -2025,19 +2030,19 @@ function CardForm({ theme, onPaid, onProcessing }) {
   );
 }
 
-// ── Order status (tokenless lookup by id; emailed link comes later) ──
-function OrderStatusPage({ store, theme, orderId }) {
+// ── Order status (private bearer token) ──────────────────────────────
+function OrderStatusPage({ store, theme, orderToken }) {
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
   const [status, setStatus] = useState('loading');
   useEffect(() => {
     (async () => {
-      const r = await checkoutCall({ action: 'get_order', orderId });
+      const r = await checkoutCall({ action: 'track_order', token: orderToken });
       if (r.error || !r.order) { setStatus('notfound'); return; }
       setOrder(r.order);
       setItems(r.items || []); setStatus('ok');
     })();
-  }, [orderId]);
+  }, [orderToken]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Order not found.</Splash></div>;
 
@@ -2312,7 +2317,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         )}
       </div>
 
-      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} token={orderToken} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
 
       {/* What's next */}
       <div style={{ background: WARM, border: `1px solid ${LINE}`, borderRadius: 8, padding: '20px 24px', marginBottom: 22 }}>
@@ -2336,7 +2341,7 @@ function OrderStatusPage({ store, theme, orderId }) {
 }
 
 // Shows the order's shipping address and — until it ships — lets the buyer fix it.
-function ShippingBlock({ theme, order, shipped, onSaved }) {
+function ShippingBlock({ theme, order, token, shipped, onSaved }) {
   const a = order.ship_address || {};
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ name: a.name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
@@ -2345,7 +2350,7 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
   const save = async () => {
     if (!f.street1 || !f.city || !f.state || !f.zip) { setMsg('Please complete street, city, state and ZIP.'); return; }
     setBusy(true); setMsg('');
-    const r = await checkoutCall({ action: 'update_ship', orderId: order.id, ship: f });
+    const r = await checkoutCall({ action: 'update_ship', token, ship: f });
     setBusy(false);
     if (r.error) { setMsg(r.error.message || 'Could not save — please try again.'); return; }
     onSaved(r.ship_address || { ...a, ...f }); setEditing(false);

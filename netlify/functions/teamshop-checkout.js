@@ -33,9 +33,9 @@
 // verifies the PaymentIntent amount/metadata — it never filters by store, so
 // Team Shop orders finalize identically to storefront orders, and the
 // stripe-webhook fallback (matched by stripe_pi_id only) shares the same
-// atomic confirmation_sent claim. `get_order` (by order UUID) and
-// `track_order` (by status_token) are equally store-agnostic, so the existing
-// /shop/order/<status_token> tracker works for Team Shop orders unchanged.
+// atomic confirmation_sent claim. Customer status/address access is always by
+// the private status_token, and the existing /shop/order/<status_token>
+// tracker works for Team Shop orders unchanged.
 //
 // Deliberately NOT mirrored from the storefront (made-to-order, coach-only):
 // no coupons, no fundraising, no processing fee, no jersey-number claims, and
@@ -481,20 +481,23 @@ async function placeOrderPo(sb, body, coach) {
 // (migration 00196): CheckoutPage calls this right after webstore-checkout's
 // finalize succeeds. Coach JWT is sufficient here because nothing is trusted
 // from the client beyond the order id — this function re-reads the order and
-// verifies it is a PAID Team Shop order before invoking the RPC, and the RPC
-// re-guards both (plus so_id replay) inside its own transaction, so a replay,
-// a race with the stripe-webhook caller, or a hostile order_id is a no-op.
+// verifies it is the authenticated coach's own PAID Team Shop order before
+// invoking the RPC. Server-side Stripe/webhook retry paths call the RPC with
+// service credentials and do not depend on this coach-facing endpoint.
 // A failure here is recoverable: the order is already paid, and the webhook
 // (or a staff batch) converts it later — hence 502, never data loss.
-async function convertOrder(sb, body) {
+async function convertOrder(sb, body, coach) {
   const orderId = String(body.order_id || '').trim();
   if (!orderId) return bad(400, 'order_id required');
   const { data, error } = await sb.from('webstore_orders')
-    .select('id,status,order_source,so_id').eq('id', orderId).limit(1);
+    .select('id,status,order_source,so_id,coach_id').eq('id', orderId).limit(1);
   if (error) return bad(500, error.message);
   const order = data && data[0];
   if (!order) return bad(404, 'Order not found');
   if (order.order_source !== 'teamshop') return bad(409, 'Not a Team Shop order.');
+  if (!coach || !coach.id || String(order.coach_id || '') !== String(coach.id)) {
+    return bad(403, 'Not authorized for this order.');
+  }
   if (order.so_id) return ok({ ok: true, so_id: order.so_id, replayed: true });
   if (order.status !== 'paid') return bad(409, 'Order is not paid yet.');
   const rpc = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: order.id });
@@ -532,7 +535,7 @@ exports.handler = async (event) => {
     if (body.action === 'place_order') return await placeOrder(admin, body, v.coach);
     if (body.action === 'place_order_ach') return await placeOrder(admin, body, v.coach, { ach: true });
     if (body.action === 'place_order_po') return await placeOrderPo(admin, body, v.coach);
-    if (body.action === 'convert_order') return await convertOrder(admin, body);
+    if (body.action === 'convert_order') return await convertOrder(admin, body, v.coach);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[teamshop-checkout] error:', e);
