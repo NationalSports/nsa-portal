@@ -2547,10 +2547,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(it.qty_only&&!Object.keys(safeSizes(it)).length){nf('Move unfulfilled needs a size breakdown. Use Change SKU for this quantity-only line.','error');return null}
     const plan=unfulfilledSizes(it);const moveKeys=Object.keys(plan.open);if(!moveKeys.length){nf('Nothing to move — every quantity is already pulled or on a PO.','error');return null}
     const avail=new Set((targetSizes||[]).filter(Boolean));const missing=avail.size?moveKeys.filter(sz=>!avail.has(sz)):[];
-    const moving=_copySzStr(plan.open);const staying=moveKeys.concat(Object.keys(plan.picked),Object.keys(plan.po)).filter((v,x,a)=>a.indexOf(v)===x).sort((a,b)=>szRank(a)-szRank(b)).map(sz=>{const bits=[];if(safeNum(plan.picked[sz])>0)bits.push(plan.picked[sz]+' pulled');if(safeNum(plan.po[sz])>0)bits.push(plan.po[sz]+' on PO');return bits.length?sz+': '+bits.join(', '):null}).filter(Boolean).join('\n');
-    const warning=missing.length?'\n\n⚠ '+targetLabel+' does not list '+missing.join(', ')+'. Approving will add '+(missing.length===1?'that size':'those sizes')+' to the replacement line.':'';
-    if(!window.confirm('Move '+moving+' from '+it.sku+' to '+targetLabel+'?\n\nStays on '+it.sku+(staying?'\n'+staying:'\nNothing — the original line will be removed.')+warning+'\n\nThis copies the full line setup and cannot be undone automatically.'))return null;
-    return plan.open;
+    const moving=_copySzStr(plan.open);const staying=moveKeys.concat(Object.keys(plan.picked),Object.keys(plan.po)).filter((v,x,a)=>a.indexOf(v)===x).sort((a,b)=>szRank(a)-szRank(b)).map(sz=>({size:sz,pulled:safeNum(plan.picked[sz]),onPO:safeNum(plan.po[sz])})).filter(r=>r.pulled>0||r.onPO>0);
+    return{open:plan.open,moving,staying,missing,targetLabel,sourceSku:it.sku};
   };
   const _moveDecoKey=it=>JSON.stringify(safeDecos(it));
   const _commitUnfulfilledMove=(i,clone,requested)=>{let merged=false;let replaced=false;
@@ -2567,7 +2565,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return{merged,replaced};
   };
   const copyI=(i,newSz,copyPrice)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_applyCopySizes(clone,newSz);_applyCopyPrice(clone,it,copyPrice);const szStr=_copySzStr(newSz);sv('items',_insertCopiedItem(o.items,i,clone));nf('📋 Copied '+it.sku+(szStr?' — '+szStr:' with all sizes')+' & decorations')};
-  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false)=>{const it=o.items[i];const moveSz=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!moveSz)return;const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
+  const copyIWithSku=(i,p,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{const it=o.items[i];const movePreview=moveOpen?_moveUnfulfilledPreview(i,p.available_sizes,p.sku+(p.color?' — '+p.color:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'catalog',product:p,preview:movePreview}}));return}const moveSz=movePreview?.open||null;const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);const _clr=p.is_clearance&&p.clearance_cost!=null;clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=catalogRepCost(p);clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;clone._is_clearance=p.is_clearance||false;
     // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
     // so filled sizes survive the swap without dragging over the catalog's full padded run.
     const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
@@ -2600,7 +2598,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // Copy item to a vendor-search result (S&S/SanMar/Momentec/Richardson). Mirrors addSearchProduct
   // but preserves source item's decorations + sizes by cloning it.
-  const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice,moveOpen=false)=>{
+  const copyIWithVendorResult=(i,style,color,source,newSz,copyPrice,moveOpen=false,moveApproved=false)=>{
     const it=o.items[i];if(!it)return;
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
@@ -2615,7 +2613,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const STD_SIZES=(isRS||_feedSizes.length)?[]:['S','M','L','XL','2XL'];
     let availSizes=[..._feedSizes,...STD_SIZES];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-    const moveSz=moveOpen?_moveUnfulfilledPreview(i,availSizes,style.sku+(color.colorName?' — '+color.colorName:'')):null;if(moveOpen&&!moveSz)return;
+    const movePreview=moveOpen?_moveUnfulfilledPreview(i,availSizes,style.sku+(color.colorName?' — '+color.colorName:'')):null;if(moveOpen&&!movePreview)return;if(moveOpen&&!moveApproved){setCopySkuModal(m=>({...m,pendingMove:{kind:'vendor',style,color,source,preview:movePreview}}));return}const moveSz=movePreview?.open||null;
     const vInv={};const vNextBySize={};
     // Only cache sizes with a real inventory hit. SanMar/S&S live-search rows often
     // come back with qty=0 because the search-time inventory fetch is a single
@@ -15855,6 +15853,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
         const newSzTot=Object.values(newSz||{}).reduce((a,v)=>a+safeNum(v),0);
         const priceMode=copySkuModal.priceMode||'keep';
         const copyPrice={mode:priceMode};
+        const pendingMove=copySkuModal.pendingMove||null;
         const onPickCatalog=p=>isReplace?changeItemSku(copySkuModal.itemIdx,p):copyIWithSku(copySkuModal.itemIdx,p,newSz,copyPrice,isMove);
         const onPickVendor=(st,c,src)=>isReplace?changeItemWithVendorResult(copySkuModal.itemIdx,st,c,src):copyIWithVendorResult(copySkuModal.itemIdx,st,c,src,newSz,copyPrice,isMove);
         const sqTokens=sq.split(/\s+/).filter(Boolean);
@@ -15884,7 +15883,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
             </div>})}
           </div>
         </div>;
-        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCopySkuModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:620}}>
           <div className="modal-header"><h2>{isMove?'Move Unfulfilled to Another SKU':isCopy?'Copy Item':'Change SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
@@ -15921,7 +15920,16 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   {newSzTot>0&&<button onClick={()=>setCopySkuModal(m=>({...m,sz:{}}))} style={{marginTop:7,padding:'3px 8px',borderRadius:5,border:'1px solid #e2e8f0',background:'white',cursor:'pointer',fontSize:10,fontWeight:700,color:'#64748b'}}>Clear sizes</button>}
                 </div>}
               </div>})()}
-            {isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {isMove&&pendingMove?(()=>{const pm=pendingMove,pv=pm.preview;return<div style={{border:'1px solid #bfdbfe',borderRadius:10,overflow:'hidden',background:'#fff'}}>
+              <div style={{padding:'10px 12px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe'}}><div style={{fontSize:14,fontWeight:800,color:'#1e3a8a'}}>Review the move</div><div style={{fontSize:12,color:'#475569',marginTop:2}}>Confirm what changes before anything is updated.</div></div>
+              <div style={{padding:12}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:10,marginBottom:12}}><div style={{padding:'9px 10px',border:'1px solid #e2e8f0',borderRadius:8,background:'#f8fafc'}}><div style={{fontSize:10,fontWeight:800,color:'#64748b',textTransform:'uppercase'}}>From</div><div style={{fontSize:14,fontWeight:800,color:'#334155'}}>{pv.sourceSku}</div></div><div style={{fontSize:20,color:'#2563eb'}}>→</div><div style={{padding:'9px 10px',border:'1px solid #bbf7d0',borderRadius:8,background:'#f0fdf4'}}><div style={{fontSize:10,fontWeight:800,color:'#15803d',textTransform:'uppercase'}}>To</div><div style={{fontSize:14,fontWeight:800,color:'#166534'}}>{pv.targetLabel}</div></div></div>
+                <div style={{fontSize:11,fontWeight:800,color:'#1e40af',textTransform:'uppercase',letterSpacing:.4,marginBottom:5}}>Moves to the replacement</div><div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:13}}>{Object.entries(pv.open||{}).map(([sz,q])=><span key={sz} style={{padding:'5px 9px',borderRadius:7,background:'#dbeafe',border:'1px solid #93c5fd',color:'#1e3a8a',fontSize:13,fontWeight:800}}>{q} × {sz}</span>)}</div>
+                <div style={{fontSize:11,fontWeight:800,color:'#475569',textTransform:'uppercase',letterSpacing:.4,marginBottom:5}}>Stays on {pv.sourceSku}</div>{pv.staying.length?<div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',marginBottom:12}}>{pv.staying.map(r=><div key={r.size} style={{display:'grid',gridTemplateColumns:'60px 1fr 1fr',gap:8,padding:'7px 10px',borderBottom:'1px solid #f1f5f9',fontSize:12,alignItems:'center'}}><strong>{r.size}</strong><span style={{color:r.pulled?'#166534':'#94a3b8'}}>{r.pulled?r.pulled+' pulled':'—'}</span><span style={{color:r.onPO?'#92400e':'#94a3b8'}}>{r.onPO?r.onPO+' on PO':'—'}</span></div>)}</div>:<div style={{padding:'8px 10px',borderRadius:8,background:'#f8fafc',color:'#64748b',fontSize:12,marginBottom:12}}>Nothing stays—the original line will be replaced.</div>}
+                {pv.missing.length>0&&<div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,color:'#92400e',fontSize:12,marginBottom:10}}>⚠ {pv.targetLabel} does not list {pv.missing.join(', ')}. {pv.missing.length===1?'That size will':'Those sizes will'} be added to the replacement line.</div>}
+                <div style={{fontSize:11,color:'#64748b',lineHeight:1.45}}>The full line setup and decorations copy to the replacement. Pulled and PO quantities remain attached to the original SKU.</div>
+              </div><div style={{display:'flex',justifyContent:'flex-end',gap:8,padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#f8fafc'}}><button className="btn btn-secondary" onClick={()=>setCopySkuModal(m=>({...m,pendingMove:null}))}>← Change selection</button><button className="btn btn-primary" onClick={()=>pm.kind==='catalog'?copyIWithSku(copySkuModal.itemIdx,pm.product,null,copyPrice,true,true):copyIWithVendorResult(copySkuModal.itemIdx,pm.style,pm.color,pm.source,null,copyPrice,true,true)}>Confirm Move</button></div>
+            </div>})():isClone?<div style={{display:'flex',flexDirection:'column',gap:10}}>
               <div style={{fontSize:12,color:'#64748b'}}>{newSzTot>0?'Adds a duplicate of this line (same SKU and decorations) below it, sized '+_copySzStr(newSz)+'.':'Adds an exact duplicate of this line (same SKU, sizes, and decorations) below it.'}</div>
               <button className="btn btn-primary" onClick={()=>{copyI(copySkuModal.itemIdx,newSz,copyPrice);setCopySkuModal(null)}} style={{alignSelf:'flex-start'}}><Icon name="file" size={14}/> Add duplicate line</button>
             </div>:<>
