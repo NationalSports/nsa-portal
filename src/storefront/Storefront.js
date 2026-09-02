@@ -144,6 +144,11 @@ function StoreStyles() {
            names retain the larger reference treatment; words such as BASKETBALL
            and VOLLEYBALL get a slightly tighter responsive scale. */
         .sf-vs-word-long{font-size:clamp(120px,20vw,260px) !important}
+        /* Scale the hero frame with its artwork. This keeps the desktop presence
+           while preventing the reduced tablet/mobile logo from floating inside
+           a desktop-height panel. */
+        .sf-vs-hero-body{min-height:clamp(240px,33vw,380px) !important}
+        .sf-vs-logo{width:clamp(190px,26vw,300px) !important;height:clamp(190px,26vw,300px) !important}
         .sf-footlink{transition:color .15s ease}
         .sf-footlink:hover{color:#fff !important}
         @media (max-width:1100px){
@@ -179,7 +184,7 @@ function StoreStyles() {
           .sf-vs-hdr{gap:10px !important;padding-left:14px !important;padding-right:14px !important}
           .sf-vs-crest{display:none !important}
           .sf-vs-title{white-space:normal !important;font-size:16px !important;line-height:1.06 !important;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-          .sf-vs-hero-body{min-height:290px !important}
+          .sf-vs-hero-body{min-height:240px !important}
           .sf-vs-word{font-size:clamp(74px,21vw,126px) !important}
           .sf-vs-word-long{font-size:clamp(74px,19vw,126px) !important}
           .sf-vs-logo{width:190px !important;height:190px !important}
