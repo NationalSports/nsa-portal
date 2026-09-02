@@ -1,0 +1,166 @@
+// Hourly webstore integrity canary + durable alert worker.
+//
+// This pass is intentionally non-financial and non-fulfilling: it reads the
+// durable workflow ledgers, verifies the security boundary, and renders
+// synthetic message/shipment emails locally. It never creates an order,
+// charges/refunds a card, calls ShipStation, or purchases a label.
+
+const { createClient } = require('@supabase/supabase-js');
+const {
+  escapeHtml,
+  buildCustomerStaffEmail,
+  buildShipmentCustomerEmail,
+  sendBrevoEmail,
+} = require('./_webstoreNotifications');
+
+const HEADERS = { 'Content-Type': 'application/json' };
+
+function isScheduled(event) {
+  if (String(event && event.headers && event.headers['x-nf-event'] || '').toLowerCase() === 'schedule') return true;
+  try { return Boolean(JSON.parse((event && event.body) || '{}').next_run); } catch (_) { return false; }
+}
+
+function alertRecipients() {
+  const raw = process.env.WEBSTORE_INTEGRITY_ALERT_EMAILS
+    || process.env.STUCK_SWEEP_ALERT_EMAIL
+    || 'stores@nationalsportsapparel.com';
+  const seen = new Set();
+  return String(raw).split(/[;,]/).map((email) => email.trim().toLowerCase())
+    .filter((email) => email && email.includes('@') && !seen.has(email) && seen.add(email))
+    .map((email) => ({ email }));
+}
+
+// Exercises the two original failure paths without sending or persisting data.
+// If a refactor removes escaping, token links, or recipients, the scheduled
+// invocation fails visibly before claiming an alert batch.
+function runRuntimeCanary() {
+  const marker = '<webstore-canary>';
+  const staff = buildCustomerStaffEmail({
+    order: { buyer_name: 'Canary', buyer_email: 'canary@example.invalid', omg_order_number: 'CANARY' },
+    store: { name: 'Webstore canary' },
+    message: { text: marker },
+    recipients: [{ email: 'stores@nationalsportsapparel.com' }],
+  });
+  const shipment = buildShipmentCustomerEmail({
+    order: { buyer_name: 'Canary', buyer_email: 'canary@example.invalid', status_token: 'canary-token' },
+    store: { name: 'Webstore canary', primary_color: '#0b1f3a', accent_color: '#e11d2a' },
+    shipment: { tracking_number: 'CANARY', carrier: 'ups', items: [{ name: 'Canary item', qty: 1 }] },
+    remainingUnits: 0,
+  });
+  if (!staff.to || !staff.to.length || !staff.htmlContent.includes('&lt;webstore-canary&gt;')) {
+    throw new Error('Customer-message notification render canary failed');
+  }
+  if (!shipment.to || !shipment.to.length || !shipment.htmlContent.includes('/shop/order/canary-token')) {
+    throw new Error('Shipment tracker notification render canary failed');
+  }
+  return true;
+}
+
+function buildAlertEmail(incidents) {
+  const rows = (incidents || []).map((incident) => {
+    const critical = incident.severity === 'critical';
+    const color = critical ? '#991b1b' : '#92400e';
+    const bg = critical ? '#fee2e2' : '#fef3c7';
+    const label = critical ? 'CRITICAL' : 'WARNING';
+    const details = incident.details && Object.keys(incident.details).length
+      ? `<div style="font-size:11px;color:#64748b;margin-top:4px">${escapeHtml(JSON.stringify(incident.details))}</div>`
+      : '';
+    return `<li style="margin:0 0 14px">
+      <span style="display:inline-block;padding:2px 7px;border-radius:10px;background:${bg};color:${color};font-size:10px;font-weight:800">${label}</span>
+      <strong style="margin-left:6px">${escapeHtml(incident.summary)}</strong>
+      <div style="font-size:12px;color:#475569;margin-top:3px">${escapeHtml(incident.category)}${incident.record_type ? ` · ${escapeHtml(incident.record_type)}` : ''}${incident.record_id ? ` · ${escapeHtml(incident.record_id)}` : ''}</div>
+      ${details}
+    </li>`;
+  }).join('');
+  const criticalCount = (incidents || []).filter((incident) => incident.severity === 'critical').length;
+  const portal = String(process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
+  return {
+    sender: { name: 'NSA Webstore Monitor', email: 'stores@nationalsportsapparel.com' },
+    to: alertRecipients(),
+    subject: `Webstore integrity alert — ${incidents.length} issue${incidents.length === 1 ? '' : 's'} (${criticalCount} critical)`,
+    htmlContent: `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:680px;color:#1e293b">
+      <h2 style="margin-bottom:4px;color:#991b1b">Webstore integrity needs attention</h2>
+      <p style="margin-top:0;color:#64748b">The automated canary found ${incidents.length} active issue${incidents.length === 1 ? '' : 's'}. It did not move money or buy postage.</p>
+      <ul style="padding-left:20px">${rows}</ul>
+      <p><a href="${escapeHtml(`${portal}/?omg=1`)}" style="display:inline-block;background:#0b1f3a;color:white;text-decoration:none;padding:10px 18px;border-radius:7px;font-weight:700">Open OMG Stores</a></p>
+      <hr style="border:none;border-top:1px solid #e2e8f0;margin-top:24px">
+      <p style="font-size:11px;color:#94a3b8">Generated by webstore-integrity-sweep. Active incidents remind at most once every 24 hours; healed incidents resolve automatically.</p>
+    </div>`,
+  };
+}
+
+async function claimAndSendAlert(admin) {
+  const { data: claimed, error: claimError } = await admin.rpc('claim_webstore_integrity_alert');
+  if (claimError) throw new Error(`Could not claim integrity alert: ${claimError.message}`);
+  const alert = claimed && claimed[0];
+  if (!alert) return { claimed: false, sent: false };
+
+  try {
+    const { data: incidents, error: incidentsError } = await admin.from('webstore_integrity_incidents')
+      .select('incident_key,category,severity,summary,record_type,record_id,details')
+      .in('incident_key', alert.incident_keys || []);
+    if (incidentsError) throw new Error(`Could not load integrity incidents: ${incidentsError.message}`);
+    if (!incidents || !incidents.length) throw new Error('Claimed integrity alert has no incident rows');
+    const providerMessageId = await sendBrevoEmail(buildAlertEmail(incidents), alert.id);
+    const { error: completeError } = await admin.rpc('complete_webstore_integrity_alert', {
+      p_id: alert.id,
+      p_provider_message_id: providerMessageId,
+    });
+    if (completeError) throw new Error(`Could not complete integrity alert: ${completeError.message}`);
+    return { claimed: true, sent: true, id: alert.id, incident_count: incidents.length };
+  } catch (error) {
+    const { error: failError } = await admin.rpc('fail_webstore_integrity_alert', {
+      p_id: alert.id,
+      p_error: error.message || String(error),
+    });
+    if (failError) console.error('[webstore-integrity-sweep] could not requeue alert:', failError.message);
+    throw error;
+  }
+}
+
+async function runSweep(admin) {
+  runRuntimeCanary();
+  const { data: scan, error: scanError } = await admin.rpc('sync_webstore_integrity_incidents');
+  if (scanError) throw new Error(`Integrity scan failed: ${scanError.message}`);
+  const delivery = await claimAndSendAlert(admin);
+  const summary = {
+    ok: true,
+    finding_count: Number(scan && scan.finding_count) || 0,
+    open_incident_count: Number(scan && scan.open_incident_count) || 0,
+    resolved_count: Number(scan && scan.resolved_count) || 0,
+    alert_claimed: delivery.claimed,
+    alert_sent: delivery.sent,
+  };
+  console.log('[webstore-integrity-sweep]', JSON.stringify(summary));
+  return summary;
+}
+
+exports.handler = async (event) => {
+  if (!isScheduled(event)) {
+    const expected = process.env.INTERNAL_FUNCTION_SECRET || '';
+    const supplied = String(event && event.headers && event.headers['x-internal-secret'] || '');
+    if (!expected || supplied !== expected) {
+      return { statusCode: 401, headers: HEADERS, body: JSON.stringify({ error: 'Unauthorized' }) };
+    }
+  }
+
+  const url = String(process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  if (!url || !key) return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: 'Supabase not configured' }) };
+  const admin = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+
+  try {
+    const summary = await runSweep(admin);
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify(summary) };
+  } catch (error) {
+    console.error('[webstore-integrity-sweep] failed:', error.message || error);
+    return { statusCode: 500, headers: HEADERS, body: JSON.stringify({ error: error.message || String(error) }) };
+  }
+};
+
+module.exports.isScheduled = isScheduled;
+module.exports.alertRecipients = alertRecipients;
+module.exports.runRuntimeCanary = runRuntimeCanary;
+module.exports.buildAlertEmail = buildAlertEmail;
+module.exports.claimAndSendAlert = claimAndSendAlert;
+module.exports.runSweep = runSweep;
