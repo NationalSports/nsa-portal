@@ -25,6 +25,7 @@ import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
+import { allocateMoneyCents } from './lib/bundleMoney';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -3660,8 +3661,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     Object.values(bundleGroups).forEach((g) => {
       if (!g.kids.length || g.parentVal <= 0) return;
       const weights = g.kids.map((c) => retailByPid[c.product_id] || 0);
-      const wsum = weights.reduce((a, b) => a + b, 0);
-      g.kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(g.parentVal * weights[idx] / wsum) : r2(g.parentVal / g.kids.length); });
+      const allocated = allocateMoneyCents(g.parentVal, weights);
+      g.kids.forEach((c, idx) => { allocById[c.id] = allocated[idx]; });
     });
     const collectedForLine = (i) => allocById[i.id] != null
       ? allocById[i.id]
