@@ -49,6 +49,8 @@ describe('diff comparators (phantom-save guards)', () => {
     expect(_soDiffCmp(so({ _sizeCosts: { M: 4 } }))).toBe(_soDiffCmp(so({ _sizeCosts: { M: 9 } })));
     // real item content still counts
     expect(_soDiffCmp(so({}))).not.toBe(_soDiffCmp({ ...so({}), items: [{ sku: 'TEE', sizes: { M: 3 }, decorations: [], pick_lines: [], po_lines: [] }] }));
+    // SO-only invoice aliases are durable content and must trigger persistence.
+    expect(_soDiffCmp(so({}))).not.toBe(_soDiffCmp(so({ invoice_line_keys: ['OLD|Blue|0'] })));
     // decorations / pick / po lines are compared whole
     expect(_soDiffCmp(so({ pick_lines: [{ M: 1 }] }))).not.toBe(_soDiffCmp(so({ pick_lines: [] })));
   });

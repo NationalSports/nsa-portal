@@ -10,6 +10,9 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
 export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
+// Sales-order-only item fields. Keep these separate from _itemCols because that base list also
+// feeds estimate_items writes, while invoice reconciliation history has no meaning on an estimate.
+export const _soItemCols=['invoice_line_keys'];
 // Topstar digitizing / vector-file billing line. This qty_only line bills the customer for a
 // file-creation service whose PO lives in so.deco_pos (a deco PO) — an item-level vendor PO is
 // never created for it. It must therefore be treated as already covered in SO status math and

@@ -17,7 +17,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
+import { _pick, _estCols, _soCols, _itemCols, _soItemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
@@ -767,14 +767,14 @@ const _estDiffCmp=(e)=>JSON.stringify({
 });
 // Phantom-save guard for sales orders — DELIBERATELY CONSERVATIVE because the SO save is the most
 // data-loss-sensitive path in the app. It differs from _diffCmp ONLY by stripping, from each line
-// item, the scalar fields that are NOT in _itemCols — i.e. exactly the fields the SO save itself
-// discards (_pick(itemData,_itemCols) in _dbSaveSOInner). Those fields (recomputed-every-load
+// item, the scalar fields that are NOT in the SO item write lists — i.e. exactly the fields the SO
+// save itself discards. Those fields (recomputed-every-load
 // _sizeCosts/_sizeSells/_colorImage/etc.) can never be persisted, so dropping them from change-
 // detection can never hide a savable change → zero data-loss risk by construction. EVERYTHING else —
 // all SO-level fields, jobs, art_files, firm_dates, and each item's decorations/pick_lines/po_lines —
 // is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
 // stop counting as changes.
-const _soItemForDiff=(it)=>({..._pick(it,_itemCols),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
+const _soItemForDiff=(it)=>({..._pick(it,[..._itemCols,..._soItemCols]),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
 const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
 // Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
 // row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
@@ -2388,7 +2388,7 @@ const _dbSaveSOInner = async (so) => {
       }
       _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
-    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
+    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,[..._itemCols,..._soItemCols]),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
     if(itemErr){
       if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
