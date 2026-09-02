@@ -11,6 +11,7 @@
 //   REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
 //   BREVO_API_KEY, and PORTAL_PUBLIC_URL (or Netlify's URL).
 const { createClient } = require('@supabase/supabase-js');
+const { planShipmentLineUpdates } = require('./_webstoreShipment');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -106,34 +107,33 @@ exports.handler = async (event) => {
       const shipmentCost = (Number(sh.shipmentCost) || 0) + (Number(sh.insuranceCost) || 0); // ShipStation's actual billed cost
       // The unique index on ss_shipment_id is the concurrency belt: a racing
       // redelivery's insert errors out (ignored) instead of duplicating the row.
-      await sb.from('webstore_shipments').insert({
+      const { error: shipmentInsertError } = await sb.from('webstore_shipments').insert({
         order_id: order.id, store_id: order.store_id, tracking_number: tracking, ss_shipment_id: ssShipmentId,
         carrier: sh.carrierCode || null, service: sh.serviceCode || null, ship_date: sh.shipDate || null,
         items: shipItems, cost: shipmentCost || null, emailed: false,
       });
+      if (shipmentInsertError) {
+        // A concurrent webhook delivery may have won the unique-key race. It
+        // already performed reconciliation, so do not double-email the buyer.
+        if (/duplicate|unique/i.test(shipmentInsertError.message || '')) continue;
+        throw new Error(`Could not record shipment ${ssShipmentId || tracking || ''}: ${shipmentInsertError.message}`);
+      }
 
       // Recompute shipped quantity per line from ALL recorded shipments for this
       // order (authoritative + idempotent even if the webhook double-fires).
       // Match by lineItemKey — the order-item id we set when creating the order —
       // so partial shipments, incl. the same SKU in different sizes, are exact.
       const { data: allShips } = await sb.from('webstore_shipments').select('items').eq('order_id', order.id);
-      const shippedByLine = {};
-      (allShips || []).forEach((s) => (s.items || []).forEach((it) => { if (it.lineItemKey) shippedByLine[it.lineItemKey] = (shippedByLine[it.lineItemKey] || 0) + (Number(it.qty) || 0); }));
-      const { data: orderItems } = await sb.from('webstore_order_items').select('id,sku,qty,is_bundle_parent,line_status').eq('order_id', order.id);
+      const { data: orderItems, error: orderItemsError } = await sb.from('webstore_order_items').select('id,sku,size,qty,is_bundle_parent,line_status,shipped_qty').eq('order_id', order.id);
+      if (orderItemsError) throw new Error(`Could not load shipment items: ${orderItemsError.message}`);
       const lines = (orderItems || []).filter((i) => !i.is_bundle_parent);
-      if (Object.keys(shippedByLine).length) {
-        for (const i of lines) {
-          const sq = shippedByLine[i.id] || 0;
-          if (sq <= 0) continue;
-          const done = sq >= (Number(i.qty) || 0);
-          await sb.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', i.id);
-          if (done) i.line_status = 'shipped';
-        }
-      } else {
-        // Legacy order created without line keys — fall back to a (qty-blind) SKU match.
-        const skus = shipItems.map((i) => i.sku).filter(Boolean);
-        if (skus.length) await sb.from('webstore_order_items').update({ line_status: 'shipped' }).eq('order_id', order.id).in('sku', skus);
-        lines.forEach((i) => { if (skus.includes(i.sku)) i.line_status = 'shipped'; });
+      const lineUpdates = planShipmentLineUpdates(lines, allShips || []);
+      for (const update of lineUpdates) {
+        const patch = { shipped_qty: update.shipped_qty, ...(update.line_status === 'shipped' ? { line_status: 'shipped' } : {}) };
+        const { error: lineError } = await sb.from('webstore_order_items').update(patch).eq('id', update.id);
+        if (lineError) throw new Error(`Could not mark shipped line ${update.id}: ${lineError.message}`);
+        const line = lines.find((i) => String(i.id) === String(update.id));
+        if (line) { line.shipped_qty = update.shipped_qty; line.line_status = update.line_status; }
       }
       // Stamp the order fully shipped only once every (non-bundle) line is shipped.
       const fullyShipped = lines.length > 0 && lines.every((i) => i.line_status === 'shipped');

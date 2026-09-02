@@ -17,6 +17,7 @@
 // left paid orphan orders on number conflicts, and raced the coupon counter.
 const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
+const { planShipmentLineUpdates } = require('./_webstoreShipment');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
 const { SO_DONE } = require('./backorder-ready-sweep'); // one definition of "SO finished"
 
@@ -930,12 +931,30 @@ async function trackOrder(sb, body) {
   if (error) return bad(500, error.message);
   const order = orders && orders[0];
   if (!order) return bad(404, 'Order not found');
-  const [{ data: sRows }, { data: items }, { data: shipments }, messages] = await Promise.all([
+  const [{ data: sRows }, { data: itemRows }, { data: shipmentRows }, messages] = await Promise.all([
     sb.from('webstores').select('name,slug,logo_url,primary_color,accent_color').eq('id', order.store_id).limit(1),
     sb.from('webstore_order_items').select('*').eq('order_id', order.id),
     sb.from('webstore_shipments').select('*').eq('order_id', order.id).order('created_at', { ascending: true }),
     loadThread(sb, order.id),
   ]);
+  const items = itemRows || [];
+  const shipments = shipmentRows || [];
+
+  // Self-heal shipments recorded by an older webhook run whose item updates
+  // failed or could not be matched. Opening the tracker should never continue
+  // showing "On order" when its own shipment ledger says those units shipped.
+  const repairs = planShipmentLineUpdates(items, shipments);
+  for (const repair of repairs) {
+    const item = items.find((i) => String(i.id) === String(repair.id));
+    if (!item) continue;
+    const alreadyCorrect = Number(item.shipped_qty || 0) === repair.shipped_qty && item.line_status === repair.line_status;
+    if (!alreadyCorrect) {
+      const patch = { shipped_qty: repair.shipped_qty, ...(repair.line_status === 'shipped' ? { line_status: 'shipped' } : {}) };
+      const { error: repairError } = await sb.from('webstore_order_items').update(patch).eq('id', repair.id);
+      if (!repairError) Object.assign(item, patch);
+      else console.error('[webstore-checkout] shipment tracker repair failed:', repair.id, repairError.message);
+    }
+  }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, store: (sRows && sRows[0]) || null, items: items || [], shipments: shipments || [], messages }) };
 }
 
@@ -949,9 +968,19 @@ async function loadThread(sb, orderId) {
     .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 }
 
+function staffRecipientIds(csrId, repId) {
+  return [...new Set([csrId, repId].filter(Boolean).map(String))];
+}
+
+function staffEmailRecipients(assigned) {
+  const recipients = [...(assigned || []), { email: 'stores@nationalsportsapparel.com', name: 'Webstore Team' }];
+  return recipients.filter((person, index, all) => person && person.email &&
+    all.findIndex((candidate) => candidate && String(candidate.email).toLowerCase() === String(person.email).toLowerCase()) === index);
+}
+
 // A shopper posts a reply from their portal page. Token-gated (no account):
 // the secret status_token is the only credential. Inserts a customer message
-// into the shared thread and notifies the store's CSR (→ rep → fallback).
+// into the shared thread and notifies the webstore team, CSR, and owning rep.
 async function postMessage(sb, body) {
   const { token } = body;
   const text = String(body.text || '').trim().slice(0, 4000);
@@ -965,7 +994,7 @@ async function postMessage(sb, body) {
   // Resolve the store, its owning rep, and the rep's primary CSR so the reply
   // routes to the right person's inbox (tagged_members) and email.
   const tagged = [];
-  let notifyEmail = null, notifyName = '';
+  let notifyRecipients = [];
   try {
     const { data: store } = await sb.from('webstores').select('id,name,rep_id,csr_id,omg_sale_code').eq('id', order.store_id).maybeSingle();
     let repId = store && store.rep_id;
@@ -982,15 +1011,24 @@ async function postMessage(sb, body) {
       const active = (asn || []).filter((a) => a.is_active !== false);
       csrId = (active.find((a) => a.is_primary) || active[0] || {}).csr_id || null;
     }
-    // Route to the CSR if there is one, else the rep.
-    if (csrId) tagged.push(String(csrId));
-    else if (repId) tagged.push(String(repId));
-    // Notify email: prefer the CSR's, else the rep's.
+    // Customer replies are high priority: route to BOTH the assigned CSR and
+    // rep. The former CSR-only behavior created a single point of failure and
+    // left the rep's Messages inbox empty even though the order was theirs.
+    tagged.push(...staffRecipientIds(csrId, repId));
     const ids = [csrId, repId].filter(Boolean).map(String);
     if (ids.length) {
       const { data: people } = await sb.from('user_profiles').select('id,email,full_name').in('id', ids);
-      const pick = (people || []).find((p) => String(p.id) === String(csrId)) || (people || []).find((p) => String(p.id) === String(repId));
-      if (pick && pick.email) { notifyEmail = pick.email; notifyName = pick.full_name || ''; }
+      notifyRecipients = (people || []).filter((p) => p.email).map((p) => ({ email: p.email, name: p.full_name || '' }));
+    }
+    // The webstore response team opts in through the existing notify_depts
+    // preference. Tag every active `store` subscriber in the in-app Messages
+    // inbox as a redundant safety net, independent of per-store assignments.
+    const { data: storeTeam } = await sb.from('user_profiles')
+      .select('id,email,full_name').eq('is_active', true).contains('notify_depts', ['store']);
+    for (const person of storeTeam || []) {
+      const sid = String(person.id);
+      if (!tagged.includes(sid)) tagged.push(sid);
+      if (person.email) notifyRecipients.push({ email: person.email, name: person.full_name || '' });
     }
     var storeName = (store && store.name) || 'your store';
   } catch (e) { var storeName = 'your store'; }
@@ -1007,14 +1045,21 @@ async function postMessage(sb, body) {
   if (insErr) return bad(502, 'Could not post your message: ' + insErr.message);
 
   // Email the assigned CSR/rep (best-effort — never blocks the post).
-  try { await notifyStaffOfReply({ to: notifyEmail || 'stores@nationalsportsapparel.com', toName: notifyName, order, storeName, text }); } catch (e) { /* logged below */ }
+  try {
+    await notifyStaffOfReply({
+      recipients: staffEmailRecipients(notifyRecipients),
+      order, storeName, text,
+    });
+  } catch (e) {
+    console.error('[webstore-checkout] customer reply staff email failed:', e.message);
+  }
 
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, messages: await loadThread(sb, order.id) }) };
 }
 
-async function notifyStaffOfReply({ to, toName, order, storeName, text }) {
+async function notifyStaffOfReply({ recipients, order, storeName, text }) {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
-  if (!brevoKey || !to) return;
+  if (!brevoKey || !recipients || !recipients.length) return;
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const adminLink = `${portal}/?omg=1`;
   const safe = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
@@ -1029,17 +1074,18 @@ async function notifyStaffOfReply({ to, toName, order, storeName, text }) {
       <p style="font-size:13px;color:#64748b">Open the order in OMG Stores to reply — your reply emails the customer their portal link.</p>
       <div style="margin:18px 0"><a href="${adminLink}" style="display:inline-block;background:#e11d2a;color:#fff;text-decoration:none;padding:11px 24px;border-radius:8px;font-weight:700">Open OMG Stores →</a></div>
     </div></div>`;
-  await fetch('https://api.brevo.com/v3/smtp/email', {
+  const emailRes = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
       sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
-      to: [{ email: to, name: toName || '' }],
+      to: recipients,
       replyTo: order.buyer_email ? { email: order.buyer_email, name: order.buyer_name || '' } : undefined,
       subject: `💬 ${order.buyer_name || 'Customer'} replied — ${storeName} order${order.omg_order_number ? ' #' + order.omg_order_number : ''}`,
       htmlContent: html,
     }),
   });
+  if (!emailRes.ok) throw new Error(`Brevo returned HTTP ${emailRes.status}`);
 }
 
 // ── Buyer self-service shipping-address edit (before the order ships) ──
@@ -1077,6 +1123,8 @@ module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
 module.exports.shipFee = shipFee;
 module.exports.r2 = r2;
+module.exports.staffRecipientIds = staffRecipientIds;
+module.exports.staffEmailRecipients = staffEmailRecipients;
 
 // ── Team Shop checkout reuse (Stage 6) ───────────────────────────────
 // teamshop-checkout.js REQUIRES these instead of forking the tax math,
