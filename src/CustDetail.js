@@ -16,6 +16,7 @@ import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
 import { _fetchHistInvoiceLines } from './lib/dbEngine';
 import { applyBulkInvoiceSendHistory, buildBulkInvoiceEmailHtml, buildBulkInvoiceMessages, bulkInvoiceEmailSubject } from './lib/bulkInvoiceEmail';
+import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices } from './lib/promoHistory';
 
 // Date normalization. Dates on this screen arrive in mixed shapes: ISO 'YYYY-MM-DD',
 // ISO timestamps, and locale strings like '7/10/2026, 3:22:11 PM' (NetSuite history
@@ -191,6 +192,26 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
+  const[promoLineHistory,setPromoLineHistory]=useState([]);
+  // customer_invoice_lines is the actively refreshed NetSuite archive used by
+  // Sales History. customer_invoices (the old header-only promo source) can lag
+  // behind it, so load the family-scoped paid lines for the two relevant halves
+  // and use them as a deduplicated fallback.
+  useEffect(()=>{
+    if(!supabase||!initCust)return;
+    const ownerId=initCust.parent_id||initCust.id;
+    const family=(allCustomers||[]).filter(c=>c.id===ownerId||c.parent_id===ownerId);
+    const pctActive=(initCust.promo_programs||[]).some(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
+    if(!pctActive){setPromoLineHistory([]);return}
+    const now=new Date();const year=now.getFullYear();const firstHalf=now.getMonth()<6;
+    const start=firstHalf?(year-1)+'-07-01':year+'-01-01';
+    const end=firstHalf?year+'-06-30':year+'-12-31';
+    let cancelled=false;
+    fetchPaidPromoHistoryInvoices({supabase,customers:family,start,end})
+      .then(rows=>{if(!cancelled)setPromoLineHistory(rows)})
+      .catch(e=>{if(!cancelled){setPromoLineHistory([]);console.warn('[Promo] NetSuite line-history fallback failed:',e?.message||e)}});
+    return()=>{cancelled=true};
+  },[initCust.id,initCust.parent_id,initCust.promo_programs,allCustomers]);
   // Auto co-op allocation + overdraft carry-forward.
   // 1) Whenever a % of Spend program is present (including one added just now), materialize the
   //    CURRENT period's allocation from the prior half's PAID qualifying spend × pct. Paid = portal
@@ -213,7 +234,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     let prevEarned=0;
     if(pct>0){
       const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
-      const histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+      const histInvsAll=mergePromoHistoryInvoices((allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice'),promoLineHistory);
       const prevSpend=calcPaidQualifyingSpend({sos,invs,histInvs:histInvsAll,famIds:fam,start:prev.start,end:prev.end}).total;
       prevEarned=Math.round(prevSpend*pct*100)/100;
     }
@@ -234,7 +255,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       carryPeriods.forEach(p=>onSavePromoPeriod({...p,notes:((p.notes||'')+' [overdraft carried to '+cur.label+']').trim()}));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[initCust.id,initCust.promo_programs,initCust.promo_periods,sos,invs]);
+  },[initCust.id,initCust.promo_programs,initCust.promo_periods,sos,invs,allOrders,promoLineHistory]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
   // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
   // show both store types in one place and jump into either.
@@ -546,7 +567,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           });
           safePOs(it).forEach(po=>{
             if(!po.po_id)return;
-            const qty=Object.entries(po).filter(([k,v])=>k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
+            const qty=Object.entries(po).filter(([k,v])=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
             const cost=qty*(it.unit_cost||0);
             txns.push({id:po.po_id,type:'po',date:po.created_at||'',memo:it.name+' ('+it.sku+')'+' — '+(po.vendor||'Vendor'),customer_id:so.customer_id,total:cost>0?cost:null,status:po.status,so_id:so.id,_src:'po'});
           });
@@ -845,7 +866,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const pctProg=programs.find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
     const pct=pctProg?safeNum(pctProg.spend_percentage):0;
     const famIds=[parentId,...allCustomers.filter(c=>c.parent_id===parentId).map(c=>c.id)];
-    const _histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+    const _histInvsAll=mergePromoHistoryInvoices((allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice'),promoLineHistory);
     const _spendInRange=(s,e)=>calcPaidQualifyingSpend({sos,invs,histInvs:_histInvsAll,famIds,start:s,end:e});
     const curSpendParts=pct>0?_spendInRange(curPeriod.start,curPeriod.end):{soSpend:0,histSpend:0,total:0};
     const curHalfSpend=curSpendParts.total;

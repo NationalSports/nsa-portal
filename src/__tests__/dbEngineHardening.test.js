@@ -165,6 +165,40 @@ describe('_dbSaveSOInner — so_items under-returned insert (fix 3)', () => {
   });
 });
 
+// ── SO-1992: a hydrated flag must never authorize an unstamped decoration shrink ──────────
+describe('_dbSaveSOInner — exact decoration deletion intent', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  test('blocks a 2→0 decoration wipe even when the client says decorations were hydrated', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { updated_at: 'yesterday', deco_pos: null, created_at: 'created', status: 'open', po_number: null }, error: null },
+        { error: null },
+      ],
+      so_items: [{ data: [
+        { id: 'oi-deco', item_index: 0, sku: 'TEE', color: 'Red', product_id: null },
+      ], error: null }],
+      so_item_decorations: [{ data: [
+        { so_item_id: 'oi-deco' }, { so_item_id: 'oi-deco' },
+      ], error: null }],
+    };
+
+    const { _dbSaveSO } = require('../lib/dbEngine');
+    const result = await _dbSaveSO({
+      id: 'SO-DECO-GUARD', created_at: 'created', updated_at: 'today', status: 'open',
+      _decosHydrated: true, _itemsHydrated: true,
+      items: [{ sku: 'TEE', color: 'Red', sizes: { M: 1 }, decorations: [], no_deco: false }],
+    });
+
+    expect(result).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'delete')).toBe(false);
+  });
+});
+
 // ── Fix 4: _dbSaveInvoiceInner — insert-first swap for invoice_items ────────────────────────
 // A failed insert of the new rows must leave the old rows untouched (no delete issued) and the
 // save must report failure, instead of the old delete-then-insert order that could zero the invoice.
@@ -217,7 +251,7 @@ describe('_dbPersistNewPoLine — durable PO line write at creation (fix 5)', ()
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
-  const poLine = { po_id: 'PO 35700 SANBA', vendor: 'Adidas', status: 'waiting', L: 3, M: 5, unit_cost: 20.62 };
+  const poLine = { po_id: 'PO 35700 SANBA', vendor: 'Adidas', status: 'waiting', L: 3, M: 5, unit_cost: 20.62, _manual_cost: 8.75, _manual_cost_note: 'Credit-card fee', _payment_method: 'credit_card' };
 
   test('persists the line when the item exists and no line is present yet', async () => {
     const { __mockState } = require('@supabase/supabase-js');
@@ -241,6 +275,9 @@ describe('_dbPersistNewPoLine — durable PO line write at creation (fix 5)', ()
     expect(row.sizes.M).toBe(5);
     expect(row.sizes.L).toBe(3);
     expect(row.sizes.unit_cost).toBe(20.62);
+    expect(row.sizes._manual_cost).toBe(8.75);
+    expect(row.sizes._manual_cost_note).toBe('Credit-card fee');
+    expect(row.sizes._payment_method).toBe('credit_card');
     // The whole-SO save owns the updated_at/version bump — this durable write must NOT issue its own.
     expect(__mockState.calls.some(c => c.table === 'sales_orders' && c.method === 'update')).toBe(false);
   });

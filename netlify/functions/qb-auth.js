@@ -6,8 +6,9 @@
 //   disconnect → revokes at Intuit + clears the store (staff-only).
 // Tokens never cross to the browser or appear in a URL — see _qb.js for the store.
 const crypto = require('crypto');
-const { verifyUser } = require('./_shared');
+const { verifyQBOUser } = require('./_shared');
 const { getSupabaseAdmin, httpsPost, basicAuth, saveTokens, getStoredTokens, clearTokens, refreshStoredTokens, revokeToken } = require('./_qb');
+const { qbOAuthRedirectUri, qbPortalRedirect } = require('./_qbOAuthRedirect');
 
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -35,7 +36,7 @@ exports.handler = async (event) => {
   const QB_CLIENT_ID = process.env.QB_CLIENT_ID;
   const QB_CLIENT_SECRET = process.env.QB_CLIENT_SECRET;
   const SITE_URL = process.env.URL || process.env.SITE_URL || 'http://localhost:3000';
-  const QB_REDIRECT_URI = process.env.QB_REDIRECT_URI || `${SITE_URL}/.netlify/functions/qb-auth?action=callback`;
+  const QB_REDIRECT_URI = qbOAuthRedirectUri(event, process.env.QB_REDIRECT_URI, SITE_URL);
 
   if (!QB_CLIENT_ID || !QB_CLIENT_SECRET) {
     return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'QuickBooks credentials not configured. Add QB_CLIENT_ID, QB_CLIENT_SECRET, QB_REDIRECT_URI to Netlify env vars.' }) };
@@ -45,6 +46,13 @@ exports.handler = async (event) => {
   let action = params.action;
   let body = {};
   if (event.body) { try { body = JSON.parse(event.body); } catch { body = {}; } if (body.action) action = body.action; }
+
+  // The Intuit callback authenticates with the short-lived CSRF state cookie.
+  // Every staff-initiated OAuth action requires accounting/admin authorization.
+  if (['debug', 'connect', 'refresh', 'disconnect'].includes(action)) {
+    const v = await verifyQBOUser(event);
+    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
+  }
 
   // ── ACTION: debug ──
   if (action === 'debug') {
@@ -71,15 +79,19 @@ exports.handler = async (event) => {
   // Intuit redirects here after the user authorizes. Validate state, exchange code, store tokens.
   if (action === 'callback' || params.code) {
     const clearState = stateCookie('', 0);
+    const redirect = (values) => qbPortalRedirect(event, SITE_URL, values);
     // CSRF: the state echoed back by Intuit must match the cookie set at connect.
     const cookieState = readCookie(event, STATE_COOKIE);
     if (!params.state || !cookieState || params.state !== cookieState) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=state_mismatch`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ error: 'state_mismatch' }), 'Set-Cookie': clearState }, body: '' };
+    }
+    if (params.error) {
+      return { statusCode: 302, headers: { Location: redirect({ error: params.error }), 'Set-Cookie': clearState }, body: '' };
     }
     const code = params.code;
     const realmId = params.realmId;
     if (!code || !realmId) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=missing_code`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ error: 'missing_code' }), 'Set-Cookie': clearState }, body: '' };
     }
     try {
       const tokenBody = `grant_type=authorization_code&code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(QB_REDIRECT_URI)}`;
@@ -87,7 +99,7 @@ exports.handler = async (event) => {
         'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': basicAuth(), 'Accept': 'application/json',
       });
       if (result.status !== 200 || !result.data?.access_token) {
-        return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=token_exchange_failed`, 'Set-Cookie': clearState }, body: '' };
+        return { statusCode: 302, headers: { Location: redirect({ error: 'token_exchange_failed' }), 'Set-Cookie': clearState }, body: '' };
       }
       // Persist tokens server-side ONLY. They never reach the browser or the redirect URL.
       await saveTokens(getSupabaseAdmin(), {
@@ -97,9 +109,9 @@ exports.handler = async (event) => {
         expires_in: result.data.expires_in,
         token_created_at: Date.now(),
       });
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?qb_connected=1&realm=${encodeURIComponent(realmId)}`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ qb_connected: '1', realm: realmId }), 'Set-Cookie': clearState }, body: '' };
     } catch (err) {
-      return { statusCode: 302, headers: { Location: `${SITE_URL}/#/qb?error=exception`, 'Set-Cookie': clearState }, body: '' };
+      return { statusCode: 302, headers: { Location: redirect({ error: 'exception' }), 'Set-Cookie': clearState }, body: '' };
     }
   }
 
@@ -120,8 +132,6 @@ exports.handler = async (event) => {
   // ── ACTION: disconnect ──
   // Revoke at Intuit + clear the store. Staff-only (no token is accepted from the client).
   if (action === 'disconnect') {
-    const v = await verifyUser(event);
-    if (!v.ok) return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
     try {
       const admin = getSupabaseAdmin();
       const cur = await getStoredTokens(admin);

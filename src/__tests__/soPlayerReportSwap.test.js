@@ -75,6 +75,68 @@ describe('mapLinesToSoItems — matches that must not move', () => {
 });
 
 describe('mapLinesToSoItems — the SO is the source of truth for sizes and new lines', () => {
+  test('treats OSFA and Adjustable as the same one-size replacement', () => {
+    const source = storeLines(2, { product_id: 'visor-old', sku: '5161257', name: 'Old Visor', color: 'Black/White', size: 'OSFA' });
+    const soItems = [{ sku: 'AH604', name: 'Replacement Visor', color: 'Black/White', sizes: { Adjustable: 2 } }];
+    const { lines, substitutions, unmatched } = mapLinesToSoItems(source, soItems);
+    lines.forEach((line) => {
+      const current = materializeMappedLine(line);
+      expect(current).toMatchObject({ sku: 'AH604', size: 'Adjustable', _wasSku: '5161257', _verify: false });
+    });
+    expect(substitutions).toEqual([{ from: '5161257', to: 'AH604 Black/White', verify: false }]);
+    expect(unmatched).toEqual([]);
+  });
+
+  test('maps only a direct product deficit to its unique exact replacement', () => {
+    const source = [
+      ...storeLines(1, { sku: 'GL9698', name: 'Old Tee', color: 'Navy', size: 'L' }),
+      ...storeLines(5, { sku: 'GL9698', name: 'Old Tee', color: 'Navy', size: 'M' }),
+      ...storeLines(20, { sku: 'GL9698', name: 'Old Tee', color: 'Navy', size: 'S' }),
+      ...storeLines(1, { sku: 'GL9698', name: 'Old Tee', color: 'Navy', size: 'XL' }),
+    ];
+    const soItems = [
+      { sku: 'GL9698', name: 'Old Tee', color: 'Navy', sizes: { L: 1, M: 4, S: 15, XL: 1, XS: 2 } },
+      { sku: 'AT301', name: 'Replacement Tee', color: 'Navy', sizes: { M: 1, S: 5 } },
+    ];
+    const { lines, substitutions, unmatched } = mapLinesToSoItems(source, soItems);
+    const current = lines.map(materializeMappedLine);
+    expect(current.reduce((n, line) => n + line.qty, 0)).toBe(27);
+    expect(current.filter((line) => line.sku === 'GL9698').reduce((n, line) => n + line.qty, 0)).toBe(21);
+    expect(current.filter((line) => line.sku === 'AT301').reduce((n, line) => n + line.qty, 0)).toBe(6);
+    expect(current.every((line) => !line._verify)).toBe(true);
+    expect(substitutions).toEqual([{ from: 'GL9698', to: 'AT301 Navy', verify: false }]);
+    expect(unmatched).toEqual([]);
+  });
+
+  test('accepts a unique equal-total replacement with a partially changed size curve', () => {
+    const source = [
+      ...storeLines(2, { sku: 'JL5410', name: 'Old Shorts', color: 'Navy', size: 'S' }),
+      ...storeLines(1, { sku: 'JL5410', name: 'Old Shorts', color: 'Navy', size: 'S 4"' }),
+    ];
+    const soItems = [{ sku: 'AT310', name: 'Replacement Shorts', color: 'Navy', sizes: { S: 2, M: 1 } }];
+    const { lines, substitutions, unmatched } = mapLinesToSoItems(source, soItems);
+    const current = lines.map(materializeMappedLine);
+    expect(current.filter((line) => line.size === 'S').reduce((n, line) => n + line.qty, 0)).toBe(2);
+    expect(current.filter((line) => line.size === 'M').reduce((n, line) => n + line.qty, 0)).toBe(1);
+    expect(current.every((line) => !line._verify)).toBe(true);
+    expect(substitutions).toEqual([{ from: 'JL5410', to: 'AT310 Navy', verify: false }]);
+    expect(unmatched).toEqual([]);
+  });
+
+  test('flags only the source unit not covered by a smaller replacement curve', () => {
+    const source = [
+      ...storeLines(2, { sku: 'HR8472', name: 'Old Hoodie', color: 'Red', size: 'M' }),
+      ...storeLines(1, { sku: 'HR8472', name: 'Old Hoodie', color: 'Red', size: 'XL' }),
+    ];
+    const soItems = [{ sku: 'AT203', name: 'Replacement Hoodie', color: 'Team Power Red/ White', sizes: { M: 2 } }];
+    const { lines, substitutions } = mapLinesToSoItems(source, soItems);
+    const current = lines.map(materializeMappedLine);
+    expect(current.filter((line) => line.size === 'M').every((line) => !line._verify)).toBe(true);
+    expect(current.filter((line) => line.size === 'XL')).toHaveLength(1);
+    expect(current.find((line) => line.size === 'XL')._verify).toBe(true);
+    expect(substitutions).toEqual([{ from: 'HR8472', to: 'AT203 Team Power Red/ White', verify: false }]);
+  });
+
   test('same-SKU size change follows the SO (SO-2021: HI0704 XS → S)', () => {
     const source = [{ id: 'hi-1', order_id: 'o1', sku: 'HI0704', name: 'Adidas W. Team Issue Pants', color: 'Black', size: 'XS', qty: 1 }];
     const soItems = [{ sku: 'HI0704', name: 'Adidas W. Team Issue Pants', color: 'Black', sizes: { XS: 0, S: 1 } }];

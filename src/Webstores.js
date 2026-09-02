@@ -8,6 +8,7 @@ import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSe
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank, scaleOf } from './lib/storeInventory';
+import { haveSameDecorations, variantGroupFields } from './lib/webstoreGrouping';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
@@ -17,10 +18,14 @@ import { buildTeamArtLibrary } from './lib/artIdentity';
 import { ptToIso, ptDateInput, ptTimeInput, ptDateLabel, ptTimeLabel, isCustomCloseTime, DEFAULT_CLOSE_TIME, DEFAULT_OPEN_TIME } from './lib/storeClock';
 import { ColorWaysEditor } from './components';
 import { knockoutWhiteBackground } from './lib/imageKnockout';
+import { normalizeSizeSkuOverride, resolveSizeSkuSource, sizeSkuCode } from './lib/sizeSkuOverrides';
 import QuickMockBuilder from './QuickMockBuilder';
-import { activeWebstoreLines, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, resolveWebstoreReportLines } from './lib/soPlayerReport';
+import { activeWebstoreLines, downloadPlayerReportCsv, isLiveWebstoreOrder, mapLinesToSoItems, materializeMappedLine, reportBlockingIssues, resolveWebstoreReportLines } from './lib/soPlayerReport';
 import { attachAdidasTagSkus } from './lib/adidasSsReport';
 import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
+import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
+import { webstoreProductionKey } from './lib/storeSkuGrouping';
+import { allocateMoneyCents } from './lib/bundleMoney';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -34,16 +39,77 @@ async function createWebstoreLabel(order, items, store, weightByPid = {}, imageB
   if (!orderId) throw new Error('ShipStation order not created');
   if (Number(store.shipstation_tag_id)) { try { await shipStationCall('/orders/addtag', { method: 'POST', body: JSON.stringify({ orderId, tagId: Number(store.shipstation_tag_id) }) }); } catch {} }
   const cm = SS_CARRIERS[(store.shipstation_carrier || 'fedex').toLowerCase()] || SS_CARRIERS.fedex;
+  const shipDate = new Date().toISOString().split('T')[0];
   const payload = {
     orderId, carrierCode: cm.carrierCode, serviceCode: store.shipstation_service || cm.serviceCode,
-    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+    packageCode: 'package', confirmation: 'none', shipDate,
     weight: { value: labelWeightLbs(items, store, weightByPid), units: 'pounds' },
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '' },
     testLabel: false,
   };
   const res = await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(payload) });
-  return { labelData: res.labelData, trackingNumber: res.trackingNumber, carrier: cm.carrierCode, shipmentId: res.shipmentId || null, cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null };
+  return {
+    labelData: res.labelData,
+    trackingNumber: res.trackingNumber,
+    carrier: cm.carrierCode,
+    service: store.shipstation_service || cm.serviceCode,
+    shipDate,
+    shipmentId: res.shipmentId || null,
+    cost: res.shipmentCost != null ? Number(res.shipmentCost) + (Number(res.insuranceCost) || 0) : null,
+  };
+}
+
+async function recordCreatedWebstoreLabel(order, items, label) {
+  const shipment = {
+    shipment_id: label.shipmentId,
+    tracking_number: label.trackingNumber,
+    carrier: label.carrier,
+    service: label.service,
+    ship_date: label.shipDate,
+    cost: label.cost,
+    items: (items || []).map((item) => ({
+      lineItemKey: item.id,
+      sku: item.sku || null,
+      name: item.name || item.sku || null,
+      qty: Number(item.qty) || 0,
+      image: item.image_url || null,
+      options: [
+        item.size && { name: 'Size', value: item.size },
+        item.player_number && { name: 'Number', value: String(item.player_number) },
+        item.player_name && { name: 'Name', value: item.player_name },
+      ].filter(Boolean),
+    })),
+  };
+  let lastError = 'Shipment recording failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: order.id, shipment, label_data: label.labelData || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment recording failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. The label was created; do not create another label.`);
+}
+
+async function recordVoidedWebstoreLabel(orderId, shipmentId) {
+  let lastError = 'Shipment void reconciliation failed';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await authFetch('/.netlify/functions/webstore-shipment-void-record', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order_id: orderId, shipment_id: String(shipmentId) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return data;
+      lastError = data.error || `Shipment void reconciliation failed (${res.status})`;
+    } catch (error) { lastError = error.message || lastError; }
+  }
+  throw new Error(`${lastError}. ShipStation already voided this label; retry local reconciliation before creating another.`);
 }
 
 // Printable club fundraising payout statement.
@@ -328,7 +394,9 @@ function reportSyncBanner(audit) {
   (audit.unmatched || []).forEach((u) => rows.push(`⚠ ${esc(u.soId)} · ${esc(u.item)} is active in the store but not matched to the SO`));
   (audit.missingSos || []).forEach((soId) => rows.push(`⚠ ${esc(soId)} could not be loaded`));
   (audit.wrongStoreLinks || []).forEach((x) => rows.push(`⚠ ${esc(x.soId)} belongs to another store — fix the batch link before fulfillment`));
-  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} SO units vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  (audit.unitMismatches || []).forEach((m) => rows.push(`⚠ ${esc(m.soId)} has ${m.soUnits} ${esc(m.targetLabel || 'sales-order units')} vs ${m.sourceUnits} active customer units (${m.delta > 0 ? '+' : ''}${m.delta})`));
+  (audit.externalIssues || []).forEach((issue) => rows.push(`⚠ ${esc(issue)}`));
+  (audit.orderExtras || []).forEach((x) => rows.push(`ℹ ${esc(x.soId)} includes ${x.units} Silver Screen order extra${x.units === 1 ? '' : 's'} with no player assignment`));
   return rows.length ? `<div class="syncwarn"><b>Sales-order reconciliation:</b><br>${rows.join('<br>')}</div>` : '';
 }
 
@@ -414,7 +482,9 @@ function sizeSkuMapOf(catalog) {
 // _skuOv (true when it differs from the line's own SKU).
 function annotateEffSkus(lines, skuMap) {
   return (lines || []).map((i) => {
-    const ov = i.product_id && skuMap[i.product_id] ? String(skuMap[i.product_id][i.size || 'OS'] || '').trim() : '';
+    const raw = i.product_id && skuMap[i.product_id] ? skuMap[i.product_id][i.size || 'OS'] : null;
+    const source = resolveSizeSkuSource({ raw, lineSku: i.sku, lineColor: i.color, baseProduct: { id: i.product_id || null, sku: i.sku || '', color: i.color || '' }, candidates: [] });
+    const ov = source.isOverride ? source.sku : '';
     const eff = ov || i.sku || '';
     return { ...i, _effSku: eff, _skuOv: !!ov && ov !== (i.sku || '') };
   });
@@ -727,7 +797,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
       sku: i._effSku || i.sku || '', name: [i._effSku || i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
       imageUrl: imageByPid[i.product_id] || undefined,
-      options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
+      options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }, ...(Array.isArray(i.add_on_selections) ? i.add_on_selections.map((o) => ({ name: o.label || 'Add-on', value: o.kind === 'addon' ? 'Yes' : String(o.value || '') })) : [])].filter(Boolean),
     })),
     amountPaid: order.payment_mode === 'paid' ? orderNetCollected(order) : 0,
     carrierCode: null, serviceCode: null, packageCode: null, confirmation: 'none',
@@ -1771,7 +1841,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok && j && j.notified) flash('Store closed — rep notified + to-do created');
-    } catch (e) { /* close already succeeded; the to-do/email is best-effort here */ }
+      else if (!r.ok) flash('Store closed — staff notification is queued for the hourly retry');
+    } catch (e) { flash('Store closed — staff notification is queued for the hourly retry'); }
   }, [flash]);
 
   const saveStore = useCallback(async (form, existingId) => {
@@ -2152,7 +2223,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const taken = new Set(stores.map((s) => s.slug));
     let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
-    const { id, created_at, updated_at, ...rest } = src;
     // A template is a separate is_template store carrying the ITEMS and packages only —
     // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
     // codes from the source team). is_template makes it show in the Templates tab and
@@ -2168,52 +2238,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // over — every trace of the source team's branding strips, and the new team's colors
     // and logos are applied fresh. So template paths also drop the banner, hero blurb and
     // the curated store_art library (the source team's logos).
-    const tplPath = opts.asTemplate || opts.startFromTemplate;
-    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, featured_product_ids: null, closed_notified_at: null, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null, coach_contact_email: null } : {}), ...(tplPath ? { banner_url: null, hero_blurb: null, store_art: [] } : {}) };
     flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
-    const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
-    if (error) { flash('Could not duplicate: ' + error.message); return null; }
-
-    // opts.itemIds limits the copy to those catalog rows (Save as template's picks, or
-    // start-from-template's verbatim set); absent = whole catalog. Filter in the query —
-    // no point pulling 200 rows to keep 5. An empty list means "copy no catalog".
-    let srcProducts = [];
-    if (!opts.itemIds || opts.itemIds.length) {
-      let q = supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
-      if (opts.itemIds) q = q.in('id', opts.itemIds);
-      srcProducts = (await q).data || [];
+    const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source_id: src.id,
+        clone_name: cloneName,
+        slug,
+        as_template: !!opts.asTemplate,
+        start_from_template: !!opts.startFromTemplate,
+        rebrand: !!opts.rebrand,
+        // null = all products; [] = deliberately no products.
+        item_ids: opts.itemIds == null ? null : opts.itemIds,
+      }),
+    });
+    const cloned = await cloneRes.json().catch(() => ({}));
+    if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
+      flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+      return null;
     }
-    const idMap = {}; // old webstore_product id -> new id
-    for (const p of (srcProducts || [])) {
-      const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
-      // Template paths carry the ITEM, not the source team's branding: custom mockups
-      // (which show the old team's logo on the garment), art placements and transfer
-      // links strip; the new team decorates fresh. Plain Duplicate keeps everything.
-      const row = tplPath ? { ...prest, image_url: null, image_back_url: null, decorations: [], transfer_codes: [], num_transfer_sets: [] } : prest;
-      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...row, store_id: store.id }).select('id').single();
-      if (pe) { flash('Catalog copy failed: ' + pe.message); break; }
-      idMap[pid] = np.id;
-    }
-    const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
-    if (bundleIds.length) {
-      const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
-      // Remap the component's webstore_product_id link too — carrying the SOURCE store's
-      // row id makes the package show (and the storefront fetch) another store's item.
-      // Null when the linked single wasn't copied: components then resolve by product_id.
-      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, webstore_product_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id], webstore_product_id: idMap[webstore_product_id] || null, ...(tplPath ? { decoration_id: null } : {}) }; }).filter((r) => r.bundle_id);
-      if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
-    }
-    // Transfer setup (heat-press codes: the team's names/numbers/logos) is source-team
-    // branding — it copies on plain Duplicate / Clone & Rebrand but never on template
-    // paths, where the new team's transfers get set up fresh.
-    if (!tplPath) {
-      const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
-      if ((srcTransfers || []).length) {
-        const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
-        const { error: te } = await supabase.from('webstore_transfers').insert(trows);
-        if (te) flash('Transfer setup copy failed: ' + te.message);
-      }
-    }
+    const store = cloned.store;
     setStores((prev) => [store, ...prev]);
     flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
@@ -2295,8 +2340,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets, decorations, category, kit_name, required, options }) => {
     // Seed the global default add-on options (Store defaults) when none were set on the item.
     const opts = (Array.isArray(options) && options.length) ? options : (Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : []);
-    // Auto-group: if this store already carries the same style/family, attach this color to
-    // that existing card (shared variant_group_id) instead of dropping in a separate row — so
+    // Auto-group: if this store already carries the same style/family WITH THE SAME ART,
+    // attach this color to that existing card (shared variant_group_id) instead of dropping
+    // in a separate row — so
     // adding colors one at a time (or via the AI builder / picker fallback, which add one
     // product at a time) still lands as a single item with a color picker. styleKey() strips
     // the trailing color token, so SanMar (same style name) and adidas "… ROYBLU/WHITE"
@@ -2307,7 +2353,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const _styleOf = (nm) => styleKey(String(nm || ''));
     const _newKey = _styleOf(product.name || product.sku);
     const _twin = _newKey ? _cat
-      .filter((c) => c.kind !== 'bundle' && c.product_id !== product.id && _styleOf(_stock[c.id]?.name || c.display_name || c.sku) === _newKey)
+      .filter((c) => c.kind !== 'bundle' && c.product_id !== product.id
+        && _styleOf(_stock[c.id]?.name || c.display_name || c.sku) === _newKey
+        && haveSameDecorations(c.decorations, decorations))
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))[0] : null;
     const _groupId = _twin ? (_twin.variant_group_id || _twin.id) : null;
     const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_codes: transfer_codes || [], num_transfer_sets: takes_number ? (num_transfer_sets || []) : [], decorations: decorations || [], category: category || null, kit_name: kit_name || null, required: !!required, options: opts, active: true, sort_order: (detail?.catalog?.length || 0), ...(_groupId ? { variant_group_id: _groupId } : {}) };
@@ -2318,10 +2366,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
   }, [sel, detail, wsSettings, flash, loadDetail]);
 
-  // Add more colors of the same garment as options ON one card (not new cards).
-  // Each color stays its own SKU/row — so per-color stock, the order line, and POs
-  // all keep working — but the rows share variant_group_id (= the primary's id), so
-  // the builder and storefront group them into a single item with a color picker.
+  // Add more colors of the same garment. By default they are options on one card;
+  // `shared.separate` leaves each row standalone so it can carry a different logo.
+  // Either way, every color keeps its own SKU/row for stock, order lines, and POs.
   const addColorsToItem = useCallback(async (primary, colorProducts, shared = {}) => {
     if (!primary?.id || !Array.isArray(colorProducts) || !colorProducts.length) return;
     const groupId = primary.variant_group_id || primary.id;
@@ -2342,14 +2389,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       kit_name: (shared.kit_name != null ? shared.kit_name : primary.kit_name) || null,
       required: !!(shared.required != null ? shared.required : primary.required),
       options: Array.isArray(primary.options) ? primary.options : [],
-      active: true, sort_order: base + i, variant_group_id: groupId,
+      active: true, sort_order: base + i,
+      ...variantGroupFields(groupId, shared.separate),
     }));
     const ops = [supabase.from('webstore_products').insert(rows)];
-    if (!primary.variant_group_id) ops.push(supabase.from('webstore_products').update({ variant_group_id: groupId }).eq('id', primary.id));
+    if (!shared.separate && !primary.variant_group_id) ops.push(supabase.from('webstore_products').update({ variant_group_id: groupId }).eq('id', primary.id));
     const results = await Promise.all(ops);
     const e = results.find((r) => r.error);
     if (e?.error) { flash('Error: ' + e.error.message); return; }
-    flash(`Added ${rows.length} color${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+    flash(shared.separate
+      ? `Added ${rows.length} separate item${rows.length === 1 ? '' : 's'} — each can use its own logo`
+      : `Added ${rows.length} color${rows.length === 1 ? '' : 's'}`);
+    loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
 
   // Bulk add from the product picker, with colorways of the same STYLE (same product
@@ -2685,12 +2736,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
     // multi-color card's art changes, push the same decorations to every color row in the
     // group so the storefront and order handoff render the right logo for each color.
-    // Decorations and the inventory-tracking choice are card-level: fan them out to every
-    // color row in the group so all colorways behave the same on the storefront.
+    // Decorations, add-on prompts, and inventory choices are card-level: fan them out to
+    // every color row in the group so changing garment color never changes (or drops) the
+    // shopper questions attached to that storefront card.
     const groupFields = {};
     if (Object.prototype.hasOwnProperty.call(fields, 'decorations')) groupFields.decorations = fields.decorations;
+    if (Object.prototype.hasOwnProperty.call(fields, 'options')) groupFields.options = fields.options;
     if (Object.prototype.hasOwnProperty.call(fields, 'track_inventory')) groupFields.track_inventory = fields.track_inventory;
-    if (Object.prototype.hasOwnProperty.call(fields, 'size_skus')) groupFields.size_skus = fields.size_skus;
+    // Size fill-ins are COLOR-specific. Never fan a White substitute onto the
+    // other rows in a multi-color card (Navy, Black, etc.).
     if (Object.keys(groupFields).length) {
       const cat = detail?.catalog || [];
       const me = cat.find((c) => c.id === id);
@@ -3153,7 +3207,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const ids = (playerIds || []).filter(Boolean);
     if (!ids.length) { flash('No players to email.'); return { error: true }; }
     try {
-      const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
+      const res = await authFetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
       const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.ok) { flash('Email failed: ' + (d.error || res.status)); return { error: true }; }
       const skipped = (d.skipped || []).length;
@@ -3192,6 +3246,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // already-refunded amount is re-read from the DB (not trusted from possibly-stale React
   // state) with an over-refund cap before any money moves.
   const refundingRef = useRef(false);
+  const refundAttemptRef = useRef(null);
   const refundOrder = useCallback(async (order, amount, customerMessage, itemAllocations = []) => {
     if (refundingRef.current) return { error: 'A refund is already in progress' };
     refundingRef.current = true;
@@ -3203,16 +3258,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // idempotency key (attempt_id), and atomically records the refund + updates
       // refunded_amt/status via the apply_webstore_refund RPC. The browser no longer
       // writes refund state directly (RLS blocks it now; the server is the source of truth).
-      const attemptId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2));
+      const signature = JSON.stringify({ order: order.id, cents, message: (customerMessage || '').trim(), items: itemAllocations });
+      if (!refundAttemptRef.current || refundAttemptRef.current.signature !== signature) {
+        refundAttemptRef.current = {
+          signature,
+          id: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2)),
+        };
+      }
+      const attemptId = refundAttemptRef.current.id;
       let d;
       try {
         const res = await authFetch('/.netlify/functions/stripe-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, expected_refunded_cents: Math.round((Number(order.refunded_amt) || 0) * 100), attempt_id: attemptId, customer_message: (customerMessage || '').trim() || null, item_allocations: itemAllocations }),
         });
         d = await res.json();
       } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
       if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
+      refundAttemptRef.current = null;
+      if (d.replayed) {
+        flash(`Refund already completed: ${money(cents / 100)}${d.kind === 'card' ? ' to card' : ' credit'} — no duplicate refund or email was sent.`);
+        loadDetail(sel); return { ok: true, ...d };
+      }
       // The refund notice fires automatically server-side. Say plainly whether it
       // actually went — a refund the buyer was never told about looks identical to a
       // clean one otherwise, and the rep is the only person who can follow up.
@@ -3298,7 +3365,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (data || []).forEach((it) => { (soItemsBySo[it.so_id] = soItemsBySo[it.so_id] || []).push(it); });
     }
     for (let i = 0; i < soIds.length; i += 100) {
-      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id').in('id', soIds.slice(i, i + 100));
+      const { data, error } = await supabase.from('sales_orders').select('id,webstore_id,deco_pos').in('id', soIds.slice(i, i + 100));
       if (error) throw new Error('Could not validate Sales Order links: ' + error.message);
       (data || []).forEach((so) => { soMetaBySo[so.id] = so; });
     }
@@ -3320,12 +3387,19 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return { valid, lines, audit, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
-  // Per-player roll-up (printable): every player and exactly what they ordered.
+  // Player fulfillment export: the same SO-scoped, substitution-aware CSV used
+  // from the Sales Order editor. The readable on-screen Orders tab remains the
+  // place to browse players; the handoff artifact is deliberately one flat CSV.
   const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, audit, orderById, roster, stockByPid } = await gatherAll();
+    const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildPlayerReport(sel, lines, orderById, roster, stockByPid, audit);
+    const scope = selectFulfillmentReportScope(lines);
+    if (!scope.ok) { flash(scope.message, 'error'); return; }
+    const blocking = reportBlockingIssues(audit);
+    if (blocking.length) { flash(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error'); return; }
+    downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
+    flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
@@ -3345,8 +3419,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { valid, lines, audit, orderById } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     try {
-      const result = downloadSilverScreenFulfillment({ store: sel, lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit });
-      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'}`);
+      const scope = selectFulfillmentReportScope(lines);
+      if (!scope.ok) throw new Error(scope.message);
+      if (!scope.soId) throw new Error('Create a batch / Sales Order before downloading the Silver Screen XLSX.');
+      const result = downloadSilverScreenFulfillment({ store: sel, lines: scope.lines, orderById, customer: cust.find((c) => c.id === sel.customer_id) || null, audit, reference: scope.label });
+      flash(`Downloaded ${result.unitCount} Silver Screen fulfillment unit${result.unitCount === 1 ? '' : 's'} for ${scope.label}${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } catch (e) { flash(e?.message || 'Silver Screen fulfillment export failed', 'error'); }
   }, [sel, detail, gatherAll, flash, cust]);
 
@@ -3354,23 +3431,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // 'orders' (every line item with order + payment detail).
   const exportCsv = useCallback(async (kind) => {
     if (!sel || !detail) return;
-    const { lines, orderById, stockByPid, stockBySku } = await gatherAll();
+    const { lines, audit, orderById, stockByPid, stockBySku } = await gatherAll();
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
-      const header = ['Order #', 'Player', 'Number', 'Item', 'SKU', 'Adidas Tag SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
-      // Sort by order number (every line of an order contiguous, oldest order first) —
-      // same rule the Orders CSV got in #1991; without it the fetch order is arbitrary.
-      const sorted = [...lines].sort((a, b) => {
-        const oa = orderById[a.order_id] || {}, ob = orderById[b.order_id] || {};
-        return ((Number(oa.order_number) || 0) - (Number(ob.order_number) || 0))
-          || (new Date(oa.created_at || 0) - new Date(ob.created_at || 0))
-          || String(oa.id || '').localeCompare(String(ob.id || ''))
-          || String(a.player_name || '').localeCompare(String(b.player_name || ''))
-          || _itemName(a, stockByPid).localeCompare(_itemName(b, stockByPid));
-      });
-      const rows = sorted.map((i) => { const o = orderById[i.order_id] || {}; return [o.order_number != null ? String(o.order_number) : '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i._adidasTagSku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
-      downloadCsv(`${slug}-players.csv`, header, rows);
+      const scope = selectFulfillmentReportScope(lines);
+      if (!scope.ok) { flash(scope.message, 'error'); return; }
+      const blocking = reportBlockingIssues(audit);
+      if (blocking.length) { flash(`Player report blocked: ${blocking.slice(0, 5).join('; ')}${blocking.length > 5 ? `; plus ${blocking.length - 5} more issue(s)` : ''}.`, 'error'); return; }
+      downloadPlayerReportCsv({ so: { id: scope.label }, storeName: sel.name, lines: scope.lines, orderById });
+      flash(`Downloaded ${scope.label} Players CSV${scope.excludedOrders ? ` · excluded ${scope.excludedOrders} unbatched order${scope.excludedOrders === 1 ? '' : 's'}` : ''}`);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
       const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
@@ -3546,6 +3616,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
     (detail.bundleItems || []).forEach((b) => { if (b.product_id) { const e = personalize[b.product_id] || { num: false, name: false }; personalize[b.product_id] = { num: e.num || !!b.takes_number, name: e.name || !!b.takes_name }; } });
+    const productionTransfersByPid = {};
+    (detail.bundleItems || []).forEach((b) => {
+      if (!b.product_id || !b.transfer_code) return;
+      (productionTransfersByPid[b.product_id] = productionTransfersByPid[b.product_id] || new Set()).add(b.transfer_code);
+    });
 
     // SO sell price = what the buyer actually paid, NOT catalog retail. The webstore
     // charges a flat price per line (retail + size upcharge + fundraise + name upcharge),
@@ -3576,8 +3651,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     Object.values(bundleGroups).forEach((g) => {
       if (!g.kids.length || g.parentVal <= 0) return;
       const weights = g.kids.map((c) => retailByPid[c.product_id] || 0);
-      const wsum = weights.reduce((a, b) => a + b, 0);
-      g.kids.forEach((c, idx) => { allocById[c.id] = wsum > 0 ? r2(g.parentVal * weights[idx] / wsum) : r2(g.parentVal / g.kids.length); });
+      const allocated = allocateMoneyCents(g.parentVal, weights);
+      g.kids.forEach((c, idx) => { allocById[c.id] = allocated[idx]; });
     });
     const collectedForLine = (i) => allocById[i.id] != null
       ? allocById[i.id]
@@ -3589,15 +3664,50 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // own SO line (same art/deco, same price, but a different item number to source).
     const sizeSkusByCatPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
+    const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
+    const pinfo = {};
+    if (pids.length) {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('id', pids);
+      (data || []).forEach((p) => { pinfo[p.id] = p; });
+    }
+    // Pull every substitute SKU's product candidates too. A SKU can exist under
+    // multiple vendors, so resolution below uses the supplier saved with the
+    // override (or the base product's supplier for legacy string overrides).
+    const overrideSkus = [...new Set(bLines.map((i) => {
+      const sz = i.size || 'OS';
+      return sizeSkuCode(inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz]);
+    }).filter(Boolean))];
+    const candidatesBySku = {};
+    if (overrideSkus.length) {
+      const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price,vendor_id').in('sku', overrideSkus);
+      (data || []).forEach((p) => {
+        pinfo[p.id] = p;
+        const k = String(p.sku || '').trim().toUpperCase();
+        (candidatesBySku[k] = candidatesBySku[k] || []).push(p);
+      });
+    }
     const byProduct = {};
     bLines.forEach((i) => {
-      const basePid = i.product_id || i.sku || 'unknown';
+      const sourcePid = i.product_id || null;
+      const baseProduct = pinfo[sourcePid] || null;
       const sz = i.size || 'OS';
-      const effectiveSku = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
-      const pid = basePid + '§' + effectiveSku;
-      if (!byProduct[pid]) byProduct[pid] = { product_id: i.product_id || null, sku: effectiveSku, sizes: {}, numbers: {}, names: {}, collected: 0 };
-      const g = byProduct[pid]; const q = i.qty || 1;
-      const pdef = personalize[i.product_id] || {};
+      const rawOverride = inlineOverrides[(i.product_id || i.sku) + '|' + sz] || (!i.product_id && skuLinks[i.sku]) || (sizeSkusByCatPid[i.product_id] || {})[sz];
+      const source = resolveSizeSkuSource({ raw: rawOverride, lineSku: i.sku, lineColor: i.color, baseProduct, candidates: candidatesBySku[sizeSkuCode(rawOverride)] || [] });
+      // Group by the item the supplier will actually receive plus its production
+      // treatment. Stale catalog ids no longer split equivalent SKU/color lines,
+      // but different art, personalization, or transfer codes remain separate.
+      const sourceColor = source.product?.color || i.color || baseProduct?.color || '';
+      const key = webstoreProductionKey({
+        sku: source.sku,
+        color: sourceColor,
+        vendorId: source.vendor_id,
+        decorations: decosByKey[sourcePid] || decosByKey[source.sku] || [],
+        personalize: personalize[sourcePid] || {},
+        transferCodes: [...(productionTransfersByPid[sourcePid] || [])],
+      });
+      if (!byProduct[key]) byProduct[key] = { source_product_id: sourcePid, product_id: source.product_id, vendor_id: source.vendor_id, sku: source.sku, sizes: {}, numbers: {}, names: {}, collected: 0 };
+      const g = byProduct[key]; const q = i.qty || 1;
+      const pdef = personalize[sourcePid] || {};
       g.sizes[sz] = (g.sizes[sz] || 0) + q;
       g.collected = r2(g.collected + collectedForLine(i));
       for (let u = 0; u < q; u++) {
@@ -3605,12 +3715,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
       }
     });
-    const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
-    const pinfo = {};
-    if (pids.length) {
-      const { data } = await supabase.from('products').select('id,sku,name,brand,color,vendor_id,nsa_cost,retail_price').in('id', pids);
-      (data || []).forEach((p) => { pinfo[p.id] = p; });
-    }
     // Store lines that never got linked to a catalog product (the builder let a bare
     // typed SKU like "AT105" through) arrive here with product_id null. Resolve them
     // against the server catalog the way manual order entry would (exact SKU, then
@@ -3695,8 +3799,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const outsideDeco = (sel.decoration_mode || 'in_house') === 'outsourced';
     const routing = outsideDeco ? { fulfillment: 'outside' } : {};
     const soItems = Object.values(byProduct).map((g) => {
-      const info = pinfo[g.product_id] || skuInfo[g.sku] || {};
-      const pdef = personalize[g.product_id] || {};
+      const sourcePid = g.source_product_id || g.product_id;
+      const sourceInfo = pinfo[sourcePid] || {};
+      const info = pinfo[g.product_id] || skuInfo[g.sku] || sourceInfo;
+      const pdef = personalize[sourcePid] || {};
       const decorations = [];
       // Numbers / names attach as deco lines with the actual values (roster/names
       // keyed by size), NOT as free-text production notes.
@@ -3704,7 +3810,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (pdef.name && hasVals(g.names)) decorations.push({ kind: 'names', position: 'Back Center', sell_override: null, sell_suppressed: true, sell_each: 6, cost_each: 3, names: g.names, ...routing });
       // Each builder logo placement → one art deco + its art file on the SO.
       const seenPlace = new Set();
-      (decosByKey[g.product_id] || decosByKey[g.sku] || []).forEach((d) => {
+      (decosByKey[sourcePid] || decosByKey[g.sku] || []).forEach((d) => {
         const pk = placeKey(d); if (seenPlace.has(pk)) return; seenPlace.add(pk);
         const lib = d.art_id ? artById[d.art_id] : null;
         // Confirm-modal method switch for this logo (e.g. screen print → DTF on a
@@ -3738,22 +3844,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         // garment_color label against the SO line's color (exact, then contains, then only-CW)
         // for legacy url-only picks.
         let cwId = null;
-        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(info.color)];
+        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(sourceInfo.color || info.color)];
         if (_pick && typeof _pick === 'object' && _pick.color_way_id && lib && Array.isArray(lib.color_ways) && lib.color_ways.some((c) => c && c.id === _pick.color_way_id)) {
           cwId = _pick.color_way_id;
         }
         if (!cwId && lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
-          const gc = colorKeyOf(info.color);
+          const gc = colorKeyOf(sourceInfo.color || info.color);
           const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
           const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
           cwId = (exact && exact.id) || (fuzzy && fuzzy.id) || (lib.color_ways.length === 1 ? lib.color_ways[0].id : null);
         }
-        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: _ovType || (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
+        decorations.push({ kind: 'art', art_file_id: artId, position: posOf(d), type: _ovType || (lib && lib.deco_type) || 'screen_print', color_way_id: cwId, web_url: decoUrlForColor(d, sourceInfo.color || info.color, lib && lib.web_logos) || d.art_url || '', placement: d.placement || '', side: d.side || 'front', color_label: d.color_label || 'original', sell_override: 0, sell_each: 0, cost_each: 0, ...routing });
       });
       // Bundle/kit components: carry the component's heat-transfer logo to the SO
       // as a $0 art deco (it's baked into the package price) so production sees
       // which transfer to apply. One shared art file per transfer code.
-      (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
+      (bundleXfersByPid[sourcePid] ? [...bundleXfersByPid[sourcePid]] : []).forEach((code) => {
         const xId = 'xfer_' + code;
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0, ...routing });
@@ -3763,8 +3869,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       // collected. Deco sells are suppressed above so the garment line carries it all.
       const qtyTot = Object.values(g.sizes).reduce((a, v) => a + v, 0) || 1;
       const unitSell = r2((g.collected || 0) / qtyTot * discRatio);
-      return { sku: g.sku || info.sku || '', name: info.name || g.sku || 'Item', brand: info.brand || '', color: info.color || '',
-        product_id: g.product_id || info.id || null, vendor_id: info.vendor_id || null, nsa_cost: info.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
+      return { sku: g.sku || info.sku || '', name: info.name || sourceInfo.name || g.sku || 'Item', brand: info.brand || sourceInfo.brand || '', color: sourceInfo.color || info.color || '',
+        product_id: g.product_id || info.id || null, vendor_id: g.vendor_id || info.vendor_id || null, nsa_cost: info.nsa_cost || sourceInfo.nsa_cost || 0, retail_price: unitSell, unit_sell: unitSell,
         sizes: g.sizes, available_sizes: Object.keys(g.sizes), no_deco: decorations.length === 0, decorations, pick_lines: [], po_lines: [] };
     });
 
@@ -3780,8 +3886,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // Team-tab extras = the tab orders' tax/shipping/processing beyond their
     // product (+fundraise) share. The auto-invoice adds these on top of the SO's
     // product lines so the club's open balance equals the team-tab gross.
-    const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
-    const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
@@ -3790,16 +3894,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
     const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
       batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
-      // Money split for the automatic invoice+settle: Stripe-collected card total,
-      // team-tab gross still owed by the club, and the tab's tax/ship/processing extras.
-      settle: { cardTotal, tabTotal, tabExtras } });
+      // The server derives the settlement split again from these locked orders; no
+      // client-supplied money total is trusted at the accounting boundary.
+      order_ids: [...selIds] });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
-    // Idempotent link: only claim orders still unbatched, so a concurrent batch
-    // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).is('backorder_of', null).select('id');
-    if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
-    else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
-    else flash(`Created ${soId} · linked ${bOrders.length} orders`);
+    // onCreateSO now returns only after the server atomically links every selected
+    // order and records the invoice/payment + fundraising credit.
+    flash(`Created ${soId} · linked ${bOrders.length} orders · accounting recorded`);
     loadDetail(sel);
     }; // end proceed
 
@@ -7490,13 +7591,13 @@ function ItemSection({ title, hint, right, children, pad = 14, subtle = false })
   );
 }
 
-// Shopper-facing add-on options for an item — either a yes/no add-on with one
-// upcharge (e.g. "Embroidered name +$5") or a "pick one" choice list (e.g. collar
-// color, each choice with its own upcharge). Stored on webstore_products.options.
+// Shopper-facing add-on fields for an item. Each prompt declares HOW the player
+// answers it (number, text, multiple choice, or yes/no) plus an optional upcharge.
+// Stored on webstore_products.options; legacy `addon` / `choice` rows remain valid.
 function OptionsEditor({ value, onChange }) {
   const opts = Array.isArray(value) ? value : [];
   const set = (i, patch) => onChange(opts.map((o, j) => j === i ? { ...o, ...patch } : o));
-  const add = () => onChange([...opts, { id: Math.random().toString(36).slice(2, 8), label: '', kind: 'addon', upcharge: 0, required: false, choices: [] }]);
+  const add = () => onChange([...opts, { id: Math.random().toString(36).slice(2, 8), label: '', kind: 'text', upcharge: 0, required: false, choices: [] }]);
   const remove = (i) => onChange(opts.filter((_, j) => j !== i));
   const setChoice = (i, ci, patch) => set(i, { choices: (opts[i].choices || []).map((c, j) => j === ci ? { ...c, ...patch } : c) });
   const addChoice = (i) => set(i, { choices: [...(opts[i].choices || []), { label: '', upcharge: 0 }] });
@@ -7507,17 +7608,18 @@ function OptionsEditor({ value, onChange }) {
       {opts.map((o, i) => (
         <div key={o.id || i} style={{ border: '1px solid #e8ebf0', borderRadius: 10, padding: 10, marginBottom: 8, background: '#fff' }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input className="form-input" style={{ flex: 1, minWidth: 150 }} placeholder="Option label (e.g. Embroidered name)" value={o.label} onChange={(e) => set(i, { label: e.target.value })} />
-            <select className="form-input" style={{ width: 150 }} value={o.kind} onChange={(e) => set(i, { kind: e.target.value })}>
-              <option value="addon">Yes / No add-on</option>
-              <option value="choice">Pick one</option>
+            <input className="form-input" style={{ flex: 1, minWidth: 190 }} placeholder="What should the player fill in?" value={o.label} onChange={(e) => set(i, { label: e.target.value })} />
+            <select aria-label={`Answer type for ${o.label || `option ${i + 1}`}`} className="form-input" style={{ width: 170 }} value={o.kind || 'text'} onChange={(e) => set(i, { kind: e.target.value })}>
+              <option value="number">Number</option>
+              <option value="text">Text</option>
+              <option value="choice">Multiple choice</option>
+              <option value="addon">Yes / No</option>
             </select>
             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={!!o.required} onChange={(e) => set(i, { required: e.target.checked })} />required</label>
             <button type="button" onClick={() => remove(i)} title="Remove option" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 18, lineHeight: 1, cursor: 'pointer' }}>×</button>
           </div>
-          {o.kind === 'addon'
-            ? <div style={{ marginTop: 8, fontSize: 13 }}>Upcharge +$<input className="form-input" style={{ width: 90, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={o.upcharge || 0} onChange={(e) => set(i, { upcharge: Number(e.target.value) || 0 })} /></div>
-            : <div style={{ marginTop: 8 }}>
+          {o.kind === 'choice'
+            ? <div style={{ marginTop: 8 }}>
                 {(o.choices || []).map((c, ci) => (
                   <div key={ci} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 5 }}>
                     <input className="form-input" style={{ flex: 1, minWidth: 120 }} placeholder="Choice (e.g. Royal)" value={c.label} onChange={(e) => setChoice(i, ci, { label: e.target.value })} />
@@ -7526,7 +7628,8 @@ function OptionsEditor({ value, onChange }) {
                   </div>
                 ))}
                 <button type="button" onClick={() => addChoice(i)} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>+ add choice</button>
-              </div>}
+              </div>
+            : <div style={{ marginTop: 8, fontSize: 13 }}>{o.kind === 'addon' ? 'Upcharge when selected' : 'Upcharge when filled'} +$<input className="form-input" style={{ width: 90, display: 'inline-block', marginLeft: 4 }} type="number" step="0.01" min={0} value={o.upcharge || 0} onChange={(e) => set(i, { upcharge: Number(e.target.value) || 0 })} /></div>}
         </div>
       ))}
       <button type="button" onClick={add} className="btn btn-sm btn-secondary">+ Add an option</button>
@@ -7536,8 +7639,11 @@ function OptionsEditor({ value, onChange }) {
 
 // Drop blank options / empty choices so we never store half-filled add-ons.
 const cleanItemOptions = (options) => (Array.isArray(options) ? options : [])
-  .map((o) => ({ ...o, label: (o.label || '').trim(), choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) }))
-  .filter((o) => o.label && (o.kind === 'addon' || o.choices.length));
+  .map((o) => {
+    const kind = ['addon', 'number', 'text', 'choice'].includes(o.kind) ? o.kind : 'text';
+    return { ...o, kind, label: (o.label || '').trim(), upcharge: Number(o.upcharge) || 0, choices: (o.choices || []).filter((c) => (c.label || '').trim()).map((c) => ({ label: c.label.trim(), upcharge: Number(c.upcharge) || 0 })) };
+  })
+  .filter((o) => o.label && (o.kind !== 'choice' || o.choices.length));
 
 // Per-color web-logo override on a placed deco. cw_by_color maps a lowercased garment
 // color name -> the web-logo URL to use for that color (e.g. a white logo on a black tee,
@@ -7880,20 +7986,49 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Other colorways of this garment (same product name) the store doesn't already carry,
   // so staff can add them in one step at the same price/options.
   const [colorSibs, setColorSibs] = useState([]);
+  const [vendorColorsLoading, setVendorColorsLoading] = useState(false);
   const [pickedColors, setPickedColors] = useState(() => new Set());
   const [addingColors, setAddingColors] = useState(false);
+  const [separateColors, setSeparateColors] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   useEffect(() => {
-    if (isBundle || !defaultName || !onAddSingle) { setColorSibs([]); return; }
+    if (isBundle || !defaultName || !onAddSingle) { setColorSibs([]); setVendorColorsLoading(false); return; }
     let cancelled = false;
     (async () => {
       const { data } = await supabase.from('products')
         .select('id,sku,name,color,retail_price,image_front_url,available_sizes,category,brand')
         .eq('name', defaultName).neq('id', item.product_id).order('color').limit(200);
-      if (!cancelled) setColorSibs(data || []);
+      if (cancelled) return;
+      // Show imported siblings immediately, then augment them from the live vendor style.
+      // A style can have dozens of colors while `products` only contains the colors that
+      // somebody previously imported (ST650 had only True Navy and White locally).
+      setColorSibs(data || []);
+      const styleSku = String(item.sku || '').trim().toUpperCase().split('-')[0];
+      if (styleSku.length < 2) return;
+      setVendorColorsLoading(true);
+      try {
+        const { data: vendors } = await supabase.from('vendors').select('id,api_provider');
+        const vendorMap = {};
+        (vendors || []).forEach((v) => { if (v.api_provider) vendorMap[v.api_provider] = v.id; });
+        const { results } = await searchVendorCatalogs(styleSku, { vendorMap });
+        if (cancelled) return;
+        const sourceForInventory = { sanmar: 'sm', ss_activewear: 'ss', richardson: 'rs', momentec: 'mt' }[invSrcByPid?.[item.product_id]];
+        const exact = (results || []).filter((s) => String(s.sku || '').trim().toUpperCase() === styleSku);
+        const style = exact.find((s) => s.source === sourceForInventory) || exact[0];
+        if (!style) return;
+        const liveRows = (style.colors || []).map((color) => ({
+          ...vendorColorToProductRow(style, color),
+          _vendorStyle: style,
+          _vendorColor: color,
+        }));
+        // Local rows come first, so an already-imported product wins over its virtual
+        // vendor equivalent when colorOptions de-duplicates the combined list.
+        setColorSibs([...(data || []), ...liveRows]);
+      } catch (_) { /* local colors remain usable when a vendor API is unavailable */ }
+      finally { if (!cancelled) setVendorColorsLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [defaultName, item.product_id, isBundle, onAddSingle]);
+  }, [defaultName, item.product_id, item.sku, isBundle, onAddSingle, invSrcByPid]);
   const existingForStyle = new Set((catalog || []).filter((c) => c.kind === 'single' && (stockByWp[c.id]?.name || '') === defaultName).map((c) => (stockByWp[c.id]?.color || '').trim().toLowerCase()));
   const colorOptions = useMemo(() => {
     const map = new Map();
@@ -7927,9 +8062,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setAddingColors(true);
     try {
       const picks = colorOptions.filter((c) => pickedColors.has(c.id));
-      // Add the picked colors as options ON this same card (sharing the editor's
-      // current price/options/logos), instead of creating separate cards.
-      await onAddColors(item, picks, { price: Number(price) || 0, fundraise: Number(fundraise) || 0, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), decorations });
+      const vendorSelections = new Map();
+      picks.filter((p) => p._vendorStyle && p._vendorColor).forEach((p) => {
+        vendorSelections.set(vendorKeyOf(p._vendorStyle, p._vendorColor), { style: p._vendorStyle, color: p._vendorColor });
+      });
+      // webstore_products requires a real products FK. Import only selected live-vendor
+      // colors, using the same reuse/upsert and SanMar stock-backfill path as Add Items.
+      const imported = vendorSelections.size ? await importVendorSelections(vendorSelections) : [];
+      const products = [...picks.filter((p) => !p._vendorStyle), ...imported];
+      // Default: share this card's price/options/logo. The explicit separate-items
+      // choice leaves each new color standalone so its logo can be edited alone.
+      await onAddColors(item, products, { price: Number(price) || 0, fundraise: Number(fundraise) || 0, takes_number: !!takesNumber, takes_name: !!takesName, name_upcharge: Number(nameUp) || 0, transfer_codes: transferCodes.filter(Boolean), decorations, separate: separateColors });
       setPickedColors(new Set());
     } finally { setAddingColors(false); }
   };
@@ -8047,7 +8190,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       // Inventory tracking only matters for stock-backed items; persist the choice there.
       if (inventoryBacked) fields.track_inventory = !!trackInv;
       // Size-level SKU overrides: only persist when there's something set.
-      fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
+      const overrideColor = stockByWp[item.id]?.color || item.color || '';
+      fields.size_skus = Object.fromEntries(Object.entries(sizeSkus).flatMap(([sz, raw]) => {
+        const ov = normalizeSizeSkuOverride(raw);
+        return ov.sku ? [[sz, { sku: ov.sku, vendor_id: ov.vendor_id || null, color: ov.color || overrideColor }]] : [];
+      }));
     }
     // Only claim success if the write actually landed. onSave returns false when
     // the DB rejected it (error or RLS-blocked 0-row write) — don't clear the dirty
@@ -8368,22 +8515,31 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
         {!isBundle && item.product_id && sizeList.length > 0 && (
           <ItemSection title="SKU overrides by size" hint="· substitute a different item number for specific sizes — same decoration, same price">
             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Leave blank to use the default SKU{item.sku ? ` (${item.sku})` : ''}. Sizes with an override become a separate line on the Sales Order.</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 10px', alignItems: 'center' }}>
-              {sizeList.map((sz) => (
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(120px,1fr) minmax(130px,1fr)', gap: '6px 10px', alignItems: 'center' }}>
+              <span />
+              <span style={{fontSize:10,fontWeight:700,color:'#64748b'}}>ITEM NUMBER</span>
+              <span style={{fontSize:10,fontWeight:700,color:'#64748b'}}>SUPPLIER</span>
+              {sizeList.map((sz) => { const ov = normalizeSizeSkuOverride(sizeSkus[sz]); const overrideColor = stockByWp[item.id]?.color || item.color || ''; return (
                 <React.Fragment key={sz}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>{sz}</span>
                   <input
                     className="form-input"
-                    value={sizeSkus[sz] || ''}
+                    value={ov.sku}
                     onChange={(e) => {
                       const v = e.target.value.trim().toUpperCase();
-                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = v; else delete n[sz]; return n; });
+                      setSizeSkus((prev) => { const n = { ...prev }; if (v) n[sz] = { sku: v, vendor_id: ov.vendor_id || null, color: overrideColor }; else delete n[sz]; return n; });
                     }}
                     placeholder={item.sku || 'e.g. JL5412XL'}
                     style={{ fontSize: 12, padding: '4px 8px', fontFamily: 'monospace' }}
                   />
+                  <select className="form-input" value={ov.vendor_id || ''} disabled={!ov.sku}
+                    onChange={(e) => setSizeSkus((prev) => ({ ...prev, [sz]: { sku: ov.sku, vendor_id: e.target.value || null, color: overrideColor } }))}
+                    style={{fontSize:12,padding:'4px 8px',color:ov.sku?'#0f172a':'#94a3b8'}}>
+                    <option value="">Match item &amp; color automatically</option>
+                    {vendorList.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
                 </React.Fragment>
-              ))}
+              ); })}
             </div>
           </ItemSection>
         )}
@@ -8416,8 +8572,8 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, alignItems: 'start' }}>
         <div>
-        {onAddColors && colorOptions.length > 0 && (
-          <ItemSection title="Add more colors" hint="· add other colors of this garment to this same card, at this price" right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
+        {onAddColors && (colorOptions.length > 0 || vendorColorsLoading) && (
+          <ItemSection title="Add more colors" hint={separateColors ? '· each color becomes its own item and can use a different logo' : '· same card, price and logo'} right={<button type="button" disabled={!pickedColors.size || addingColors} onClick={addColors} className="btn btn-sm btn-primary" style={{ opacity: (!pickedColors.size || addingColors) ? 0.5 : 1 }}>{addingColors ? 'Adding…' : separateColors ? `Add ${pickedColors.size || ''} separate item${pickedColors.size === 1 ? '' : 's'}` : `Add ${pickedColors.size || ''} color${pickedColors.size === 1 ? '' : 's'}`}</button>}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {colorOptions.map((s) => { const on = pickedColors.has(s.id); return (
                 <button key={s.id} type="button" onClick={() => toggleColor(s.id)} title={s.color || s.sku} style={{ position: 'relative', width: 92, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 10, padding: 5, cursor: 'pointer' }}>
@@ -8429,6 +8585,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                 </button>
               ); })}
             </div>
+            {vendorColorsLoading && <div style={{ marginTop: colorOptions.length ? 8 : 0, fontSize: 11, color: '#64748b' }}>Loading all vendor colors…</div>}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 12, fontWeight: 700, color: '#475569', cursor: 'pointer' }}>
+              <input type="checkbox" checked={separateColors} onChange={(e) => setSeparateColors(e.target.checked)} />
+              Separate items — use this when the colors need different logos
+            </label>
           </ItemSection>
         )}
 
@@ -10154,7 +10315,7 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
 // future AI-brief and customer self-serve flows can drive the same engine.
 // Who may edit the shared/curated "TEAM" favorites that show first for everyone. Personal
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
-const FAV_CURATORS = ['smpeterson327@gmail.com'];
+const FAV_CURATORS = ['steve@nationalsportsapparel.com'];
 
 // ── Live vendor-catalog search (shared by the popup modal AND the picker's main search bar).
 // Searches SanMar/District, S&S, Richardson and Momentec APIs for any style (even ones not in
@@ -13073,14 +13234,12 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       if (addrErr) { errs.push({ order: who, msg: addrErr }); continue; }
       const shipItems = plan.map((x) => ({ ...x.item, qty: x.qty }));
       try {
-        const { labelData, trackingNumber, carrier, shipmentId, cost } = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
-        if (labelData) labels.push(labelData);
-        const shippedById = {}; const targetById = {}; const lineById = {};
-        lines.forEach((i) => { targetById[i.id] = (targetById[i.id] || 0) + (Number(i.qty) || 0); lineById[i.id] = i; });
-        plan.forEach((x) => { shippedById[x.item.id] = (shippedById[x.item.id] || 0) + x.qty; });
-        for (const [id, add] of Object.entries(shippedById)) { const i = lineById[id]; const sq = (Number(i._sourceShippedQty) || 0) + add; const done = sq >= (targetById[id] || 0); try { await supabase.from('webstore_order_items').update({ shipped_qty: sq, ...(done ? { line_status: 'shipped' } : {}) }).eq('id', id); } catch {} lines.filter((l) => l.id === id).forEach((l) => { l.shipped_qty = sq; l._sourceShippedQty = sq; if (done) l.line_status = 'shipped'; }); }
-        const allShipped = Object.keys(targetById).every((id) => (Number(lineById[id].shipped_qty) || 0) >= targetById[id]);
-        try { await supabase.from('webstore_orders').update({ tracking_number: trackingNumber || null, carrier: carrier || null, label_cost: cost != null ? cost : null, label_data: labelData || null, shipstation_shipment_id: shipmentId, ...(allShipped ? { shipped_at: new Date().toISOString() } : {}) }).eq('id', o.id); } catch {}
+        const label = await createWebstoreLabel(o, shipItems, store, weightByPid, imageByPid);
+        // Keep the purchased PDF printable even if the ledger handoff needs
+        // attention; retries are idempotent and the error explicitly warns the
+        // operator not to buy a second label.
+        if (label.labelData) labels.push(label.labelData);
+        await recordCreatedWebstoreLabel(o, shipItems, label);
       } catch (e) { errs.push({ order: who, msg: (e && e.message) || 'Label failed' }); }
     }
     // Roll the Sales Order's outbound shipping cost up = sum of its orders' label
@@ -13519,14 +13678,9 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
     try {
       const res = await shipStationCall('/shipments/voidlabel', { method: 'POST', body: JSON.stringify({ shipmentId: Number(o.shipstation_shipment_id) }) });
       if (res && res.approved === false) throw new Error(res.message || 'ShipStation declined the void.');
-      await supabase.from('webstore_order_items').update({ shipped_qty: 0, line_status: 'bagging' }).eq('order_id', o.id).eq('line_status', 'shipped');
-      await supabase.from('webstore_shipments').delete().eq('order_id', o.id);
-      await supabase.from('webstore_orders').update({ tracking_number: null, carrier: null, label_data: null, shipstation_shipment_id: null, label_cost: null, shipped_at: null }).eq('id', o.id);
-      // Re-roll the Sales Order's shipping cost without this order's label.
-      if (o.so_id) { try { const { data: soOrds } = await supabase.from('webstore_orders').select('label_cost').eq('so_id', o.so_id); const total = (soOrds || []).reduce((a, x) => a + (Number(x.label_cost) || 0), 0); await supabase.from('sales_orders').update({ _shipping_cost: total, _shipstation_cost: total }).eq('id', o.so_id); } catch {} }
+      await recordVoidedWebstoreLabel(o.id, o.shipstation_shipment_id);
       o.label_data = null; o.shipstation_shipment_id = null;
-      (itemsByOrder[o.id] || []).forEach((i) => { if (i.line_status === 'shipped') { i.line_status = 'bagging'; i.shipped_qty = 0; } });
-      setTick((t) => t + 1);
+      window.location.reload();
     } catch (e) { window.alert('Void failed: ' + e.message); }
   };
   const itemsByOrder = {};
@@ -13596,8 +13750,8 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
           </button>
         )}
         {onPlayerReport && (
-          <button className="btn btn-secondary" onClick={onPlayerReport} title="Every player and exactly what they ordered (plus who hasn't ordered)">
-            👥 Player report
+          <button className="btn btn-secondary" onClick={onPlayerReport} title="Download the SO-scoped player report as CSV">
+            ⬇ Player report CSV
           </button>
         )}
         {onStockReport && (
@@ -13613,7 +13767,6 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
         {onExportCsv && (
           <select style={sel} value="" onChange={(e) => { const v = e.target.value; if (v) onExportCsv(v); }} title="Download as CSV (Excel)">
             <option value="">⬇️ Export CSV…</option>
-            <option value="players">Players CSV</option>
             <option value="stock">Stock CSV</option>
             <option value="orders">Orders CSV</option>
           </select>
@@ -13671,7 +13824,7 @@ function OrdersTab({ orders, orderItems, nameByPid = {}, numbersEnabled, onBatch
                           const sub = [i.color, nm ? i.sku : null].filter(Boolean).join(' · ');
                           return (
                           <tr key={i.id} style={{ borderTop: '1px solid #dbeafe' }}>
-                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}</td>
+                            <td style={td}><div style={{ fontWeight: 600 }}>{nm || i.sku || '—'}</div>{sub && <div style={{ fontSize: 11, color: '#64748b' }}>{sub}</div>}{(i.add_on_selections || []).map((o) => <div key={o.id || o.label} style={{ fontSize: 11, color: '#475569' }}>{o.label}: {o.kind === 'addon' ? 'Yes' : o.value}</div>)}</td>
                             <td style={td}>{i.size || '—'}</td>
                             {showPlayer && <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>}
                             <td style={td}>{i.qty}</td>
@@ -13755,6 +13908,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   const billedTotal = Number(order.original_total != null ? order.original_total : order.total) || 0;
   const remaining = Math.max(0, billedTotal - (Number(order.refunded_amt) || 0));
   const fullyRefunded = Number(order.refunded_amt) > 0 && remaining <= 0.005;
+  const moneySettled = order.payment_mode === 'paid' || !!order.stripe_pi_id;
 
   // The coupon discount scales with the merchandise pot it was a percentage of, so a
   // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
@@ -13767,6 +13921,11 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
   const hasChanges = rows.some((r, i) => r._removed !== initRows[i]?._initialRemoved || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
+  // A settled card amount covers the originally purchased, not-yet-refunded
+  // units only. Restoring a cancelled-but-unrefunded unit is safe; adding a new
+  // unit is not, because no new payment is collected by this editor.
+  const hasUnpaidIncrease = moneySettled && rows.some((r, i) => !r._removed && Number(r.qty) > Math.max(0,
+    Number(initRows[i]?.qty || 0) + Number(initRows[i]?.cancelled_qty || 0) - Number(initRows[i]?.refunded_qty || 0)));
   // Bundle parents hold the package price (components are $0) and aren't editable, so
   // seed the recompute with their value — otherwise the New total drops every package.
   const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
@@ -13909,9 +14068,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
               // obvious and removes an action that can never legitimately succeed.
               const refundLocked = r._removed && Number(r.refunded_qty) > 0;
               const editLocked = fullyRefunded || r._removed;
-              const maxActiveQty = Number(r.refunded_qty) > 0
-                ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty))
-                : undefined;
+              const maxActiveQty = moneySettled
+                ? Math.max(0, Number(initRows[idx]?.qty || 0) + Number(initRows[idx]?.cancelled_qty || 0) - Number(initRows[idx]?.refunded_qty || 0))
+                : (Number(r.refunded_qty) > 0 ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty)) : undefined);
               return (
                 <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -13922,7 +14081,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                   {sizes.length > 0
                     ? <select value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
                     : <input value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                  <input type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <input aria-label={`Quantity for ${r.name || r.sku || 'item'}`} type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
                   <button disabled={fullyRefunded || refundLocked} onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: fullyRefunded || refundLocked ? '#94a3b8' : r._removed ? '#2563eb' : '#b91c1c', cursor: fullyRefunded || refundLocked ? 'default' : 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{fullyRefunded || refundLocked ? 'refunded' : r._removed ? 'undo' : 'remove'}</button>
                 </div>
               );
@@ -13936,7 +14095,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
+          {hasUnpaidIncrease && <div role="alert" style={{ background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', borderRadius: 8, padding: '9px 12px', marginBottom: 12, fontSize: 12 }}>A paid order can’t be increased here because this editor does not collect the additional card payment. Create a separate order for the added unit.</div>}
+
+          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded || hasUnpaidIncrease} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
           {hasChanges && owed > 0.005 && <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 7 }}>Saves the order, then opens the refund review. Nothing is refunded until you confirm.</div>}
 
           {/* Refund controls remain available for stand-alone/manual refunds. Item

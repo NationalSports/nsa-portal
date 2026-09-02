@@ -95,7 +95,7 @@ exports.handler = async (event) => {
           .select('id,store_id,buyer_email,buyer_name,total,shipping_fee,discount_amt,coupon_code,payment_mode,ship_method,ship_address').limit(1);
         const order = claimed && claimed[0];
         if (order) {
-          if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code);
+          if (order.coupon_code) await bumpCouponUse(sb, order.store_id, order.coupon_code, order.id);
           if (order.buyer_email) await sendOrderConfirmation(sb, order);
         }
 

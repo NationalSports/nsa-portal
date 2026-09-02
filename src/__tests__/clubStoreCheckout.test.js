@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Club-store individual-order flow — checkout branching (migration 00204 workstream).
  *
  * Club webstores (org_type='club') stamp order_source='club' + customer_id (from
@@ -13,7 +15,7 @@
  */
 process.env.STRIPE_SECRET_KEY = 'sk_test_123';
 jest.mock('stripe', () => {
-  const paymentIntents = { create: jest.fn(), retrieve: jest.fn() };
+  const paymentIntents = { create: jest.fn(), retrieve: jest.fn(), cancel: jest.fn() };
   const factory = (key) => ({ paymentIntents });
   factory.__pi = paymentIntents;
   return factory;
@@ -80,12 +82,21 @@ const TEAM_STORE = {
 const NULL_ORG_STORE = { ...TEAM_STORE, id: 'st-null', slug: 'null1', org_type: undefined };
 const WP = { id: 'wp1', store_id: 'x', kind: 'single', active: true, retail_price: 20, sku: 'TEE', product_id: 'p1', display_name: 'Tee', takes_name: false, takes_number: false };
 const CART = [{ webstore_product_id: 'wp1', qty: 1, size: 'L' }];
-const BUYER = { name: 'Pat', email: 'pat@example.com' };
+// Pickup tax is sourced from the buyer's billing address. Nevada is deliberately
+// outside this test process's default CA-only nexus so these flow tests remain
+// network-free while still exercising the production address contract.
+const BUYER = { name: 'Pat', email: 'pat@example.com', billing_street1: '1 Main St', billing_city: 'Reno', state: 'NV', zip: '89501' };
 const NEW_ORDER = { id: 'ord-new', status: 'unpaid', store_id: 'st-club' };
 
 const happyTables = () => ({
   'webstore_products.select': [{ data: [WP], error: null }],
-  'webstore_storefront_products.select': [{ data: [], error: null }, { data: [], error: null }],
+  // Public storefront-view read supplies optional size upcharges. The stock
+  // guard uses its service-scoped RPC so archived package components are also
+  // visible without broadening anonymous view access.
+  'webstore_storefront_products.select': [{ data: [], error: null }],
+  'rpc.get_webstore_checkout_inventory': [
+    { data: [{ webstore_product_id: 'wp1', product_id: 'p1', name: 'Tee', size_stock: { L: 10 }, vendor_size_stock: {}, on_order_qty: 0, earliest_eta: null, vendor_eta: null, track_inventory: true, inventory_source: 'adidas' }], error: null },
+  ],
 });
 const body = (store, extra) => ({ storeSlug: store.slug, cart: CART, buyer: BUYER, payMode: 'unpaid', ...extra });
 
@@ -196,6 +207,19 @@ describe('finalize — post-payment club conversion trigger', () => {
     const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).ok).toBe(true);
+  });
+
+  test('a paid-status write failure is reported and conversion never starts', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 2000, metadata: {} });
+    const order = clubOrder({ status: 'pending_payment' });
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [order], error: null }],
+      'webstore_orders.update': [{ data: null, error: { message: 'database unavailable' } }],
+    });
+    const res = await checkout.finalize(sb, { orderId: order.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).error).toMatch(/payment was received/i);
+    expect(sb.calls.some((c) => c.op === 'rpc' && c.table === 'create_club_sales_order')).toBe(false);
   });
 
   test('already-converted club order (so_id set) does not call the RPC again', async () => {

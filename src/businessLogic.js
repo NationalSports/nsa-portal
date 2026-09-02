@@ -17,6 +17,16 @@ const safeDecos = (it) => safeArr(it?.decorations);
 const safeItems = (o) => safeArr(o?.items);
 const safeArt = (o) => safeArr(o?.art_files);
 const safeJobs = (o) => safeArr(o?.jobs);
+const manualPoCostTotal = (o) => {
+  const seen = new Set(); let total = 0;
+  safeItems(o).forEach((it, ii) => safePOs(it).forEach((po, pi) => {
+    const amount = safeNum(po?._manual_cost); if (!(amount > 0)) return;
+    const poId = String(po?.po_id || '').trim();
+    const key = poId ? poId.replace(/\s+/g, ' ').toLowerCase() : ('line:' + ii + ':' + pi);
+    if (seen.has(key)) return; seen.add(key); total += amount;
+  }));
+  return total;
+};
 // Same "does this art file actually have anything to review" check the approval-card UI uses
 // (App.js totalMocks) — an art file can carry a stale 'needs_approval'/'uploaded' status with 0
 // files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as waiting_approval
@@ -1075,6 +1085,7 @@ function calcTotals(o, cust) {
     if (bc > 0) { cost += bc; return; }
     cost += safeNum(dp.qty || 0) * safeNum(dp.unit_cost || 0);
   });
+  cost += manualPoCostTotal(o);
   const ship = o.shipping_type === 'pct' ? rev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
   // Prior shipping carried from a Manual Ship recorded when the customer had no open order.
   const priorShip = safeNum(o.pending_ship_applied ? o.pending_ship_amount : 0);
@@ -1242,11 +1253,12 @@ function calcPromoTotals(o, cust) {
 
   // Customer pays only the non-promo portion
   const customerPays = normalRev + normalShip + normalTax;
+  const manualPoCost = manualPoCostTotal(o);
 
   return {
-    promoRev, promoCost, promoShip, promoAmount,
+    promoRev, promoCost, promoShip, promoAmount, manualPoCost,
     normalRev, normalCost, normalShip, normalTax,
-    customerPays, totalCost: promoCost + normalCost
+    customerPays, totalCost: promoCost + normalCost + manualPoCost
   };
 }
 
@@ -1464,6 +1476,34 @@ function itemsWithWipedQty(clientItems, dbItems) {
     if (total(ci.sizes) === 0) out.push({ item_index: idx, sku: db.sku, name: db.name, prevQty: oldQty });
   });
   return out;
+}
+
+// A decoration reduction is destructive, so it must be tied to the exact before/after counts
+// recorded by the editor's Remove action. Hydration flags are deliberately irrelevant here: a
+// stale or partially reconciled client can incorrectly believe it fully loaded decorations.
+function decorationShrinkConflicts(clientItems, dbItems, dbDecoCounts, deleteIntents) {
+  const clients = safeArr(clientItems);
+  const intents = safeObj(deleteIntents);
+  const countFor = id => dbDecoCounts instanceof Map
+    ? safeNum(dbDecoCounts.get(id))
+    : safeNum(safeObj(dbDecoCounts)[id]);
+  return safeArr(dbItems).reduce((out, dbItem) => {
+    const oldCount = countFor(dbItem.id);
+    const clientItem = clients[dbItem.item_index];
+    if (!clientItem || oldCount <= 0) return out; // removing the whole item is handled separately
+    const newCount = safeDecos(clientItem).length;
+    if (newCount >= oldCount) return out;
+    const intent = safeObj(intents[String(dbItem.item_index)]);
+    if (safeNum(intent.from) === oldCount && safeNum(intent.to) === newCount) return out;
+    out.push({
+      item_index: dbItem.item_index,
+      sku: clientItem.sku || dbItem.sku || '',
+      name: clientItem.name || dbItem.name || '',
+      oldCount,
+      newCount,
+    });
+    return out;
+  }, []);
 }
 
 // ─── Commission / account attribution ───
@@ -1797,7 +1837,7 @@ function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
 
 module.exports = {
   // Safe accessors
-  safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
+  safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs, manualPoCostTotal,
   // Attribution
   commissionRepId,
   isCommissionRep,
@@ -1818,5 +1858,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems,
+  itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems,
 };

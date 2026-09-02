@@ -245,6 +245,13 @@
 [functions."bill-anomaly-digest"]
   schedule = "30 21 * * *"
 
+# Weekly financial digest — Mondays 14:00 UTC (~6-7 AM PT). Owner's summary of
+# billed / AR / order intake (computed live from Supabase) plus margin and order
+# book read from the Financials page's newest finance_snapshots row.
+# Env: FINANCE_DIGEST_EMAILS (comma list; defaults to Steve).
+[functions."weekly-financial-digest"]
+  schedule = "0 14 * * 1"
+
 # Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
 # whose roster deadline is within 3 days and whose team isn't locked yet, once
 # per session (deadline_reminded_at).
@@ -293,4 +300,18 @@
 
 [functions."gmail-ai-sync"]
   schedule = "*/5 * * * *"
+  timeout = 26
+
+# Durable webstore notification retry queue. Customer replies and shipment
+# emails are persisted before delivery; this sweep retries provider/API failures.
+[functions."webstore-notification-sweep"]
+  schedule = "*/5 * * * *"
+  timeout = 26
+
+# Hourly read-only webstore integrity canary. Reconciles durable message,
+# shipment, tracker, cost, refund, and batch-accounting records; also verifies
+# the sensitive-table/RPC access boundary. Findings are deduplicated in a
+# service-only incident ledger and alerted through a durable email outbox.
+[functions."webstore-integrity-sweep"]
+  schedule = "35 * * * *"
   timeout = 26

@@ -2,8 +2,8 @@
 // Staff-only (Supabase JWT). The access token is read from the service-role-only store and
 // refreshed server-side when stale — tokens are never supplied by, or returned to, the client.
 const https = require('https');
-const { verifyUser } = require('./_shared');
-const { getSupabaseAdmin, getStoredTokens, getValidAccessToken } = require('./_qb');
+const { verifyQBOUser } = require('./_shared');
+const { getSupabaseAdmin, getValidAccessToken } = require('./_qb');
 
 const corsHeaders = (origin) => ({
   'Access-Control-Allow-Origin': origin || '*',
@@ -38,6 +38,9 @@ function qbRequest(method, path, accessToken, body, useSandbox) {
       });
     });
     req.on('error', reject);
+    // Fail before the Netlify function's hard timeout so the client receives a
+    // structured 500 and can perform its one permitted read-only retry.
+    req.setTimeout(8000, () => req.destroy(new Error('QBO upstream request timed out')));
     if (body) req.write(typeof body === 'string' ? body : JSON.stringify(body));
     req.end();
   });
@@ -52,9 +55,9 @@ exports.handler = async (event) => {
     return { statusCode: 405, headers: corsHeaders(origin), body: JSON.stringify({ error: 'POST only' }) };
   }
 
-  // Staff-only: QBO writes (invoices, payments, POs, inventory) require a signed-in,
-  // active team member's Supabase JWT in the Authorization header.
-  const v = await verifyUser(event);
+  // Company financial data is restricted to accounting and admin roles. This
+  // gate covers connection status and reads as well as transaction writes.
+  const v = await verifyQBOUser(event);
   if (!v.ok) {
     return { statusCode: v.status, headers: corsHeaders(origin), body: JSON.stringify({ error: v.error }) };
   }
@@ -65,13 +68,21 @@ exports.handler = async (event) => {
 
   const admin = getSupabaseAdmin();
 
-  // ── CONNECTION STATUS ── lightweight, no QBO call (client uses this to render connect state)
+  // ── CONNECTION STATUS ── validate/refresh the stored grant before claiming
+  // the company is connected. Merely finding a stale row produced a false green
+  // status until the first live read failed.
   if (action === 'connection_status') {
     try {
-      const row = await getStoredTokens(admin);
-      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ connected: !!row, realm_id: row?.realm_id || null, token_created_at: row?.token_created_at || null }) };
+      const valid = await getValidAccessToken(admin);
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({ connected: true, realm_id: valid.realm_id || null }) };
     } catch (err) {
-      return { statusCode: 500, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Status check failed: ' + err.message }) };
+      const notConnected = err.code === 'NOT_CONNECTED';
+      return { statusCode: 200, headers: corsHeaders(origin), body: JSON.stringify({
+        connected: false,
+        requires_reconnect: !notConnected,
+        code: err.code || 'TOKEN_ERROR',
+        error: notConnected ? 'QuickBooks is not connected' : 'QuickBooks authorization expired — reconnect required',
+      }) };
     }
   }
 
@@ -247,10 +258,17 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
+    // ── CREATE BANK DEPOSIT ──
+    if (action === 'upsert_deposit') {
+      const { deposit } = body;
+      const res = await qbRequest('POST', `${basePath}/deposit`, access_token, deposit, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
     // ── READ SINGLE ENTITY ──
     if (action === 'read') {
       const { entity, id } = body;
-      const validEntities = ['customer', 'vendor', 'invoice', 'bill', 'purchaseorder', 'item', 'payment', 'account'];
+      const validEntities = ['customer', 'vendor', 'invoice', 'bill', 'purchaseorder', 'item', 'payment', 'deposit', 'account'];
       if (!validEntities.includes(entity)) {
         return { statusCode: 400, headers: corsHeaders(origin), body: JSON.stringify({ error: 'Invalid entity: ' + entity }) };
       }

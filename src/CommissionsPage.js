@@ -6,7 +6,7 @@ import { useAppData } from './AppContext';
 import { calcSOStatus } from './components';
 import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, garmentCost } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
-import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
+import { safeArt, safeDecos, safeItems, safeNum, safeSizes, manualPoCostRows, manualPoCostTotal } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
@@ -17,7 +17,12 @@ import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnap
 // team_members id — same single-user gate as the App.js to-do list).
 const ADMIN_DASH_USER_ID='00000000-0000-0000-0000-000000000001';
 
-export default function CommissionsPage(){
+// `adminReports` renders ONLY the admin-only report tabs (Monthly Reports, Admin
+// Dashboard) — the Financials page mounts the component this way so those reports live
+// in the admin financial home. Reps keep the full Commissions page unchanged; nothing
+// about the commission math, snapshots or state moves, so there is exactly one copy of
+// the money logic and rep pay cannot drift between the two mounts.
+export default function CommissionsPage({adminReports=false}={}){
   const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos,setSOs}=useAppData();
 
     const isAdmin=cu.role==='admin'||cu.role==='super_admin';
@@ -25,6 +30,15 @@ export default function CommissionsPage(){
     const salesReps=REPS.filter(isCommissionRep);
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
+
+    // The Financials mount shows only admin report tabs; commTab is shared with the
+    // Commissions page, so a rep-oriented value ('statement') would render an empty body.
+    // Land on the first tab this user can actually see.
+    useEffect(()=>{
+      if(!adminReports)return;
+      const allowed=[...(isAdmin?['monthly']:[]),...(isSteve?['adminDash']:[])];
+      if(allowed.length&&!allowed.includes(commTab))setCommTab(allowed[0]);
+    },[adminReports,isAdmin,isSteve,commTab,setCommTab]);
 
     // ── Commission snapshots: frozen money for paid invoices ──
     // A paid invoice's GP/rate/amount/paid-date freeze the first time this page sees the
@@ -153,7 +167,9 @@ export default function CommissionsPage(){
       // Outside deco POs — SO-level cost bucket
       const _db0=cost;
       (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
-      if(dtl&&cost-_db0>0)dtl.push({kind:'bucket',label:'Outside deco POs',rev:0,cost:cost-_db0});
+      const manualPoRows=manualPoCostRows(so);const manualPoCost=manualPoRows.reduce((a,row)=>a+row.amount,0);cost+=manualPoCost;
+      if(dtl&&cost-_db0-manualPoCost>0)dtl.push({kind:'bucket',label:'Outside deco POs',rev:0,cost:cost-_db0-manualPoCost});
+      if(dtl)manualPoRows.forEach(row=>dtl.push({kind:'bucket',label:'Manual PO cost'+(row.po_id?' · '+row.po_id:'')+(row.payment_label?' · Paid by '+row.payment_label:''),rev:0,cost:row.amount}));
       // Shipping revenue (charged to customer)
       const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
       // Outbound shipping cost from ShipStation — fallback to shipment records
@@ -280,6 +296,7 @@ export default function CommissionsPage(){
           safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
         });
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+        cost+=manualPoCostTotal(so);
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
@@ -327,10 +344,11 @@ export default function CommissionsPage(){
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);const c=bc>0?bc:safeNum(dp.qty||0)*safeNum(dp.unit_cost||0);decoCost+=c});
         const totalRev=promoRev;const baseShip=so.shipping_type==='pct'?totalRev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=rQ(baseShip*1.25);
-        const totalCost=productCost+decoCost+shipCost;
+        const manualCost=manualPoCostTotal(so);
+        const totalCost=productCost+decoCost+shipCost+manualCost;
         const soDate=so.created_at?so.created_at.substring(0,10):'';
         const soMonth=soDate?soDate.substring(0,7):'';
-        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:commissionRepId(c,so,_ovrOf(so.id))};
+        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,manualCost:Math.round(manualCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:commissionRepId(c,so,_ovrOf(so.id))};
       });
     };
 
@@ -438,25 +456,25 @@ export default function CommissionsPage(){
     return(<>
       {/* Header with rep selector (admin only) */}
       <div style={{display:'flex',gap:12,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
-        {isAdmin&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
+        {isAdmin&&!adminReports&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
           <select className="form-select" style={{width:180}} value={commRep} onChange={e=>setCommRep(e.target.value)}>
             <option value="all">All Reps</option>
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
-        <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
-          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])].map(([id,label])=>
+        <div style={{display:'flex',gap:4,marginLeft:isAdmin&&!adminReports?'auto':0}}>
+          {(adminReports?[...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])]:[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])]).map(([id,label])=>
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="stats-row" style={{marginBottom:16}}>
+      {/* Summary cards — rep-statement figures; not shown in the admin-reports mount. */}
+      {!adminReports&&<div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card"><div className="stat-label">This Month</div><div className="stat-value" style={{color:'#166534'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div>{monthPromoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>−${monthPromoCost.toLocaleString()} promo</div>}</div>
         <div className="stat-card"><div className="stat-label">YTD Earned</div><div className="stat-value" style={{color:'#1e40af'}}>${ytdNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div>{ytdPromoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>−${ytdPromoCost.toLocaleString()} promo</div>}</div>
         <div className="stat-card"><div className="stat-label">Pipeline</div><div className="stat-value" style={{color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
         <div className="stat-card"><div className="stat-label">Promo Costs</div><div className="stat-value" style={{color:'#dc2626'}}>${ytdPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{allPromoLines.length} orders YTD</div></div>
         <div className="stat-card"><div className="stat-label">Avg GP%</div><div className="stat-value" style={{color:ytdRev>0&&(ytdGP/ytdRev*100)>=30?'#166534':'#d97706'}}>{ytdRev>0?Math.round(ytdGP/ytdRev*100):0}%</div></div>
-      </div>
+      </div>}
 
       {/* MONTHLY STATEMENT TAB */}
       {commTab==='statement'&&<div className="card">
@@ -606,7 +624,7 @@ export default function CommissionsPage(){
         <div className="card-body" style={{padding:0}}>
           {monthPromoLines.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No promo orders this month</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>SO #</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th>Date</th><th style={{textAlign:'right'}}>Product Cost</th><th style={{textAlign:'right'}}>Deco Cost</th><th style={{textAlign:'right'}}>Shipping</th><th style={{textAlign:'right',fontWeight:800}}>Total Cost</th>
+            <th>SO #</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th>Date</th><th style={{textAlign:'right'}}>Product Cost</th><th style={{textAlign:'right'}}>Deco Cost</th><th style={{textAlign:'right'}}>Shipping</th><th style={{textAlign:'right'}}>Manual PO</th><th style={{textAlign:'right',fontWeight:800}}>Total Cost</th>
           </tr></thead><tbody>
             {monthPromoLines.map(l=><tr key={l.so.id}>
               <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
@@ -616,6 +634,7 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.productCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.decoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.shipCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:l.manualCost>0?'#dc2626':'#94a3b8'}}>{l.manualCost>0?'$'+l.manualCost.toLocaleString(undefined,{maximumFractionDigits:2}):'—'}</td>
               <td style={{textAlign:'right',fontWeight:800,color:'#dc2626'}}>${l.totalCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>)}
             <tr style={{fontWeight:800,background:'#fef2f2',borderTop:'2px solid #dc2626'}}>
@@ -623,6 +642,7 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.productCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.decoCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.shipCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.manualCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td style={{textAlign:'right',fontSize:14,color:'#dc2626'}}>${monthPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>
           </tbody></table>}
@@ -735,7 +755,7 @@ export default function CommissionsPage(){
           if(!w){alert('Popup blocked — please allow popups for this site.');return}
           const css=`body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:24px;max-width:780px;margin:0 auto}h1{margin:0 0 4px;font-size:22px}h2{margin:0 0 16px;font-size:14px;color:#64748b;font-weight:500}table{width:100%;border-collapse:collapse;font-size:12px;margin:12px 0}th{text-align:left;padding:8px 6px;border-bottom:2px solid #1e293b;background:#f8fafc;font-size:11px;text-transform:uppercase;color:#475569}td{padding:8px 6px;border-bottom:1px solid #e2e8f0}tfoot td{border-top:2px solid #1e293b;font-weight:700}.tr{text-align:right}.tc{text-align:center}.muted{color:#64748b;font-size:10px}.pos{color:#166534}.neg{color:#dc2626}.box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin:8px 0}.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.tile{padding:12px;border-radius:8px;text-align:center}.tile .v{font-size:20px;font-weight:800}.tile .l{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}.t1{background:#f0f9ff;color:#1e40af}.t2{background:#fef2f2;color:#dc2626}.t3{background:#f0fdf4;color:#166534}.t4{background:#f5f3ff;color:#6d28d9}@media print{button{display:none}}`;
           const earnedRows=rr.lines.map(l=>`<tr><td><strong>${l.inv.id}</strong><div class="muted">${l.inv.date||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr">${fmt0(l.gp.rev)}</td><td class="tr neg">${fmt0(l.gp.cost)}</td><td class="tr pos">${fmt0(l.gp.gp)}</td><td class="tc">${l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</td><td class="tc">${l.daysToPay??'—'}d</td><td class="tc">${Math.round(l.commRate*100)}%</td><td class="tr"><strong>${fmt(l.commAmt)}</strong></td></tr>`).join('');
-          const promoRows=rr.promo.map(l=>`<tr><td><strong>${l.so.id}</strong><div class="muted">${l.soDate||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr neg">${fmt(l.productCost)}</td><td class="tr neg">${fmt(l.decoCost)}</td><td class="tr neg">${fmt(l.shipCost)}</td><td class="tr neg"><strong>−${fmt(l.totalCost)}</strong></td></tr>`).join('');
+          const promoRows=rr.promo.map(l=>`<tr><td><strong>${l.so.id}</strong><div class="muted">${l.soDate||''}</div></td><td>${(l.customer?.name||'—').replace(/</g,'&lt;')}</td><td class="tr neg">${fmt(l.productCost)}</td><td class="tr neg">${fmt(l.decoCost)}</td><td class="tr neg">${fmt(l.shipCost)}</td><td class="tr neg">${fmt(l.manualCost)}</td><td class="tr neg"><strong>−${fmt(l.totalCost)}</strong></td></tr>`).join('');
           w.document.write(`<!doctype html><html><head><title>Commission — ${rr.rep.name} — ${monthLabel}</title><style>${css}</style></head><body>
             <h1>Commission Statement</h1>
             <h2>${rr.rep.name} · ${monthLabel}</h2>
@@ -750,9 +770,9 @@ export default function CommissionsPage(){
             <tbody>${earnedRows}</tbody>
             <tfoot><tr><td colspan="2">TOTAL EARNED</td><td class="tr">${fmt0(rr.rev)}</td><td colspan="2"></td><td colspan="3"></td><td class="tr pos">${fmt(rr.earned)}</td></tr></tfoot></table>`:''}
             ${rr.promo.length>0?`<h3 style="margin-top:20px;font-size:13px">Promo Order Cost Deductions</h3>
-            <table><thead><tr><th>SO</th><th>Customer</th><th class="tr">Product</th><th class="tr">Deco</th><th class="tr">Shipping</th><th class="tr">Total</th></tr></thead>
+            <table><thead><tr><th>SO</th><th>Customer</th><th class="tr">Product</th><th class="tr">Deco</th><th class="tr">Shipping</th><th class="tr">Manual PO</th><th class="tr">Total</th></tr></thead>
             <tbody>${promoRows}</tbody>
-            <tfoot><tr><td colspan="5">TOTAL PROMO COSTS</td><td class="tr neg">−${fmt(rr.promoCost)}</td></tr></tfoot></table>`:''}
+            <tfoot><tr><td colspan="6">TOTAL PROMO COSTS</td><td class="tr neg">−${fmt(rr.promoCost)}</td></tr></tfoot></table>`:''}
             <div class="box"><strong>Net Commission for ${monthLabel}: <span class="${rr.net>=0?'pos':'neg'}">${fmt(rr.net)}</span></strong></div>
             <div style="margin-top:24px;font-size:10px;color:#64748b"><strong>Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days. Promo costs are deducted from net commission.</div>
             <div style="margin-top:16px;text-align:center"><button onclick="window.print()" style="padding:8px 24px;font-size:13px;background:#1e40af;color:white;border:none;border-radius:6px;cursor:pointer">Print this report</button></div>
@@ -1376,7 +1396,7 @@ export default function CommissionsPage(){
 
       {/* Commission policy note */}
       <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice or set a custom rate per invoice via <em>Edit %</em>. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping) are deducted from monthly commission as they represent real costs with no customer revenue.
+        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice or set a custom rate per invoice via <em>Edit %</em>. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Manual PO Costs &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping, and manual PO costs) are deducted from monthly commission as they represent real costs with no customer revenue.
       </div>
     </>);
   }

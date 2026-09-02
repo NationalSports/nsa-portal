@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* Unit tests for the webstore close-out notify guards (_webstoreClose.js).
  *
  * The "process the store" to-do/email fires at close (fulfillment: batch the orders and
@@ -6,15 +7,17 @@
  * store, but its captured orders are for refunding — never a process prompt).
  * Fund settlement is prompted separately when the SO's final job finishes (App.js).
  */
-const { notifyStoreClosed } = require('../../netlify/functions/_webstoreClose');
+const { notifyStoreClosed, closeTodoId, closeEmailKey } = require('../../netlify/functions/_webstoreClose');
 
 // Minimal chainable stub for the supabase admin client: every method returns the chain,
 // awaiting it resolves { data: [], error: null } — enough for buildBreakdown (no orders),
 // the todo insert (skipped: no rep_id), and the closed_notified_at stamp.
-const stubAdmin = () => {
-  const from = () => {
+const stubAdmin = (events = []) => {
+  const from = (table) => {
     const c = {};
-    ['select', 'eq', 'in', 'update', 'insert'].forEach((m) => { c[m] = () => c; });
+    ['select', 'eq', 'in'].forEach((m) => { c[m] = () => c; });
+    c.update = () => { events.push(`update:${table}`); return c; };
+    c.insert = () => { events.push(`insert:${table}`); return c; };
     c.then = (resolve) => resolve({ data: [], error: null });
     return c;
   };
@@ -35,8 +38,37 @@ describe('notifyStoreClosed — close-out notify guards', () => {
   });
 
   test('a just-closed store notifies immediately', async () => {
-    const r = await notifyStoreClosed(stubAdmin(), { id: 's1', name: 'Test Store', close_at: new Date().toISOString() });
+    const sent = [];
+    const r = await notifyStoreClosed(stubAdmin(), { id: 's1', name: 'Test Store', close_at: '2026-09-01T20:00:00.000Z' }, {
+      sendEmail: async (payload, key) => { sent.push({ payload, key }); },
+    });
     expect(r.notified).toBe(true);
     expect(r.breakdown).toBeDefined();
+    expect(r.emailed).toContain('stores@nationalsportsapparel.com');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].key).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  test('stable close identities make to-do creation and email delivery retry-safe', () => {
+    const store = { id: 's1', close_at: '2026-09-01T20:00:00.000Z' };
+    expect(closeTodoId(store)).toBe(closeTodoId({ ...store }));
+    expect(closeEmailKey(store)).toBe(closeEmailKey({ ...store }));
+    expect(closeEmailKey(store)).not.toBe(closeEmailKey({ ...store, close_at: '2026-09-08T20:00:00.000Z' }));
+  });
+
+  test('an email failure leaves closed_notified_at unstamped for the hourly retry', async () => {
+    const events = [];
+    await expect(notifyStoreClosed(stubAdmin(events), { id: 's1', name: 'Test Store', close_at: '2026-09-01T20:00:00.000Z' }, {
+      sendEmail: async () => { events.push('email'); throw new Error('provider unavailable'); },
+    })).rejects.toThrow(/provider unavailable/);
+    expect(events).toEqual(['email']);
+  });
+
+  test('completion is stamped only after the close email succeeds', async () => {
+    const events = [];
+    await notifyStoreClosed(stubAdmin(events), { id: 's1', name: 'Test Store', close_at: '2026-09-01T20:00:00.000Z' }, {
+      sendEmail: async () => { events.push('email'); },
+    });
+    expect(events).toEqual(['email', 'update:webstores']);
   });
 });

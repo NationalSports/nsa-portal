@@ -59,14 +59,14 @@ const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JS
 const playerKey = (slug) => 'nsa_player_' + slug;
 const loadPlayerToken = (slug) => { try { return localStorage.getItem(playerKey(slug)) || ''; } catch { return ''; } };
 const savePlayerToken = (slug, tok) => { try { if (tok) localStorage.setItem(playerKey(slug), tok); else localStorage.removeItem(playerKey(slug)); } catch {} };
-const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0);
+const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0) + (Number(l.option_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
 const shipFee = (store) => store && store.delivery_mode === 'ship_home' ? (Number(store.flat_shipping) || 0) : 0;
-// Processing fee: a percent of the item subtotal only — base price + size upcharge,
-// excluding fundraising and name upcharge (mirrors the server's priceCart subtotal).
+// Processing fee: a percent of the item subtotal only — base price + size/add-on
+// upcharges, excluding fundraising and name personalization (mirrors priceCart).
 const procPct = (store) => Math.max(0, Number(store && store.processing_pct) || 0);
-const cartProcBase = (items) => items.reduce((a, l) => a + ((Number(l.unit_price) || 0) + (Number(l.size_extra) || 0)) * (l.qty || 1), 0);
+const cartProcBase = (items) => items.reduce((a, l) => a + ((Number(l.unit_price) || 0) + (Number(l.size_extra) || 0) + (Number(l.option_extra) || 0)) * (l.qty || 1), 0);
 const procFeeAmt = (store, items) => Math.round(procPct(store) / 100 * cartProcBase(items) * 100) / 100;
 const grandTotal = (store, items) => cartTotal(items) + shipFee(store) + procFeeAmt(store, items);
 
@@ -166,6 +166,19 @@ function darken(hex, amount) {
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const sumSizes = (j) => Object.values(j || {}).reduce((a, v) => a + (Number(v) || 0), 0);
 const priceOf = (p) => (p.display_price != null ? p.display_price : p.retail_price);
+const optionDefsOf = (p) => Array.isArray(p && p.options) ? p.options.filter((o) => o && String(o.label || '').trim()) : [];
+const optionKey = (o, i) => String(o.id || `option-${i}`);
+const optionHasValue = (o, value) => o.kind === 'addon' ? value === true : String(value == null ? '' : value).trim() !== '';
+const optionSelections = (defs, values) => defs.reduce((out, o, i) => {
+  const key = optionKey(o, i); const value = values[key];
+  if (!optionHasValue(o, value)) return out;
+  const choice = o.kind === 'choice' ? (o.choices || []).find((c) => c.label === value) : null;
+  const upcharge = o.kind === 'choice' ? Number(choice && choice.upcharge) || 0 : Number(o.upcharge) || 0;
+  out.push({ id: key, label: String(o.label).trim(), kind: o.kind || 'text', value: o.kind === 'addon' ? true : String(value).trim(), upcharge });
+  return out;
+}, []);
+const optionsExtra = (defs, values) => optionSelections(defs, values).reduce((sum, s) => sum + (Number(s.upcharge) || 0), 0);
+const optionDetailLabels = (selections) => (Array.isArray(selections) ? selections : []).map((s) => `${s.label}: ${s.kind === 'addon' ? 'Yes' : s.value}`);
 // Per-size upcharge — bigger sizes (2XL/3XL+) cost the vendor more, so the view
 // publishes a size→extra-dollars map. 0 when the store has it off or the size is standard.
 const sizeUp = (p, sz) => (sz ? Number((p.size_upcharges || {})[sz]) || 0 : 0);
@@ -235,6 +248,11 @@ function parsePath() {
   return { slug: segs[1] || '', view: segs[2] || 'home', id: segs[3] || null };
 }
 function navTo(path) { window.history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); window.scrollTo(0, 0); }
+function orderPath(store, order, suffix = '') {
+  const token = String(order && order.status_token || '');
+  if (!token) throw new Error('Order tracking token missing');
+  return `/shop/${store.slug}/order/${encodeURIComponent(token)}${suffix}`;
+}
 
 function useTheme(store) {
   return useMemo(() => {
@@ -519,7 +537,7 @@ export default function Storefront() {
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
         {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
-        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
+        {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderToken={route.id} /></Wrap>}
       </main>
       <Footer store={store} theme={theme} />
     </div>
@@ -1129,6 +1147,34 @@ function Placeholder({ theme, label, kind = 'top', store }) {
   return <GarmentTile theme={theme} store={store || { name: label }} kind={kind} />;
 }
 
+function AddOnFields({ options, values, onChange, theme }) {
+  const defs = optionDefsOf({ options });
+  if (!defs.length) return null;
+  const set = (key, value) => onChange({ ...values, [key]: value });
+  const labelStyle = { fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', color: theme.subText, marginBottom: 6 };
+  return (
+    <div style={{ margin: '4px 0 18px', padding: '16px', border: `1px solid ${theme.line}`, borderRadius: 6, background: theme.paper }}>
+      <div style={{ fontFamily: DISPLAY, fontSize: 12, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', color: theme.ink, marginBottom: 12 }}>Player details &amp; add-ons</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
+        {defs.map((o, i) => {
+          const key = optionKey(o, i); const value = values[key] == null ? '' : values[key];
+          const suffix = o.kind === 'choice' ? '' : (Number(o.upcharge) > 0 ? ` (+${money(o.upcharge)})` : '');
+          return <div key={key}>
+            <div style={labelStyle}>{o.label}{o.required ? ' *' : ''}{suffix}</div>
+            {o.kind === 'number' && <input aria-label={o.label} className="sf-input" inputMode="numeric" value={value} onChange={(e) => set(key, e.target.value.replace(/[^0-9]/g, '').slice(0, 12))} placeholder="Enter number" style={fieldStyle(theme, '100%')} />}
+            {(o.kind === 'text' || !['number', 'choice', 'addon'].includes(o.kind)) && <input aria-label={o.label} className="sf-input" value={value} onChange={(e) => set(key, e.target.value.slice(0, 120))} placeholder="Enter text" style={fieldStyle(theme, '100%')} />}
+            {o.kind === 'choice' && <select aria-label={o.label} className="sf-input" value={value} onChange={(e) => set(key, e.target.value)} style={fieldStyle(theme, '100%')}>
+              <option value="">Select one…</option>
+              {(o.choices || []).map((c) => <option key={c.label} value={c.label}>{c.label}{Number(c.upcharge) > 0 ? ` (+${money(c.upcharge)})` : ''}</option>)}
+            </select>}
+            {o.kind === 'addon' && <label style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 9, border: `1px solid ${theme.line}`, borderRadius: 4, padding: '9px 12px', cursor: 'pointer', background: value === true ? theme.cream : '#fff' }}><input type="checkbox" checked={value === true} onChange={(e) => set(key, e.target.checked)} /> <span style={{ fontSize: 14, fontWeight: 600 }}>Yes, add this</span></label>}
+          </div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Rough color-name → swatch hex for the small color dots.
 function swatchColor(name) {
   const n = String(name || '').trim().toLowerCase();
@@ -1144,10 +1190,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const [img, setImg] = useState('front');
   const [num, setNum] = useState('');
   const [pname, setPname] = useState('');
+  const [addOnValues, setAddOnValues] = useState({});
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
   // Reset the picked color / size when navigating to a different product.
-  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); }, [rep ? rep.webstore_product_id : null]);
+  useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); setAddOnValues({}); }, [rep ? rep.webstore_product_id : null]);
   // Prefill personalization from the player's roster link — jersey number is the
   // high-value bit; name is prefilled too but stays editable.
   useEffect(() => {
@@ -1212,7 +1259,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   });
   const nameUp = Number(p.name_upcharge) || 0;
   const upNow = sizeUp(p, size);
-  const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
+  const addOnDefs = optionDefsOf(p);
+  const addOnExtra = optionsExtra(addOnDefs, addOnValues);
+  const selectedAddOns = optionSelections(addOnDefs, addOnValues);
+  const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
+  const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0) + addOnExtra;
   const needSize = isFitGroup ? true : sizesArr.length > 0;
   // A product that inherently has sizes (a real size scale, or a rep-added
   // sizes_offered list) but yields ZERO sellable sizes is sold out in every size and
@@ -1222,8 +1273,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const inherentlySized = !isFitGroup && (scaleOf(p).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
   const soldOutNoSize = inherentlySized && sizesArr.length === 0;
   const needNumber = !!p.takes_number;
-  const isPersonalized = needNumber || !!p.takes_name;
-  const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim());
+  const isPersonalized = needNumber || !!p.takes_name || selectedAddOns.length > 0;
+  const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim()) && !missingAddOn;
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
@@ -1231,6 +1282,8 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
       unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0,
       size_extra: upNow,
       name_extra: p.takes_name && pname.trim() ? nameUp : 0,
+      option_extra: addOnExtra,
+      option_selections: selectedAddOns,
       player_number: needNumber ? num.trim() : null,
       player_name: p.takes_name && pname.trim() ? pname.trim() : null,
       qty: isPersonalized ? 1 : qty,
@@ -1322,7 +1375,9 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
             </div>
           )}
 
-          {(upNow > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
+          <AddOnFields options={addOnDefs} values={addOnValues} onChange={setAddOnValues} theme={theme} />
+
+          {(upNow > 0 || addOnExtra > 0 || (p.takes_name && nameUp > 0 && pname.trim())) ? <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 800, marginBottom: 10, color: theme.ink }}>Total: {money(total)}</div> : null}
           <div style={{ display: 'flex', alignItems: 'stretch', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
             {!isPersonalized && (
               <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${theme.line}`, borderRadius: 4, overflow: 'hidden', height: 50 }}>
@@ -1332,7 +1387,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
               </div>
             )}
             <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), flex: 1, minWidth: 220, opacity: canAdd ? 1 : 0.55, cursor: canAdd ? 'pointer' : 'not-allowed' }}>
-              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
+              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : missingAddOn ? `Complete ${missingAddOn.label}` : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
             </button>
           </div>
           {added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}
@@ -1351,6 +1406,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
+  const [addOnValues, setAddOnValues] = useState({});
   const [added, setAdded] = useState(false);
   // Prefill every numbered/named component from the player's roster link.
   useEffect(() => {
@@ -1364,14 +1420,18 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
   if (!p) return <Splash>Package not found.</Splash>;
   const compSizesArr = (c) => foldScale(meta(c).sizes);
   const nameExtra = components.reduce((a, c) => a + ((c.takes_name && (names[c.id] || '').trim()) ? (Number(c.name_upcharge) || 0) : 0), 0);
+  const addOnDefs = optionDefsOf(p);
+  const addOnExtra = optionsExtra(addOnDefs, addOnValues);
+  const selectedAddOns = optionSelections(addOnDefs, addOnValues);
+  const missingAddOn = addOnDefs.find((o, i) => o.required && !optionHasValue(o, addOnValues[optionKey(o, i)]));
   const missingSize = components.some((c) => c.size_required && compSizesArr(c).length > 0 && !picks[c.id]);
   const missingNum = components.some((c) => c.takes_number && !(nums[c.id] || '').trim());
-  const canAdd = isOpen && !missingSize && !missingNum;
+  const canAdd = isOpen && !missingSize && !missingNum && !missingAddOn;
   const addToCart = () => {
     onAdd({
       kind: 'bundle', webstore_product_id: p.webstore_product_id, product_id: null, sku: null,
       name: p.name, image: p.image_front_url || (components.map((c) => meta(c).image).find(Boolean)) || null,
-      unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra,
+      unit_price: Number(p.retail_price) || 0, fundraise: Number(p.fundraise_amount) || 0, name_extra: nameExtra, option_extra: addOnExtra, option_selections: selectedAddOns,
       components: components.map((c) => { const m = meta(c); return {
         bundle_item_id: c.id, product_id: c.product_id, sku: c.sku, name: m.name, image: m.image || null,
         size: picks[c.id] || null,
@@ -1477,16 +1537,18 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
         </div>
       )}
 
+      {addOnDefs.length > 0 && <div style={{ margin: '0 0 96px' }}><AddOnFields options={addOnDefs} values={addOnValues} onChange={setAddOnValues} theme={theme} /></div>}
+
       {/* Sticky action bar */}
       <div style={{ position: 'sticky', bottom: 0, zIndex: 10, background: theme.ink, borderRadius: '8px 8px 0 0', boxShadow: '0 -4px 24px rgba(0,0,0,0.18)', padding: '16px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 180 }}>
           <div style={{ width: 170, maxWidth: '60vw', height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.18)', overflow: 'hidden', marginBottom: 8 }}>
             <div style={{ width: `${Math.round(pct * 100)}%`, height: '100%', background: theme.accent, borderRadius: 999, transition: 'width .3s ease' }} />
           </div>
-          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>{!isOpen ? 'Store not open yet' : canAdd ? 'Pack complete — ready to add' : `${selCount} of ${total} selected`}</div>
+          <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, letterSpacing: 0.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>{!isOpen ? 'Store not open yet' : missingAddOn ? `Complete ${missingAddOn.label}` : canAdd ? 'Pack complete — ready to add' : `${selCount} of ${total} selected`}</div>
         </div>
         <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ border: 'none', borderRadius: 4, padding: '15px 28px', fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, letterSpacing: 1.2, textTransform: 'uppercase', cursor: canAdd ? 'pointer' : 'not-allowed', background: canAdd ? theme.accent : 'rgba(255,255,255,0.16)', color: canAdd ? theme.ink : 'rgba(255,255,255,0.5)' }}>
-          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added' : `Add Player Pack · ${money(pack + nameExtra)}`}</span>
+          <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added' : `Add Player Pack · ${money(pack + nameExtra + addOnExtra)}`}</span>
         </button>
       </div>
     </div>
@@ -1495,9 +1557,10 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
 
 // ── Cart ─────────────────────────────────────────────────────────────
 function lineDetail(l) {
-  if (l.kind === 'bundle') return (l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`);
+  if (l.kind === 'bundle') return [...optionDetailLabels(l.option_selections), ...(l.components || []).map((c) => `${c.name}${c.size ? ' · ' + c.size : ''}${c.player_number ? ' · #' + c.player_number : ''}${c.player_name ? ' · ' + c.player_name : ''}`)];
   return [
     [l.variant_label, l.size && 'Size ' + l.size, l.player_number && '#' + l.player_number, l.player_name].filter(Boolean).join(' · '),
+    ...optionDetailLabels(l.option_selections),
     Number(l.size_extra) > 0 ? `Includes +${money(l.size_extra)} for ${l.size}` : null,
   ].filter(Boolean);
 }
@@ -1505,7 +1568,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
   const remove = (key) => onUpdate(cart.filter((l) => l.key !== key));
   const setQty = (key, q) => onUpdate(cart.map((l) => (l.key === key ? { ...l, qty: Math.max(1, q) } : l)));
   // Personalized items (a specific jersey number/name) and packs are 1-of-a-kind.
-  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name;
+  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name || (Array.isArray(l.option_selections) && l.option_selections.length > 0);
   const heading = <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Your Cart<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>;
   if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Start with the Player Pack</SkewBtn></div></div>;
 
@@ -1522,7 +1585,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
             // Grouped Player Pack card — one priced unit, child items show "incl."
             <div key={l.key} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderLeft: `4px solid ${theme.accent}`, borderRadius: 6, marginBottom: 16, overflow: 'hidden' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${theme.line}` }}>
-                <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink }}>{l.name} · {money(lineUnit(l))}</div>
+                <div><div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink }}>{l.name} · {money(lineUnit(l))}</div>{optionDetailLabels(l.option_selections).map((x) => <div key={x} style={{ fontSize: 12.5, color: theme.subText }}>{x}</div>)}</div>
                 <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase' }}>Remove pack</button>
               </div>
               {(l.components || []).map((c, i) => (
@@ -1542,6 +1605,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, textTransform: 'uppercase', letterSpacing: 0.3, color: theme.ink }}>{l.name}</div>
                 <div style={{ fontSize: 13, color: theme.subText }}>{optLabel([l.variant_label, l.size, l.player_number && '#' + l.player_number, l.player_name])}</div>
+                {optionDetailLabels(l.option_selections).map((x) => <div key={x} style={{ fontSize: 12.5, color: theme.subText }}>{x}</div>)}
                 {fixedQty(l)
                   ? <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase', padding: '6px 0 0' }}>Remove</button>
                   : <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
@@ -1614,7 +1678,7 @@ async function repriceCart(store, cart) {
     if (!ids.length) return cart;
     const [{ data: prods }, { data: bitems }] = await Promise.all([
       supabase.from('webstore_storefront_products')
-        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge')
+        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge,options')
         .eq('store_id', store.id).in('webstore_product_id', ids),
       supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
     ]);
@@ -1625,6 +1689,9 @@ async function repriceCart(store, cart) {
       if (!p) return l; // product gone/deactivated — leave as-is; the server surfaces its own error
       const unit_price = Number(p.retail_price) || 0;
       const fundraise = Number(p.fundraise_amount) || 0;
+      const selectedValues = Object.fromEntries((l.option_selections || []).map((s) => [s.id, s.value]));
+      const option_selections = optionSelections(optionDefsOf(p), selectedValues);
+      const option_extra = option_selections.reduce((a, s) => a + (Number(s.upcharge) || 0), 0);
       if (l.kind === 'bundle') {
         // Bundle name upcharge = sum over selected components that take a name and have one.
         const name_extra = (l.components || []).reduce((a, c) => {
@@ -1632,11 +1699,11 @@ async function repriceCart(store, cart) {
           const hasName = c.player_name && String(c.player_name).trim();
           return a + ((bi && bi.takes_name && hasName) ? (Number(bi.name_upcharge) || 0) : 0);
         }, 0);
-        return { ...l, unit_price, fundraise, name_extra };
+        return { ...l, unit_price, fundraise, name_extra, option_extra, option_selections };
       }
       const size_extra = l.size ? (Number((p.size_upcharges || {})[l.size]) || 0) : 0;
       const name_extra = (l.player_name && String(l.player_name).trim()) ? (Number(p.name_upcharge) || 0) : 0;
-      return { ...l, unit_price, fundraise, size_extra, name_extra };
+      return { ...l, unit_price, fundraise, size_extra, name_extra, option_extra, option_selections };
     });
   } catch (e) { return cart; }
 }
@@ -1663,31 +1730,36 @@ const STRIPE_ADDR_OPTS = { mode: 'payment', amount: 100, currency: 'usd', appear
 class StripeFieldBoundary extends React.Component {
   constructor(p) { super(p); this.state = { failed: false }; }
   static getDerivedStateFromError() { return { failed: true }; }
-  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain ZIP:', err && err.message); } catch (e) {} }
+  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain address fields:', err && err.message); } catch (e) {} }
   render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
 
-function BillingAddressInner({ onZip }) {
+function BillingAddressInner({ onAddress }) {
   return (
     <AddressElement
       options={{ mode: 'billing', fields: { phone: 'never' } }}
       onChange={(e) => {
-        const pc = e && e.value && e.value.address && e.value.address.postal_code;
-        if (pc) onZip(String(pc).replace(/\D/g, '').slice(0, 5));
+        const address = e && e.value && e.value.address;
+        if (address) onAddress({
+          billing_street1: String(address.line1 || '').trim().slice(0, 200),
+          billing_city: String(address.city || '').trim().slice(0, 120),
+          zip: String(address.postal_code || '').replace(/\D/g, '').slice(0, 5),
+          state: String(address.state || '').trim().toUpperCase().slice(0, 2),
+        });
       }}
     />
   );
 }
 
-// Renders the Stripe billing address (its postal drives the sales-tax quote), or the
-// plain ZIP `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
+// Renders the Stripe billing address (it drives the sales-tax quote), or the
+// plain-field `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
 // isn't available, or if the widget errors.
-function BillingZip({ stripePromise, disabled, onZip, fallback }) {
+function BillingZip({ stripePromise, disabled, onAddress, fallback }) {
   if (disabled || !stripePromise) return fallback;
   return (
     <StripeFieldBoundary fallback={fallback}>
       <Elements stripe={stripePromise} options={STRIPE_ADDR_OPTS}>
-        <BillingAddressInner onZip={onZip} />
+        <BillingAddressInner onAddress={onAddress} />
       </Elements>
     </StripeFieldBoundary>
   );
@@ -1701,7 +1773,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // player_name = who the gear is for (often a parent buys for their kid). On
   // club/team stores it's required so every order tags to a player for the
   // player report + bagging; pre-filled from the roster link when present.
-  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', billing_street1: '', billing_city: '', zip: '', state: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
@@ -1719,19 +1791,19 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // charges the original amount, or switch to team-tab and mint a duplicate order.
   const locked = !!clientSecret;
   const [checkoutMsg, setCheckoutMsg] = useState('');
-  useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
+  useEffect(() => { checkoutCall({ action: 'settings' }).then((data) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
   // Server-quoted sales tax: CA via CDTFA, registered out-of-state via TaxCloud. Quoted once
   // we can source tax (a complete ship address, or pickup which sources to NSA's location).
   const [taxInfo, setTaxInfo] = useState(null); // { tax, total, tax_state }
-  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ('pickup|' + (buyer.zip || ''));
-  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty]));
+  const _shipKey = needAddr ? [ship.street1, ship.city, ship.state, ship.zip].join('|') : ['pickup', buyer.billing_street1 || '', buyer.billing_city || '', buyer.state || '', buyer.zip || ''].join('|');
+  const _cartKey = JSON.stringify(cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.option_selections || null]));
   useEffect(() => {
     if (needAddr && !(ship.street1 && ship.city && ship.state && ship.zip)) { setTaxInfo(null); return; }
-    if (!needAddr && (buyer.zip || '').length < 5) { setTaxInfo(null); return; }
+    if (!needAddr && (!(buyer.billing_street1 || '').trim() || !(buyer.billing_city || '').trim() || (buyer.state || '').length !== 2 || (buyer.zip || '').length < 5)) { setTaxInfo(null); return; }
     let cancelled = false;
     const t = setTimeout(async () => {
-      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { zip: buyer.zip }, couponCode: coupon ? coupon.code : null });
+      const r = await checkoutCall({ action: 'quote', storeSlug: store.slug, cart, ship: needAddr ? ship : null, billing: needAddr ? null : { street1: buyer.billing_street1, city: buyer.billing_city, zip: buyer.zip, state: buyer.state }, couponCode: coupon ? coupon.code : null });
       if (!cancelled && r && r.totals) setTaxInfo(r.totals);
     }, 500);
     return () => { cancelled = true; clearTimeout(t); };
@@ -1745,7 +1817,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const _orderRefState = useRef({ key: '', ref: '' });
   const orderRefFor = (payMode) => {
     const key = JSON.stringify([store.slug, payMode, buyer.email, coupon ? coupon.code : null,
-      cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.components || null])]);
+      cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.option_selections || null, l.components || null])]);
     if (_orderRefState.current.key !== key) {
       const uuid = (window.crypto && window.crypto.randomUUID)
         ? window.crypto.randomUUID()
@@ -1759,7 +1831,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
-    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : (((buyer.zip || '').length === 5) && (buyer.player_name || '').trim()));
+    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.billing_street1 || '').trim() && (buyer.billing_city || '').trim() && ((buyer.zip || '').length === 5) && ((buyer.state || '').length === 2) && (buyer.player_name || '').trim()));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const processing = procFeeAmt(store, cart);
@@ -1784,13 +1856,13 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   };
 
   const submitUnpaid = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
     setBusy(false);
     if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+    onClear(); navTo(orderPath(store, r.order));
   };
 
   // Order-first: the server re-prices the cart, persists the order as
@@ -1798,23 +1870,28 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing address.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
     if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     if (r.alreadyPaid) {
       // Replay of an order whose payment already went through — finalize and land
       // on the confirmation instead of showing a card form for a settled intent.
-      await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      const finalized = await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      if (finalized.error || !finalized.ok) {
+        setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+        setBusy(false);
+        return;
+      }
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+      onClear(); navTo(orderPath(store, r.order));
       return;
     }
     if (r.paymentProcessing) {
       // Replay of an order whose ACH debit is mid-settlement (or awaiting micro-deposit
       // verification) — the money is already in motion, so never re-show a payment form.
       clearOrderRef();
-      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}${r.bankVerify ? '?bankverify=1' : ''}`);
+      onClear(); navTo(orderPath(store, r.order, r.bankVerify ? '?bankverify=1' : ''));
       return;
     }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
@@ -1829,9 +1906,14 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     // to paid, and sends the confirmation email. If this call never lands (tab
     // closed, network drop), the Stripe webhook does the same — the atomic
     // confirmation_sent claim means exactly one of them sends the email.
-    await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    const finalized = await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    if (finalized.error || !finalized.ok) {
+      setErr((finalized.error && finalized.error.message) || 'Payment was received, but the order is still finalizing. Please try again — you will not be charged twice.');
+      setBusy(false);
+      return;
+    }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
+    onClear(); navTo(orderPath(store, pendingOrder));
   };
 
   // Bank (ACH) debit initiated but not yet settled — no finalize (the server
@@ -1842,7 +1924,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const confirmProcessing = async (paymentIntentId, verifying) => {
     if (!pendingOrder) { setErr('Order reference lost — your bank payment was submitted. Please contact us and we’ll confirm your order.'); return; }
     clearOrderRef();
-    onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}${verifying ? '?bankverify=1' : ''}`);
+    onClear(); navTo(orderPath(store, pendingOrder, verifying ? '?bankverify=1' : ''));
   };
 
   return (
@@ -1871,7 +1953,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
         <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
-        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onZip={(z) => setBuyer((b) => ({ ...b, zip: z }))} fallback={<input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} />} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
+        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onAddress={(a) => setBuyer((b) => ({ ...b, ...a }))} fallback={<div style={{ display: 'grid', gap: 8 }}><input aria-label="Billing street" style={inp} value={buyer.billing_street1 || ''} disabled={locked} maxLength={200} placeholder="Street address" onChange={(e) => setBuyer({ ...buyer, billing_street1: e.target.value })} /><input aria-label="Billing city" style={inp} value={buyer.billing_city || ''} disabled={locked} maxLength={120} placeholder="City" onChange={(e) => setBuyer({ ...buyer, billing_city: e.target.value })} /><div style={{ display: 'flex', gap: 8 }}><input aria-label="Billing state" style={{ ...inp, maxWidth: 82 }} value={buyer.state || ''} disabled={locked} maxLength={2} placeholder="State" onChange={(e) => setBuyer({ ...buyer, state: e.target.value.replace(/[^a-z]/gi, '').toUpperCase().slice(0, 2) })} /><input aria-label="Billing ZIP" style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="ZIP" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /></div></div>} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
       )}
 
       {/* Coupon / scholarship code */}
@@ -1963,19 +2045,19 @@ function CardForm({ theme, onPaid, onProcessing }) {
   );
 }
 
-// ── Order status (tokenless lookup by id; emailed link comes later) ──
-function OrderStatusPage({ store, theme, orderId }) {
+// ── Order status (private bearer token) ──────────────────────────────
+function OrderStatusPage({ store, theme, orderToken }) {
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
   const [status, setStatus] = useState('loading');
   useEffect(() => {
     (async () => {
-      const r = await checkoutCall({ action: 'get_order', orderId });
+      const r = await checkoutCall({ action: 'track_order', token: orderToken });
       if (r.error || !r.order) { setStatus('notfound'); return; }
       setOrder(r.order);
       setItems(r.items || []); setStatus('ok');
     })();
-  }, [orderId]);
+  }, [orderToken]);
   if (status === 'loading') return <Splash>Loading your order…</Splash>;
   if (status === 'notfound') return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Order not found.</Splash></div>;
 
@@ -2183,6 +2265,7 @@ function OrderStatusPage({ store, theme, orderId }) {
                     <span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>Bundle · {bundleChildren.length} items</span>
                   </span>
                 </div>
+                {optionDetailLabels(item.add_on_selections).map((x) => <div key={x} style={{ fontSize: 13, color: SUB, marginTop: 2 }}>{x}</div>)}
                 <div style={{ marginTop: 5 }}>{chipForLines(bundleChildren)}</div>
               </div>
               <div style={{ flexShrink: 0, fontFamily: DISPLAY, fontWeight: 800, fontSize: 21, color: P }}>{money(Number(item.unit_price) * (item.qty || 1))}</div>
@@ -2211,7 +2294,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
           {soloItems.map((item) => {
             const label = item.name || item.sku || 'Item';
-            const sub = [item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name].filter(Boolean).join(' · ');
+            const sub = [item.size && 'Size ' + item.size, item.player_number && '#' + item.player_number, item.player_name, ...optionDetailLabels(item.add_on_selections)].filter(Boolean).join(' · ');
             return (
               <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 16, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 8, padding: '14px 18px' }}>
                 <div style={{ flexShrink: 0 }}>{imgThumb(item, 60)}</div>
@@ -2249,7 +2332,7 @@ function OrderStatusPage({ store, theme, orderId }) {
         )}
       </div>
 
-      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
+      {order.ship_method === 'ship_home' && <ShippingBlock theme={theme} order={order} token={orderToken} shipped={!!order.shipped_at || curIdx >= 4} onSaved={(addr) => setOrder((o) => ({ ...o, ship_address: addr }))} />}
 
       {/* What's next */}
       <div style={{ background: WARM, border: `1px solid ${LINE}`, borderRadius: 8, padding: '20px 24px', marginBottom: 22 }}>
@@ -2272,8 +2355,9 @@ function OrderStatusPage({ store, theme, orderId }) {
   );
 }
 
-// Shows the order's shipping address and — until it ships — lets the buyer fix it.
-function ShippingBlock({ theme, order, shipped, onSaved }) {
+// Shows the order's shipping address and — until it ships — lets the buyer
+// correct tax-neutral recipient details. Jurisdiction/routing changes go to staff.
+function ShippingBlock({ theme, order, token, shipped, onSaved }) {
   const a = order.ship_address || {};
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({ name: a.name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
@@ -2282,7 +2366,7 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
   const save = async () => {
     if (!f.street1 || !f.city || !f.state || !f.zip) { setMsg('Please complete street, city, state and ZIP.'); return; }
     setBusy(true); setMsg('');
-    const r = await checkoutCall({ action: 'update_ship', orderId: order.id, ship: f });
+    const r = await checkoutCall({ action: 'update_ship', token, ship: f });
     setBusy(false);
     if (r.error) { setMsg(r.error.message || 'Could not save — please try again.'); return; }
     onSaved(r.ship_address || { ...a, ...f }); setEditing(false);
@@ -2291,18 +2375,13 @@ function ShippingBlock({ theme, order, shipped, onSaved }) {
     <div style={{ marginTop: 22, borderTop: '1px solid #eef1f5', paddingTop: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b' }}>Shipping to</div>
-        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit address</button>}
+        {!shipped && !editing && <button onClick={() => setEditing(true)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: theme.accent, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>Edit recipient / unit</button>}
       </div>
       {editing ? (
         <div>
           <Field label="Name"><input style={inp} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-          <Field label="Street"><input style={inp} value={f.street1} onChange={(e) => setF({ ...f, street1: e.target.value })} /></Field>
           <Field label="Apt / unit (optional)"><input style={inp} value={f.street2} onChange={(e) => setF({ ...f, street2: e.target.value })} /></Field>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <Field label="City"><input style={inp} value={f.city} onChange={(e) => setF({ ...f, city: e.target.value })} /></Field>
-            <Field label="State"><input style={inp} value={f.state} onChange={(e) => setF({ ...f, state: e.target.value })} /></Field>
-            <Field label="ZIP"><input style={inp} value={f.zip} onChange={(e) => setF({ ...f, zip: e.target.value })} /></Field>
-          </div>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#475569', marginBottom: 12 }}>To change the street, city, state, or ZIP, message our team so we can verify tax and shipping first.</div>
           {msg && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 8 }}>{msg}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="sf-btn" onClick={save} disabled={busy} style={{ ...cta(theme), width: 'auto', padding: '12px 28px', fontSize: 14 }}>{busy ? 'Saving…' : 'Save address'}</button>

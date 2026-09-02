@@ -1,3 +1,4 @@
+/** @jest-environment node */
 /* place_order idempotency (client_ref, migration 00170) and the transactional
  * write path (place_webstore_order RPC + stock holds, migration 00171).
  *
@@ -65,7 +66,9 @@ const STORE = {
 };
 const WP = { id: 'wp1', store_id: 'st1', kind: 'single', active: true, retail_price: 20, sku: 'TEE', product_id: 'p1', display_name: 'Tee', takes_name: false, takes_number: false };
 const CART = [{ webstore_product_id: 'wp1', qty: 1, size: 'L' }];
-const BUYER = { name: 'Pat', email: 'pat@example.com' };
+// Pickup tax is sourced from billing. Use a complete non-nexus address so these
+// idempotency/gating tests never depend on an external tax provider.
+const BUYER = { name: 'Pat', email: 'pat@example.com', billing_street1: '1 Main St', billing_city: 'Reno', state: 'NV', zip: '89501' };
 const EXISTING = {
   id: 'ord-existing', status: 'unpaid', store_id: 'st1', buyer_email: 'pat@example.com',
   subtotal: 20, fundraise_amt: 0, shipping_fee: 0, processing_fee: 0, discount_amt: 0, tax: 0, total: 20,
@@ -75,20 +78,22 @@ const REF = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const NEW_ORDER = { ...EXISTING, id: 'ord-new' };
 const RPC_MISSING = { data: null, error: { message: 'Could not find the function public.place_webstore_order(p_claims, p_hold_minutes, p_holds, p_items, p_order) in the schema cache' } };
 // A tracked in-stock storefront row so checkStock produces a hold for size L.
-const SF_ROW = { webstore_product_id: 'wp1', name: 'Tee', size_stock: { L: 5 }, vendor_size_stock: {}, on_order_qty: 0, earliest_eta: null, vendor_eta: null, track_inventory: true, inventory_source: 'adidas' };
+const SF_ROW = { webstore_product_id: 'wp1', product_id: 'p1', name: 'Tee', size_stock: { L: 5 }, vendor_size_stock: {}, on_order_qty: 0, earliest_eta: null, vendor_eta: null, track_inventory: true, inventory_source: 'adidas' };
+const isOrderWriteCall = (c) => c.op === 'insert' || (c.op === 'rpc' && c.table === 'place_webstore_order');
 
 const body = (extra) => ({ storeSlug: 'tigers', cart: CART, buyer: BUYER, payMode: 'unpaid', ...extra });
 
 // Table traffic for scenarios that reach the write phase, in order —
 //   webstores.select (store) → [webstore_orders.select dup check when ref present]
 //   → webstore_products.select (priceCart) → webstore_storefront_products.select (upcharges)
-//   → webstore_storefront_products.select (checkStock) → rpc.place_webstore_order
+//   → rpc.get_webstore_checkout_inventory (checkStock) → rpc.place_webstore_order
 //   → [legacy: webstore_orders.insert → webstore_order_items.insert]
 //   → webstore_orders.update (confirmation_sent claim)
 const happyTables = () => ({
   'webstores.select': [{ data: [STORE], error: null }],
   'webstore_products.select': [{ data: [WP], error: null }],
-  'webstore_storefront_products.select': [{ data: [], error: null }, { data: [SF_ROW], error: null }],
+  'webstore_storefront_products.select': [{ data: [], error: null }],
+  'rpc.get_webstore_checkout_inventory': [{ data: [SF_ROW], error: null }],
   'webstore_order_items.insert': [{ data: null, error: null }],
   'webstore_orders.update': [{ data: [{ id: NEW_ORDER.id }], error: null }],
 });
@@ -102,11 +107,11 @@ describe('transactional path (place_webstore_order RPC)', () => {
     const res = await checkout.placeOrder(sb, body({ clientRef: REF }));
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).order.id).toBe('ord-new');
-    const rpcCall = sb.calls.find((c) => c.op === 'rpc');
+    const rpcCall = sb.calls.find((c) => c.op === 'rpc' && c.table === 'place_webstore_order');
     expect(rpcCall.payload.p_order.client_ref).toBe(REF);
     expect(rpcCall.payload.p_items).toHaveLength(1);
     expect(rpcCall.payload.p_items[0].order_id).toBeUndefined(); // proc injects it
-    expect(rpcCall.payload.p_holds).toEqual([{ webstore_product_id: 'wp1', size: 'L', qty: 1, max_avail: 5, label: 'Tee (size L)' }]);
+    expect(rpcCall.payload.p_holds).toEqual([{ webstore_product_id: 'wp1', size: 'L', qty: 1, max_avail: 5, gross_max_avail: 5, label: 'Tee (size L)' }]);
     expect(rpcCall.payload.p_hold_minutes).toBe(30);
     expect(sb.calls.filter((c) => c.op === 'insert')).toHaveLength(0);
   });
@@ -133,6 +138,17 @@ describe('transactional path (place_webstore_order RPC)', () => {
     expect(JSON.parse(res.body).error).toContain('Tee (size L)');
   });
 
+  test('an atomic coupon-quota race loser gets a useful 409', async () => {
+    const sb = fakeSb({
+      ...happyTables(),
+      'webstore_coupons.select': [{ data: [{ code: 'LAST', active: true, kind: 'percent', value: 10, cover_shipping: true, expires_at: null, max_uses: 1, used_count: 0 }], error: null }],
+      'rpc.place_webstore_order': [{ data: null, error: { message: 'NSA_COUPON_USED' } }],
+    });
+    const res = await checkout.placeOrder(sb, body({ couponCode: 'LAST' }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/already been used/i);
+  });
+
   test('client_ref race inside the transaction replays the winner', async () => {
     const sb = fakeSb({
       ...happyTables(),
@@ -153,15 +169,15 @@ describe('transactional path (place_webstore_order RPC)', () => {
     const sb = fakeSb({
       'webstores.select': [{ data: [STORE], error: null }],
       'webstore_products.select': [{ data: [WP], error: null }],
-      'webstore_storefront_products.select': [
-        { data: [], error: null },
+      'webstore_storefront_products.select': [{ data: [], error: null }],
+      'rpc.get_webstore_checkout_inventory': [
         { data: [{ ...SF_ROW, size_stock: {} }], error: null }, // zero stock, nothing incoming
       ],
     });
     const res = await checkout.placeOrder(sb, body());
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toContain('sold out');
-    expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
+    expect(sb.calls.filter((c) => c.op === 'rpc' && c.table === 'place_webstore_order')).toHaveLength(0);
   });
 });
 
@@ -177,7 +193,7 @@ describe('place_order idempotency + legacy fallback (pre-00171 DBs)', () => {
     expect(out.replayed).toBe(true);
     expect(out.order.id).toBe('ord-existing');
     expect(out.totals.total).toBe(20);
-    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+    expect(sb.calls.filter(isOrderWriteCall)).toHaveLength(0);
   });
 
   test('replay works even if the store has since closed', async () => {
@@ -284,7 +300,7 @@ describe('placeOrder — drift guard, coupon clamp, and payment-mode gates', () 
     expect(out.code).toBe('totals_changed');
     expect(out.totals.subtotal).toBe(20);
     expect(out.totals.total).toBe(20);
-    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+    expect(sb.calls.filter(isOrderWriteCall)).toHaveLength(0);
   });
 
   test('a coupon discount exceeding cartTotal+shipping clamps the charged total to 0, never negative', async () => {
@@ -306,7 +322,7 @@ describe('placeOrder — drift guard, coupon clamp, and payment-mode gates', () 
     const res = await checkout.placeOrder(sb, body({ payMode: 'paid' }));
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/card payment isn.t enabled/i);
-    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+    expect(sb.calls.filter(isOrderWriteCall)).toHaveLength(0);
   });
 
   test('unpaid submission with total>0 on a paid-only store → 409, nothing written', async () => {
@@ -318,7 +334,7 @@ describe('placeOrder — drift guard, coupon clamp, and payment-mode gates', () 
     const res = await checkout.placeOrder(sb, body({ payMode: 'unpaid' }));
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/requires card payment/i);
-    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+    expect(sb.calls.filter(isOrderWriteCall)).toHaveLength(0);
   });
 
   test('card total under $0.50 after a near-total coupon discount is rejected', async () => {
@@ -326,13 +342,14 @@ describe('placeOrder — drift guard, coupon clamp, and payment-mode gates', () 
     const sb = fakeSb({
       'webstores.select': [{ data: [eitherStore], error: null }],
       'webstore_products.select': [{ data: [WP], error: null }],
-      'webstore_storefront_products.select': [{ data: [], error: null }, { data: [SF_ROW], error: null }],
+      'webstore_storefront_products.select': [{ data: [], error: null }],
+      'rpc.get_webstore_checkout_inventory': [{ data: [SF_ROW], error: null }],
       'webstore_coupons.select': [{ data: [{ code: 'CHEAP', active: true, kind: 'percent', value: 99, cover_shipping: true, expires_at: null, max_uses: null, used_count: 0 }], error: null }],
     });
     // $20 cart, 99% off → $0.20 pre-tax, well under the $0.50 Stripe minimum.
     const res = await checkout.placeOrder(sb, body({ payMode: 'paid', couponCode: 'CHEAP' }));
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toMatch(/\$0\.50/);
-    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+    expect(sb.calls.filter(isOrderWriteCall)).toHaveLength(0);
   });
 });

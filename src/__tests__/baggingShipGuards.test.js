@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 /* Guards on the Bagging Station's auto ship label (netlify/functions/_baggingShip.js).
  *
  * These pin the review fixes: an OPEN short must block the label (nothing has

@@ -6,7 +6,7 @@ import { supabase } from '../lib/supabase';
 // ready/in-deco/short counts and one-click into /bagging-station. Light
 // portal theme (this renders inside App.js, not the dark kiosk). Refreshes
 // every 60s; failures render as a quiet retry row, never a broken card.
-export default function BaggingDashCard() {
+function useBaggingGroups() {
   const [groups, setGroups] = useState(null);
   const [err, setErr] = useState(false);
 
@@ -30,6 +30,38 @@ export default function BaggingDashCard() {
     const t = setInterval(load, 60000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  return { groups, err };
+}
+
+export function BaggingQueueTile() {
+  const { groups } = useBaggingGroups();
+  const totalReady = (groups || []).reduce((a, g) => a + (Number(g.ready) || 0), 0);
+
+  return (
+    <button
+      type="button"
+      onClick={() => window.open('/bagging-station', '_blank', 'noopener,noreferrer')}
+      style={{
+        padding: '14px 12px', borderRadius: 10, border: '1px solid #e2e8f0',
+        background: '#fff', color: '#0f172a', cursor: 'pointer',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.04)', display: 'flex',
+        flexDirection: 'column', alignItems: 'center', gap: 4,
+        transition: 'all 0.15s', borderLeft: '4px solid #7c3aed',
+      }}
+      aria-label="Open Bagging Queue"
+    >
+      <div style={{ fontSize: 22, lineHeight: 1 }}>🛍️</div>
+      <div style={{ fontSize: 28, fontWeight: 900, lineHeight: 1, color: '#7c3aed' }}>
+        {groups ? totalReady : '—'}
+      </div>
+      <div style={{ fontSize: 11, fontWeight: 700, textAlign: 'center', opacity: 0.8 }}>Bagging Queue ↗</div>
+    </button>
+  );
+}
+
+export default function BaggingDashCard() {
+  const { groups, err } = useBaggingGroups();
 
   const KIND = { so: 'Club batch', store: 'OMG school', backorders: 'Backorders' };
   const totalReady = (groups || []).reduce((a, g) => a + (Number(g.ready) || 0), 0);

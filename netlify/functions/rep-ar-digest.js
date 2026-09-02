@@ -1,7 +1,8 @@
 // Scheduled (see netlify.toml): every Friday morning (PT) emails each rep a
 // branded A/R recap dedicated to their PAST-DUE invoices — every open, overdue
 // portal invoice for their customers, aged into 1-30 / 31-60 / 61-90 / 90+
-// buckets with a total, sorted worst-first. This is the weekly collections
+// buckets with a total, grouped by account with the largest overdue account
+// balances first. This is the weekly collections
 // companion to the daily rep-ops-digest (which only flags invoices the day they
 // newly cross 10 days past due). Reps with nothing past due get no email.
 //
@@ -9,7 +10,7 @@
 // all-reps send only runs from the scheduler, which carries no httpMethod):
 //   GET /.netlify/functions/rep-ar-digest?test=<email>[&rep=<id|name>][&key=<k>]
 const { getSupabaseAdmin } = require('./_shared');
-const { isOpenInvoice, invoiceBalance, invoiceDaysPastDue, agingBucket, AGING_BUCKETS } = require('../../src/lib/opsRecap');
+const { isOpenInvoice, invoiceBalance, invoiceDaysPastDue, agingBucket, AGING_BUCKETS, groupOverdueInvoicesByAccount } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
@@ -67,7 +68,7 @@ exports.handler = async (event) => {
     const [members, customers, invoices] = await Promise.all([
       loadAll(admin, 'team_members', '*'),
       loadAll(admin, 'customers', 'id,name,alpha_tag,primary_rep_id'),
-      loadAll(admin, 'invoices', 'id,customer_id,so_id,date,due_date,total,paid,status,type,memo,created_by,deleted_at', (q) => q.is('deleted_at', null)),
+      loadAll(admin, 'invoices', 'id,customer_id,so_id,date,due_date,total,paid,status,type,memo,created_by,rep_id,deleted_at', (q) => q.is('deleted_at', null)),
     ]);
     const repById = {}; members.forEach((m) => { repById[m.id] = m; });
     const custById = {}; customers.forEach((c) => { custById[c.id] = c; });
@@ -197,18 +198,31 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
   const summary = `<table width="100%" style="border-collapse:separate;border-spacing:6px 0;margin:0 0 14px"><tr>
       ${AGING_BUCKETS.map((k) => tile(k === '90+' ? '90+ days' : k + ' days', byBucket[k])).join('')}</tr></table>`;
 
-  const rowsHtml = rows.map((r) => {
-    const heat = r.dpd >= 90 ? '#7F1D1D' : r.dpd >= 60 ? '#B91C1C' : r.dpd >= 30 ? '#B45309' : '#92400E';
-    return `<tr>
-      <td style="padding:8px 0;border-bottom:1px solid #f1ece1;vertical-align:top">
-        <div style="font-weight:700;color:${INK};font-size:14px">${esc(custName(r.inv.customer_id))}</div>
-        <div style="font-size:12px;color:${SUB}">${esc(r.inv.id)}${r.inv.memo ? ` · ${esc(r.inv.memo)}` : ''} · due ${esc(String(r.inv.due_date).slice(0, 10))}</div></td>
-      <td align="right" style="padding:8px 0;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">
-        <div style="font-weight:800;color:${RED};font-size:14px">${money(r.balance)}</div>
-        <div style="margin-top:1px"><span style="font-size:12px;font-weight:800;color:${heat}">${r.dpd}d</span></div>
-        <div style="margin-top:4px">
-          <a href="${invLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open →</a>
-          <a href="${dlLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700;margin-left:14px">↓ Download</a></div></td></tr>`;
+  const groups = groupOverdueInvoicesByAccount(rows, custName);
+  const rowsHtml = groups.map((group) => {
+    const invoiceRows = group.invoices.map((r) => {
+      const heat = r.dpd >= 90 ? '#7F1D1D' : r.dpd >= 60 ? '#B91C1C' : r.dpd >= 30 ? '#B45309' : '#92400E';
+      return `<tr>
+        <td style="padding:9px 0 9px 12px;border-bottom:1px solid #f1ece1;vertical-align:top">
+          <div style="font-weight:700;color:${INK};font-size:14px">${esc(r.inv.id)}</div>
+          <div style="font-size:12px;color:${SUB};margin-top:1px">${esc(r.inv.memo || 'No memo')}</div>
+          <div style="font-size:11px;color:${SUB};margin-top:1px">Due ${esc(String(r.inv.due_date).slice(0, 10))}</div></td>
+        <td align="right" style="padding:9px 0;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">
+          <div style="font-weight:800;color:${RED};font-size:14px">${money(r.balance)}</div>
+          <div style="margin-top:1px"><span style="font-size:12px;font-weight:800;color:${heat}">${r.dpd} days past</span></div>
+          <div style="margin-top:4px">
+            <a href="${invLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open →</a>
+            <a href="${dlLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700;margin-left:14px">↓ Download</a></div></td></tr>`;
+    }).join('');
+    return `<tr><td colspan="2" style="padding:15px 0 7px;border-bottom:2px solid ${LINE}">
+        <table width="100%" style="border-collapse:collapse"><tr>
+          <td style="vertical-align:bottom">
+            <div style="font-weight:800;color:${NAVY};font-size:16px">${esc(group.account)}</div>
+            <div style="font-size:11px;color:${SUB};margin-top:1px">${group.invoices.length} overdue invoice${group.invoices.length === 1 ? '' : 's'}</div></td>
+          <td align="right" style="vertical-align:bottom;white-space:nowrap">
+            <div style="font-weight:800;color:${RED};font-size:17px">${money(group.total)}</div>
+            <div style="font-size:10px;color:${SUB};text-transform:uppercase;letter-spacing:.4px">Account total</div></td>
+        </tr></table></td></tr>${invoiceRows}`;
   }).join('');
 
   return `<div style="background:${CREAM};padding:0;margin:0">
@@ -230,7 +244,7 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <table width="100%" style="border-collapse:collapse"><tbody>${rowsHtml}</tbody></table>
-      <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these customers. Oldest balances are listed first.</p>
+      <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these customers. Accounts are ranked by total past-due balance; invoices within each account are oldest first.</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>
   </div></div>`;

@@ -1,6 +1,6 @@
 /* eslint-disable */
 import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
-import { safeNum, safeJobs } from './safeHelpers';
+import { safeNum, safeJobs, manualPoCostTotal } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
 import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } from './businessLogic';
@@ -288,7 +288,7 @@ export const calcOrderMargin=(o,allOrders,decoVendors,decoVendorPricing)=>{
   (o.deco_pos||[]).forEach(dp=>{const bc=_sNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=_sNum(dp.qty||0)*_sNum(dp.unit_cost||0)});
   // Actual shipping spend (outbound from ShipStation + inbound freight) rolls into cost so margin is real
   const actualShipCost=_sNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+_sNum(s.shipping_cost||0),0));
-  cost+=actualShipCost+_sNum(o._inbound_freight||0);
+  cost+=actualShipCost+_sNum(o._inbound_freight||0)+manualPoCostTotal(o);
   // Shipping billed to the customer is revenue that offsets the shipping cost — mirrors calcGP in
   // CommissionsPage so margin treats shipping as a wash (only an over/under-quote moves it), not
   // pure cost drag. `rev` stays product+deco (dashboards sum it as sales), so the shipping charge
@@ -373,7 +373,7 @@ export const calcPaidQualifyingSpend=({sos,invs,histInvs,famIds,start,end})=>{
   const inRange=(v)=>{const d=promoDateKey(v);return !!d&&d>=start&&d<=end};
   const soSpend=(sos||[]).filter(so=>so&&fam.has(so.customer_id)&&inRange(so.order_date||so.created_at)&&soIsPaid(so,invs))
     .reduce((a,so)=>a+calcQualifyingSpend(so),0);
-  const histSpend=(histInvs||[]).filter(hi=>hi&&fam.has(hi.customer_id)&&hi.status==='paid'&&inRange(hi.date||hi.invoice_date))
+  const histSpend=(histInvs||[]).filter(hi=>hi&&fam.has(hi.customer_id)&&String(hi.status||'').trim().toLowerCase().startsWith('paid')&&inRange(hi.date||hi.invoice_date))
     .reduce((a,hi)=>{
       const net=hi.subtotal!=null?safeNum(hi.subtotal):safeNum(hi.total)-safeNum(hi.tax);
       return a+(hi.invoice_type==='credit_memo'?-Math.abs(net):net);

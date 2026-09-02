@@ -2,7 +2,7 @@
  * src/index.js uses to send nationalteamshop.com visitors (and /teamshop paths
  * on any host) to the Team Shop chunk instead of the portal login. */
 
-const { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isVendorDigitizingPath, isProductionHQPath } = require('../lib/hostRouting');
+const { isTeamShopHost, isFloorStationPath, isBaggingStationPath, isMoveCheckinPath, isVendorDigitizingPath, isProductionHQPath } = require('../lib/hostRouting');
 
 describe('isTeamShopHost', () => {
   // ── Hostname matches (any path) ────────────────────────────────────────────
@@ -118,6 +118,20 @@ describe('isBaggingStationPath', () => {
     '/BAGGING-STATION', null, undefined,
   ])('false for %s', (path) => {
     expect(isBaggingStationPath(path)).toBe(false);
+  });
+});
+
+// The index.js routing branch for the Move Check-In station chunk — exact path
+// match with optional trailing slash, same shape as isFloorStationPath.
+describe('isMoveCheckinPath', () => {
+  test.each(['/move-checkin', '/move-checkin/'])('true for %s', (path) => {
+    expect(isMoveCheckinPath(path)).toBe(true);
+  });
+  test.each([
+    '/', '', '/move-checkin/extra', '/move-checkins', '/x/move-checkin',
+    '/MOVE-CHECKIN', null, undefined,
+  ])('false for %s', (path) => {
+    expect(isMoveCheckinPath(path)).toBe(false);
   });
 });
 
