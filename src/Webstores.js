@@ -3170,7 +3170,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const ids = (playerIds || []).filter(Boolean);
     if (!ids.length) { flash('No players to email.'); return { error: true }; }
     try {
-      const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
+      const res = await authFetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
       const d = await res.json().catch(() => ({}));
       if (!res.ok || !d.ok) { flash('Email failed: ' + (d.error || res.status)); return { error: true }; }
       const skipped = (d.skipped || []).length;

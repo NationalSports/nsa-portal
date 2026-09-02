@@ -8,27 +8,42 @@
 // sweep knows an invite went out. Rows with no valid parent email are skipped
 // and reported back so the UI can tell the user who needs an address.
 
-const { getSupabaseAdmin } = require('./_shared');
+const { getSupabaseAdmin, resolveCustomerFamily, verifyUser } = require('./_shared');
+const { assertStoreInFamily } = require('./_coachWebstoreAccess');
 const { sendRosterEmail } = require('./_rosterEmail');
 
 exports.handler = async (event) => {
-  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' };
+  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ ok: false, error: 'Method not allowed' }) };
 
   try {
     const body = JSON.parse(event.body || '{}');
+    const alphaTag = String(body.alpha_tag || '').trim();
     const storeId = String(body.store_id || '').trim();
     const ids = Array.isArray(body.player_ids) ? body.player_ids.filter(Boolean).map(String) : [];
     if (!storeId) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'store_id required' }) };
     if (!ids.length) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'No players selected' }) };
     if (ids.length > 500) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Too many players in one send' }) };
 
-    const sb = getSupabaseAdmin();
-    const { data: stores, error: sErr } = await sb.from('webstores').select('id,name,slug,primary_color').eq('id', storeId).limit(1);
-    if (sErr) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: sErr.message }) };
-    const store = stores && stores[0];
-    if (!store) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Store not found' }) };
+    let sb;
+    let store;
+    if (alphaTag) {
+      sb = getSupabaseAdmin();
+      const familyResult = await resolveCustomerFamily(sb, alphaTag);
+      if (familyResult.error) return { statusCode: familyResult.notFound ? 403 : 500, headers, body: JSON.stringify({ ok: false, error: familyResult.error }) };
+      const owned = await assertStoreInFamily(sb, familyResult.fam, storeId);
+      if (owned.error) return { statusCode: owned.status, headers, body: JSON.stringify({ ok: false, error: owned.error }) };
+      store = owned.store;
+    } else {
+      const auth = await verifyUser(event);
+      if (!auth.ok) return { statusCode: auth.status, headers, body: JSON.stringify({ ok: false, error: auth.error }) };
+      sb = auth.admin;
+      const { data, error } = await sb.from('webstores').select('id,name,slug,primary_color').eq('id', storeId).maybeSingle();
+      if (error) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: error.message }) };
+      if (!data) return { statusCode: 404, headers, body: JSON.stringify({ ok: false, error: 'Store not found' }) };
+      store = data;
+    }
 
     const { data: players, error: pErr } = await sb.from('webstore_roster')
       .select('id,player_name,player_number,parent_email,token,invite_count')
