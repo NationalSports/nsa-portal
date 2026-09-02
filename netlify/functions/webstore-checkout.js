@@ -222,8 +222,9 @@ const _availForSize = (p, size) => {
 // just Adidas), so non-Adidas items are validated against real vendor availability.
 // Returns { error, holds }: error blocks checkout; holds are the (product, size,
 // qty, max_avail) lines the place_webstore_order transaction reserves for 30
-// minutes (migration 00171), closing the read-then-insert oversell race. Only
-// tracked, not-incoming lines get holds — the same lines this check can block on.
+// minutes, closing the read-then-insert oversell race. The transaction also
+// subtracts accepted order demand after those short holds expire
+// (20260902053000), so units stay reserved through unfinished SO production.
 async function checkStock(sb, store, lines) {
   const singles = lines.filter((l) => l.kind === 'single' && l.size);
   if (!singles.length) return { error: null, holds: [] };
@@ -280,22 +281,28 @@ async function checkStock(sb, store, lines) {
       // is known (on_order_qty), this line is capped at on-hand + on-order
       // MINUS what the open backorder ledger already promises to earlier
       // orders (loaded above), so a burst of orders can't all sell against the
-      // same 20 incoming units. ETA-only signals (a vendor restock date with
-      // no qty) keep the uncapped allowance — there is no number to cap
-      // against. Remaining honest limit: an accepted order's claim appears in
-      // the ledger only at conversion (club: instant; teamshop: store close),
-      // so unconverted teamshop demand isn't counted yet.
+      // same 20 incoming units. A finite incoming pool gets a transactional hold
+      // too; the RPC subtracts accepted and converted-but-unfinished webstore
+      // and Team Shop demand before allowing it. ETA-only signals (a vendor restock date with
+      // no qty) keep the uncapped allowance — there is no number to reserve.
       const onOrder = Number(p.on_order_qty) || 0;
       if (onOrder > 0) {
         const avail = _availForSize(p, size);
         const promised = claimed[(p.product_id || '') + '|' + size] || 0;
-        if (avail + onOrder - promised < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+        const grossAvail = avail + onOrder;
+        const finiteAvail = grossAvail - promised;
+        if (finiteAvail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+        // max_avail retains the legacy net-of-converted-claims cap, so either
+        // side of a staggered function deploy remains safe. The new function
+        // prefers gross_max_avail and subtracts full live order demand itself,
+        // eliminating the conversion/auto-PO timing gap.
+        holds.push({ webstore_product_id: wid, size, qty: q, max_avail: finiteAvail, gross_max_avail: grossAvail, label: `${p.name || 'item'} (size ${size})` });
       }
       return;
     }
     const avail = _availForSize(p, size);
     if (avail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
-    holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, label: `${p.name || 'item'} (size ${size})` });
+    holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, gross_max_avail: avail, label: `${p.name || 'item'} (size ${size})` });
   });
   if (short.length) return { error: `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`, holds: [] };
   return { error: null, holds };

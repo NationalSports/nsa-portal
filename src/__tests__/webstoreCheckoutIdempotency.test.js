@@ -109,7 +109,7 @@ describe('transactional path (place_webstore_order RPC)', () => {
     expect(rpcCall.payload.p_order.client_ref).toBe(REF);
     expect(rpcCall.payload.p_items).toHaveLength(1);
     expect(rpcCall.payload.p_items[0].order_id).toBeUndefined(); // proc injects it
-    expect(rpcCall.payload.p_holds).toEqual([{ webstore_product_id: 'wp1', size: 'L', qty: 1, max_avail: 5, label: 'Tee (size L)' }]);
+    expect(rpcCall.payload.p_holds).toEqual([{ webstore_product_id: 'wp1', size: 'L', qty: 1, max_avail: 5, gross_max_avail: 5, label: 'Tee (size L)' }]);
     expect(rpcCall.payload.p_hold_minutes).toBe(30);
     expect(sb.calls.filter((c) => c.op === 'insert')).toHaveLength(0);
   });

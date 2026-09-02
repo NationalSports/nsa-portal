@@ -76,15 +76,54 @@ begin
   raise notice 'S3 sold-out boundary: OK';
 end $$;
 
--- ═══ Scenario 4: expired holds stop counting ═══
+-- ═══ Scenario 4: expired pending holds release, accepted demand stays reserved ═══
 do $$
 begin
   update webstore_stock_holds set expires_at = now() - interval '1 minute';
+  -- S3's accepted unpaid order still reserves one L from its live item even
+  -- though its short checkout hold has expired, so three more cannot fit.
+  begin
+    perform place_webstore_order(
+      p_order  => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"Blocked","subtotal":60,"total":60}'::jsonb,
+      p_items  => '[{"product_id":"p1","sku":"TEE","size":"L","qty":3,"unit_price":20}]'::jsonb,
+      p_holds  => '[{"webstore_product_id":"00000000-0000-0000-0000-0000000000aa","size":"L","qty":3,"max_avail":3,"label":"Tee (size L)"}]'::jsonb);
+    raise exception 'S4: expected accepted demand to stay reserved';
+  exception when others then
+    if sqlerrm not like 'NSA_SOLD_OUT:Tee (size L)%' then raise exception 'S4: wrong error: %', sqlerrm; end if;
+  end;
+
+  -- Once that accepted order is cancelled, its live demand releases and all
+  -- three units become sellable again.
+  update webstore_orders set status = 'cancelled'
+   where buyer_name = 'Lee' and status = 'unpaid' and so_id is null;
   perform place_webstore_order(
     p_order  => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"Max","subtotal":60,"total":60}'::jsonb,
     p_items  => '[{"product_id":"p1","sku":"TEE","size":"L","qty":3,"unit_price":20}]'::jsonb,
     p_holds  => '[{"webstore_product_id":"00000000-0000-0000-0000-0000000000aa","size":"L","qty":3,"max_avail":3}]'::jsonb);
-  raise notice 'S4 expired holds released: OK';
+
+  -- New checkout callers pass the gross pool too. That keeps full demand
+  -- reserved after conversion, even before/without an auto-PO ledger write.
+  update webstore_stock_holds set expires_at = now() - interval '1 minute';
+  insert into sales_orders (id, status) values ('SO-LIFECYCLE', 'waiting_receive');
+  update webstore_orders set status = 'batched', so_id = 'SO-LIFECYCLE'
+   where buyer_name = 'Max' and status = 'unpaid';
+  begin
+    perform place_webstore_order(
+      p_order  => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"Still Blocked","subtotal":20,"total":20}'::jsonb,
+      p_items  => '[{"product_id":"p1","sku":"TEE","size":"L","qty":1,"unit_price":20}]'::jsonb,
+      p_holds  => '[{"webstore_product_id":"00000000-0000-0000-0000-0000000000aa","size":"L","qty":1,"max_avail":3,"gross_max_avail":3,"label":"Tee (size L)"}]'::jsonb);
+    raise exception 'S4: expected unfinished SO demand to stay reserved';
+  exception when others then
+    if sqlerrm not like 'NSA_SOLD_OUT:Tee (size L)%' then raise exception 'S4: wrong converted error: %', sqlerrm; end if;
+  end;
+
+  -- A finished SO releases the production reservation.
+  update sales_orders set status = 'complete' where id = 'SO-LIFECYCLE';
+  perform place_webstore_order(
+    p_order  => '{"store_id":"00000000-0000-0000-0000-000000000001","status":"unpaid","payment_mode":"unpaid","buyer_name":"After Complete","subtotal":60,"total":60}'::jsonb,
+    p_items  => '[{"product_id":"p1","sku":"TEE","size":"L","qty":3,"unit_price":20}]'::jsonb,
+    p_holds  => '[{"webstore_product_id":"00000000-0000-0000-0000-0000000000aa","size":"L","qty":3,"max_avail":3,"gross_max_avail":3}]'::jsonb);
+  raise notice 'S4 durable accepted + unfinished-SO demand and releases: OK';
 end $$;
 
 -- ═══ Scenario 5: duplicate client_ref aborts the transaction (idempotency backstop) ═══
