@@ -2223,7 +2223,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const taken = new Set(stores.map((s) => s.slug));
     let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
-    const { id, created_at, updated_at, ...rest } = src;
     // A template is a separate is_template store carrying the ITEMS and packages only —
     // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
     // codes from the source team). is_template makes it show in the Templates tab and
@@ -2239,52 +2238,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // over — every trace of the source team's branding strips, and the new team's colors
     // and logos are applied fresh. So template paths also drop the banner, hero blurb and
     // the curated store_art library (the source team's logos).
-    const tplPath = opts.asTemplate || opts.startFromTemplate;
-    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, featured_product_ids: null, closed_notified_at: null, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null, coach_contact_email: null } : {}), ...(tplPath ? { banner_url: null, hero_blurb: null, store_art: [] } : {}) };
     flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
-    const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
-    if (error) { flash('Could not duplicate: ' + error.message); return null; }
-
-    // opts.itemIds limits the copy to those catalog rows (Save as template's picks, or
-    // start-from-template's verbatim set); absent = whole catalog. Filter in the query —
-    // no point pulling 200 rows to keep 5. An empty list means "copy no catalog".
-    let srcProducts = [];
-    if (!opts.itemIds || opts.itemIds.length) {
-      let q = supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
-      if (opts.itemIds) q = q.in('id', opts.itemIds);
-      srcProducts = (await q).data || [];
+    const cloneRes = await authFetch('/.netlify/functions/webstore-clone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source_id: src.id,
+        clone_name: cloneName,
+        slug,
+        as_template: !!opts.asTemplate,
+        start_from_template: !!opts.startFromTemplate,
+        rebrand: !!opts.rebrand,
+        // null = all products; [] = deliberately no products.
+        item_ids: opts.itemIds == null ? null : opts.itemIds,
+      }),
+    });
+    const cloned = await cloneRes.json().catch(() => ({}));
+    if (!cloneRes.ok || !cloned?.ok || !cloned?.store?.id) {
+      flash('Could not duplicate: ' + (cloned?.error || 'Atomic store copy failed'));
+      return null;
     }
-    const idMap = {}; // old webstore_product id -> new id
-    for (const p of (srcProducts || [])) {
-      const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
-      // Template paths carry the ITEM, not the source team's branding: custom mockups
-      // (which show the old team's logo on the garment), art placements and transfer
-      // links strip; the new team decorates fresh. Plain Duplicate keeps everything.
-      const row = tplPath ? { ...prest, image_url: null, image_back_url: null, decorations: [], transfer_codes: [], num_transfer_sets: [] } : prest;
-      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...row, store_id: store.id }).select('id').single();
-      if (pe) { flash('Catalog copy failed: ' + pe.message); break; }
-      idMap[pid] = np.id;
-    }
-    const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
-    if (bundleIds.length) {
-      const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
-      // Remap the component's webstore_product_id link too — carrying the SOURCE store's
-      // row id makes the package show (and the storefront fetch) another store's item.
-      // Null when the linked single wasn't copied: components then resolve by product_id.
-      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, webstore_product_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id], webstore_product_id: idMap[webstore_product_id] || null, ...(tplPath ? { decoration_id: null } : {}) }; }).filter((r) => r.bundle_id);
-      if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
-    }
-    // Transfer setup (heat-press codes: the team's names/numbers/logos) is source-team
-    // branding — it copies on plain Duplicate / Clone & Rebrand but never on template
-    // paths, where the new team's transfers get set up fresh.
-    if (!tplPath) {
-      const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
-      if ((srcTransfers || []).length) {
-        const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
-        const { error: te } = await supabase.from('webstore_transfers').insert(trows);
-        if (te) flash('Transfer setup copy failed: ' + te.message);
-      }
-    }
+    const store = cloned.store;
     setStores((prev) => [store, ...prev]);
     flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
