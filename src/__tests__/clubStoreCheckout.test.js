@@ -82,7 +82,10 @@ const TEAM_STORE = {
 const NULL_ORG_STORE = { ...TEAM_STORE, id: 'st-null', slug: 'null1', org_type: undefined };
 const WP = { id: 'wp1', store_id: 'x', kind: 'single', active: true, retail_price: 20, sku: 'TEE', product_id: 'p1', display_name: 'Tee', takes_name: false, takes_number: false };
 const CART = [{ webstore_product_id: 'wp1', qty: 1, size: 'L' }];
-const BUYER = { name: 'Pat', email: 'pat@example.com' };
+// Pickup tax is sourced from the buyer's billing address. Nevada is deliberately
+// outside this test process's default CA-only nexus so these flow tests remain
+// network-free while still exercising the production address contract.
+const BUYER = { name: 'Pat', email: 'pat@example.com', billing_street1: '1 Main St', billing_city: 'Reno', state: 'NV', zip: '89501' };
 const NEW_ORDER = { id: 'ord-new', status: 'unpaid', store_id: 'st-club' };
 
 const happyTables = () => ({

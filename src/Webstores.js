@@ -13927,6 +13927,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   const billedTotal = Number(order.original_total != null ? order.original_total : order.total) || 0;
   const remaining = Math.max(0, billedTotal - (Number(order.refunded_amt) || 0));
   const fullyRefunded = Number(order.refunded_amt) > 0 && remaining <= 0.005;
+  const moneySettled = order.payment_mode === 'paid' || !!order.stripe_pi_id;
 
   // The coupon discount scales with the merchandise pot it was a percentage of, so a
   // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
@@ -13939,6 +13940,11 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
   // components have unit_price:0 (price lives on the parent row which is
   // excluded), so computing from scratch gives a wrong $0 on load.
   const hasChanges = rows.some((r, i) => r._removed !== initRows[i]?._initialRemoved || r.size !== initRows[i]?.size || Number(r.qty) !== Number(initRows[i]?.qty));
+  // A settled card amount covers the originally purchased, not-yet-refunded
+  // units only. Restoring a cancelled-but-unrefunded unit is safe; adding a new
+  // unit is not, because no new payment is collected by this editor.
+  const hasUnpaidIncrease = moneySettled && rows.some((r, i) => !r._removed && Number(r.qty) > Math.max(0,
+    Number(initRows[i]?.qty || 0) + Number(initRows[i]?.cancelled_qty || 0) - Number(initRows[i]?.refunded_qty || 0)));
   // Bundle parents hold the package price (components are $0) and aren't editable, so
   // seed the recompute with their value — otherwise the New total drops every package.
   const bundleBaseSub = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0);
@@ -14081,9 +14087,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
               // obvious and removes an action that can never legitimately succeed.
               const refundLocked = r._removed && Number(r.refunded_qty) > 0;
               const editLocked = fullyRefunded || r._removed;
-              const maxActiveQty = Number(r.refunded_qty) > 0
-                ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty))
-                : undefined;
+              const maxActiveQty = moneySettled
+                ? Math.max(0, Number(initRows[idx]?.qty || 0) + Number(initRows[idx]?.cancelled_qty || 0) - Number(initRows[idx]?.refunded_qty || 0))
+                : (Number(r.refunded_qty) > 0 ? Math.max(0, Number(r.qty) + Number(r.cancelled_qty) - Number(r.refunded_qty)) : undefined);
               return (
                 <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: idx < rows.length - 1 ? '1px solid #eef1f5' : 'none', opacity: r._removed ? 0.4 : 1, background: r._removed ? '#fff5f5' : 'transparent' }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -14094,7 +14100,7 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
                   {sizes.length > 0
                     ? <select value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, background: '#fff' }}><option value="">size</option>{sizes.map((s) => <option key={s} value={s}>{s}</option>)}</select>
                     : <input value={r.size} disabled={editLocked} onChange={(e) => upd(r.id, 'size', e.target.value)} placeholder="size" style={{ width: 70, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }} />}
-                  <input type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
+                  <input aria-label={`Quantity for ${r.name || r.sku || 'item'}`} type="number" min={1} max={maxActiveQty} value={r.qty} disabled={editLocked} onChange={(e) => upd(r.id, 'qty', e.target.value)} style={{ width: 52, padding: '5px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, textAlign: 'center' }} />
                   <button disabled={fullyRefunded || refundLocked} onClick={() => setRows((all) => all.map((x) => x.id === r.id ? { ...x, _removed: !x._removed, qty: x._removed && Number(x.qty) <= 0 ? 1 : x.qty } : x))} style={{ background: 'none', border: 'none', color: fullyRefunded || refundLocked ? '#94a3b8' : r._removed ? '#2563eb' : '#b91c1c', cursor: fullyRefunded || refundLocked ? 'default' : 'pointer', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>{fullyRefunded || refundLocked ? 'refunded' : r._removed ? 'undo' : 'remove'}</button>
                 </div>
               );
@@ -14108,7 +14114,9 @@ export function OrderManageModal({ order, items, availSizes = {}, nameByPid = {}
             </div>
           )}
 
-          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
+          {hasUnpaidIncrease && <div role="alert" style={{ background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', borderRadius: 8, padding: '9px 12px', marginBottom: 12, fontSize: 12 }}>A paid order can’t be increased here because this editor does not collect the additional card payment. Create a separate order for the added unit.</div>}
+
+          <button className="btn btn-primary" disabled={busy || !hasChanges || fullyRefunded || hasUnpaidIncrease} onClick={save}>{busy ? 'Saving…' : justSaved ? 'Saved ✓' : hasChanges && owed > 0.005 ? 'Save & review refund' : 'Save item changes'}</button>
           {hasChanges && owed > 0.005 && <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 7 }}>Saves the order, then opens the refund review. Nothing is refunded until you confirm.</div>}
 
           {/* Refund controls remain available for stand-alone/manual refunds. Item
