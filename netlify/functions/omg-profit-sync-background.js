@@ -19,6 +19,7 @@ const apiPath = link => {
 async function omgGet(path, attempt = 0) {
   const response = await fetch(API_BASE + path, {
     headers: { 'X-ACCESS-TOKEN': API_KEY, Accept: 'application/json', 'User-Agent': 'NSA-Portal/1.0' },
+    signal: AbortSignal.timeout(20000),
   });
   if ((response.status === 409 || response.status === 429 || response.status >= 500) && attempt < 3) {
     await pause(750 * (2 ** attempt));
@@ -260,14 +261,34 @@ exports.handler = async event => {
   }
   let synced = 0, held = 0, finalized = 0;
   const errors = [];
-  for (const store of stores || []) {
-    try {
-      const result = await syncStore(sb, store, customers, reps, linkedSalesOrders, run.id, now);
-      synced++; held += result.held ? 1 : 0; finalized += result.finalized;
-    } catch (error) {
-      errors.push({ storeCode: store._omg_sale_code, message: String(error?.message || error).slice(0, 500) });
-      console.error('[omg-profit-sync]', store._omg_sale_code, error);
+  // Keep enough parallelism to finish every mapped store inside Netlify's
+  // background-function window without flooding OMG's API. Checkpoint each
+  // batch so the portal shows real progress and an interrupted run is auditable.
+  const batchSize = 3;
+  for (let index = 0; index < (stores || []).length; index += batchSize) {
+    const batch = stores.slice(index, index + batchSize);
+    const results = await Promise.all(batch.map(async store => {
+      try {
+        const result = await syncStore(sb, store, customers, reps, linkedSalesOrders, run.id, now);
+        return { ok: true, result };
+      } catch (error) {
+        console.error('[omg-profit-sync]', store._omg_sale_code, error);
+        return {
+          ok: false,
+          error: { storeCode: store._omg_sale_code, message: String(error?.message || error).slice(0, 500) },
+        };
+      }
+    }));
+    for (const item of results) {
+      if (item.ok) {
+        synced++;
+        held += item.result.held ? 1 : 0;
+        finalized += item.result.finalized;
+      } else errors.push(item.error);
     }
+    await sb.from('omg_profit_sync_runs').update({
+      stores_synced: synced, stores_held: held, commissions_finalized: finalized, errors,
+    }).eq('id', run.id);
   }
   const status = errors.length ? (synced ? 'partial' : 'failed') : 'complete';
   await sb.from('omg_profit_sync_runs').update({ status, stores_synced: synced, stores_held: held, commissions_finalized: finalized, errors, finished_at: new Date().toISOString() }).eq('id', run.id);
