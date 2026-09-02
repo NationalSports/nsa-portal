@@ -10,6 +10,9 @@ const checkout = require('../../netlify/functions/webstore-checkout');
 // methods are no-ops and whose awaited value is the canned result for that table.
 function fakeSb(tables) {
   return {
+    rpc(name) {
+      return Promise.resolve(tables[`rpc:${name}`] || tables.webstore_storefront_products || { data: [], error: null });
+    },
     from(table) {
       const result = tables[table] || { data: [], error: null };
       const chain = {
@@ -309,6 +312,60 @@ describe('checkStock — demand for the same product+size is summed across cart 
     expect(r.error).toMatch(/could not verify inventory/i);
     expect(r.holds).toEqual([]);
   });
+
+  test('bundle component demand is checked at its catalog-authoritative quantity', async () => {
+    const row = sfRow({ webstore_product_id: 'wpChild', product_id: 'c1', size_stock: { M: 1 } });
+    const lines = [{
+      kind: 'bundle',
+      components: [{ product_id: 'c1', size: 'M', qty: 2 }],
+    }];
+    const r = await checkout.checkStock(sb(row), store, lines);
+    expect(r.error).toMatch(/sold out/i);
+    expect(r.holds).toEqual([]);
+  });
+
+  test('bundle component produces an atomic hold for the resolved store listing', async () => {
+    const row = sfRow({ webstore_product_id: 'wpChild', product_id: 'c1', size_stock: { M: 3 } });
+    const lines = [{
+      kind: 'bundle',
+      components: [{ product_id: 'c1', size: 'M', qty: 2 }],
+    }];
+    const r = await checkout.checkStock(sb(row), store, lines);
+    expect(r.error).toBeNull();
+    expect(r.holds).toEqual([{
+      webstore_product_id: 'wpChild', size: 'M', qty: 2,
+      max_avail: 3, gross_max_avail: 3, label: 'Tee (size M)',
+    }]);
+  });
+
+  test('single and bundle demand for one product+size share one stock pool', async () => {
+    const row = sfRow({ product_id: 'c1', size_stock: { M: 5 } });
+    const lines = [
+      { kind: 'single', size: 'M', wp: { id: 'wp1', product_id: 'c1' }, qty: 3 },
+      { kind: 'bundle', components: [{ product_id: 'c1', size: 'M', qty: 3 }] },
+    ];
+    const r = await checkout.checkStock(sb(row), store, lines);
+    expect(r.error).toMatch(/sold out/i);
+    expect(r.holds).toEqual([]);
+  });
+
+  test('fails closed when a catalog bundle component has no inventory listing', async () => {
+    const r = await checkout.checkStock(
+      fakeSb({ webstore_storefront_products: { data: [], error: null } }),
+      store,
+      [{ kind: 'bundle', components: [{ product_id: 'missing', size: 'M', qty: 1 }] }],
+    );
+    expect(r.error).toMatch(/could not verify inventory/i);
+  });
+
+  test('an explicitly untracked bundle component does not consume stock', async () => {
+    const row = sfRow({ webstore_product_id: 'wpChild', product_id: 'c1', track_inventory: false, size_stock: { M: 0 } });
+    const r = await checkout.checkStock(
+      sb(row), store,
+      [{ kind: 'bundle', components: [{ webstore_product_id: 'wpChild', product_id: 'c1', size: 'M', qty: 2 }] }],
+    );
+    expect(r).toEqual({ error: null, holds: [] });
+  });
 });
 
 describe('checkSizesRequired — a sized item must carry a size', () => {
@@ -515,6 +572,17 @@ describe('priceCart — bundle component qty is catalog-authoritative (fulfillme
     expect(r.lines[0].components[0].qty).toBe(2);
     expect(r.subtotal).toBe(60); // money unchanged — the $60 is on the parent at qty 1
     expect(r.fundraise).toBe(0);
+  });
+
+  test('carries the authoritative component listing id into stock validation', async () => {
+    const compRow = { bundle_id: 'wpB', webstore_product_id: 'wpChild', product_id: 'c1', sku: 'S1', size_required: true, takes_name: false, takes_number: false, qty: 1, sort_order: 1 };
+    const sb = fakeSb({
+      webstore_products: { data: [wpBundle], error: null },
+      webstore_storefront_products: { data: [], error: null },
+      webstore_bundle_items: { data: [compRow], error: null },
+    });
+    const r = await checkout.priceCart(sb, store, [{ webstore_product_id: 'wpB', components: [{ product_id: 'c1', size: 'M' }] }]);
+    expect(r.lines[0].components[0].webstore_product_id).toBe('wpChild');
   });
 
   test('a missing/invalid catalog qty defaults to 1', async () => {

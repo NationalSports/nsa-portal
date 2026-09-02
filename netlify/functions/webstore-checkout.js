@@ -178,7 +178,7 @@ async function priceCart(sb, store, cart) {
         // order_item.qty). Money is unaffected: components are stored at $0 and the parent
         // holds the whole package price at qty 1.
         const cq = Math.max(1, parseInt(c.qty, 10) || 1);
-        return { product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null, qty: cq };
+        return { webstore_product_id: c.webstore_product_id || null, product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null, qty: cq };
       });
       if (outComps.some((c) => c === null)) return { error: 'Package contents changed — please re-add it to your cart.' };
       if (outComps.some((c) => c === undefined)) return { error: 'A package in your cart is missing a size or number — please re-add it.' };
@@ -226,16 +226,67 @@ const _availForSize = (p, size) => {
 // subtracts accepted order demand after those short holds expire
 // (20260902053000), so units stay reserved through unfinished SO production.
 async function checkStock(sb, store, lines) {
-  const singles = lines.filter((l) => l.kind === 'single' && l.size);
-  if (!singles.length) return { error: null, holds: [] };
-  const ids = [...new Set(singles.map((l) => l.wp.id))];
-  const { data, error } = await sb.from('webstore_storefront_products')
-    .select('webstore_product_id,product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
-    .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
-  const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
-  if (ids.some((id) => !byId[id])) return { error: INVENTORY_RETRY_ERROR, holds: [] };
-  const need = {}; singles.forEach((l) => { const k = l.wp.id + '|' + l.size; need[k] = (need[k] || 0) + l.qty; });
+  // Flatten every inventory-backed fulfillment line. Bundle parents carry the
+  // money, but their catalog components carry the garments and therefore must
+  // reserve stock using their server-priced, catalog-authoritative quantities.
+  const demand = [];
+  lines.forEach((l) => {
+    if (l.kind === 'single' && l.size) {
+      demand.push({ webstore_product_id: l.wp.id, product_id: l.wp.product_id || null, size: l.size, qty: l.qty });
+    } else if (l.kind === 'bundle') {
+      (l.components || []).forEach((c) => {
+        // A legacy decorative/service placeholder can have no catalog product;
+        // there is no physical inventory resource to check in that case.
+        if (c.size && c.product_id) demand.push({
+          webstore_product_id: c.webstore_product_id || null,
+          product_id: c.product_id,
+          size: c.size,
+          qty: Math.max(1, parseInt(c.qty, 10) || 1),
+        });
+      });
+    }
+  });
+  if (!demand.length) return { error: null, holds: [] };
+
+  const ids = [...new Set(demand.map((d) => d.webstore_product_id).filter(Boolean))];
+  const pids = [...new Set(demand.map((d) => d.product_id).filter(Boolean))];
+  // Server-only lookup includes archived component cards that remain valid
+  // inside a package; the anonymous storefront view intentionally omits them.
+  const invRes = await sb.rpc('get_webstore_checkout_inventory', {
+    p_store_id: store.id,
+    p_webstore_product_ids: ids,
+    p_product_ids: pids,
+  });
+  if (invRes.error) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+  const rows = invRes.data || [];
+  const byId = {}; const byPid = {};
+  rows.forEach((p) => {
+    byId[p.webstore_product_id] = p;
+    if (p.product_id) {
+      byPid[p.product_id] = byPid[p.product_id] || [];
+      if (!byPid[p.product_id].some((x) => x.webstore_product_id === p.webstore_product_id)) byPid[p.product_id].push(p);
+    }
+  });
+
+  // Resolve each request to a listing in this store, then merge by the actual
+  // shared inventory resource (catalog product + size), not by storefront card.
+  const need = {};
+  for (const d of demand) {
+    let p = d.webstore_product_id ? byId[d.webstore_product_id] : null;
+    if (!p && d.product_id) {
+      const candidates = byPid[d.product_id] || [];
+      // Without an exact component listing, ambiguity is unsafe: two cards can
+      // deliberately use different inventory tracking modes.
+      if (candidates.length !== 1) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+      [p] = candidates;
+    }
+    if (!p || (d.product_id && p.product_id !== d.product_id)) return { error: INVENTORY_RETRY_ERROR, holds: [] };
+    const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+    if (!tracked) continue;
+    const resource = (p.product_id || ('wp:' + p.webstore_product_id)) + '|' + d.size;
+    if (!need[resource]) need[resource] = { p, size: d.size, qty: 0 };
+    need[resource].qty += Number(d.qty) || 0;
+  }
 
   // Cumulative backorder claims: open needs-ledger rows (teamshop and club
   // alike, ANY store) already promise units of on-hand + incoming stock to
@@ -245,7 +296,7 @@ async function checkStock(sb, store, lines) {
   // unreadable or truncated claims ledger could otherwise let multiple buyers
   // sell the same incoming units.
   const claimed = {}; // '<product_id>|<size>' -> promised qty on unfinished SOs
-  const capPids = [...new Set((data || []).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
+  const capPids = [...new Set(Object.values(need).map((n) => n.p).filter((p) => Number(p.on_order_qty) > 0 && p.product_id).map((p) => p.product_id))];
   if (capPids.length) {
     try {
       const nd = await sb.from('teamshop_auto_po_needs')
@@ -266,8 +317,8 @@ async function checkStock(sb, store, lines) {
     } catch (_) { return { error: INVENTORY_RETRY_ERROR, holds: [] }; }
   }
   const short = []; const holds = [];
-  Object.entries(need).forEach(([k, q]) => {
-    const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
+  Object.values(need).forEach(({ p, size, qty: q }) => {
+    const wid = p.webstore_product_id;
     // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
     const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
     if (!tracked) return;
