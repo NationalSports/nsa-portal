@@ -307,3 +307,11 @@
 [functions."webstore-notification-sweep"]
   schedule = "*/5 * * * *"
   timeout = 26
+
+# Hourly read-only webstore integrity canary. Reconciles durable message,
+# shipment, tracker, cost, refund, and batch-accounting records; also verifies
+# the sensitive-table/RPC access boundary. Findings are deduplicated in a
+# service-only incident ledger and alerted through a durable email outbox.
+[functions."webstore-integrity-sweep"]
+  schedule = "35 * * * *"
+  timeout = 26
