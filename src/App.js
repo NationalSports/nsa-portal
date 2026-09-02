@@ -6563,7 +6563,7 @@ export default function App(){
     setCust(prev=>prev.map(cc=>cc.id===customerId?{...cc,credits:[...(cc.credits||[]),credit]}:cc));
     return credit;
   };
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle,batch_label,batch_cutoff})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,batch_label,batch_cutoff,order_ids})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -6606,18 +6606,47 @@ export default function App(){
       const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
       if(_bn&&_bn.webstore_batch_no!=null){newSO.webstore_batch_no=_bn.webstore_batch_no;setSOs(prev=>prev.map(s=>s.id===id?{...s,webstore_batch_no:_bn.webstore_batch_no}:s));}
     }catch{}
-    // Club fundraising from this batch becomes Fundraiser Dollars on the customer —
-    // a cash credit line, spendable dollar-for-dollar via Apply Credit. Per-batch, and
-    // the batch's fundraise total is already net of coupon discounts, so multiple
-    // batches from one store never double-credit.
-    if(Number(fundraise_cost)>0&&customer_id)addFundraiseCredit(customer_id,fundraise_cost,'Webstore fundraising — '+(memo||'store'),id,'so_'+id);
-    // Webstore money is already collected via Stripe by batch time, so invoice
-    // + settle immediately — paid in full when the card funds cover it, else
-    // partial with exactly the team-tab gross left as the club's open balance.
-    if(settle){try{createAndSettleWebstoreInvoice(newSO,settle)}catch(e){console.warn('[Webstore] auto-invoice failed:',e.message)}}
+    // Claim the selected customer orders and record invoice/payment + fundraising
+    // credit in ONE database transaction. A closed browser can no longer interrupt
+    // the accounting half after production has been created. The RPC is idempotent,
+    // so retry once; after an ambiguous error, verify the committed records directly.
+    let finalized=null;let finalizeErr=null;
+    for(let attempt=0;attempt<2&&!finalized?.ok;attempt++){
+      try{
+        const{data,error}=await supabase.rpc('finalize_webstore_batch',{p_so_id:id,p_order_ids:Array.isArray(order_ids)?order_ids:[]});
+        if(error){finalizeErr=error;continue}
+        finalized=data;finalizeErr=null;
+        if(data&&!data.ok)break;
+      }catch(e){finalizeErr=e}
+    }
+    if(!finalized?.ok&&finalizeErr){
+      try{
+        const[{count:_linked},{data:_inv},{data:_credit}]=await Promise.all([
+          supabase.from('webstore_orders').select('id',{count:'exact',head:true}).in('id',Array.isArray(order_ids)?order_ids:[]).eq('so_id',id),
+          supabase.from('invoices').select('id').eq('so_id',id).limit(1).maybeSingle(),
+          Number(fundraise_cost)>0?supabase.from('customer_credits').select('id').eq('id','cr_fund_so_'+id).maybeSingle():Promise.resolve({data:{id:'none'}})
+        ]);
+        if(_linked===(order_ids||[]).length&&_inv&&_credit)finalized={ok:true,invoice_id:_inv.id,linked_count:_linked};
+      }catch{}
+    }
+    if(!finalized?.ok){
+      const why=finalized?.reason==='order_claim_changed'?'Some selected orders changed or were batched by another session.':'The server could not confirm the order links and accounting records.';
+      // A returned business rejection proves the RPC committed no links/accounting,
+      // so the just-created SO is safe to remove. A transport/SQL error is ambiguous:
+      // leave the SO intact and require reload rather than risk deleting a committed batch.
+      if(finalized){
+        try{await _dbDeleteSO(id)}catch{}
+        setSOs(prev=>prev.filter(s=>s.id!==id));
+        nf('Batch stopped safely. '+why+' No customer orders were linked; reload and try again.','error');
+      }else{
+        nf('Sales Order '+id+' was saved, but batch finalization could not be verified. Reload before doing anything else; do not create a second batch for these orders.','error');
+      }
+      console.error('[Webstore] atomic batch finalization failed:',finalizeErr||finalized);
+      return null;
+    }
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
-    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s)');
+    nf('Created '+id+' from webstore — '+(items||[]).length+' line(s) · invoice '+(finalized.invoice_id||'recorded'));
     return id;
   };
   const savV=v=>{setVend(p=>{const e=p.find(x=>x.id===v.id);return e?p.map(x=>x.id===v.id?{...x,...v}:x):[...p,v]});nf(vend.some(x=>x.id===v.id)?'Vendor updated':'Vendor created')};
@@ -15165,7 +15194,7 @@ export default function App(){
   // from webstore_orders sums for queue-driven backlog settles. All amounts
   // are clamped so a data surprise can only under-apply (visible partial),
   // never overpay. Idempotent: any-invoice guard + the 'WEB <so id>' ref.
-  const createAndSettleWebstoreInvoice=(so,settle)=>{
+  const createAndSettleWebstoreInvoice=async(so,settle)=>{
     if(!so||so.omg_store_id)return null;
     if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
     if(!acquireOmgCreationGuard(webstoreInvoiceCreating.current,so.id)){nf('Invoice creation is already running for '+so.id,'error');return null}
@@ -15198,10 +15227,15 @@ export default function App(){
       items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
       payments:applied>0?[{amount:applied,method:'store',ref,date:payDate,cc_fee:0}]:[],
       created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
-    setInvs(prev=>[inv,...prev]);
-    logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
-    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
-    return inv;
+    try{
+      const ok=await _dbSaveInvoice(inv);
+      if(!ok){nf('Invoice for '+so.id+' did not finish saving — it remains in the retry queue.','error');return null}
+      setInvs(prev=>prev.some(i=>i.id===inv.id||i.so_id===so.id)?prev:[inv,...prev]);
+      logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
+      nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
+      return inv;
+    }catch(e){console.error('[Webstore] invoice save failed:',e);nf('Invoice for '+so.id+' failed to save: '+(e.message||e),'error');return null}
+    finally{webstoreInvoiceCreating.current.delete(so.id)}
   };
 
 ;
