@@ -5184,7 +5184,7 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);
+  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',channel:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',channel:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);
   // Remove a brought-in OMG store that never became a Sales Order — pulls it out of this
   // section entirely (omg_store_products cascades in the DB, so only the store row needs deleting).
   const deleteOmgStore=(s)=>{
@@ -17911,6 +17911,7 @@ export default function App(){
     const filtered=stores.filter(s=>{
       if(omgFilter.rep!=='all'&&s.rep_id!==omgFilter.rep)return false;
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
+      if((omgFilter.channel||'all')!=='all'&&s.channel_type!==omgFilter.channel)return false;
       if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
         if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')+' '+(s._omg_sale_code||'')).toLowerCase().includes(q))return false}
       // Date range filter — based on open_date or close_date. Open and draft
@@ -19005,6 +19006,11 @@ export default function App(){
           <option value="1y">Last Year</option>
           <option value="all">All Time</option>
         </select>
+        <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.channel||'all'} onChange={e=>setOmgFilter(x=>({...x,channel:e.target.value}))}>
+          <option value="all">All Channels</option>
+          <option value="24/7">24/7 Stores</option>
+          <option value="pop-up">Pop-up Stores</option>
+        </select>
         <div style={{display:'flex',gap:4}}>
           {[['all','All'],['open','Open'],['closed','Closed'],['draft','Draft']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${omgFilter.status===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOmgFilter(x=>({...x,status:v}))}>{l}</button>)}
@@ -19032,6 +19038,7 @@ export default function App(){
               <div style={{fontSize:14,fontWeight:800,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',color:'#0f172a'}}>{s.store_name}</div>
               <div style={{display:'flex',alignItems:'center',gap:5,marginTop:2}}>
                 {s._omg_sale_code&&<span style={{fontFamily:'monospace',fontSize:11,fontWeight:800,color:'#1e40af',background:'#eff6ff',padding:'1px 5px',borderRadius:3}}>{s._omg_sale_code}</span>}
+                {s.channel_type==='24/7'&&<span style={{fontSize:9,fontWeight:800,color:'#6d28d9',background:'#ede9fe',padding:'2px 6px',borderRadius:8}}>24/7</span>}
                 <span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{c?.name}</span>
                 {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:700,flexShrink:0}}>↗</a>}
               </div>

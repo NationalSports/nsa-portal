@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { normalizeOmgProfitRow } from './lib/omgMonthlyProfit';
+import { buildManualCommissionCloseout, normalizeOmgProfitRow } from './lib/omgMonthlyProfit';
 
 const money = n => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const previousMonth = () => {
@@ -50,11 +50,12 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
         const parsed = normalizeOmgProfitRow(r, { periodMonth: `${period}-01`, isCumulative });
         const store = byCode.get(parsed.storeCode) || null;
         const customer = store?.customer_id ? customerMap.get(store.customer_id) : null;
-        const repId = store?.rep_id || customer?.primary_rep_id || null;
+        const repId = customer?.primary_rep_id || store?.rep_id || null;
         const rep = repId ? repMap.get(repId) : null;
         const problems = [];
         if (!parsed.storeCode) problems.push('Missing store code');
         else if (!store) problems.push('Store code not found');
+        if (store && store.channel_type !== '24/7') problems.push('Store is not classified 24/7');
         if (store && !customer) problems.push('Store needs a customer');
         if (store && customer && !rep) problems.push('Store/customer needs a rep');
         return { ...parsed, index: index + 2, store, customer, rep, repId, problems };
@@ -74,6 +75,23 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
     if (!readyRows.length) return notify?.('No fully mapped rows are ready to import', 'error');
     setBusy(true);
     try {
+      const storeIds = [...new Set(readyRows.map(r => r.store.id))];
+      const [{ data: priorSnapshots, error: priorError }, { data: linkedOrders, error: linkedError }] = await Promise.all([
+        supabase.from('omg_store_profit_snapshots')
+          .select('id,store_id,store_code,period_month,is_cumulative,customer_id,rep_id,product_collected,item_cost,product_profit,refunds,omg_fees,processing_fees,invoiced_fees,net_profit')
+          .in('store_id', storeIds).lt('period_month', `${period}-01`).order('period_month', { ascending: false }),
+        supabase.from('sales_orders').select('id,omg_store_id').in('omg_store_id', storeIds),
+      ]);
+      if (priorError) throw priorError;
+      if (linkedError) throw linkedError;
+      const priorByStore = new Map();
+      (priorSnapshots || []).forEach(snapshot => { if (!priorByStore.has(snapshot.store_id)) priorByStore.set(snapshot.store_id, snapshot); });
+      const linkedByStore = new Map();
+      (linkedOrders || []).forEach(order => {
+        if (!linkedByStore.has(order.omg_store_id)) linkedByStore.set(order.omg_store_id, []);
+        linkedByStore.get(order.omg_store_id).push(order.id);
+      });
+      const importedAt = new Date().toISOString();
       const payload = readyRows.map(r => ({
         store_id: r.store.id,
         store_code: r.storeCode,
@@ -93,16 +111,47 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
         net_profit: r.netProfit,
         source_file: fileName,
         source_mode: 'manual',
-        validation_status: 'pending',
-        validation: { source: 'manual_import', note: 'Fallback snapshot; nightly API closeout remains authoritative.' },
+        validation_status: 'ready',
+        validation: { ready: true, source: 'manual_import', note: 'Verified OMG Margin Report; manual monthly import is the accounting source of truth.' },
         imported_by: currentUser?.id || null,
-        imported_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        imported_at: importedAt,
+        updated_at: importedAt,
       }));
-      const { error } = await supabase.from('omg_store_profit_snapshots')
-        .upsert(payload, { onConflict: 'store_id,period_month' });
+      const { data: savedSnapshots, error } = await supabase.from('omg_store_profit_snapshots')
+        .upsert(payload, { onConflict: 'store_id,period_month' })
+        .select('id,store_id,store_code,period_month,is_cumulative,customer_id,rep_id,product_collected,item_cost,product_profit,refunds,omg_fees,processing_fees,invoiced_fees,net_profit');
       if (error) throw error;
-      notify?.(`Imported ${payload.length} OMG profit snapshot${payload.length === 1 ? '' : 's'} for ${period}`);
+      const savedByStore = new Map((savedSnapshots || []).map(snapshot => [snapshot.store_id, snapshot]));
+      const outcomes = readyRows.map(r => {
+        const snapshot = savedByStore.get(r.store.id);
+        if (!snapshot) throw new Error(`Snapshot save did not return ${r.storeCode}; re-import the file.`);
+        return buildManualCommissionCloseout({
+          snapshot,
+          previousSnapshot: priorByStore.get(r.store.id) || null,
+          store: r.store,
+          customer: r.customer,
+          rep: r.rep,
+          linkedSoIds: linkedByStore.get(r.store.id) || [],
+          now: importedAt,
+        });
+      });
+      const commissionRows = outcomes.map(outcome => outcome.row).filter(Boolean);
+      if (commissionRows.length) {
+        const { error: commissionError } = await supabase.from('omg_store_commission_months')
+          .upsert(commissionRows, { onConflict: 'store_id,period_month' });
+        if (commissionError) throw commissionError;
+      }
+      const finalized = outcomes.filter(outcome => outcome.kind === 'finalized').length;
+      const baselines = outcomes.filter(outcome => outcome.kind === 'baseline').length;
+      const held = outcomes.filter(outcome => outcome.kind === 'held').length;
+      const heldResult = await supabase.from('omg_store_commission_months').select('id', { count: 'exact', head: true }).eq('status', 'held');
+      if (!heldResult.error) setHeldCount(heldResult.count || 0);
+      const summary = [
+        `${finalized} commission month${finalized === 1 ? '' : 's'} finalized`,
+        baselines ? `${baselines} baseline${baselines === 1 ? '' : 's'} saved` : '',
+        held ? `${held} held for review` : '',
+      ].filter(Boolean).join(' · ');
+      notify?.(`Imported ${payload.length} OMG profit snapshot${payload.length === 1 ? '' : 's'} for ${period} · ${summary}`);
       setRows([]); setFileName(''); setOpen(false);
     } catch (error) { notify?.(`OMG profit import failed: ${error.message}`, 'error'); }
     finally { setBusy(false); }
@@ -110,7 +159,7 @@ export default function OmgMonthlyProfitImport({ stores = [], customers = [], re
 
   const downloadTemplate = () => {
     const header = ['Store Code', 'Store Name', 'Products', 'Collected', 'Cost', 'Profit', 'Margin', 'Refunds', 'OMG Fees', 'Processing Fees', 'Invoiced Fees', 'Net Profit'];
-    const csvRows = stores.filter(s => s._omg_sale_code).map(s => [s._omg_sale_code, s.store_name || '', '', '', '', '', '', '', '', '', '', '']);
+    const csvRows = stores.filter(s => s._omg_sale_code && s.channel_type === '24/7').map(s => [s._omg_sale_code, s.store_name || '', '', '', '', '', '', '', '', '', '', '']);
     const esc = value => `"${String(value == null ? '' : value).replace(/"/g, '""')}"`;
     const csv = [header, ...csvRows].map(r => r.map(esc).join(',')).join('\r\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });

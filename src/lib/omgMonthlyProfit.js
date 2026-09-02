@@ -119,7 +119,85 @@ const latestMonthlyProfit = rows => {
   };
 };
 
-module.exports = {
+const monthlySnapshotTotals = (current, previous) => {
+  if (!current) return { kind: 'held', reason: 'Current snapshot is missing', totals: null };
+  if (current.is_cumulative && !previous) return { kind: 'baseline', reason: 'First cumulative snapshot establishes the baseline', totals: null };
+  if (current.is_cumulative && !previous.is_cumulative) {
+    return { kind: 'held', reason: 'A cumulative snapshot requires a prior cumulative snapshot', totals: null };
+  }
+  const value = key => current.is_cumulative
+    ? roundMoney((Number(current[key]) || 0) - (Number(previous[key]) || 0))
+    : roundMoney(Number(current[key]) || 0);
+  return {
+    kind: 'ready',
+    reason: '',
+    totals: {
+      productCollected: value('product_collected'),
+      itemCost: value('item_cost'),
+      productProfit: value('product_profit'),
+      refunds: value('refunds'),
+      omgFees: value('omg_fees'),
+      processingFees: value('processing_fees'),
+      invoicedFees: value('invoiced_fees'),
+      netProfit: value('net_profit'),
+    },
+  };
+};
+
+const buildManualCommissionCloseout = ({ snapshot, previousSnapshot, store, customer, rep, linkedSoIds = [], now }) => {
+  const calculation = monthlySnapshotTotals(snapshot, previousSnapshot);
+  if (calculation.kind === 'baseline') return { ...calculation, row: null };
+  const totals = calculation.totals || {
+    productCollected: 0, itemCost: 0, productProfit: 0, refunds: 0,
+    omgFees: 0, processingFees: 0, invoicedFees: 0, netProfit: 0,
+  };
+  const basis = rep?.commission_basis === 'revenue' ? 'revenue' : 'gp';
+  const rate = basis === 'revenue' ? (Number(rep?.commission_rate) || 0.01) : 0.30;
+  const reasons = [];
+  if (calculation.kind !== 'ready') reasons.push(calculation.reason);
+  if (!store?.customer_id || !customer?.id) reasons.push('Store is not assigned to a customer');
+  if (!rep?.id) reasons.push('Store/customer is not assigned to a commission rep');
+  if (linkedSoIds.length) reasons.push('Store is linked to portal sales order(s); held to prevent duplicate commission');
+  const status = reasons.length ? 'held' : 'finalized';
+  const base = basis === 'revenue'
+    ? roundMoney(totals.productCollected - totals.refunds)
+    : totals.netProfit;
+  const timestamp = now || new Date().toISOString();
+  return {
+    kind: status,
+    reason: reasons.join('; '),
+    totals,
+    row: {
+      store_id: store.id,
+      store_code: String(store._omg_sale_code || snapshot?.store_code || '').trim().toUpperCase(),
+      period_month: snapshot.period_month,
+      customer_id: store.customer_id || null,
+      rep_id: rep?.id || null,
+      product_collected: totals.productCollected,
+      item_cost: totals.itemCost,
+      product_profit: totals.productProfit,
+      fees_and_refunds: roundMoney(totals.refunds + totals.omgFees + totals.processingFees + totals.invoicedFees),
+      net_profit: totals.netProfit,
+      commission_basis: basis,
+      commission_rate: rate,
+      commission_amount: status === 'finalized' ? roundMoney(base * rate) : 0,
+      status,
+      hold_reason: status === 'held' ? reasons.join('; ') : null,
+      validation: {
+        ready: status === 'finalized',
+        source: 'manual_import',
+        isCumulative: !!snapshot.is_cumulative,
+        previousSnapshotId: previousSnapshot?.id || null,
+        linkedSoIds,
+      },
+      source_snapshot_id: snapshot.id,
+      finalized_at: status === 'finalized' ? timestamp : null,
+      updated_at: timestamp,
+    },
+  };
+};
+
+export {
   HEADER_ALIASES,
   normalizeHeader,
   parseNumber,
@@ -127,4 +205,6 @@ module.exports = {
   normalizeOmgProfitRow,
   monthlyValue,
   latestMonthlyProfit,
+  monthlySnapshotTotals,
+  buildManualCommissionCloseout,
 };

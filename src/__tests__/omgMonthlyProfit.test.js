@@ -3,6 +3,7 @@ const {
   normalizePeriodMonth,
   parseNumber,
   latestMonthlyProfit,
+  buildManualCommissionCloseout,
 } = require('../lib/omgMonthlyProfit');
 
 describe('OMG monthly profit import', () => {
@@ -64,5 +65,46 @@ describe('OMG monthly profit import', () => {
     expect(result).toMatchObject({ collected: 500, itemCost: 300, productProfit: 200, netProfit: 170, baseline: false });
     expect(normalizePeriodMonth('8/2026')).toBe('2026-08-01');
     expect(parseNumber('($1,234.50)')).toBe(-1234.5);
+  });
+
+  test('turns the second cumulative snapshot into a finalized GP commission month', () => {
+    const result = buildManualCommissionCloseout({
+      snapshot: { id: 'snap-2', store_code: '5YP6D', period_month: '2026-10-01', is_cumulative: true, product_collected: 3084.5, item_cost: 2047.05, product_profit: 1037.45, refunds: 10, omg_fees: 127.74, processing_fees: 100.21, invoiced_fees: 5, net_profit: 794.5 },
+      previousSnapshot: { id: 'snap-1', period_month: '2026-09-01', is_cumulative: true, product_collected: 2084.5, item_cost: 1447.05, product_profit: 637.45, refunds: 0, omg_fees: 97.74, processing_fees: 80.21, invoiced_fees: 0, net_profit: 459.5 },
+      store: { id: 'OMG-sale_5YP6D', _omg_sale_code: '5YP6D', customer_id: 'c1' },
+      customer: { id: 'c1' },
+      rep: { id: 'rep-1' },
+      now: '2026-11-01T12:00:00.000Z',
+    });
+    expect(result.kind).toBe('finalized');
+    expect(result.row).toMatchObject({
+      period_month: '2026-10-01', product_collected: 1000, item_cost: 600,
+      product_profit: 400, fees_and_refunds: 65, net_profit: 335,
+      commission_basis: 'gp', commission_rate: 0.30, commission_amount: 100.5,
+      status: 'finalized', source_snapshot_id: 'snap-2',
+    });
+  });
+
+  test('keeps the first cumulative snapshot as a baseline with no commission row', () => {
+    const result = buildManualCommissionCloseout({
+      snapshot: { id: 'snap-1', period_month: '2026-09-01', is_cumulative: true },
+      store: { id: 'store-1', _omg_sale_code: 'ABC12', customer_id: 'c1' },
+      customer: { id: 'c1' }, rep: { id: 'rep-1' },
+    });
+    expect(result).toMatchObject({ kind: 'baseline', row: null });
+  });
+
+  test('uses the rep revenue policy and holds stores linked to a portal sales order', () => {
+    const result = buildManualCommissionCloseout({
+      snapshot: { id: 'snap-1', period_month: '2026-09-01', is_cumulative: false, product_collected: 1000, item_cost: 600, product_profit: 400, refunds: 50, omg_fees: 25, processing_fees: 30, invoiced_fees: 0, net_profit: 295 },
+      store: { id: 'store-1', _omg_sale_code: 'ABC12', customer_id: 'c1' },
+      customer: { id: 'c1' },
+      rep: { id: 'rep-1', commission_basis: 'revenue', commission_rate: 0.01 },
+      linkedSoIds: ['SO-1'],
+      now: '2026-10-01T12:00:00.000Z',
+    });
+    expect(result.kind).toBe('held');
+    expect(result.row).toMatchObject({ commission_basis: 'revenue', commission_rate: 0.01, commission_amount: 0, status: 'held' });
+    expect(result.row.hold_reason).toMatch(/duplicate commission/);
   });
 });
