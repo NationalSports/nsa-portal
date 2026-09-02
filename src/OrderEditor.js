@@ -15887,7 +15887,7 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           <div className="modal-header"><h2>{isMove?'Move Unfulfilled to Another SKU':isCopy?'Copy Item':'Change SKU'}</h2><button className="modal-close" onClick={()=>setCopySkuModal(null)}>×</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12,fontSize:12}}>
-              <div style={{fontWeight:700}}>{isMove?'Moving open quantities from':isClone?'Copying':isCopy?'Copying from':'Changing'}: {srcIt.sku} — {srcIt.name}</div>
+              <div style={{fontWeight:700,display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}><span>{isMove?'Moving open quantities from':isClone?'Copying':isCopy?'Copying from':'Changing'}: {srcIt.sku} — {srcIt.name}</span>{srcIt.color&&<span style={{padding:'2px 6px',borderRadius:5,background:'#e2e8f0',color:'#475569',fontSize:10,fontWeight:800}}>{srcIt.color}</span>}</div>
               <div style={{color:'#64748b'}}>{isMove?_copySzStr(unfulfilledSizes(srcIt).open)+' will move; pulled and PO quantities stay here. Full line setup will copy.':safeDecos(srcIt).length+' decoration(s) '+(isReplace?'+ sizes will be kept on this line':(newSzTot>0?'will carry over — sizes replaced with '+_copySzStr(newSz):'+ sizes will carry over'))}</div>
             </div>
             {isCopy&&<div style={{display:'flex',gap:6,marginBottom:10,padding:4,background:'#f1f5f9',borderRadius:8}}>
