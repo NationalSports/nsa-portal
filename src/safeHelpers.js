@@ -624,6 +624,22 @@ export const shouldSkipZeroFinalInvoice = ({ invType, invTotal, isPromoOrder, pr
 };
 
 export const safeJobs = (o) => safeArr(o?.jobs);
+
+// Financial closure and physical fulfillment are independent. A final invoice makes the SO's
+// status "complete", but an unpulled pick line is still live warehouse work and must keep the
+// order in the warehouse data set.
+export const hasOpenItemFulfillment = (o) => safeItems(o).some(it =>
+  safePicks(it).some(pk => pk?.status !== 'pulled')
+);
+
+// Manual stock corrections are intentionally narrower than Inventory-page access. Admins can
+// adjust stock, as can explicitly designated warehouse leads; the warehouse role by itself stays
+// read-only so adding one lead does not silently grant the control to every warehouse account.
+export const canAdjustInventory = (user, warehouseLeadIds = []) => !!user && (
+  user.role === 'admin' ||
+  user.role === 'super_admin' ||
+  warehouseLeadIds.includes(user.id)
+);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
 // ── Mock links ("use the same mockup as that garment") ──
