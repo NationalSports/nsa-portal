@@ -70,6 +70,8 @@ export default function QBPage(){
   const [stripePayoutDetail,setStripePayoutDetail]=useState(null);
   const [stripePayoutLoading,setStripePayoutLoading]=useState(false);
   const [stripePayoutError,setStripePayoutError]=useState('');
+  const [stripeBackfill,setStripeBackfill]=useState(null);
+  const [stripeWebhookStatus,setStripeWebhookStatus]=useState(null);
 
   const stripeReconApi=async(action,payload={})=>{
     const res=await authFetch('/.netlify/functions/stripe-reconciliation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})});
@@ -97,6 +99,38 @@ export default function QBPage(){
       nf('Stripe payout reconciled to its balance transactions');
     }catch(e){setStripePayoutError(e.message);setStripePayoutLoading(false)}
   };
+  const loadStripeWebhookStatus=async()=>{
+    try{const data=await stripeReconApi('webhook_status');setStripeWebhookStatus(data);return data}
+    catch(e){setStripeWebhookStatus({healthy:false,error:e.message,missing_events:[]});throw e}
+  };
+  const runStripeHistoricalBackfill=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    const progress={phase:'orders',orders_processed:0,orders_linked:0,payouts_processed:0,errors:[]};
+    setStripeBackfill({...progress});
+    try{
+      let cursor=null;
+      for(let page=0;page<100;page+=1){
+        const batch=await stripeReconApi('backfill_orders',{starting_after:cursor,limit:10});
+        progress.orders_processed+=Number(batch.processed||0);progress.orders_linked+=Number(batch.linked||0);
+        progress.errors.push(...(batch.errors||[]));cursor=batch.next_cursor||null;setStripeBackfill({...progress});
+        if(!batch.has_more||!cursor)break;
+      }
+      progress.phase='payouts';setStripeBackfill({...progress});
+      cursor=null;let createdGte=null;
+      for(let page=0;page<100;page+=1){
+        const batch=await stripeReconApi('backfill_payouts',{starting_after:cursor,created_gte:createdGte,limit:5});
+        createdGte=batch.created_gte||createdGte;progress.payouts_processed+=Number(batch.processed||0);
+        progress.errors.push(...(batch.errors||[]));cursor=batch.next_cursor||null;setStripeBackfill({...progress});
+        if(!batch.has_more||!cursor)break;
+      }
+      const [status,webhook,payoutData]=await Promise.all([
+        stripeReconApi('reconciliation_status'),loadStripeWebhookStatus(),stripeReconApi('list_payouts'),
+      ]);
+      setStripePayouts(payoutData.payouts||[]);
+      setStripeBackfill({...progress,phase:'done',unlinked_card_orders:status.unlinked_card_orders,non_exact_automatic_payouts:status.non_exact_automatic_payouts,webhook_healthy:webhook.healthy});
+      nf(status.unlinked_card_orders===0?'Stripe historical backfill complete':'Stripe backfill complete with review items',status.unlinked_card_orders===0?'success':'error');
+    }catch(e){setStripePayoutError(e.message);setStripeBackfill({...progress,phase:'error'});}finally{setStripePayoutLoading(false)}
+  };
   const exportStripePayoutCsv=()=>{
     const detail=stripePayoutDetail;if(!detail?.payout)return;
     const head=['Payout ID','Balance Transaction','Webstore Order','Entry Type','Posting Account Key','Tax State','Amount Cents','QBO Ready'];
@@ -106,7 +140,7 @@ export default function QBPage(){
     const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
     const a=document.createElement('a');a.href=url;a.download='stripe-payout-'+detail.payout.stripe_payout_id+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   };
-  useEffect(()=>{if(qbTab==='stripe')loadStripePayouts()},[qbTab]);
+  useEffect(()=>{if(qbTab==='stripe'){loadStripePayouts();loadStripeWebhookStatus().catch(()=>{})}},[qbTab]);
 
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
@@ -753,6 +787,14 @@ export default function QBPage(){
           </div>
           <div className="card-body">
             <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payouts can be exported as cent-based semantic posting rows; this screen never posts a bank deposit to QuickBooks automatically.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',padding:10,marginBottom:10,background:stripeWebhookStatus?.healthy?'#f0fdf4':'#fffbeb',border:'1px solid '+(stripeWebhookStatus?.healthy?'#bbf7d0':'#fde68a'),borderRadius:7,fontSize:11}}>
+              <div><strong>Live webhook:</strong> {stripeWebhookStatus?.healthy?'all payment, refund, dispute, and payout events covered':stripeWebhookStatus?.error?'could not verify — '+stripeWebhookStatus.error:stripeWebhookStatus?'missing '+(stripeWebhookStatus.missing_events||[]).join(', '):'checking Stripe configuration...'}</div>
+              <button className="btn btn-primary btn-sm" disabled={stripePayoutLoading} onClick={runStripeHistoricalBackfill}>{stripePayoutLoading&&stripeBackfill?.phase&&stripeBackfill.phase!=='done'?'Backfill running...':'Run full historical backfill'}</button>
+            </div>
+            {stripeBackfill&&<div style={{padding:9,marginBottom:10,background:stripeBackfill.phase==='done'&&stripeBackfill.unlinked_card_orders===0?'#f0fdf4':'#eff6ff',border:'1px solid #bfdbfe',borderRadius:7,fontSize:11,color:'#1e3a8a'}}>
+              <strong>{stripeBackfill.phase==='done'?'Backfill complete':stripeBackfill.phase==='error'?'Backfill stopped':'Backfill '+stripeBackfill.phase+' in progress'}:</strong> {stripeBackfill.orders_linked||0} of {stripeBackfill.orders_processed||0} order attempts linked · {stripeBackfill.payouts_processed||0} payouts reconciled · {(stripeBackfill.errors||[]).length} errors
+              {stripeBackfill.phase==='done'&&<span> · {stripeBackfill.unlinked_card_orders||0} card orders remain unlinked · {stripeBackfill.non_exact_automatic_payouts||0} non-exact automatic payouts</span>}
+            </div>}
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7}}>
               <input className="form-input" style={{minWidth:300,flex:'1 1 300px'}} placeholder="Historical payout ID (po_...)" value={stripePayoutId} onChange={e=>setStripePayoutId(e.target.value)}/>
               <button className="btn btn-primary btn-sm" disabled={stripePayoutLoading||!stripePayoutId.trim()} onClick={()=>reconcileStripePayout(stripePayoutId)}>Fetch &amp; reconcile</button>

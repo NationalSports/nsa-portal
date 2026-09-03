@@ -4,7 +4,12 @@
 
 const stripe = require('stripe');
 const { corsHeaders, getSupabaseAdmin, verifyQBOUser } = require('./_shared');
-const { recordPayoutReconciliation } = require('./_stripeReconciliation');
+const {
+  auditWebhookConfiguration,
+  reconcilePayoutBatch,
+  recordPaymentIntentFinancials,
+  recordPayoutReconciliation,
+} = require('./_stripeReconciliation');
 
 const response = (statusCode, origin, payload) => ({
   statusCode,
@@ -13,6 +18,19 @@ const response = (statusCode, origin, payload) => ({
 });
 
 const validPayoutId = (value) => /^po_[A-Za-z0-9_]+$/.test(String(value || ''));
+
+async function oldestCardOrderUnix(admin) {
+  const { data, error } = await admin.from('webstore_orders')
+    .select('created_at')
+    .eq('payment_mode', 'paid')
+    .not('stripe_pi_id', 'is', null)
+    .order('created_at', { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  const timestamp = data && data[0] && Date.parse(data[0].created_at);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.floor((timestamp - (7 * 24 * 60 * 60 * 1000)) / 1000);
+}
 
 exports.handler = async (event) => {
   const origin = event.headers?.origin || event.headers?.Origin || '*';
@@ -69,6 +87,81 @@ exports.handler = async (event) => {
       return response(200, origin, { ok: true, reconciliation: result });
     }
 
+    if (action === 'backfill_orders') {
+      const secret = process.env.STRIPE_SECRET_KEY;
+      if (!secret) return response(500, origin, { error: 'Stripe is not configured' });
+      const limit = Math.max(1, Math.min(25, Number(body.limit) || 10));
+      let query = admin.from('webstore_orders')
+        .select('id,stripe_pi_id,created_at')
+        .eq('payment_mode', 'paid')
+        .not('stripe_pi_id', 'is', null)
+        .is('stripe_balance_transaction_id', null)
+        .order('id', { ascending: true })
+        .limit(limit);
+      if (body.starting_after) query = query.gt('id', String(body.starting_after));
+      const { data: orders, error } = await query;
+      if (error) throw error;
+      const client = stripe(secret);
+      const results = [];
+      const errors = [];
+      for (const order of (orders || [])) {
+        try {
+          const row = await recordPaymentIntentFinancials({
+            client,
+            sb: admin,
+            paymentIntent: { id: order.stripe_pi_id },
+          });
+          if (!row) throw new Error('Stripe PaymentIntent has no balance transaction yet');
+          results.push({ order_id: order.id, balance_transaction_id: row.stripe_balance_transaction_id });
+        } catch (orderError) {
+          errors.push({ order_id: order.id, error: orderError.message });
+        }
+      }
+      const last = orders && orders.length ? orders[orders.length - 1] : null;
+      return response(200, origin, {
+        processed: (orders || []).length,
+        linked: results.length,
+        results,
+        errors,
+        has_more: (orders || []).length === limit,
+        next_cursor: last ? last.id : null,
+      });
+    }
+
+    if (action === 'backfill_payouts') {
+      const secret = process.env.STRIPE_SECRET_KEY;
+      if (!secret) return response(500, origin, { error: 'Stripe is not configured' });
+      const createdGte = Number(body.created_gte) || await oldestCardOrderUnix(admin);
+      const result = await reconcilePayoutBatch({
+        client: stripe(secret),
+        sb: admin,
+        createdGte,
+        startingAfter: body.starting_after || null,
+        limit: body.limit || 3,
+      });
+      return response(200, origin, { ...result, created_gte: createdGte });
+    }
+
+    if (action === 'webhook_status') {
+      const secret = process.env.STRIPE_SECRET_KEY;
+      if (!secret) return response(500, origin, { error: 'Stripe is not configured' });
+      return response(200, origin, await auditWebhookConfiguration(stripe(secret)));
+    }
+
+    if (action === 'reconciliation_status') {
+      const [unlinkedResult, mismatchResult] = await Promise.all([
+        admin.from('webstore_orders').select('id', { count: 'exact', head: true })
+          .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null).is('stripe_balance_transaction_id', null),
+        admin.from('stripe_payouts').select('stripe_payout_id', { count: 'exact', head: true })
+          .eq('automatic', true).or('reconciliation_status.is.null,reconciliation_status.neq.exact'),
+      ]);
+      if (unlinkedResult.error || mismatchResult.error) throw unlinkedResult.error || mismatchResult.error;
+      return response(200, origin, {
+        unlinked_card_orders: unlinkedResult.count || 0,
+        non_exact_automatic_payouts: mismatchResult.count || 0,
+      });
+    }
+
     return response(400, origin, { error: 'Unknown action: ' + action });
   } catch (error) {
     console.error('[stripe-reconciliation]', action, error.message);
@@ -77,3 +170,4 @@ exports.handler = async (event) => {
 };
 
 module.exports.validPayoutId = validPayoutId;
+module.exports.oldestCardOrderUnix = oldestCardOrderUnix;

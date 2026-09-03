@@ -1,8 +1,10 @@
 /** @jest-environment node */
 
 const {
+  auditWebhookConfiguration,
   balanceTransactionRow,
   listPayoutBalanceTransactions,
+  reconcilePayoutBatch,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,
 } = require('../../netlify/functions/_stripeReconciliation');
@@ -20,6 +22,45 @@ const bt = (id, { amount = 1000, fee = 59, net = amount - fee, source = null } =
   created: 1788451200,
   available_on: 1788624000,
   fee_details: [{ amount: fee, currency: 'usd', type: 'stripe_fee', description: 'Stripe processing fees' }],
+});
+
+describe('Stripe catch-up pagination and webhook audit', () => {
+  test('returns a resumable payout cursor and preserves per-payout failures', async () => {
+    const sb = fakeSb();
+    const payouts = [
+      { id: 'po_ok', amount: 941, currency: 'usd', status: 'paid', automatic: true, created: 1788451200 },
+      { id: 'po_bad', amount: 941, currency: 'usd', status: 'paid', automatic: true, created: 1788451200 },
+    ];
+    const client = {
+      payouts: { list: jest.fn().mockResolvedValue({ data: payouts, has_more: true }) },
+      balanceTransactions: { list: jest.fn()
+        .mockResolvedValueOnce({ data: [bt('txn_ok')], has_more: false })
+        .mockRejectedValueOnce(new Error('temporary Stripe failure')) },
+    };
+    const result = await reconcilePayoutBatch({ client, sb, createdGte: 1788000000, startingAfter: 'po_newer', limit: 2 });
+    expect(client.payouts.list).toHaveBeenCalledWith({ limit: 2, created: { gte: 1788000000 }, starting_after: 'po_newer' });
+    expect(result).toMatchObject({ processed: 2, has_more: true, next_cursor: 'po_bad' });
+    expect(result.results).toEqual([expect.objectContaining({ payout_id: 'po_ok', status: 'exact' })]);
+    expect(result.errors).toEqual([expect.objectContaining({ payout_id: 'po_bad', error: 'temporary Stripe failure' })]);
+  });
+
+  test('confirms only an active portal webhook covering every required event', async () => {
+    const client = { webhookEndpoints: { list: jest.fn().mockResolvedValue({
+      data: [{ id: 'we_live', url: 'https://connect.nationalsportsapparel.com/.netlify/functions/stripe-webhook', status: 'enabled', enabled_events: ['*'] }],
+      has_more: false,
+    }) } };
+    await expect(auditWebhookConfiguration(client)).resolves.toMatchObject({ healthy: true, missing_events: [] });
+  });
+
+  test('reports missing refund and dispute coverage', async () => {
+    const client = { webhookEndpoints: { list: jest.fn().mockResolvedValue({
+      data: [{ id: 'we_partial', url: 'https://nsa-portal.netlify.app/.netlify/functions/stripe-webhook', status: 'enabled', enabled_events: ['payment_intent.succeeded', 'payout.paid'] }],
+      has_more: false,
+    }) } };
+    const result = await auditWebhookConfiguration(client);
+    expect(result.healthy).toBe(false);
+    expect(result.missing_events).toEqual(expect.arrayContaining(['charge.refunded', 'charge.dispute.created']));
+  });
 });
 
 function fakeSb(order = null) {

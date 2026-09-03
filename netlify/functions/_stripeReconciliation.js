@@ -38,6 +38,19 @@ const cleanFeeDetails = (details) => (Array.isArray(details) ? details : []).map
   description: detail.description || null,
 }));
 
+const REQUIRED_WEBHOOK_EVENTS = [
+  'payment_intent.succeeded',
+  'payment_intent.payment_failed',
+  'charge.refunded',
+  'charge.dispute.created',
+  'payout.created',
+  'payout.updated',
+  'payout.paid',
+  'payout.failed',
+  'payout.canceled',
+  'payout.reconciliation_completed',
+];
+
 async function retrieveSource(client, sourceId) {
   if (!client || !sourceId) return null;
   if (sourceId.startsWith('ch_')) return client.charges.retrieve(sourceId);
@@ -301,11 +314,90 @@ async function recordPayoutReconciliation({ client, sb, payout }) {
   return { ...patch, stripe_payout_id: payout.id };
 }
 
+async function reconcilePayoutBatch({ client, sb, createdGte, startingAfter = null, limit = 5 }) {
+  const pageSize = Math.max(1, Math.min(25, Number(limit) || 5));
+  const params = {
+    limit: pageSize,
+    ...(createdGte ? { created: { gte: Math.floor(Number(createdGte)) } } : {}),
+    ...(startingAfter ? { starting_after: startingAfter } : {}),
+  };
+  const page = await client.payouts.list(params);
+  const payouts = Array.isArray(page && page.data) ? page.data : [];
+  const results = [];
+  const errors = [];
+  for (const payout of payouts) {
+    try {
+      const reconciliation = await recordPayoutReconciliation({ client, sb, payout });
+      results.push({
+        payout_id: payout.id,
+        status: reconciliation.reconciliation_status,
+        difference_cents: reconciliation.reconciliation_difference_cents || 0,
+      });
+    } catch (error) {
+      errors.push({ payout_id: payout.id, error: error.message });
+    }
+  }
+  return {
+    processed: payouts.length,
+    results,
+    errors,
+    has_more: !!(page && page.has_more),
+    next_cursor: payouts.length ? payouts[payouts.length - 1].id : null,
+  };
+}
+
+async function listWebhookEndpoints(client, { maxPages = 20 } = {}) {
+  const endpoints = [];
+  let startingAfter;
+  for (let pageNo = 0; pageNo < maxPages; pageNo += 1) {
+    const page = await client.webhookEndpoints.list({
+      limit: 100,
+      ...(startingAfter ? { starting_after: startingAfter } : {}),
+    });
+    const data = Array.isArray(page && page.data) ? page.data : [];
+    endpoints.push(...data);
+    if (!page || !page.has_more) return endpoints;
+    if (!data.length) throw new Error('Stripe webhook pagination returned has_more without rows');
+    startingAfter = data[data.length - 1].id;
+  }
+  throw new Error('Stripe webhook endpoints exceeded the pagination safety limit');
+}
+
+async function auditWebhookConfiguration(client) {
+  const endpoints = await listWebhookEndpoints(client);
+  const matching = endpoints.filter((endpoint) => {
+    try { return new URL(endpoint.url).pathname.replace(/\/+$/, '').endsWith('/.netlify/functions/stripe-webhook'); }
+    catch (_) { return false; }
+  });
+  const active = matching.filter((endpoint) => String(endpoint.status || 'enabled') === 'enabled');
+  const covered = new Set();
+  for (const endpoint of active) {
+    const events = Array.isArray(endpoint.enabled_events) ? endpoint.enabled_events : [];
+    if (events.includes('*')) REQUIRED_WEBHOOK_EVENTS.forEach((event) => covered.add(event));
+    events.forEach((event) => covered.add(event));
+  }
+  const missingEvents = REQUIRED_WEBHOOK_EVENTS.filter((event) => !covered.has(event));
+  return {
+    healthy: active.length > 0 && missingEvents.length === 0,
+    required_events: REQUIRED_WEBHOOK_EVENTS,
+    missing_events: missingEvents,
+    endpoints: matching.map((endpoint) => ({
+      id: endpoint.id,
+      url: endpoint.url,
+      status: endpoint.status || 'enabled',
+      enabled_events: endpoint.enabled_events || [],
+    })),
+  };
+}
+
 module.exports = {
+  REQUIRED_WEBHOOK_EVENTS,
+  auditWebhookConfiguration,
   balanceTransactionRow,
   loadExistingBalanceTransactions,
   listPayoutBalanceTransactions,
   payoutRow,
+  reconcilePayoutBatch,
   recordDisputeFinancials,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,
