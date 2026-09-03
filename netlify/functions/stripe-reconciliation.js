@@ -9,6 +9,7 @@ const {
   reconcilePayoutBatch,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,
+  repairWebhookConfiguration,
 } = require('./_stripeReconciliation');
 
 const response = (statusCode, origin, payload) => ({
@@ -146,6 +147,12 @@ exports.handler = async (event) => {
       const secret = process.env.STRIPE_SECRET_KEY;
       if (!secret) return response(500, origin, { error: 'Stripe is not configured' });
       return response(200, origin, await auditWebhookConfiguration(stripe(secret)));
+    }
+
+    if (action === 'repair_webhook_events') {
+      const secret = process.env.STRIPE_SECRET_KEY;
+      if (!secret) return response(500, origin, { error: 'Stripe is not configured' });
+      return response(200, origin, await repairWebhookConfiguration(stripe(secret)));
     }
 
     if (action === 'reconciliation_status') {

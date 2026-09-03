@@ -390,6 +390,22 @@ async function auditWebhookConfiguration(client) {
   };
 }
 
+async function repairWebhookConfiguration(client) {
+  const before = await auditWebhookConfiguration(client);
+  const active = before.endpoints.filter((endpoint) => endpoint.status === 'enabled');
+  if (!active.length) throw new Error('No active portal Stripe webhook endpoint was found');
+  const updated = [];
+  for (const endpoint of active) {
+    const events = Array.isArray(endpoint.enabled_events) ? endpoint.enabled_events : [];
+    if (events.includes('*')) continue;
+    const enabledEvents = [...new Set([...events, ...REQUIRED_WEBHOOK_EVENTS])];
+    if (enabledEvents.length === events.length) continue;
+    await client.webhookEndpoints.update(endpoint.id, { enabled_events: enabledEvents });
+    updated.push(endpoint.id);
+  }
+  return { ...(await auditWebhookConfiguration(client)), updated_endpoints: updated };
+}
+
 module.exports = {
   REQUIRED_WEBHOOK_EVENTS,
   auditWebhookConfiguration,
@@ -398,6 +414,7 @@ module.exports = {
   listPayoutBalanceTransactions,
   payoutRow,
   reconcilePayoutBatch,
+  repairWebhookConfiguration,
   recordDisputeFinancials,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,

@@ -5,6 +5,7 @@ const {
   balanceTransactionRow,
   listPayoutBalanceTransactions,
   reconcilePayoutBatch,
+  repairWebhookConfiguration,
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,
 } = require('../../netlify/functions/_stripeReconciliation');
@@ -60,6 +61,20 @@ describe('Stripe catch-up pagination and webhook audit', () => {
     const result = await auditWebhookConfiguration(client);
     expect(result.healthy).toBe(false);
     expect(result.missing_events).toEqual(expect.arrayContaining(['charge.refunded', 'charge.dispute.created']));
+  });
+
+  test('adds missing events without removing existing webhook subscriptions', async () => {
+    const partial = { id: 'we_partial', url: 'https://nsa-portal.netlify.app/.netlify/functions/stripe-webhook', status: 'enabled', enabled_events: ['customer.created', 'payment_intent.succeeded'] };
+    const complete = { ...partial, enabled_events: ['*'] };
+    const client = { webhookEndpoints: {
+      list: jest.fn().mockResolvedValueOnce({ data: [partial], has_more: false }).mockResolvedValueOnce({ data: [complete], has_more: false }),
+      update: jest.fn().mockResolvedValue({}),
+    } };
+    const result = await repairWebhookConfiguration(client);
+    expect(client.webhookEndpoints.update).toHaveBeenCalledWith('we_partial', {
+      enabled_events: expect.arrayContaining(['customer.created', 'payment_intent.succeeded', 'charge.refunded', 'charge.dispute.created', 'payout.reconciliation_completed']),
+    });
+    expect(result).toMatchObject({ healthy: true, updated_endpoints: ['we_partial'] });
   });
 });
 
