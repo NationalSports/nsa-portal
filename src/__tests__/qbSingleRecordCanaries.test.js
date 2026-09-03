@@ -1,5 +1,5 @@
 import { createQBSyncEngine } from '../qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
+import { indexQBNonInventoryItems, QB_ACCOUNT_MAPPING_DEFAULTS, QB_ACCOUNT_SPECS } from '../qbAccountMappings';
 
 const accountRows = Object.values(QB_ACCOUNT_SPECS).map((spec,index)=>({
   Id:String(index+1),Name:spec.name,FullyQualifiedName:spec.name,AcctNum:spec.number,
@@ -63,9 +63,9 @@ describe('QuickBooks one-record canaries', () => {
     expect(setters.setInvs).not.toHaveBeenCalled();
   });
 
-  test('creates and reads back exactly one zero-quantity Inventory SKU with approved accounts', async() => {
+  test('creates and reads back exactly one NonInventory SKU with approved accounts', async() => {
     const product={id:'P1',sku:'SKU-1',name:'Test Jersey',is_active:true,nsa_cost:12,retail_price:20};
-    const readback={Id:'I-1',Sku:'SKU-1',Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:0,IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('50000')},AssetAccountRef:{value:accountId('12000')}};
+    const readback={Id:'I-1',Sku:'SKU-1',Type:'NonInventory',IncomeAccountRef:{value:accountId('40000')},ExpenseAccountRef:{value:accountId('51300')}};
     const qbApi=jest.fn(async(action,{query,item}={})=>{
       if(action==='query'&&query.includes('FROM Account'))return accountResponse;
       if(action==='query'&&query.includes('FROM Item STARTPOSITION'))return{QueryResponse:{Item:[]}};
@@ -79,9 +79,14 @@ describe('QuickBooks one-record canaries', () => {
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_item')).toHaveLength(1);
     const itemPayload=qbApi.mock.calls.find(([action])=>action==='upsert_item')[1].item;
     expect(itemPayload.IncomeAccountRef).toEqual({value:accountId('40000')});
-    expect(itemPayload.ExpenseAccountRef).toEqual({value:accountId('50000')});
-    expect(itemPayload.AssetAccountRef).toEqual({value:accountId('12000')});
-    expect(itemPayload).toEqual(expect.objectContaining({Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:0,InvStartDate:'2026-09-01'}));
+    expect(itemPayload.ExpenseAccountRef).toEqual({value:accountId('51300')});
+    expect(itemPayload.AssetAccountRef).toBeUndefined();
+    expect(itemPayload).toEqual(expect.objectContaining({Type:'NonInventory'}));
+    expect(itemPayload.TrackQtyOnHand).toBeUndefined();
+    expect(itemPayload.QtyOnHand).toBeUndefined();
+    expect(indexQBNonInventoryItems([{Id:'I-1',Active:true,...itemPayload}],['SKU-1'])).toEqual({
+      'SKU-1':{value:'I-1',name:'SKU-1'},
+    });
     expect(getConfig().prodQBMap.P1).toBe('I-1');
   });
 
