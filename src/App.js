@@ -4046,7 +4046,24 @@ export default function App(){
         orders,
         orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [],
       };
-      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+      const converted = convertOMGStore(detail, cust);
+      // Preserve the portal-owned assignment/configuration around an API
+      // refresh. OMG metadata must never detach a manually mapped 24/7 store,
+      // change its channel, or erase report-imported products/financials.
+      const updated = {
+        ...store,
+        ...converted,
+        id: store.id,
+        customer_id: store.customer_id || converted.customer_id,
+        rep_id: store.rep_id || converted.rep_id,
+        csr_id: store.csr_id || null,
+        artist_id: store.artist_id || null,
+        channel_type: store.channel_type || converted.channel_type,
+        delivery_mode: store.delivery_mode || null,
+        products: (store.products || []).length ? store.products : (converted.products || []),
+        _omg_source: store._omg_source,
+        _details_loaded: true,
+      };
 
       // ── Aggregate sizes per product ──
       // Each order_product carries attribute_values (size, color, etc). We
@@ -17938,7 +17955,7 @@ export default function App(){
       return true;
     });
     const totalSales=filtered.reduce((a,s)=>{const pr=(s.products||[]).reduce((a2,p)=>{const q=Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0);return a2+q*p.retail},0);return a+(pr||s.total_sales||0)},0);
-    const totalUnits=filtered.reduce((a,s)=>a+(s.products||[]).reduce((a2,p)=>a2+Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0),0),0);
+    const totalUnits=filtered.reduce((a,s)=>{const productUnits=(s.products||[]).reduce((a2,p)=>a2+Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0),0);return a+(productUnits||s.items_sold||0)},0);
     const totalFund=filtered.reduce((a,s)=>a+(s._omg_fundraise||s.fundraise_total||0),0);
 
     // Store detail view
@@ -19039,7 +19056,8 @@ export default function App(){
       {/* Store list */}
       <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
         {filtered.map((s,i)=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);const linkedSO=sos.find(so=>so.omg_store_id===s.id);const _orderCount=(s._omg_sale_code&&omgWsoCounts[s._omg_sale_code]!=null)?omgWsoCounts[s._omg_sale_code]:(s.orders||0);
-          const _refDate=s.close_date||(s._last_synced?s._last_synced.split('T')[0]:null);
+          const _refDate=s.close_date||null;
+          const _syncDate=s._last_synced?String(s._last_synced).split(/[T ]/)[0]:null;
           const _deadline=_refDate?(()=>{const d=new Date(_refDate+'T00:00:00');d.setDate(d.getDate()+30);return d})():null;
           const _today=new Date();_today.setHours(0,0,0,0);
           const _daysLeft=_deadline&&!isNaN(_deadline)?Math.ceil((_deadline-_today)/(24*60*60*1000)):null;
@@ -19061,7 +19079,8 @@ export default function App(){
                 background:_daysLeft>14?'#dcfce7':_daysLeft>0?'#fef3c7':'#fee2e2',
                 color:_daysLeft>14?'#166534':_daysLeft>0?'#92400e':'#dc2626'}}>
                 {_daysLeft>0?`${_daysLeft}d left`:`${Math.abs(_daysLeft)}d overdue`}</span>}
-              {!_refDate&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
+              {!_refDate&&_syncDate?<span style={{fontSize:10,color:'#64748b'}}>synced {_syncDate}</span>:null}
+              {!_refDate&&!_syncDate&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
             </div>
             <div style={{flex:'0 0 90px',textAlign:'right'}}>
               <div style={{fontSize:15,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div>
