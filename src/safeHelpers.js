@@ -969,7 +969,7 @@ export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.t
 // Approve — which need surface-specific delivery (nf toast vs alert) but must agree on
 // what the rep is told to do about it.
 export const missingMockupsMsg = (action, missing) =>
-  'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. A sew-out proof isn\'t enough: reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
+  'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. Reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
 
 // Companion message for the reversible color-way gate (skusMissingRevColorWays) — enforced
 // at the same rep surfaces as the mock gate (Approve Artwork / Send to Coach / openCoachSend).
@@ -1167,12 +1167,13 @@ export const displayableProofFile = (f) =>
   /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
 // DISPLAY-ONLY fallback: the files shown in a mockup slot when an art file carries NO per-garment mocks at
 // all: the general mockup_files/files bucket (legacy single-design art), else the
-// digitizer's displayable sew-out proof in prod_files (reused library art). This ladder is
+// displayable production proof in prod_files (reused library art). This ladder is
 // what the OrderEditor/CoachPortal approval views render — every mockup display surface
 // (incl. the Art Dashboard slots) must use it so a reused art never renders as "no mockup"
-// on one screen while another screen shows proof. NOTE: display only — the sew-out proof
-// does NOT satisfy the approval gate (skusMissingMockups requires a real garment mockup;
-// jobs are required to have one) and never appears on floor documents (_prodJobGenericMocks).
+// on one screen while another screen shows proof. Embroidery sew-outs are display-only and
+// do NOT satisfy the approval gate; a screen-print production proof can satisfy it because it
+// is the actual visual proof the rep reviews. Production proofs never appear on floor documents
+// (_prodJobGenericMocks).
 // Returns [] the moment the art has ANY per-garment mock — per-item mocks make the
 // general/proof buckets ambiguous (wrong-colorway class), so they stop standing in.
 export const artProofFallback = (a) => {
@@ -1299,13 +1300,20 @@ export const skusMissingMockups = (job, so) => {
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
     });
     if (general.length > 0) return;
-    // POLICY: the digitizer's sew-out proof in prod_files does NOT satisfy the mockup
-    // gate. Jobs are required to carry a real garment mockup before Approve / Send to
-    // Coach — a sew-out is often a recolor, and one reaching a coach as "the mockup"
-    // is exactly what happened on SO-1661. The waiting_approval panel gives proof-only
-    // art its two compliant paths (reuse an approved prior mock, or send to the artist
-    // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
-    // so approval screens still show what exists — it just can't pass the gate.
+    // A screen-print proof saved with the production files is the visual proof the rep
+    // reviews, so it satisfies approval even when legacy data did not also copy it into
+    // mockup_files/item_mockups. Keep embroidery stricter: a digitizer sew-out is often a
+    // recolor and must not stand in for a garment mockup (SO-1661).
+    const hasScreenPrintProof = artFiles.some(a => {
+      const method = String(a?.deco_type || job?.deco_type || '').toLowerCase();
+      if (!/screen[\s_-]*print/.test(method) || a?.proof_dismissed) return false;
+      const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+      return !hasPerItem && safeArr(a?.prod_files).some(displayableProofFile);
+    });
+    if (hasScreenPrintProof) return;
+    // POLICY: embroidery sew-outs remain display-only. The waiting_approval panel gives
+    // proof-only embroidery art its compliant paths (reuse an approved prior mock, or
+    // send to the artist for a new one).
     if (mLabel) missing.push(mLabel);
   });
   return missing;

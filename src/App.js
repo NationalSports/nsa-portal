@@ -22976,6 +22976,11 @@ export default function App(){
     });
 
     const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);
+    // Admins use one scope picker for both sides of the art workflow. Artist values are
+    // namespaced so their IDs cannot be mistaken for sales-rep ownership below. Keep the
+    // retired Gmail alias out even if an old browser cache briefly merges it back into REPS.
+    const artRepMembers=REPS.filter(r=>isCommissionRep(r)&&r.is_active!==false&&String(r.name||'').trim().toLowerCase()!=='steve peterson (gmail)');
+    const artArtistScopeId=String(artFilter||'').startsWith('artist:')?String(artFilter).slice(7):null;
 
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const _isRepUser=cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin';
@@ -22992,7 +22997,12 @@ export default function App(){
         const _mine=j.assigned_artist===cu.id||_actReq?.artist===cu.id;
         const _ownedByLiveArtist=artistMembers.some(r=>r.id===j.assigned_artist||r.id===_actReq?.artist);
         if(!_mine&&_ownedByLiveArtist)return false}
-      if(!_isArtistUser&&artFilter!=='all'&&(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter))return false;
+      if(!_isArtistUser&&artFilter!=='all'){
+        if(artArtistScopeId){
+          const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
+          if(j.assigned_artist!==artArtistScopeId&&_actReq?.artist!==artArtistScopeId)return false;
+        }else if(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter)return false;
+      }
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
           !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s)&&
@@ -23311,7 +23321,8 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         {_isRepUser&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
           <option value="all">All Reps</option>
-          {REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          <optgroup label="Reps">{artRepMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+          <optgroup label="Artists">{artistMembers.map(r=><option key={r.id} value={'artist:'+r.id}>🎨 {r.name}</option>)}</optgroup>
         </select>}
         {!_isArtistUser&&!_isRepUser&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
           <option value="all">All Artists</option><option value="">Unassigned</option>
@@ -23627,7 +23638,7 @@ export default function App(){
             if(ok===false){if(typeof nf==='function')nf(dismissed?'Failed to clear proof. Please retry.':'Failed to restore proof. Please retry.','error');return}
             const newSO=savSO(pendingSO);
             setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
-            if(typeof nf==='function')nf(dismissed?'Sew-out proof cleared — upload a garment mockup for this item':'Sew-out proof restored');
+            if(typeof nf==='function')nf(dismissed?'Production proof cleared — upload a garment mockup for this item':'Production proof restored');
           }finally{setArtJobDetailUploading(false)}
         };
         // ── Mock links ── stored on the job's primary design: garment -> source garment.
@@ -23685,7 +23696,7 @@ export default function App(){
                     </div>
                   </div>})}
               </>:allArtFiles2.some(a2=>artProofFallback(a2).length>0)?<div style={{width:'100%',maxWidth:600,padding:'10px 14px',borderRadius:10,background:'#fffbeb',border:'1px solid #fde68a',fontSize:12,color:'#92400e',fontWeight:600}}>
-                ♻️ Reused art — no garment mockup yet. The sew-out proof from its production files is shown on each item below.
+                ♻️ Reused art — its production proof is shown on each item below.
               </div>:<div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column'}}>
                 <div style={{fontSize:64,marginBottom:8}}>🎨</div>
                 <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
@@ -23807,7 +23818,7 @@ export default function App(){
                         {_myDeps.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#3730a3',background:'#e0e7ff',padding:'2px 8px',borderRadius:10}}>🔗 also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</span>}
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
-                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
+                       :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;const proofLabel=/embroid/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Sew-out proof':/screen[\s_-]*print/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Screen-print proof':'Artwork proof';
                         const mocks=_dedupMockDupes(slotMockFiles(slot,_repSlots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         // Reused/pre-digitized art has no per-garment mocks — the approval gate and the SO
@@ -23843,11 +23854,11 @@ export default function App(){
                                <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
                                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title="Clear this sew-out proof from the slot — keeps the production files" onClick={()=>{if(window.confirm('Clear the sew-out proof from this item?\n\nThe production files (including the .dst/.emb machine files) stay attached — this only removes the sew-out standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
                                </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">Sew-out proof · + upload garment mockup</div>
+                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">{proofLabel} · + upload garment mockup</div>
                              </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's sew-out proof in the slot again">↺ Restore sew-out proof</button>}</div>}
+                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
                             <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
@@ -24248,7 +24259,7 @@ export default function App(){
           setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
           const ok=await _dbSaveSO(newSO);
           if(ok===false){nf(dismissed?'Failed to clear proof. Please retry.':'Failed to restore proof. Please retry.','error');return}
-          nf(dismissed?'Sew-out proof cleared — upload a garment mockup for this item':'Sew-out proof restored');
+          nf(dismissed?'Production proof cleared — upload a garment mockup for this item':'Production proof restored');
         };
 
         // Upload handler for production files. Accepts [{file, artId}] so multi-art jobs can route each file to the correct art.
@@ -24458,7 +24469,7 @@ export default function App(){
                           _slots.push({key:sd.key,kind:'names',primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,kind:'art',primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
-                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
+                      return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;const proofLabel=/embroid/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Sew-out proof':/screen[\s_-]*print/.test(String(a?.deco_type||j.deco_type||'').toLowerCase())?'Screen-print proof':'Artwork proof';
                         const mocks=_dedupMockDupes(slotMockFiles(slot,_slots,gi));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         // Reused/pre-digitized art: no per-garment mocks anywhere, so show the same
@@ -24495,11 +24506,11 @@ export default function App(){
                                <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
                                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
-                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title="Clear this sew-out proof from the slot — keeps the production files" onClick={()=>{if(window.confirm('Clear the sew-out proof from this item?\n\nThe production files (including the .dst/.emb machine files) stay attached — this only removes the sew-out standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title={'Clear this '+proofLabel.toLowerCase()+' from the slot — keeps the production files'} onClick={()=>{if(window.confirm('Clear this '+proofLabel.toLowerCase()+' from this item?\n\nThe production files stay attached — this only removes the proof standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
                                </div>
-                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">Sew-out proof · + upload garment mockup</div>
+                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">{proofLabel} · + upload garment mockup</div>
                              </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's sew-out proof in the slot again">↺ Restore sew-out proof</button>}</div>}
+                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's production proof in the slot again">↺ Restore production proof</button>}</div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
                             <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
