@@ -4,6 +4,7 @@ import { NSA as _NSA_CONST } from './constants';
 import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
 import { supabase as _sbAuthClient } from './lib/supabase';
+import { buildQrSheetInfoBoxes } from './lib/pickTicket';
 // pdf-lib is loaded on demand (see printPdfLabels below) to keep it out of the eager bundle.
 
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
@@ -1043,7 +1044,7 @@ export const downloadQrLabel=async(label={})=>{
 // stays on printQrLabel/downloadQrLabel; this is the "Download (PDF)" sheet.
 // The QR is fetched and inlined as a data URL so html2canvas doesn't get
 // blocked by api.qrserver.com's CORS headers.
-export const downloadQrSheet=async({id,qrData,title,subtitle,shipBadge,items,totalUnits})=>{
+export const downloadQrSheet=async({id,qrData,title,subtitle,rep,shipBadge,items,totalUnits})=>{
   const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=600x600&margin=4&data='+encodeURIComponent(qrData||id||'');
   let qrSrc=qrUrl;
   try{
@@ -1051,10 +1052,7 @@ export const downloadQrSheet=async({id,qrData,title,subtitle,shipBadge,items,tot
     if(resp.ok){const blob=await resp.blob();qrSrc=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob)})}
   }catch(e){/* fall back to direct URL */}
   const headerRight='<img src="'+qrSrc+'" alt="'+(id||'')+'" style="width:130px;height:130px;display:block;margin:0 0 6px auto;background:#fff;padding:4px;image-rendering:pixelated"/>'+(totalUnits!=null?'<div class="ta" style="font-size:22px">'+totalUnits+' Units</div>':'');
-  const infoBoxes=[];
-  if(title)infoBoxes.push({label:'Customer / Team',value:title,sub:subtitle||''});
-  if(shipBadge&&shipBadge.text)infoBoxes.push({label:'Ship To',value:shipBadge.text});
-  else infoBoxes.push({label:'Fulfillment',value:'In-House Deco'});
+  const infoBoxes=buildQrSheetInfoBoxes({title,subtitle,rep,shipBadge});
   const rows=(items||[]).map(it=>({cells:[it.sku||'',it.name||'',it.color||'—',it.sizes||'',it.units!=null?it.units:'']}));
   const opts={
     title:title||id,docNum:id,docType:'PICK TICKET',showPricing:false,
