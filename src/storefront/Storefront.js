@@ -7,6 +7,7 @@ import { webstorePublicData } from '../lib/webstorePublicData';
 import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize, sizeRank, scaleOf as _scaleOf } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
+import { deliveryWindowLabel, estimatedDeliveryDate, estimatedDeliveryRangeLabel } from '../lib/webstoreDeliveryWindow';
 
 // Route SanMar garment photos through a Cloudinary transform that trims to the
 // garment (on its white studio background) and pads to a uniform 4:5 frame, so
@@ -467,6 +468,12 @@ function closesLabel(close_at) {
   return { text: `Open until ${date}`, urgent: false };
 }
 
+export function storeDeliveryEstimate(store) {
+  const weeks = `${deliveryWindowLabel(store && store.delivery_window_weeks)} after the store closes`;
+  const calendar = estimatedDeliveryRangeLabel(store && store.close_at, store && store.delivery_window_weeks);
+  return calendar ? `${weeks} — around ${calendar}` : weeks;
+}
+
 async function loadShowcasePresentation(store) {
   const fallback = { mode: 'standard', assets: {}, preview: false };
   try {
@@ -769,12 +776,14 @@ function mascotWord(name) {
 function VsTopStrip({ store, theme, collapsed = false }) {
   const closes = closesLabel(store.close_at);
   const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team';
+  const estimate = deliveryWindowLabel(store.delivery_window_weeks);
+  const calendarEstimate = estimatedDeliveryRangeLabel(store.close_at, store.delivery_window_weeks);
   return (
     <div style={{ background: theme.deepest, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 36, overflow: 'hidden', transition: 'max-height .25s ease' }}>
       <div className="sf-topstrip-inner" style={{ maxWidth: 1240, height: 36, margin: '0 auto', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, fontFamily: DISPLAY, fontSize: 14, fontWeight: 600, letterSpacing: '0.09em', textTransform: 'uppercase' }}>
         <a className="sf-topstrip-brand" href="https://nationalsportsapparel.com" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>← National Sports Apparel</a>
         <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: closes && closes.urgent ? theme.accent : 'inherit' }}>
-          <span style={{ color: theme.accent }}>★</span>{' '}{closes ? `${deliver} · ${closes.text}` : deliver}{' '}<span style={{ color: theme.accent }}>★</span>
+          <span style={{ color: theme.accent }}>★</span>{' '}{deliver} in {estimate} after close{calendarEstimate ? ` · Around ${calendarEstimate}` : ''}{closes ? ` · ${closes.text}` : ''}{' '}<span style={{ color: theme.accent }}>★</span>
         </span>
         <a className="sf-vs-phone" href="tel:+17142798777" style={{ color: 'inherit', textDecoration: 'none', whiteSpace: 'nowrap' }}>(714) 279-8777</a>
       </div>
@@ -983,10 +992,11 @@ function VsCrumbs({ store, theme, category, name, onCat }) {
 function TopStrip({ store, theme, collapsed = false }) {
   const closes = closesLabel(store.close_at);
   const deliver = store.delivery_mode === 'ship_home' ? 'Ships to your door' : 'Ships to the team';
+  const calendarEstimate = estimatedDeliveryRangeLabel(store.close_at, store.delivery_window_weeks);
   // The essential line shoppers need: where it ships + when the store closes. On
   // mobile this is all that shows (the brand label is hidden via .sf-topstrip-brand);
   // on desktop the brand label sits on the left and this sits on the right.
-  const status = closes ? `${deliver} · ${closes.text}` : deliver;
+  const status = `${deliver} in ${deliveryWindowLabel(store.delivery_window_weeks)} after close${calendarEstimate ? ` · Around ${calendarEstimate}` : ''}${closes ? ` · ${closes.text}` : ''}`;
   return (
     <div style={{ background: theme.ink, color: 'rgba(255,255,255,0.82)', maxHeight: collapsed ? 0 : 44, overflow: 'hidden', transition: 'max-height .25s ease' }}>
       <div className="sf-topstrip-inner" style={{ maxWidth: 1240, margin: '0 auto', padding: '7px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontFamily: DISPLAY, fontSize: 12.5, fontWeight: 600, letterSpacing: 1.4, textTransform: 'uppercase' }}>
@@ -1224,6 +1234,7 @@ function Home({ store, theme, products, bundleItems = [], compInfo = {}, compExt
 function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], compExtras = [] }) {
   const { head, tail } = splitHeadline(store.name);
   const closes = closesLabel(store.close_at);
+  const calendarEstimate = estimatedDeliveryRangeLabel(store.close_at, store.delivery_window_weeks);
   const imgs = featuredHeroImgs(store, products, compExtras);
   const showCollage = imgs.length > 0;
   return (
@@ -1243,7 +1254,7 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
             <SkewBtn theme={theme} variant="outlineLight" onClick={scrollGrid}>Shop the Collection</SkewBtn>
           </div>
           <div style={{ display: 'flex', gap: 'clamp(20px,4vw,40px)', marginTop: 34, flexWrap: 'wrap' }}>
-            {[['No', 'Minimums'], ['Delivery', store.delivery_mode === 'deliver_club' ? 'To coach' : 'To home'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
+            {[['No', 'Minimums'], ['Delivery', store.delivery_mode === 'deliver_club' ? 'To coach' : 'To home'], [deliveryWindowLabel(store.delivery_window_weeks), calendarEstimate ? `Around ${calendarEstimate}` : 'After Store Close']].map(([n, l]) => (
               <div key={l}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: '#fff', lineHeight: 1 }}>{n}</div>
                 <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.7)', fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
@@ -2067,11 +2078,32 @@ function lineDetail(l) {
     Number(l.size_extra) > 0 ? `Includes +${money(l.size_extra)} for ${l.size}` : null,
   ].filter(Boolean);
 }
+
+// Cart quantities can come back from older localStorage snapshots as strings.
+// Normalize before doing arithmetic so "+" turns "1" into 2 (not "11").
+export function cartLineQty(line) {
+  const qty = Number(line?.qty);
+  return Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 1;
+}
+
+// A chosen color/size/custom option does not make a garment one-of-a-kind.
+// Only packs and genuinely personalized lines must remain at one unit.
+export function isFixedCartQty(line) {
+  return line?.kind === 'bundle' || !!line?.player_number || !!line?.player_name;
+}
+
+export function setCartLineQty(cart, key, nextQty) {
+  const qty = Number(nextQty);
+  if (!Number.isFinite(qty)) return cart;
+  if (qty <= 0) return cart.filter((line) => line.key !== key);
+  return cart.map((line) => (line.key === key ? { ...line, qty: Math.floor(qty) } : line));
+}
+
 function CartPage({ store, theme, cart, onUpdate }) {
   const remove = (key) => onUpdate(cart.filter((l) => l.key !== key));
-  const setQty = (key, q) => onUpdate(cart.map((l) => (l.key === key ? { ...l, qty: Math.max(1, q) } : l)));
+  const setQty = (key, q) => onUpdate(setCartLineQty(cart, key, q));
   // Personalized items (a specific jersey number/name) and packs are 1-of-a-kind.
-  const fixedQty = (l) => l.kind === 'bundle' || !!l.player_number || !!l.player_name || (Array.isArray(l.option_selections) && l.option_selections.length > 0);
+  const fixedQty = isFixedCartQty;
   const heading = <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Your Cart<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>;
   if (!cart.length) return <div style={{ paddingTop: 24 }}><BackLink store={store} theme={theme} />{heading}<div style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, padding: '48px 24px', textAlign: 'center' }}><div style={{ fontSize: 16, color: theme.subText, marginBottom: 18 }}>Your cart is empty.</div><SkewBtn theme={theme} variant="primary" onClick={() => navTo('/shop/' + store.slug)}>Browse the Store</SkewBtn></div></div>;
 
@@ -2113,9 +2145,9 @@ function CartPage({ store, theme, cart, onUpdate }) {
                   ? <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase', padding: '6px 0 0' }}>Remove</button>
                   : <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', border: `1px solid ${theme.line}`, borderRadius: 4, overflow: 'hidden', height: 36 }}>
-                        <button onClick={() => setQty(l.key, (l.qty || 1) - 1)} disabled={(l.qty || 1) <= 1} style={{ ...qtyBtn((l.qty || 1) <= 1), width: 34, minHeight: 34, fontSize: 17 }}>−</button>
-                        <span style={{ minWidth: 32, textAlign: 'center', fontWeight: 700, fontSize: 14, fontFamily: DISPLAY }}>{l.qty || 1}</span>
-                        <button onClick={() => setQty(l.key, (l.qty || 1) + 1)} style={{ ...qtyBtn(false), width: 34, minHeight: 34, fontSize: 17 }}>+</button>
+                        <button type="button" aria-label={`Decrease quantity for ${l.name || 'item'}`} title={cartLineQty(l) === 1 ? 'Remove item' : 'Decrease quantity'} onClick={() => setQty(l.key, cartLineQty(l) - 1)} style={{ ...qtyBtn(false), width: 34, minHeight: 34, fontSize: 17 }}>−</button>
+                        <span style={{ minWidth: 32, textAlign: 'center', fontWeight: 700, fontSize: 14, fontFamily: DISPLAY }}>{cartLineQty(l)}</span>
+                        <button type="button" aria-label={`Increase quantity for ${l.name || 'item'}`} onClick={() => setQty(l.key, cartLineQty(l) + 1)} style={{ ...qtyBtn(false), width: 34, minHeight: 34, fontSize: 17 }}>+</button>
                       </div>
                       <button onClick={() => remove(l.key)} style={{ background: 'none', border: 'none', color: theme.primary, cursor: 'pointer', fontFamily: DISPLAY, fontWeight: 700, fontSize: 12.5, letterSpacing: 0.5, textTransform: 'uppercase' }}>Remove</button>
                     </div>}
@@ -2137,7 +2169,7 @@ function CartPage({ store, theme, cart, onUpdate }) {
             <span style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 30, color: theme.primary }}>{money(grandTotal(store, cart))}</span>
           </div>
           <button className="sf-btn sf-skew" onClick={() => navTo('/shop/' + store.slug + '/checkout')} style={{ ...cta(theme), marginTop: 4 }}><span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>Checkout →</span></button>
-          <p style={{ fontSize: 12.5, color: theme.subText, lineHeight: 1.5, margin: '14px 0 0' }}>{store.delivery_mode === 'ship_home' ? 'Custom-decorated and shipped to your door' : 'Delivered to the team'} ~4–5 weeks after the store closes{closesLabel(store.close_at) ? ` ${closesLabel(store.close_at).text.replace(/^Closes /, '').replace(/^Open until /, 'on ')}` : ''}.</p>
+          <p style={{ fontSize: 12.5, color: theme.subText, lineHeight: 1.5, margin: '14px 0 0' }}>{store.delivery_mode === 'ship_home' ? 'Custom-decorated and shipped to your door' : 'Delivered to the team'}. Estimated delivery: {storeDeliveryEstimate(store)}{closesLabel(store.close_at) ? ` (${closesLabel(store.close_at).text})` : ''}.</p>
         </div>
       </div>
     </div>
@@ -2453,6 +2485,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
     <div style={{ paddingTop: 24, maxWidth: 640 }}>
       <BackLink store={store} theme={theme} />
       <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Checkout<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>
+      <div style={{ background: '#fffbeb', color: '#78350f', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}><strong>Estimated delivery:</strong> {storeDeliveryEstimate(store)}.</div>
       {checkoutMsg && <div style={{ background: '#eff6ff', color: '#1e3a5f', border: '1px solid #bfdbfe', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14, whiteSpace: 'pre-wrap' }}>{checkoutMsg}</div>}
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
       {priceNotice && <div style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>Prices changed while you were shopping, so we refreshed your cart to the current prices. Please review your new total below and place your order again.</div>}
@@ -2670,10 +2703,10 @@ function OrderStatusPage({ store, theme, orderToken }) {
   const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
   const updatedAt = order.updated_at || order.created_at;
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
-  // Team delivery is ~4–5 weeks after the store CLOSES (production runs once the
-  // store closes), not from the order date. Show the later (5-week) edge so we
-  // don't over-promise — matches the "~4–5 weeks after the store closes" copy.
-  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 35 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
+  // Production starts after close. Use the later edge of the store's selected
+  // window for the confirmation's conservative "week of" date.
+  const estimatedDate = estimatedDeliveryDate(store.close_at, store.delivery_window_weeks);
+  const estDelivery = estimatedDate ? 'Wk of ' + estimatedDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
   const orderedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 
   // Inline helpers
@@ -2983,7 +3016,7 @@ function Footer({ store, theme }) {
           <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 9, fontSize: 14 }}>
             <li>Custom team decoration included</li>
             <li>No order minimums</li>
-            <li>4–5 week team delivery</li>
+            <li>{deliveryWindowLabel(store && store.delivery_window_weeks)} after store close</li>
             <li>Questions? hello@nationalsportsapparel.com</li>
           </ul>
         </div>
