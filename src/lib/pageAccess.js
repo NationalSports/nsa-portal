@@ -12,3 +12,11 @@ export const resolveAccessUser = (cachedUser, teamMembers, teamReady = true) => 
     access: current.access == null ? null : current.access,
   };
 };
+
+// AI Inbox contains the full contents of the shared sales mailbox. Keep this
+// identity-based so another admin cannot gain access through a role change or
+// an editable page-access array.
+export const AI_INBOX_OWNER_ID = '00000000-0000-0000-0000-000000000001';
+
+export const canViewAiInbox = (user) =>
+  !!user?.id && String(user.id) === AI_INBOX_OWNER_ID;

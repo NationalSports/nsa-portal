@@ -315,3 +315,10 @@
 [functions."webstore-integrity-sweep"]
   schedule = "35 * * * *"
   timeout = 26
+
+# Nightly operational OMG refresh — 08:15 UTC (12:15 AM PST / 1:15 AM PDT).
+# Reads the global order feed, groups by explicit sale relationship, and updates
+# 24/7 store order counts only. Monthly Margin Report imports remain the sole
+# source for profit and commissions.
+[functions."omg-order-sync-cron"]
+  schedule = "15 8 * * *"

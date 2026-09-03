@@ -111,6 +111,7 @@
    "customer_supplied",
    "est_qty",
    "id",
+   "invoice_line_keys",
    "is_custom",
    "is_footwear",
    "is_free_promo",

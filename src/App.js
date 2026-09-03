@@ -27,7 +27,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
-import { resolveAccessUser } from './lib/pageAccess';
+import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, schoolPOBoxes, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, mailProxyFetch, _withTimeout, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages, dedupeMockDupes } from './utils';
@@ -38,12 +38,14 @@ import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
+import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests } from './lib/artRequests';
-import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice } from './lib/dashboardNotificationRules';
+import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice, shouldShowMockupReviewNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
+import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
@@ -447,7 +449,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -475,6 +477,7 @@ import {
   _diffSaveSkipLogged,
   _diffCmp,
   _custDiffCmp,
+  _invDiffCmp,
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
@@ -2604,12 +2607,14 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
-  // Store sales-tax remittance ledger: {[rowId]:{at,by,amount}}. OMG collects
-  // tax from parents and remits it to NSA bundled in the payout; webstores
-  // collect it at Stripe checkout — NSA files both with the state manually
-  // (not Stripe Tax). This tracks which store/state rows have been remitted so
-  // nothing is missed or double-paid. Durable in app_state like omgFirstSeen.
-  const[omgTaxRemit,setOmgTaxRemit]=useState(()=>loadState('omg_tax_remit',{}));
+  // Append-only filing records are loaded through a staff-only endpoint. The
+  // legacy app_state.omg_tax_remit blob is migrated once and never written by
+  // this client again; corrections are reversal rows rather than deletes.
+  const[taxRemittanceLedger,setTaxRemittanceLedger]=useState([]);
+  const[taxRemittanceLoaded,setTaxRemittanceLoaded]=useState(false);
+  const[taxRemitDraft,setTaxRemitDraft]=useState(null);
+  const[taxRemitBusy,setTaxRemitBusy]=useState(false);
+  const[taxRemitError,setTaxRemitError]=useState('');
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
   // Portal-side Adidas availability for the Assign Task bot card: the portal
   // already syncs per-size stock + restock dates (adidas_inventory), so show
@@ -3613,7 +3618,7 @@ export default function App(){
 
   React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
   React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
-  React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i),_invDiffCmp)},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
     _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
@@ -4046,7 +4051,24 @@ export default function App(){
         orders,
         orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [],
       };
-      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+      const converted = convertOMGStore(detail, cust);
+      // Preserve the portal-owned assignment/configuration around an API
+      // refresh. OMG metadata must never detach a manually mapped 24/7 store,
+      // change its channel, or erase report-imported products/financials.
+      const updated = {
+        ...store,
+        ...converted,
+        id: store.id,
+        customer_id: store.customer_id || converted.customer_id,
+        rep_id: store.rep_id || converted.rep_id,
+        csr_id: store.csr_id || null,
+        artist_id: store.artist_id || null,
+        channel_type: store.channel_type || converted.channel_type,
+        delivery_mode: store.delivery_mode || null,
+        products: (store.products || []).length ? store.products : (converted.products || []),
+        _omg_source: store._omg_source,
+        _details_loaded: true,
+      };
 
       // ── Aggregate sizes per product ──
       // Each order_product carries attribute_values (size, color, etc). We
@@ -4180,7 +4202,18 @@ export default function App(){
     }));
   },[sos,ests]);
   React.useEffect(()=>{_saveAppState('omg_first_seen',omgFirstSeen)},[omgFirstSeen]);
-  React.useEffect(()=>{_saveAppState('omg_tax_remit',omgTaxRemit)},[omgTaxRemit]);
+  const taxRemittanceApi=async(action,payload={})=>{
+    const res=await authFetch('/.netlify/functions/sales-tax-remittance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(data.error||('Sales-tax ledger returned HTTP '+res.status));
+    return data;
+  };
+  const loadTaxRemittanceLedger=async()=>{
+    setTaxRemittanceLoaded(false);
+    try{const data=await taxRemittanceApi('list');setTaxRemittanceLedger(data.entries||[]);setTaxRemittanceLoaded(true);setTaxRemitError('')}
+    catch(e){setTaxRemittanceLoaded(false);setTaxRemitError(e.message);console.warn('[sales tax ledger] load failed:',e.message)}
+  };
+  React.useEffect(()=>{if(pg==='omg')loadTaxRemittanceLedger()},[pg]);
   // Webstore-collected sales tax, aggregated per store + buyer state for the
   // remittance report. Webstores charge tax at checkout (CDTFA/TaxCloud rates)
   // on the buyer's destination, so one store can owe several states. Card
@@ -4196,13 +4229,16 @@ export default function App(){
     _webTaxLoaded.current=true;
     (async()=>{try{
       const{data,error}=await supabase.from('webstore_orders')
-        .select('store_id,so_id,tax,payment_mode,status,ship_address,created_at,webstores!inner(source,name)')
+        .select('store_id,so_id,tax,tax_state,tax_rate,tax_source,payment_mode,status,ship_address,created_at,webstores!inner(source,name)')
         .eq('webstores.source','webstore').gt('tax',0);
       if(error){console.warn('[web tax] fetch failed:',error.message);return}
       const byKey={};
       (data||[]).forEach(o=>{
         if(!o||o.status==='cancelled'||o.status==='refunded')return;
-        const st=String((o.ship_address&&(o.ship_address.state||o.ship_address.State))||'—').toUpperCase();
+        // Pickup/team-delivery orders intentionally have no shipping address.
+        // tax_state is the immutable jurisdiction captured at checkout; retain
+        // the address fallback only for pre-migration history.
+        const st=String(o.tax_state||(o.ship_address&&(o.ship_address.state||o.ship_address.State))||'—').toUpperCase();
         const k=o.store_id+':'+st;
         const b=byKey[k]||(byKey[k]={storeId:o.store_id,name:o.webstores?.name||'Webstore',state:st,cardTax:0,tabBySo:{},orders:0,firstAt:o.created_at});
         const tax=+o.tax||0;
@@ -6324,8 +6360,8 @@ export default function App(){
     rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','salesmap','import'],
     csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
     accounting:['dashboard','orders','invoices','customers','reports','qb','import'],
-    warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
-    prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
+    warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','messages'],
+    prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports','messages'],
     prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
     production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
     artist:['dashboard','orders','art','jobs','production'],
@@ -6342,6 +6378,7 @@ export default function App(){
   },[accessUser,RESTRICTED_PAGES,DEFAULT_ACCESS_BY_ROLE]);
   const canAccess=useCallback((pageId)=>{
     if(!accessUser)return false;
+    if(pageId==='ai_inbox')return canViewAiInbox(accessUser);
     // QBO is an accounting system, not a delegable portal page. Legacy access
     // arrays that contain `qb` must not expose it to reps or other operations roles.
     // Financials is identity-restricted even among admins. Never let an admin
@@ -7491,6 +7528,33 @@ export default function App(){
   // Manual "Check Shipping Status" button (fetchSOShippingStatus) still works on demand.
 
   // ─── OMG Sync Handler ───
+  // Operational-only refresh. The background function reads the unfiltered
+  // OMG order feed, groups by the explicit sale relationship, and updates only
+  // order-count metadata for mapped 24/7 stores. Accounting stays manual.
+  const syncOMGOrderCounts = async () => {
+    if (omgSyncing) return;
+    setOmgSyncing(true);
+    try {
+      const response = await authFetch('/.netlify/functions/omg-order-sync-background', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(message || `HTTP ${response.status}`);
+      }
+      nf('OMG 24/7 order sync started — totals will refresh in the background');
+      // Pull the first completed checkpoint promptly; the ordinary portal poll
+      // continues reconciling if the global feed takes longer.
+      setTimeout(() => { if (_runPollRef.current) _runPollRef.current(); }, 8000);
+    } catch (error) {
+      nf('OMG order sync failed to start: ' + error.message, 'error');
+    } finally {
+      setOmgSyncing(false);
+    }
+  };
+
   // Lightweight sync: fetches store list only (no order/product details).
   // Details are loaded on-demand when user clicks into a store.
   const syncOMGStores = async () => {
@@ -8177,6 +8241,10 @@ export default function App(){
       return;
     }
     const inv=invs.find(i=>i.id===invId);if(!inv)return;
+    if((inv.credit_memos||[]).length){
+      nf('Cannot delete '+invId+' — it has '+inv.credit_memos.length+' posted credit memo'+(inv.credit_memos.length===1?'':'s')+'. The invoice and payment history must remain for the account audit trail.','error');
+      return;
+    }
     if(inv.paid>0&&!window.confirm('This invoice has $'+inv.paid.toLocaleString()+' in payments recorded. Deleting will lose this payment history. Continue?'))return;
     if(!window.confirm('Delete invoice '+invId+'?'))return;
     // Remove from state
@@ -8516,7 +8584,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(!j.sent_to_coach_at){
+          if(shouldShowMockupReviewNotice(j,so)){
             // Reused / previously-approved art is parked at waiting_approval so the rep confirms it
             // for THIS order (OrderEditor _newArtSt), but until a real garment mockup exists it can
             // neither be reviewed nor sent to the coach. skusMissingMockups is the SAME gate the
@@ -8528,7 +8596,7 @@ export default function App(){
             if(skusMissingMockups(j,so).length>0){todos.push({type:'art',priority:1,msg:'🎨 Previous art — set up the mockup: '+j.art_name,detail:tag+' · '+so.id+' · No garment mockup yet — reuse an approved mock or send to the artist',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Set up art',role:'sales',date:j.updated_at||so.updated_at})}
             else{todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
           }
-          else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+          else if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago')+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // Production-files step is rep/CSR-owned for embroidery (upload DST + PDF) and DTF (order transfer films) — not the artist.
         if(PROD_FILES_STATUSES.includes(j.art_status)){
@@ -11311,7 +11379,7 @@ export default function App(){
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
-      onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
+      onDeleteCredit={async(id)=>{const ok=await _dbDeleteCredit(id);if(supabase&&ok!==true){nf('Credit could not be removed — posted credit memo credits stay locked to their invoice','error');return}const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onSavePendingShip={async(rec)=>{await _dbSavePendingShip(rec);const updated={...selC,pending_shipping:[...(selC.pending_shipping||[]).filter(r=>r.id!==rec.id),rec]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge saved')}}
       onDeletePendingShip={async(id)=>{await _dbDeletePendingShip(id);const updated={...selC,pending_shipping:(selC.pending_shipping||[]).filter(r=>r.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={id=>{try{const u=new URL(window.location);u.searchParams.set('store',id);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={canAccess('omg')?(id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}):null} onOmgStoreSaved={store=>setOmgStores(prev=>prev.some(s=>s.id===store.id)?prev.map(s=>s.id===store.id?{...s,...store}:s):[store,...prev])}
@@ -13025,7 +13093,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){
-          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+          if(j.sent_to_coach_at&&!j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&!DECO_OR_LATER_STATUSES.includes(j.prod_status)&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
         // M6 (same rule as the desktop dashboard generator): rejection visible until re-sent.
         if(j.coach_rejected&&!j.sent_to_coach_at&&j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
@@ -17938,7 +18006,7 @@ export default function App(){
       return true;
     });
     const totalSales=filtered.reduce((a,s)=>{const pr=(s.products||[]).reduce((a2,p)=>{const q=Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0);return a2+q*p.retail},0);return a+(pr||s.total_sales||0)},0);
-    const totalUnits=filtered.reduce((a,s)=>a+(s.products||[]).reduce((a2,p)=>a2+Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0),0),0);
+    const totalUnits=filtered.reduce((a,s)=>{const productUnits=(s.products||[]).reduce((a2,p)=>a2+Object.values(p.sizes||{}).reduce((a3,v)=>a3+v,0),0);return a+(productUnits||s.items_sold||0)},0);
     const totalFund=filtered.reduce((a,s)=>a+(s._omg_fundraise||s.fundraise_total||0),0);
 
     // Store detail view
@@ -18886,6 +18954,7 @@ export default function App(){
       {/* Ingest an OMG store from a shared report link → review SKUs → create it. */}
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,flexWrap:'wrap'}}>
         <button className="btn btn-primary" style={{background:'#166534',whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 18px'}} onClick={()=>{setOmgIngestUrl('');setOmgIngestOpen(true)}} title="Paste an OMG report link to ingest its items into a new store — review & fix SKUs, then create it">📥 Ingest OMG Store</button>
+        <button className="btn btn-secondary" disabled={omgSyncing} onClick={syncOMGOrderCounts} title="Refresh order counts for all mapped 24/7 OMG stores. Profit and commissions are not changed." style={{whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 16px'}}>{omgSyncing?'⏳ Starting…':'↻ Sync 24/7 orders now'}</button>
         <span style={{fontSize:12,color:'#64748b'}}>Paste a shared OMG report link to pull its products into a new store — you'll review &amp; fix SKUs, then it's created.</span>
       </div>
 
@@ -18925,12 +18994,10 @@ export default function App(){
         const $=n=>'$'+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const omgRows=(omgStores||[]).filter(s=>s&&(+s._omg_tax||0)>0.005).map(s=>{
           const c=cust.find(x=>x.id===s.customer_id);
-          const rec=omgTaxRemit[s.id];
           const dRaw=s._report_imported_at||s._last_synced||null;
           return{id:s.id,src:'OMG',name:s.store_name||s.id,code:s._omg_sale_code||'',
-            state:(c?.shipping_state||c?.billing_state||'—'),cust:c?.name||'',
-            tax:Math.round((+s._omg_tax)*100)/100,pending:0,date:dRaw?String(dRaw).slice(0,10):'',
-            remitted:!!rec,remittedAt:rec?String(rec.at).slice(0,10):'',remittedBy:rec?.by||null};
+            state:String(c?.shipping_state||c?.billing_state||'—').toUpperCase(),cust:c?.name||'',
+            tax:Math.round((+s._omg_tax)*100)/100,pending:0,date:dRaw?String(dRaw).slice(0,10):''};
         });
         // Webstore rows keyed store+state (one store can owe several states).
         // Card tax is collected at checkout; team-tab tax counts as collected
@@ -18941,26 +19008,66 @@ export default function App(){
           let tabCollected=0,tabPending=0;
           Object.entries(b.tabBySo||{}).forEach(([soId,t])=>{ if(soId!=='_unbatched'&&_wPaidSo.has(soId))tabCollected+=t; else tabPending+=t; });
           const id='ws:'+b.storeId+':'+b.state;
-          const rec=omgTaxRemit[id];
           return{id,src:'WEB',name:b.name,code:'',state:b.state,cust:'',
             tax:Math.round((b.cardTax+tabCollected)*100)/100,pending:Math.round(tabPending*100)/100,
-            date:b.firstAt?String(b.firstAt).slice(0,10):'',
-            remitted:!!rec,remittedAt:rec?String(rec.at).slice(0,10):'',remittedBy:rec?.by||null};
+            date:b.firstAt?String(b.firstAt).slice(0,10):''};
         }).filter(b=>b.tax>0.005||b.pending>0.005);
-        const rows=[...omgRows,...webRows].sort((a,b)=>(a.remitted-b.remitted)||(b.tax-a.tax));
-        if(!rows.length)return null;
+        const collectedRows=[...omgRows,...webRows];
+        if(!collectedRows.length)return null;
+        if(!taxRemittanceLoaded){
+          const collected=Math.round(collectedRows.reduce((a,r)=>a+r.tax,0)*100)/100;
+          const pending=Math.round(collectedRows.reduce((a,r)=>a+(r.pending||0),0)*100)/100;
+          return <div className="card" style={{marginBottom:12,border:'1px solid #fca5a5'}}><div style={{padding:'14px 16px'}}>
+            <div style={{fontSize:15,fontWeight:800,color:'#b91c1c',marginBottom:10}}>🧾 Store Sales Tax — Remittance <span style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>(OMG + webstores)</span></div>
+            <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10}}>
+              <div style={{flex:'1 1 140px',padding:'10px 14px',background:'#3341550d',border:'1px solid #33415540',borderRadius:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.4}}>Total collected</div><div style={{fontSize:20,fontWeight:800,color:'#334155'}}>{$(collected)}</div></div>
+            </div>
+            <div style={{padding:10,background:taxRemitError?'#fef2f2':'#f8fafc',border:'1px solid '+(taxRemitError?'#fecaca':'#cbd5e1'),borderRadius:6,color:taxRemitError?'#b91c1c':'#475569',fontSize:11,fontWeight:600}}>
+              {taxRemitError?'Filing ledger unavailable: '+taxRemitError:'Loading the filing ledger…'} Filed and outstanding amounts are withheld until the audit ledger is available.
+              {pending>0.005&&<div style={{marginTop:4,color:'#92400e'}}>{$(pending)} of additional team-tab tax is pending club payment.</div>}
+            </div>
+            {taxRemitError&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:8}} onClick={loadTaxRemittanceLedger}>Retry ledger</button>}
+          </div></div>;
+        }
+        const rows=applyTaxRemittanceLedger(collectedRows,taxRemittanceLedger)
+          .sort((a,b)=>(b.outstanding-a.outstanding)||(b.tax-a.tax));
         const total=Math.round(rows.reduce((a,r)=>a+r.tax,0)*100)/100;
-        const remitted=Math.round(rows.filter(r=>r.remitted).reduce((a,r)=>a+r.tax,0)*100)/100;
+        const remitted=Math.round(rows.reduce((a,r)=>a+r.remittedAmount,0)*100)/100;
         const outstanding=Math.round((total-remitted)*100)/100;
         const pendingTotal=Math.round(rows.reduce((a,r)=>a+(r.pending||0),0)*100)/100; // team-tab tax not yet collected (club unpaid)
-        const byState={};rows.forEach(r=>{const b=byState[r.state]||(byState[r.state]={total:0,out:0});b.total+=r.tax;if(!r.remitted)b.out+=r.tax});
-        const markRemit=(id,amt)=>setOmgTaxRemit(prev=>({...prev,[id]:{at:new Date().toISOString(),by:cu?.id||null,amount:amt}}));
-        const unmarkRemit=(id)=>setOmgTaxRemit(prev=>{const n={...prev};delete n[id];return n});
+        const byState={};rows.forEach(r=>{const b=byState[r.state]||(byState[r.state]={total:0,out:0,remitted:0});b.total+=r.tax;b.out+=r.outstanding;b.remitted+=r.remittedAmount});
+        const reversedIds=reversedTaxRemittanceIds(taxRemittanceLedger);
+        const activeFilings=(taxRemittanceLedger||[]).filter(e=>e.entry_type==='remittance'&&!reversedIds.has(e.id));
+        const uuid=()=>{if(window.crypto?.randomUUID)return window.crypto.randomUUID();return'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const v=Math.random()*16|0;return(c==='x'?v:(v&3|8)).toString(16)})};
+        const nextDate=(value)=>{const d=new Date(String(value||'')+'T12:00:00Z');if(Number.isNaN(d.getTime()))return'';d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)};
+        const openFiling=(r)=>{
+          if(!/^[A-Z]{2}$/.test(String(r.state||''))){setTaxRemitError('Set a valid two-letter jurisdiction before recording a filing.');return}
+          const prior=activeFilings.filter(e=>e.source_key===r.id&&e.jurisdiction===r.state).sort((a,b)=>String(b.filing_period_end).localeCompare(String(a.filing_period_end)))[0];
+          const today=new Date().toISOString().slice(0,10);
+          setTaxRemitDraft({source_type:r.src==='WEB'?'webstore':'omg',source_key:r.id,store_name:r.name,jurisdiction:r.state,
+            filing_period_start:(prior&&nextDate(prior.filing_period_end))||r.date||today,filing_period_end:today,
+            amount:(Math.max(0,r.outstandingCents)/100).toFixed(2),payment_reference:'',notes:''});setTaxRemitError('');
+        };
+        const saveFiling=async()=>{
+          const d=taxRemitDraft;if(!d)return;
+          const amountCents=Math.round((Number(d.amount)||0)*100);
+          if(!amountCents||amountCents<1){setTaxRemitError('Enter a positive filing amount.');return}
+          if(!d.payment_reference.trim()){setTaxRemitError('Enter the state payment or filing confirmation reference.');return}
+          setTaxRemitBusy(true);setTaxRemitError('');
+          try{await taxRemittanceApi('record',{...d,amount_cents:amountCents,cutoff_at:new Date().toISOString(),idempotency_key:uuid()});await loadTaxRemittanceLedger();setTaxRemitDraft(null);nf('Sales-tax filing recorded in the append-only ledger')}
+          catch(e){setTaxRemitError(e.message)}finally{setTaxRemitBusy(false)}
+        };
+        const reverseFiling=async(entry)=>{
+          const reason=window.prompt('Why is this filing record being reversed? The original entry will remain in the audit trail.');if(!reason?.trim())return;
+          setTaxRemitBusy(true);setTaxRemitError('');
+          try{await taxRemittanceApi('reverse',{entry_id:entry.id,reason:reason.trim(),idempotency_key:uuid()});await loadTaxRemittanceLedger();nf('Sales-tax filing reversal recorded')}
+          catch(e){setTaxRemitError(e.message)}finally{setTaxRemitBusy(false)}
+        };
         const exportCsv=()=>{
-          const head=['Source','Store','Sale Code','State','Customer','Report Date','Collected Tax','Pending (team tab)','Remitted','Remitted On'];
-          const body=rows.map(r=>[r.src,r.name,r.code,r.state,r.cust,r.date,r.tax.toFixed(2),(r.pending||0).toFixed(2),r.remitted?'Yes':'No',r.remittedAt]);
+          const head=['Source','Store','Sale Code','State','Customer','Report Date','Collected Tax','Pending (team tab)','Filed / Remitted','Outstanding'];
+          const body=rows.map(r=>[r.src,r.name,r.code,r.state,r.cust,r.date,r.tax.toFixed(2),(r.pending||0).toFixed(2),r.remittedAmount.toFixed(2),r.outstanding.toFixed(2)]);
           const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
-          const csv=[head,...body,['','','','','','TOTAL',total.toFixed(2),pendingTotal.toFixed(2),'',''],['','','','','','OUTSTANDING',outstanding.toFixed(2),'','','']].map(r=>r.map(esc).join(',')).join('\r\n');
+          const csv=[head,...body,['','','','','','TOTAL',total.toFixed(2),pendingTotal.toFixed(2),remitted.toFixed(2),outstanding.toFixed(2)]].map(r=>r.map(esc).join(',')).join('\r\n');
           try{const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='store-sales-tax-'+new Date().toISOString().slice(0,10)+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){nf('Export failed: '+e.message,'error')}
         };
         const tile=(label,val,color)=><div style={{flex:'1 1 140px',padding:'10px 14px',background:color+'0d',border:'1px solid '+color+'40',borderRadius:8}}>
@@ -18973,34 +19080,52 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10}}>
             {tile('Outstanding — owed',outstanding,'#dc2626')}
-            {tile('Remitted',remitted,'#166534')}
+            {tile('Filed / remitted',remitted,'#166534')}
             {tile('Total collected',total,'#334155')}
           </div>
           {Object.keys(byState).length>0&&<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10,alignItems:'center'}}>
             {Object.entries(byState).sort((a,b)=>b[1].out-a[1].out).map(([st,b])=>
               <span key={st} style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:'#f1f5f9',color:'#334155',fontWeight:600}}>
-                {st}: <strong style={{color:b.out>0.005?'#dc2626':'#166534'}}>{$(b.out)}</strong> owed <span style={{color:'#94a3b8'}}>of {$(b.total)}</span></span>)}
+                {st}: <strong style={{color:b.out>0.005?'#dc2626':'#166534'}}>{$(b.out)}</strong> owed <span style={{color:'#94a3b8'}}>· {$(b.remitted)} filed of {$(b.total)}</span></span>)}
             {pendingTotal>0.005&&<span style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:'#fffbeb',color:'#92400e',fontWeight:600}} title="Team-tab sales tax billed to clubs but not yet collected — becomes owed when the club pays its invoice">+ {$(pendingTotal)} pending club payment</span>}
+          </div>}
+          {taxRemitError&&<div style={{margin:'8px 0',padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:600}}>{taxRemitError}</div>}
+          {taxRemitDraft&&<div style={{margin:'10px 0',padding:12,background:'#f8fafc',border:'1px solid #cbd5e1',borderRadius:8}}>
+            <div style={{fontSize:12,fontWeight:800,color:'#334155',marginBottom:8}}>Record filing — {taxRemitDraft.store_name} · {taxRemitDraft.jurisdiction}</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:8}}>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>PERIOD START<input className="form-input" type="date" value={taxRemitDraft.filing_period_start} onChange={e=>setTaxRemitDraft(d=>({...d,filing_period_start:e.target.value}))}/></label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>PERIOD END<input className="form-input" type="date" value={taxRemitDraft.filing_period_end} onChange={e=>setTaxRemitDraft(d=>({...d,filing_period_end:e.target.value}))}/></label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>AMOUNT REMITTED<input className="form-input" type="number" min="0.01" step="0.01" value={taxRemitDraft.amount} onChange={e=>setTaxRemitDraft(d=>({...d,amount:e.target.value}))}/></label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>PAYMENT / FILING REFERENCE<input className="form-input" value={taxRemitDraft.payment_reference} maxLength={160} onChange={e=>setTaxRemitDraft(d=>({...d,payment_reference:e.target.value}))} placeholder="Confirmation or payment ID"/></label>
+            </div>
+            <label style={{display:'block',fontSize:10,fontWeight:700,color:'#64748b',marginTop:8}}>NOTES<input className="form-input" value={taxRemitDraft.notes} maxLength={1000} onChange={e=>setTaxRemitDraft(d=>({...d,notes:e.target.value}))} placeholder="Optional filing notes"/></label>
+            <div style={{fontSize:9,color:'#64748b',marginTop:6}}>The collection cutoff is recorded at submission time. This creates a permanent entry; corrections require a separately logged reversal.</div>
+            <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:9}}><button className="btn btn-sm btn-secondary" disabled={taxRemitBusy} onClick={()=>setTaxRemitDraft(null)}>Cancel</button><button className="btn btn-sm btn-primary" disabled={taxRemitBusy} onClick={saveFiling}>{taxRemitBusy?'Recording…':'Record filing'}</button></div>
           </div>}
           <details>
             <summary style={{cursor:'pointer',fontSize:12,fontWeight:700,color:'#475569',marginBottom:6}}>Per-store detail — {rows.length} store{rows.length!==1?'s':''}</summary>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginTop:6}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
               <th style={{padding:'4px 8px'}}>STORE</th><th style={{padding:'4px 8px'}}>STATE</th><th style={{padding:'4px 8px'}}>REPORT DATE</th>
               <th style={{padding:'4px 8px',textAlign:'right'}}>COLLECTED TAX</th><th style={{padding:'4px 8px'}}>STATUS</th></tr></thead><tbody>
-              {rows.map(r=><tr key={r.id} style={{borderTop:'1px solid #e2e8f0',background:r.remitted?'#f0fdf4':'#fff'}}>
+              {rows.map(r=><tr key={r.id} style={{borderTop:'1px solid #e2e8f0',background:r.outstanding<=0.005?'#f0fdf4':'#fff'}}>
                 <td style={{padding:'6px 8px'}}><span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,marginRight:6,background:r.src==='WEB'?'#e0f2fe':'#ede9fe',color:r.src==='WEB'?'#0369a1':'#6d28d9'}}>{r.src}</span><span style={{fontWeight:600}}>{r.name}</span> <span style={{fontFamily:'monospace',fontSize:10,color:'#64748b'}}>{r.code}</span></td>
                 <td style={{padding:'6px 8px'}}>{r.state}</td>
                 <td style={{padding:'6px 8px',color:'#64748b'}}>{r.date||'—'}</td>
-                <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700}}>{$(r.tax)}{r.pending>0.005&&<div style={{fontSize:9,fontWeight:600,color:'#b45309'}}>+{$(r.pending)} pending</div>}</td>
+                <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700}}>{$(r.tax)}<div style={{fontSize:9,fontWeight:600,color:r.outstanding>0.005?'#b91c1c':'#166534'}}>{$(r.remittedAmount)} filed · {$(r.outstanding)} owed</div>{r.pending>0.005&&<div style={{fontSize:9,fontWeight:600,color:'#b45309'}}>+{$(r.pending)} pending</div>}</td>
                 <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
-                  {r.remitted
-                    ?<><span style={{fontSize:11,color:'#166534',fontWeight:700}}>✓ Remitted {r.remittedAt}</span> <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:6,background:'#fff',border:'1px solid #cbd5e1',color:'#64748b'}} onClick={()=>unmarkRemit(r.id)}>Undo</button></>
-                    :r.tax>0.005?<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#166534',color:'#fff',border:'none'}} onClick={()=>markRemit(r.id,r.tax)}>Mark remitted</button>
+                  {r.outstanding<=0.005
+                    ?<span style={{fontSize:11,color:'#166534',fontWeight:700}}>✓ Fully filed</span>
+                    :r.tax>0.005?(canManageQuickBooksRole(cu?.role)?<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#166534',color:'#fff',border:'none'}} onClick={()=>openFiling(r)}>Record filing</button>:<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>accounting action required</span>)
                     :<span style={{fontSize:10,color:'#b45309',fontStyle:'italic'}}>awaiting club payment</span>}
                 </td></tr>)}
             </tbody></table>
           </details>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>OMG collects sales tax from parents and remits it to NSA bundled in the payout; webstores collect it at Stripe checkout (CDTFA/TaxCloud rates by buyer destination). NSA files both with the state manually — the store invoices stay tax-exempt, so this liability lives here, not on an invoice. Webstore rows are per store per state. Team-tab tax (billed to the club, not charged at checkout) shows as <strong>pending</strong> until the club pays its invoice, then counts as collected. Marking a row remitted is a bookkeeping record, not a filing.</div>
+          {taxRemittanceLedger.length>0&&<details style={{marginTop:10}}><summary style={{cursor:'pointer',fontSize:12,fontWeight:700,color:'#475569'}}>Filing audit trail — {taxRemittanceLedger.length} entr{taxRemittanceLedger.length===1?'y':'ies'}</summary>
+            <table style={{width:'100%',fontSize:10,borderCollapse:'collapse',marginTop:6}}><thead><tr style={{textAlign:'left',color:'#94a3b8'}}><th>RECORDED</th><th>STORE / STATE</th><th>PERIOD</th><th>REFERENCE</th><th style={{textAlign:'right'}}>AMOUNT</th><th></th></tr></thead><tbody>
+              {taxRemittanceLedger.map(e=>{const reversed=e.entry_type==='remittance'&&reversedIds.has(e.id);return<tr key={e.id} style={{borderTop:'1px solid #e2e8f0',background:e.entry_type==='reversal'?'#fff7ed':reversed?'#f8fafc':'#fff'}}><td>{String(e.recorded_at||'').slice(0,10)}<div style={{fontSize:9,color:'#94a3b8'}}>{e.recorded_by||'legacy'}</div></td><td>{e.store_name} · {e.jurisdiction}<div style={{fontFamily:'monospace',fontSize:9,color:'#94a3b8'}}>{e.source_key}</div></td><td>{e.filing_period_start} — {e.filing_period_end}<div style={{fontSize:9,color:'#94a3b8'}}>cutoff {String(e.cutoff_at||'').slice(0,10)}</div></td><td>{e.payment_reference||'Legacy reference unavailable'}{e.notes&&<div style={{fontSize:9,color:'#64748b'}}>{e.notes}</div>}</td><td style={{textAlign:'right',fontWeight:800,color:e.entry_type==='reversal'?'#c2410c':'#166534'}}>{e.entry_type==='reversal'?'-':''}${(Number(e.amount_cents||0)/100).toFixed(2)}{reversed&&<div style={{fontSize:9,color:'#94a3b8'}}>reversed</div>}</td><td>{e.entry_type==='remittance'&&!reversed&&canManageQuickBooksRole(cu?.role)&&<button className="btn btn-sm btn-secondary" disabled={taxRemitBusy} style={{fontSize:9,padding:'2px 6px'}} onClick={()=>reverseFiling(e)}>Reverse</button>}</td></tr>})}
+            </tbody></table>
+          </details>}
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>OMG collects sales tax from parents and remits it to NSA bundled in the payout; webstores collect it at Stripe checkout (CDTFA/TaxCloud rates by buyer destination). NSA files both with the state manually — the store invoices stay tax-exempt, so this liability lives here, not on an invoice. Webstore rows are per store per state. Team-tab tax shows as <strong>pending</strong> until the club pays its invoice. Each filing now records a period, collection cutoff, exact amount, reference, actor, and timestamp; later collections remain outstanding automatically.</div>
         </div></div>;
       })()}
 
@@ -19039,7 +19164,8 @@ export default function App(){
       {/* Store list */}
       <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
         {filtered.map((s,i)=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);const linkedSO=sos.find(so=>so.omg_store_id===s.id);const _orderCount=(s._omg_sale_code&&omgWsoCounts[s._omg_sale_code]!=null)?omgWsoCounts[s._omg_sale_code]:(s.orders||0);
-          const _refDate=s.close_date||(s._last_synced?s._last_synced.split('T')[0]:null);
+          const _refDate=s.close_date||null;
+          const _syncDate=s._last_synced?String(s._last_synced).split(/[T ]/)[0]:null;
           const _deadline=_refDate?(()=>{const d=new Date(_refDate+'T00:00:00');d.setDate(d.getDate()+30);return d})():null;
           const _today=new Date();_today.setHours(0,0,0,0);
           const _daysLeft=_deadline&&!isNaN(_deadline)?Math.ceil((_deadline-_today)/(24*60*60*1000)):null;
@@ -19061,7 +19187,8 @@ export default function App(){
                 background:_daysLeft>14?'#dcfce7':_daysLeft>0?'#fef3c7':'#fee2e2',
                 color:_daysLeft>14?'#166534':_daysLeft>0?'#92400e':'#dc2626'}}>
                 {_daysLeft>0?`${_daysLeft}d left`:`${Math.abs(_daysLeft)}d overdue`}</span>}
-              {!_refDate&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
+              {!_refDate&&_syncDate?<span style={{fontSize:10,color:'#64748b'}}>synced {_syncDate}</span>:null}
+              {!_refDate&&!_syncDate&&<span style={{fontSize:10,color:'#94a3b8'}}>no close date</span>}
             </div>
             <div style={{flex:'0 0 90px',textAlign:'right'}}>
               <div style={{fontSize:15,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div>
@@ -19868,7 +19995,7 @@ export default function App(){
                 const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.so?.memo)lines.push({text:t.so.memo,cls:'memo'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
                 return<div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge,title:t.cName||t.soId,subtitle:t.soId,totalUnits:grandNeed,items:pickItems.map(pi=>({sku:pi.sku||'',name:pi.name||'',color:pi.color||'',units:pi.needsPull,sizes:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge,title:t.cName||t.soId,subtitle:t.soId,rep:t.rep&&t.rep!=='—'?t.rep:'',totalUnits:grandNeed,items:pickItems.map(pi=>({sku:pi.sku||'',name:pi.name||'',color:pi.color||'',units:pi.needsPull,sizes:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
                 </div>;
               })()}
             </div>
@@ -24207,22 +24334,22 @@ export default function App(){
 
         // Send for approval — sends directly to rep for review, with optional message
         const sendForApproval=()=>{
-          // Re-fetch latest art file from sos state to avoid stale closure data
+          // Re-fetch both the order AND this job before validating. The modal can remain open while
+          // a realtime save splits/reassigns its job, leaving j._art_ids/items stale even though the
+          // rendered art comes from live SO decorations (SO-2199).
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const missing=skusMissingMockups(j,liveSO2);
+          const{currentJob:liveJob,missingImages:_noImg}=approvalArtContext(j,liveSO2,buildJobs(liveSO2));
+          const missing=skusMissingMockups(liveJob,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
           // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
           // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
           // source — a web logo or any mockup the design already carries satisfies the visual requirement.
           // (Mockups are already mandatory via skusMissingMockups above, so designs that get here normally
           // have one; this gate only blocks a design that has no image of any kind at all.)
-          const _hasArtImage=(a)=>!!(a&&(a.preview_url||a.web_logo_url||safeArr(a.web_logos).length||safeArr(a.mockup_files).length||safeArr(a.sample_art).length||Object.values(safeObj(a.item_mockups)).some(v=>safeArr(v).length>0)));
-          const _jobArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-          const _noImg=_jobArtIds.map(id=>safeArt(liveSO2).find(a=>a.id===id)).filter(Boolean).filter(a=>!_hasArtImage(a));
           if(_noImg.length){nf('Add a logo image before sending for approval: '+_noImg.map(a=>a.name||'art').join(', '),'error');return}
-          if(!_confirmResendIfRejected(j))return;
+          if(!_confirmResendIfRejected(liveJob))return;
           // Move to waiting_approval / needs_approval
-          moveArtStatus(j,'waiting_approval');
+          moveArtStatus(liveJob,'waiting_approval');
           const msgs=[...artMessages];
           // Include artist's message if provided
           if(artJobDetailApprovalMsg.trim()){
@@ -24230,8 +24357,8 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
-          const _sendArtIds=jobLiveArtIds(j,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
+          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(liveJob,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
+          const _sendArtIds=jobLiveArtIds(liveJob,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
           nf('Mockup sent to '+(rep?.name||'rep')+' for approval');
@@ -29654,7 +29781,7 @@ export default function App(){
     const pushBillsToQB=async()=>{
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&!row.qbStatus);
+        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&qbBillNeedsSync(row.qbStatus));
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
@@ -29746,9 +29873,10 @@ export default function App(){
             ?['deco_account','freight_account','ap_account']
             :['purchases_account','freight_account','sports_inc_fee_account','ap_account'];
           const billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
-          const requiredSkus=decorationCategory?[]:(bill.items||[]).map(item=>item?.sku).filter(Boolean);
+          const qboRoutedBill=decorationCategory?routedBill:{...routedBill,items:mapBillItemsToPortalSkus(routedBill.items,routedBill._lineMappings)};
+          const requiredSkus=decorationCategory?[]:(qboRoutedBill.items||[]).map(item=>item?.sku).filter(Boolean);
           const billItemRefs=requiredSkus.length?indexQBNonInventoryItems(existingQBItems,requiredSkus):{};
-          const built=buildVendorBillLines(routedBill,billRefs,billItemRefs);
+          const built=buildVendorBillLines(qboRoutedBill,billRefs,billItemRefs);
           const amt=built.total;
           const lineItems=built.lines;
 
@@ -29759,7 +29887,7 @@ export default function App(){
           const billDocNumber=String(bill.doc_number||b.id||'').trim();
           if(!billDocNumber)throw new Error('Bill has no vendor document number or portal source ID; no QBO bill was sent.');
           const memo=[canaryMode?'NSA-QB-CANARY:'+String(b.id||bill.doc_number||bi):'','PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
-          const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:billRefs.ap_account,TxnDate:txnDate,
+          const qbBill={VendorRef:{value:String(qbVendorId)},APAccountRef:qbWriteAccountRef(billRefs.ap_account),TxnDate:txnDate,
             DueDate:dueDate,DocNumber:billDocNumber,Line:lineItems,PrivateNote:memo};
 
           // Idempotency check happens before every create. An exact vendor/date/total
@@ -30926,7 +31054,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.some(b=>qbBillNeedsSync(b.qbStatus)),onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
@@ -33410,8 +33538,8 @@ export default function App(){
       rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools','sales_history','import'],
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools','sales_history','import'],
       accounting:['dashboard','orders','invoices','customers','reports','qb','import'],
-      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
-      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
+      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','messages'],
+      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports','messages'],
       prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
       production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
       artist:['dashboard','orders','art','jobs','production'],
@@ -37399,7 +37527,7 @@ export default function App(){
         </div>
       </div>}
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
-    {pg==='ai_inbox'&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
+    {pg==='ai_inbox'&&canAccess('ai_inbox')&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}
     {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>

@@ -18,7 +18,7 @@ const completeSchema = () => ({
   estimate_art_files: [...cols('_artCols'), 'estimate_id', '_version'],
   so_art_files: [...cols('_artCols'), 'so_id', '_version'],
   estimate_items: [...cols('_itemCols'), 'estimate_id', 'item_index', 'id'],
-  so_items: [...cols('_itemCols'), 'so_id', 'item_index', 'id'],
+  so_items: [...cols('_itemCols'), ...cols('_soItemCols'), 'so_id', 'item_index', 'id'],
   estimate_item_decorations: [...cols('_decoCols'), 'estimate_item_id', 'deco_index', 'id'],
   so_item_decorations: [...cols('_decoCols'), 'so_item_id', 'deco_index', 'id'],
   so_jobs: [...cols('_jobCols'), 'so_id', '_version'],

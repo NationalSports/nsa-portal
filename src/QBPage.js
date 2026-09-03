@@ -2,12 +2,13 @@
 // as step 3 of the App.js decomposition. All shared state comes from useAppData();
 // this component holds no state of its own, so mount/unmount on page switch is
 // behavior-identical to the old closure call.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
-import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName } from './qbSyncEngine';
+import { authFetch } from './utils';
+import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -21,6 +22,7 @@ import {
   readQBWithRetry,
   manualBillAccountKey,
   normalizeVendorName,
+  qbWriteAccountRef,
   resolveQBAccountRefs,
 } from './qbAccountMappings';
 
@@ -63,6 +65,48 @@ export default function QBPage(){
   const [qbCanarySOId,setQbCanarySOId]=useState('');
   const [qbCanaryPOId,setQbCanaryPOId]=useState('');
   const [qbPreflighting,setQbPreflighting]=useState(false);
+  const [stripePayouts,setStripePayouts]=useState([]);
+  const [stripePayoutId,setStripePayoutId]=useState('');
+  const [stripePayoutDetail,setStripePayoutDetail]=useState(null);
+  const [stripePayoutLoading,setStripePayoutLoading]=useState(false);
+  const [stripePayoutError,setStripePayoutError]=useState('');
+
+  const stripeReconApi=async(action,payload={})=>{
+    const res=await authFetch('/.netlify/functions/stripe-reconciliation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(data.error||('Stripe reconciliation returned HTTP '+res.status));
+    return data;
+  };
+  const loadStripePayouts=async()=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('list_payouts');setStripePayouts(data.payouts||[])}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const loadStripePayoutDetail=async(id)=>{
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{const data=await stripeReconApi('payout_detail',{payout_id:id});setStripePayoutDetail(data)}
+    catch(e){setStripePayoutError(e.message)}finally{setStripePayoutLoading(false)}
+  };
+  const reconcileStripePayout=async(id)=>{
+    const payoutId=String(id||'').trim();
+    if(!/^po_[A-Za-z0-9_]+$/.test(payoutId)){setStripePayoutError('Enter a valid Stripe payout ID (po_...).');return}
+    setStripePayoutLoading(true);setStripePayoutError('');
+    try{
+      await stripeReconApi('reconcile_payout',{payout_id:payoutId});
+      setStripePayoutId('');await loadStripePayouts();await loadStripePayoutDetail(payoutId);
+      nf('Stripe payout reconciled to its balance transactions');
+    }catch(e){setStripePayoutError(e.message);setStripePayoutLoading(false)}
+  };
+  const exportStripePayoutCsv=()=>{
+    const detail=stripePayoutDetail;if(!detail?.payout)return;
+    const head=['Payout ID','Balance Transaction','Webstore Order','Entry Type','Posting Account Key','Tax State','Amount Cents','QBO Ready'];
+    const rows=(detail.qbo_entries||[]).map(e=>[detail.payout.stripe_payout_id,e.stripe_balance_transaction_id,e.webstore_order_id||'',e.entry_type,e.posting_account_key,e.tax_state||'',e.amount_cents,e.qbo_ready?'Yes':'No']);
+    const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const csv=[head,...rows].map(row=>row.map(esc).join(',')).join('\r\n');
+    const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='stripe-payout-'+detail.payout.stripe_payout_id+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  };
+  useEffect(()=>{if(qbTab==='stripe')loadStripePayouts()},[qbTab]);
 
 
     // Sync engine — one copy of the logic (see qbSyncEngine.js); the App-level
@@ -181,14 +225,14 @@ export default function QBPage(){
       }
       const qbBill={
         VendorRef:{value:qbVendorId},
-        APAccountRef:apAccountRef,
+        APAccountRef:qbWriteAccountRef(apAccountRef),
         TxnDate:qbBillDate,
         Line:billLines,
         ...((isCanary||qbBillMemo)?{PrivateNote:[isCanary?'NSA-QB-CANARY:'+new Date().toISOString():'',qbBillMemo].filter(Boolean).join(' | ')}:{}),
       };
       const billRes=await qbApi('upsert_bill',{bill:qbBill});
       if(!billRes?.Bill?.Id){
-        log.details.push('Bill creation failed: '+(billRes?.Fault?.Error?.[0]?.Detail||'unknown'));
+        log.details.push('Bill creation failed: '+qbResponseErrorDetail(billRes));
         log.status='error';
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Bill upload failed','error');
@@ -436,7 +480,7 @@ export default function QBPage(){
 
       {/* Tabs */}
       <div className="tab-bar" style={{marginBottom:16}}>
-        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['stripe','Stripe Payouts'],['bills','Bill Upload'],['inventory','QBO Items'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
           <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
       </div>
 
@@ -698,6 +742,42 @@ export default function QBPage(){
             </table>
           </div>
         </div>
+      </>}
+
+      {/* ── STRIPE PAYOUT RECONCILIATION TAB ── */}
+      {qbTab==='stripe'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+            <h2>Stripe Payout Reconciliation</h2>
+            <button className="btn btn-secondary btn-sm" disabled={stripePayoutLoading} onClick={loadStripePayouts}>{stripePayoutLoading?'Loading...':'Refresh'}</button>
+          </div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#475569',marginBottom:10}}>Each automatic payout is reconciled against every Stripe balance transaction in the batch. Exact payouts can be exported as cent-based semantic posting rows; this screen never posts a bank deposit to QuickBooks automatically.</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7}}>
+              <input className="form-input" style={{minWidth:300,flex:'1 1 300px'}} placeholder="Historical payout ID (po_...)" value={stripePayoutId} onChange={e=>setStripePayoutId(e.target.value)}/>
+              <button className="btn btn-primary btn-sm" disabled={stripePayoutLoading||!stripePayoutId.trim()} onClick={()=>reconcileStripePayout(stripePayoutId)}>Fetch &amp; reconcile</button>
+            </div>
+            {stripePayoutError&&<div style={{marginTop:9,padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:600}}>{stripePayoutError}</div>}
+          </div>
+          <div style={{padding:0,maxHeight:390,overflow:'auto'}}>
+            <table style={{fontSize:11}}><thead><tr style={{background:'#f8fafc'}}><th>Payout</th><th>Arrival</th><th>Status</th><th>Reconciliation</th><th style={{textAlign:'right'}}>Activity amount</th><th style={{textAlign:'right'}}>Stripe fees</th><th style={{textAlign:'right'}}>Bank net</th><th></th></tr></thead><tbody>
+              {!stripePayouts.length&&!stripePayoutLoading?<tr><td colSpan="8" style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No payout ledger rows yet. Paste a historical payout ID above or wait for Stripe&apos;s next payout webhook.</td></tr>:
+              stripePayouts.map(p=>{const exact=p.reconciliation_status==='exact';return<tr key={p.stripe_payout_id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                <td style={{fontFamily:'monospace',fontWeight:700}}>{p.stripe_payout_id}</td><td>{p.arrival_date||'—'}</td><td>{p.status}</td>
+                <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:700,background:exact?'#dcfce7':p.reconciliation_status==='mismatch'?'#fee2e2':'#fef3c7',color:exact?'#166534':p.reconciliation_status==='mismatch'?'#b91c1c':'#92400e'}}>{p.reconciliation_status}</span>{p.reconciliation_difference_cents?<span style={{marginLeft:5,color:'#b91c1c'}}>{p.reconciliation_difference_cents}¢ diff</span>:null}</td>
+                <td style={{textAlign:'right'}}>${(Number(p.activity_amount_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',color:'#b45309'}}>${(Number(p.fee_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(p.amount_cents||0)/100).toFixed(2)}</td>
+                <td style={{whiteSpace:'nowrap'}}><button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>loadStripePayoutDetail(p.stripe_payout_id)}>Detail</button>{!exact&&<button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:4}} onClick={()=>reconcileStripePayout(p.stripe_payout_id)}>Retry</button>}</td>
+              </tr>})}
+            </tbody></table>
+          </div>
+        </div>
+        {stripePayoutDetail&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}><h2>QBO-ready entries — {stripePayoutDetail.payout?.stripe_payout_id}</h2><button className="btn btn-primary btn-sm" disabled={!stripePayoutDetail.qbo_entries?.length} onClick={exportStripePayoutCsv}>Export CSV</button></div>
+          <div style={{padding:'9px 14px',fontSize:11,background:stripePayoutDetail.qbo_ready?'#f0fdf4':'#fffbeb',color:stripePayoutDetail.qbo_ready?'#166534':'#92400e',borderBottom:'1px solid #e2e8f0'}}>{stripePayoutDetail.qbo_ready?'All entries have deterministic semantic account routing. Resolve live QBO account IDs before posting.':'Contains review_required activity (such as an unlinked charge, refund, dispute, or amount mismatch). Resolve it before creating a QBO deposit.'}</div>
+          <div style={{padding:0,maxHeight:360,overflow:'auto'}}><table style={{fontSize:10}}><thead><tr style={{background:'#f8fafc'}}><th>Balance transaction</th><th>Order</th><th>Entry</th><th>Account key</th><th>State</th><th style={{textAlign:'right'}}>Amount</th></tr></thead><tbody>
+            {(stripePayoutDetail.qbo_entries||[]).map((e,i)=><tr key={e.stripe_balance_transaction_id+':'+e.entry_type+':'+i} style={{borderBottom:'1px solid #f1f5f9',background:e.qbo_ready?'#fff':'#fffbeb'}}><td style={{fontFamily:'monospace'}}>{e.stripe_balance_transaction_id}</td><td>{e.webstore_order_id||'—'}</td><td>{e.entry_type}</td><td style={{fontFamily:'monospace',color:e.qbo_ready?'#475569':'#b91c1c'}}>{e.posting_account_key}</td><td>{e.tax_state||'—'}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(e.amount_cents||0)/100).toFixed(2)}</td></tr>)}
+          </tbody></table></div>
+        </div>}
       </>}
 
       {/* ── BILL UPLOAD TAB ── */}

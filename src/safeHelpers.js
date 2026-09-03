@@ -411,9 +411,10 @@ export const poIdMissingFromOrder = (o, poId) => {
 };
 
 // Returns a Map of soLineKey -> total invoiced qty across the given invoices.
-// Matches first by exact key, then degrades to sku+color, then to sku alone,
-// for items from invoices written before the key existed or that lost their
-// color metadata. Deposit invoices bill a percentage of the whole order and
+// Matches first by exact key, then by a durable prior-key alias retained when
+// an invoiced line changes SKU, then degrades to sku+color or sku alone for
+// items from invoices written before the key existed or that lost their color
+// metadata. Deposit invoices bill a percentage of the whole order and
 // do NOT lock specific units, so their line qty is intentionally ignored
 // here — callers should credit the deposit amount as $ paid instead.
 // Core reconciliation of "how much of each SO line has already been invoiced".
@@ -428,6 +429,7 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
   // Index by sku|color and by sku alone for fallback lookups
   const skuColorBuckets = new Map(); // sku|color -> [idx,...]
   const skuBuckets = new Map();      // sku -> [idx,...]
+  const aliasBuckets = new Map();    // prior sku|color|idx -> [current idx,...]
   items.forEach((it, idx) => {
     const sku = safeStr(it?.sku)||'';
     const k = sku+'|'+(safeStr(it?.color)||'');
@@ -435,6 +437,12 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
     skuColorBuckets.get(k).push(idx);
     if (!skuBuckets.has(sku)) skuBuckets.set(sku, []);
     skuBuckets.get(sku).push(idx);
+    safeArr(it?.invoice_line_keys).forEach(alias => {
+      const key = safeStr(alias);
+      if (!key || key === soLineKey(it, idx)) return;
+      if (!aliasBuckets.has(key)) aliasBuckets.set(key, []);
+      if (!aliasBuckets.get(key).includes(idx)) aliasBuckets.get(key).push(idx);
+    });
   });
   const pourInto = (bucket, q) => {
     if (bucket.length === 0) return;
@@ -471,6 +479,10 @@ const _reconcileInvoicedQty = (so, invoicesForSO) => {
       if (!(q > 0)) return;
       if (li?._so_line_key && map.has(li._so_line_key)) {
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
+        return;
+      }
+      if (li?._so_line_key && aliasBuckets.has(li._so_line_key)) {
+        pourInto(aliasBuckets.get(li._so_line_key), q);
         return;
       }
       // Legacy fallback chain: parse sku/color from explicit fields or the desc

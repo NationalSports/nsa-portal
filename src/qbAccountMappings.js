@@ -1,3 +1,5 @@
+import { ourBillSku } from './billResolve';
+
 // Single source of truth for every QuickBooks account used by the portal.
 // Values are account numbers (AcctNum), not display names. Account numbers are
 // stable across renamed accounts and let us fail closed instead of guessing.
@@ -494,6 +496,15 @@ export function manualBillAccountKey(vendorSelection) {
   return String(vendorSelection || '').startsWith('deco:') ? 'deco_account' : 'purchases_account';
 }
 
+// Account resolution keeps the account number/name for portal verification and
+// display. QBO write payloads use ReferenceType, which accepts only the entity
+// id; sending portal-only metadata such as accountNumber causes validation fault
+// 2010. Normalize every account reference at the write boundary.
+export function qbWriteAccountRef(ref) {
+  if (!ref?.value) throw new Error('QuickBooks account reference is missing; no transaction was sent.');
+  return { value: String(ref.value) };
+}
+
 export function isDecorationVendorBill(bill, decorationVendors = []) {
   if (bill?.kind === 'decoration') return true;
   return !!findUniqueVendorMatch(bill?.supplier, decorationVendors);
@@ -504,11 +515,43 @@ function expenseLine(amount, description, accountRef) {
     DetailType: 'AccountBasedExpenseLineDetail',
     Amount: money(amount),
     Description: description,
-    AccountBasedExpenseLineDetail: { AccountRef: accountRef },
+    AccountBasedExpenseLineDetail: { AccountRef: qbWriteAccountRef(accountRef) },
   };
 }
 
 const skuKey = value => String(value == null ? '' : value).trim().toUpperCase();
+
+// QBO items are keyed by the portal SKU, never the vendor's internal catalog
+// number. Prefer an accepted line tie because it is the operator-approved
+// answer; otherwise use the same conservative alias/style/description resolver
+// that the bill-review UI uses. Keeping this conversion at the QBO boundary
+// preserves the raw vendor SKU for matching and audit history.
+export function mapBillItemsToPortalSkus(items = [], lineMappings = []) {
+  const mappedByIndex = new Map();
+  for (const mapping of lineMappings || []) {
+    const index = Number(mapping?.bill_idx);
+    const mappedSku = String(mapping?.sku || '').trim();
+    if (!Number.isInteger(index) || index < 0 || !mappedSku || !(Number(mapping?.allocated_qty) > 0)) continue;
+    if (!mappedByIndex.has(index)) mappedByIndex.set(index, new Map());
+    mappedByIndex.get(index).set(skuKey(mappedSku), mappedSku);
+  }
+
+  return (items || []).map((item, index) => {
+    const acceptedSkus = [...(mappedByIndex.get(index)?.values() || [])];
+    if (acceptedSkus.length > 1) {
+      throw new Error(`Bill line ${index + 1} is tied to multiple portal SKUs; no bill was sent.`);
+    }
+    const portalSku = acceptedSkus[0] || ourBillSku(item) || String(item?.sku || '').trim();
+    return portalSku ? { ...item, sku: portalSku } : item;
+  });
+}
+
+// A failed write is safe to retry because the bill sync repeats its duplicate
+// preflight before creating anything. Successful and partial results stay
+// locked for review instead of being blindly re-run.
+export function qbBillNeedsSync(status) {
+  return !status || status === 'error';
+}
 
 export function indexQBNonInventoryItems(items = [], requiredSkus = []) {
   const required = new Set((requiredSkus || []).map(skuKey).filter(Boolean));

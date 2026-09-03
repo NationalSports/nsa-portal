@@ -968,7 +968,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const _allCredits=customer.credits||[];const _creditUsageAll=customer.credit_usage||[];
     const fundCredits=_allCredits.filter(cr=>cr.is_fundraise);
     const regCredits=_allCredits.filter(cr=>!cr.is_fundraise);
-    const _creditRow=cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=_creditUsageAll.filter(u=>u.credit_id===cr.id);
+    const _creditRow=cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=_creditUsageAll.filter(u=>u.credit_id===cr.id);const isMemoCredit=/^Credit memo CM-/i.test(cr.source||'');
       return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
         <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
         <div style={{flex:1}}>
@@ -987,7 +987,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>}
         </div>
         <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
-        {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
+        {isMemoCredit&&<span style={{fontSize:9,color:'#9a3412',fontWeight:700}} title="Posted credit memos stay locked to their original invoice for the accounting audit trail">Credit memo · locked</span>}
+        {bal>0&&!isMemoCredit&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
       </div>;};
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
       {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
