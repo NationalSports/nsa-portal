@@ -119,11 +119,18 @@ def load_csv(path: Path):
     with path.open(newline="", encoding="utf-8-sig") as f:
         sniff = f.read(4096)
         f.seek(0)
+        # Sniff ONLY the delimiter. csv.Sniffer also guesses quoting, and on these
+        # exports it returns doublequote=False -- which silently mis-splits every
+        # field holding an escaped "" (size runs like 5/XXL", inch marks). The row
+        # count still matches, so the damage lands as columns shifted one place
+        # left on ~1.2k rows rather than a parse error: item ends up holding a
+        # quantity, amount lands NULL. Excel quoting is what NetSuite writes, so
+        # pin it instead of letting the sniffer vote.
         try:
-            dialect = csv.Sniffer().sniff(sniff, delimiters=",\t;")
+            delimiter = csv.Sniffer().sniff(sniff, delimiters=",\t;").delimiter
         except csv.Error:
-            dialect = csv.excel
-        reader = csv.reader(f, dialect=dialect)
+            delimiter = ","
+        reader = csv.reader(f, delimiter=delimiter, quotechar='"', doublequote=True)
         raw_headers = next(reader)
         headers = _dedupe_headers(raw_headers)
         out = []
