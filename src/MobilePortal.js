@@ -49,7 +49,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxMerge,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -137,7 +137,42 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // ─── Warehouse state ───
   const[whTab,setWhTab]=useState('if'); // if | pos
   const[mpScanOpen,setMpScanOpen]=useState(false); // camera/QR scanner modal
-  const[mpBox,setMpBox]=useState(null); // {box,binDraft,combineWith} — Box Action sheet (BX plate scans)
+  const[mpBox,setMpBox]=useState(null); // {box,binDraft,combineWith,mergeMode,pending:[box],warn} — Box Action sheet (BX plate scans)
+  // Merge mode has to survive the screen being backgrounded mid-flow: this runs on a phone
+  // held one-handed on the warehouse floor, and iOS Safari discards the tab whenever the
+  // other hand needs the camera or a call comes in. Only the PLATES are stored — the boxes
+  // themselves are re-looked-up on restore, so a merge can never be rebuilt from stale contents.
+  const MERGE_KEY='nsa_box_merge_draft';
+  useEffect(()=>{
+    try{
+      if(mpBox&&mpBox.mergeMode&&mpBox.box)localStorage.setItem(MERGE_KEY,JSON.stringify({targetId:mpBox.box.id,pendingIds:(mpBox.pending||[]).map(p=>p.id)}));
+      else localStorage.removeItem(MERGE_KEY);
+    }catch(_){}
+  },[mpBox]);
+  const _mergeRestored=useRef(false);
+  useEffect(()=>{
+    if(_mergeRestored.current||!onBoxLookup)return;
+    _mergeRestored.current=true;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const raw=localStorage.getItem(MERGE_KEY);if(!raw)return;
+        const d=JSON.parse(raw);if(!d||!d.targetId)return;
+        const target=await onBoxLookup(d.targetId);
+        if(!target||cancelled){try{localStorage.removeItem(MERGE_KEY)}catch(_){}return}
+        const pend=[];
+        for(const pid of (d.pendingIds||[])){
+          const b=await onBoxLookup(pid);
+          // Drop anything that was merged or shipped by someone else while we were away.
+          if(b&&b.id!==target.id&&b.status!=='combined'&&b.status!=='shipped')pend.push(b);
+        }
+        if(cancelled)return;
+        setMpBox({box:target,combineWith:'',mergeMode:true,pending:pend});
+        if(nf)nf('Picked your merge back up — '+target.id+' + '+pend.length+' box'+(pend.length===1?'':'es'));
+      }catch(_){}
+    })();
+    return()=>{cancelled=true};
+  },[onBoxLookup]);// eslint-disable-line react-hooks/exhaustive-deps
   const[receiptPrinted,setReceiptPrinted]=useState(false); // check-in confirmation: has the label been printed yet?
   useEffect(()=>{setReceiptPrinted(false)},[receipt]); // reset the Print button each time a new confirmation opens
   const[whDetail,setWhDetail]=useState(null); // null | {kind:'if',soId,pickId} | {kind:'po',key}
@@ -1437,6 +1472,16 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         const b=onBoxLookup?await onBoxLookup(upper):null;
         if(!b){if(nf)nf('Box "'+v+'" not found','error');return}
         if(b.id!==upper&&nf)nf(upper+' was combined into '+b.id);
+        // Merge mode: keep the target pinned and stack this carton in the pending list,
+        // so the next scan doesn't throw away a half-built merge.
+        if(mpBox&&mpBox.mergeMode&&mpBox.box&&mpBox.box.id!==b.id){
+          if((mpBox.pending||[]).some(p=>p.id===b.id)){if(nf)nf(b.id+' is already in this merge');return}
+          if(b.status==='shipped'){if(nf)nf(b.id+' already shipped — it can\'t be merged','error');return}
+          setMpBox(m=>m?{...m,pending:[...(m.pending||[]),b],warn:null}:m);
+          if(nf)nf(b.id+' added to merge — '+boxUnits(b.contents)+' units');
+          return;
+        }
+        if(mpBox&&mpBox.mergeMode&&mpBox.box&&mpBox.box.id===b.id){if(nf)nf(b.id+' is the merge target');return}
         setMpBox({box:b,combineWith:''});
       })();
       return;
@@ -2407,13 +2452,23 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       const setStatus=async(st)=>{if(!onBoxUpdate)return;if(await onBoxUpdate(bx.id,{status:st}))setMpBox(m=>m?{...m,box:{...m.box,status:st}}:m)};
       const saveBin=async()=>{if(!onBoxUpdate)return;const bin=(mpBox.binDraft||'').trim()||null;if(await onBoxUpdate(bx.id,{bin}))setMpBox(m=>m?{...m,box:{...m.box,bin},binDraft:undefined}:m)};
       const doCombine=async()=>{if(!onBoxCombine||!mpBox.combineWith)return;await onBoxCombine(bx,mpBox.combineWith);const fresh=onBoxLookup?await onBoxLookup(bx.id):null;setMpBox(fresh?{box:fresh,combineWith:''}:null)};
-      return<div style={{position:'fixed',inset:0,zIndex:3000,background:'rgba(15,23,42,0.6)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={()=>setMpBox(null)}>
+      const mergeMode=!!mpBox.mergeMode;const pending=mpBox.pending||[];
+      // Customer behind a box, for the cross-customer warning and the pending rows.
+      const boxCustName=(b)=>{const so=b&&b.so_id?(sos||[]).find(s=>s.id===b.so_id):null;const c=so?(cust||[]).find(x=>x.id===so.customer_id):null;return (c&&c.name)||(b&&b.so_id)||''};
+      const doMerge=async(force)=>{
+        if(!onBoxMerge||!pending.length)return;
+        const res=await onBoxMerge(bx,pending,{confirmedCrossCustomer:!!force});
+        if(res&&res.needsConfirm){setMpBox(m=>m?{...m,warn:res.needsConfirm}:m);return}
+        if(res)setMpBox({box:res,combineWith:'',mergeMode:false,pending:[]});
+      };
+      return<div style={{position:'fixed',inset:0,zIndex:3000,background:'rgba(15,23,42,0.6)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={()=>{if(!mergeMode)setMpBox(null)}}>
         <div style={{width:'100%',maxWidth:560,maxHeight:'85vh',overflowY:'auto',background:'white',borderRadius:'14px 14px 0 0',padding:'14px 16px calc(14px + env(safe-area-inset-bottom))'}} onClick={e=>e.stopPropagation()}>
           <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:8}}>
             <span style={{fontSize:17,fontWeight:900,fontFamily:'monospace',color:'#0e7490'}}>📦 {bx.id}</span>
+            {mergeMode&&<span style={{fontSize:10,padding:'3px 10px',borderRadius:10,fontWeight:900,color:'#fff',background:'#0e7490',letterSpacing:0.5}}>MERGE TARGET</span>}
             <span style={{fontSize:11,padding:'2px 10px',borderRadius:10,fontWeight:800,color:meta.color,background:meta.bg}}>{meta.label}</span>
             {bx.merged_into&&<span style={{fontSize:11,color:'#64748b'}}>→ {bx.merged_into}</span>}
-            <button onClick={()=>setMpBox(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',fontSize:22,padding:'0 4px'}}>×</button>
+            {!mergeMode&&<button onClick={()=>setMpBox(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',fontSize:22,padding:'0 4px'}}>×</button>}
           </div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12,marginBottom:10,color:'#475569'}}>
             {bx.if_id&&<span>IF: <strong style={{color:'#1e40af'}}>{bx.if_id}</strong></span>}
@@ -2431,7 +2486,47 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               </div>
               <div style={{fontFamily:'monospace',fontSize:11,color:'#475569',marginTop:2}}>{sz.map(([s,val])=>s+': '+val).join('  ')}</div>
             </div>})}
-          {boxActive&&<>
+          {/* ── MERGE MODE ── target stays pinned above; each scan stacks a carton here.
+              Big tap targets throughout: this is worked one-handed holding a box. ── */}
+          {mergeMode&&<div style={{marginTop:10}}>
+            {/* The sheet covers the toolbar's scan button, so merge mode carries its own —
+                without it there is no way to scan the next carton without closing the merge. */}
+            <button onClick={()=>setMpScanOpen(true)}
+              style={{width:'100%',padding:'14px',border:'2px dashed #0e7490',borderRadius:10,background:'#f0fdff',marginBottom:10,textAlign:'left'}}>
+              <div style={{fontSize:15,fontWeight:800,color:'#0e7490'}}>📷 Scan the next box to add it</div>
+              <div style={{fontSize:12,color:'#0e7490',marginTop:3}}>Everything lands in <strong>{bx.id}</strong>. Nothing is saved until you confirm.</div>
+            </button>
+            <div style={{fontSize:11,fontWeight:800,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Merging in ({pending.length})</div>
+            {pending.length===0&&<div style={{fontSize:13,color:'#94a3b8',marginBottom:8}}>No boxes scanned yet.</div>}
+            {pending.map(p=><div key={p.id} style={{display:'flex',alignItems:'center',gap:10,padding:'12px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{fontFamily:'monospace',fontWeight:800,color:'#0e7490',fontSize:15}}>{p.id}</div>
+                <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{[boxCustName(p),p.so_id].filter(Boolean).join(' · ')}</div>
+              </div>
+              <span style={{fontSize:13,fontWeight:800,color:'#334155'}}>{boxUnits(p.contents)} u</span>
+              <button onClick={()=>setMpBox(m=>m?{...m,pending:(m.pending||[]).filter(x=>x.id!==p.id),warn:null}:m)}
+                style={{minWidth:48,minHeight:48,borderRadius:10,border:'1px solid #fecaca',background:'#fef2f2',color:'#b91c1c',fontSize:20,fontWeight:800}} aria-label={'Remove '+p.id}>×</button>
+            </div>)}
+            {mpBox.warn&&<div style={{padding:'14px',border:'2px solid #b45309',background:'#fffbeb',borderRadius:10,margin:'10px 0'}}>
+              <div style={{fontSize:14,fontWeight:900,color:'#92400e',marginBottom:6}}>⚠️ These boxes belong to different customers.</div>
+              {mpBox.warn.groups.map(g=><div key={g.key||g.name} style={{fontSize:13,color:'#78350f',marginBottom:3}}>
+                <strong style={{fontFamily:'monospace'}}>{g.boxIds.join(', ')}</strong> — {g.name}</div>)}
+              <div style={{display:'flex',gap:8,marginTop:12}}>
+                <button onClick={()=>doMerge(true)} style={{flex:1,minHeight:48,fontSize:14,fontWeight:800,borderRadius:10,border:'none',background:'#b45309',color:'#fff'}}>Merge anyway</button>
+                <button onClick={()=>setMpBox(m=>m?{...m,warn:null}:m)} style={{minHeight:48,padding:'0 20px',fontSize:14,fontWeight:700,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff'}}>Back</button>
+              </div>
+            </div>}
+            <div style={{display:'flex',gap:8,marginTop:12}}>
+              <button onClick={()=>doMerge(false)} disabled={!pending.length}
+                style={{flex:1,minHeight:52,fontSize:15,fontWeight:800,borderRadius:10,border:'none',background:'#0e7490',color:'#fff',opacity:pending.length?1:0.5}}>
+                ✓ Confirm Merge ({pending.length+1} boxes)</button>
+              <button onClick={()=>setMpBox(m=>m?{...m,mergeMode:false,pending:[],warn:null}:m)}
+                style={{minHeight:52,padding:'0 20px',fontSize:15,fontWeight:700,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff'}}>Cancel</button>
+            </div>
+          </div>}
+          {boxActive&&!mergeMode&&<>
+            {onBoxMerge&&<button onClick={()=>setMpBox(m=>m?{...m,mergeMode:true,pending:[],warn:null,combineWith:''}:m)}
+              style={{width:'100%',minHeight:52,fontSize:15,fontWeight:800,borderRadius:10,border:'none',background:'#0e7490',color:'#fff',margin:'10px 0'}}>🔗 Merge boxes into {bx.id}</button>}
             <div style={{display:'flex',gap:6,alignItems:'center',margin:'10px 0'}}>
               <input placeholder="Location / bin (e.g. A3, dock)" value={mpBox.binDraft??(bx.bin||'')} onChange={e=>setMpBox(m=>({...m,binDraft:e.target.value}))}
                 style={{flex:1,fontSize:13,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8}}/>
