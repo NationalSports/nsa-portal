@@ -81,24 +81,33 @@ async function loadFindings(admin, graceDays = 7) {
       .select('id,so_id,total,stripe_balance_transaction_id,created_at')
       .eq('payment_mode', 'paid').not('stripe_balance_transaction_id', 'is', null),
     admin.from('stripe_balance_transactions')
-      .select('stripe_balance_transaction_id,amount_cents')
-      .eq('reporting_category', 'charge'),
+      .select('stripe_balance_transaction_id,webstore_order_id,reporting_category,amount_cents')
+      .not('webstore_order_id', 'is', null),
   ]);
   const error = unlinked.error || mismatches.error || failures.error || linkedOrders.error || linkedCharges.error;
   if (error) throw error;
-  const chargeById = new Map((linkedCharges.data || []).map((row) => [row.stripe_balance_transaction_id, row]));
+  const financialRows = linkedCharges.data || [];
+  const chargeById = new Map(financialRows
+    .filter((row) => row.reporting_category === 'charge')
+    .map((row) => [row.stripe_balance_transaction_id, row]));
+  const activityByOrder = financialRows.reduce((amounts, row) => {
+    amounts.set(row.webstore_order_id, Number(amounts.get(row.webstore_order_id) || 0) + Number(row.amount_cents || 0));
+    return amounts;
+  }, new Map());
   const amountMismatches = (linkedOrders.data || []).flatMap((order) => {
     const charge = chargeById.get(order.stripe_balance_transaction_id);
     if (!charge) return [];
     const portalCents = Math.round(Number(order.total || 0) * 100);
-    const stripeCents = Number(charge.amount_cents) || 0;
-    if (portalCents === stripeCents) return [];
+    const stripeChargeCents = Number(charge.amount_cents) || 0;
+    const stripeActivityCents = Number(activityByOrder.get(order.id) || 0);
+    if (portalCents === stripeActivityCents) return [];
     return [{
       order_id: order.id,
       so_id: order.so_id || null,
       portal_total_cents: portalCents,
-      stripe_amount_cents: stripeCents,
-      difference_cents: stripeCents - portalCents,
+      stripe_charge_cents: stripeChargeCents,
+      stripe_activity_cents: stripeActivityCents,
+      difference_cents: stripeActivityCents - portalCents,
       created_at: order.created_at,
     }];
   });
@@ -122,7 +131,7 @@ async function sendAlert({ webhook, catchUp, payoutSweep, findings }) {
   const failureRows = findings.failures.map((row) =>
     `<li><strong>${escapeHtml(row.stripe_payout_id)}</strong> · ${escapeHtml(row.failure_code || 'failed')} · ${escapeHtml(row.failure_message || '')}</li>`).join('');
   const amountRows = findings.amount_mismatches.map((row) =>
-    `<li><strong>${escapeHtml(row.so_id || row.order_id)}</strong> · Stripe $${(Number(row.stripe_amount_cents || 0) / 100).toFixed(2)} vs portal $${(Number(row.portal_total_cents || 0) / 100).toFixed(2)}</li>`).join('');
+    `<li><strong>${escapeHtml(row.so_id || row.order_id)}</strong> · Stripe net customer activity $${(Number(row.stripe_activity_cents || 0) / 100).toFixed(2)} vs portal $${(Number(row.portal_total_cents || 0) / 100).toFixed(2)} (original charge $${(Number(row.stripe_charge_cents || 0) / 100).toFixed(2)})</li>`).join('');
   const catchUpRows = [...catchUp.errors, ...payoutSweep.errors].map((row) =>
     `<li><strong>${escapeHtml(row.order_id || row.payout_id || 'Stripe item')}</strong> · ${escapeHtml(row.error)}</li>`).join('');
   const htmlContent = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:680px">
@@ -132,7 +141,7 @@ async function sendAlert({ webhook, catchUp, payoutSweep, findings }) {
     ${findings.unlinked_count ? `<h3>Old card orders without a balance-transaction link (${findings.unlinked_count})</h3><ul>${orderRows}</ul>` : ''}
     ${findings.mismatches.length ? `<h3>Actionable paid payouts (${findings.mismatches.length})</h3><ul>${mismatchRows}</ul>` : ''}
     ${findings.failures.length ? `<h3>Failed payouts (${findings.failures.length})</h3><ul>${failureRows}</ul>` : ''}
-    ${findings.amount_mismatches.length ? `<h3>Charged amount differs from portal order (${findings.amount_mismatches.length})</h3><ul>${amountRows}</ul>` : ''}
+    ${findings.amount_mismatches.length ? `<h3>Stripe customer activity differs from portal order (${findings.amount_mismatches.length})</h3><ul>${amountRows}</ul>` : ''}
     ${catchUpRows ? `<h3>Catch-up errors</h3><ul>${catchUpRows}</ul>` : ''}
     <p style="font-size:12px;color:#64748b">Open QuickBooks → Stripe Payouts in the NSA portal to retry or inspect the ledger. No QuickBooks transaction is posted automatically.</p>
   </div>`;

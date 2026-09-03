@@ -47,19 +47,23 @@ function summarizeSettledOrders(rows, chargeByOrder) {
   }, { order_count: 0, linked_count: 0, unlinked_count: 0, total_cents: 0, portal_total_cents: 0, linked_cents: 0, unlinked_cents: 0 });
 }
 
-function chargeAmountMismatches(orders, chargeByOrder) {
+function chargeAmountMismatches(orders, chargeByOrder, activityAmountByOrder = null) {
   return (orders || []).flatMap((order) => {
     const charge = chargeByOrder.get(order.id);
     if (!charge) return [];
     const portalCents = Math.round(Number(order.total || 0) * 100);
-    const stripeCents = Number(charge.amount_cents) || 0;
-    if (portalCents === stripeCents) return [];
+    const stripeChargeCents = Number(charge.amount_cents) || 0;
+    const stripeActivityCents = activityAmountByOrder
+      ? Number(activityAmountByOrder.get(order.id) || 0)
+      : stripeChargeCents;
+    if (portalCents === stripeActivityCents) return [];
     return [{
       order_id: order.id,
       so_id: order.so_id || null,
       portal_total_cents: portalCents,
-      stripe_amount_cents: stripeCents,
-      difference_cents: stripeCents - portalCents,
+      stripe_charge_cents: stripeChargeCents,
+      stripe_activity_cents: stripeActivityCents,
+      difference_cents: stripeActivityCents - portalCents,
     }];
   });
 }
@@ -219,15 +223,22 @@ exports.handler = async (event) => {
           .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null),
         admin.from('stripe_payouts').select('stripe_payout_id,automatic,method,status,reconciliation_status'),
         admin.from('stripe_balance_transactions')
-          .select('stripe_balance_transaction_id,webstore_order_id,amount_cents')
-          .eq('reporting_category', 'charge').not('webstore_order_id', 'is', null),
+          .select('stripe_balance_transaction_id,webstore_order_id,reporting_category,amount_cents')
+          .not('webstore_order_id', 'is', null),
       ]);
       if (ordersResult.error || payoutsResult.error || chargesResult.error) {
         throw ordersResult.error || payoutsResult.error || chargesResult.error;
       }
       const orders = ordersResult.data || [];
       const payouts = payoutsResult.data || [];
-      const chargeByOrder = new Map((chargesResult.data || []).map((row) => [row.webstore_order_id, row]));
+      const financialRows = chargesResult.data || [];
+      const chargeByOrder = new Map(financialRows
+        .filter((row) => row.reporting_category === 'charge')
+        .map((row) => [row.webstore_order_id, row]));
+      const activityAmountByOrder = financialRows.reduce((amounts, row) => {
+        amounts.set(row.webstore_order_id, Number(amounts.get(row.webstore_order_id) || 0) + Number(row.amount_cents || 0));
+        return amounts;
+      }, new Map());
       const cardOrders = summarizeOrders(orders);
       const incompleteAttempts = summarizeOrders(orders.filter((row) =>
         !chargeByOrder.has(row.id) && row.status === 'pending_payment'));
@@ -236,7 +247,7 @@ exports.handler = async (event) => {
       const settledOrders = summarizeSettledOrders(orders, chargeByOrder);
       const settledUnlinkedOrders = orders.filter((row) =>
         chargeByOrder.has(row.id) && !row.stripe_balance_transaction_id);
-      const amountMismatches = chargeAmountMismatches(orders, chargeByOrder);
+      const amountMismatches = chargeAmountMismatches(orders, chargeByOrder, activityAmountByOrder);
       const so2313 = summarizeOrders(orders.filter((row) => {
         const soId = String(row.so_id || '').trim().toUpperCase();
         return soId === 'SO-2313' || soId === '2313';

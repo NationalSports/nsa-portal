@@ -236,12 +236,24 @@ describe('Stripe-settled order summaries', () => {
       ['order-1', { amount_cents: 1000 }],
       ['order-2', { amount_cents: 2000 }],
     ]);
+    const activityByOrder = new Map([
+      ['order-1', 900],
+      ['order-2', 2000],
+    ]);
     expect(summarizeSettledOrders(orders, chargeByOrder)).toMatchObject({
       order_count: 2, linked_count: 1, unlinked_count: 1,
       total_cents: 3000, portal_total_cents: 3200,
     });
-    expect(chargeAmountMismatches(orders, chargeByOrder)).toEqual([expect.objectContaining({
-      order_id: 'order-1', portal_total_cents: 1200, stripe_amount_cents: 1000, difference_cents: -200,
+    expect(chargeAmountMismatches(orders, chargeByOrder, activityByOrder)).toEqual([expect.objectContaining({
+      order_id: 'order-1', portal_total_cents: 1200, stripe_charge_cents: 1000,
+      stripe_activity_cents: 900, difference_cents: -300,
     })]);
+  });
+
+  test('treats a linked refund that brings Stripe activity to the current order total as reconciled', () => {
+    const orders = [{ id: 'order-refunded', so_id: 'SO-R', total: 9, stripe_balance_transaction_id: 'txn_charge' }];
+    const chargeByOrder = new Map([['order-refunded', { amount_cents: 1000 }]]);
+    const activityByOrder = new Map([['order-refunded', 900]]);
+    expect(chargeAmountMismatches(orders, chargeByOrder, activityByOrder)).toEqual([]);
   });
 });
