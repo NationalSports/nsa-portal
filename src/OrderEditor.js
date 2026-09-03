@@ -36,6 +36,7 @@ import { _dbPersistNewPoLine } from './lib/dbEngine';
 import { applyFullPromoPricing } from './lib/promoPricing';
 import { fetchPaidPromoHistoryInvoices, mergePromoHistoryInvoices, promoHalfWindows, withEarnedPromoAllocation } from './lib/promoHistory';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
+import { apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from './lib/apiOrderLines';
 import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -2881,7 +2882,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const sizes={};Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&typeof v==='number'&&v>0)sizes[k]=v});
       if(!Object.keys(sizes).length)return;
       if(!writeIn&&pl.ship_to&&(pl.ship_to.line1||pl.ship_to.city))writeIn={addr:pl.ship_to,attention:pl.attention||pl.ship_to.attention||''};
-      payloadItems.push({sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
+      payloadItems.push({item_idx:ln.lineIdx,sku:it.sku,name:it.name,color:it.color,sizes,unit_cost:safeNum(pl.unit_cost!=null?pl.unit_cost:it.nsa_cost),
         ...(pl._size_costs?{_size_costs:pl._size_costs}:{}),
         ...(it._mt_skus?{_mt_style:it._mt_style,_mt_color:it._mt_color,_mt_sku:it._mt_sku,_mt_skus:it._mt_skus}:{})});
     });
@@ -2900,7 +2901,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const shipTo=writeIn?_shape(writeIn.addr,writeIn.attention):(_decoShip?_shape(_decoShip):_shape(_custShip));
     return {
       vendorKey:vk,poNumber:poId,vendorName:po.vendor,
-      batchPOs:[{so_id:o.id,items:payloadItems}],
+      batchPOs:[{so_id:o.id,po_id:poId,items:payloadItems}],
       ...(shipTo?{shipTo}:{}),
       ...(po.drop_ship&&!shipTo?{shipWarning:'This PO is drop ship but no delivery address is on file'+(relDeco?' for the decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" for the SO's ship-to customer")+' — it has fallen back to the NSA warehouse. Edit the address below if it should go elsewhere.'}:{}),
       // Decorator drop-ship: pre-lock ship-to and pre-fill DPO number in attention line
@@ -2913,10 +2914,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // After a real submit, stamp the returned order id on the PO's lines for traceability.
   // Returns true once the ack is stamped and saved — the vendor modals show a loud "order placed
   // but NOT recorded" warning on a falsy return, so a successful record must say so explicitly.
-  const _recordApiOrder=(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
+  const _recordApiOrder=async(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return false;
     // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
     // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
-    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||''}))}:null;
     // Granularity (owner 2026-07-23): each line carries only ITS item's vendor keys — a
     // style-matched subset when one exists, the full list as fallback so nothing is lost.
     const _vkN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -2924,11 +2925,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const k=_vkN(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
       return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
     const stamp=_stampFor('');// legacy shape for the full-page badge below
-    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
-    const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
+    const current=oRef.current||o;
+    const items=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
+    const updated={...current,items,updated_at:new Date().toLocaleString()};
+    // A vendor acknowledgement is not safely recorded until the database save itself has
+    // completed. A fire-and-forget save can show success and then lose the API marker on reload.
+    setO(updated);oRef.current=updated;
+    let saved=true;
+    try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[recordApiOrder] durable save failed',_saveErr)}
+    if(!saved){setO(current);oRef.current=current;nf('⚠️ '+desc.vendorName+' accepted order '+oid+', but the portal could not confirm its PO record. Do NOT re-order.','error');return false}
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
     // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
-    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp}}:pf);
+    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp},soItems:items}:pf);
     nf('✅ '+desc.vendorName+' order '+oid+' recorded on '+desc.poNumber);
     return true;};
   // Shared onSubmitted for the vendor API modals below. Batch submits promote the whole queue
@@ -2942,7 +2950,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const orderedNum=onOrderBatch?await onOrderBatch({vendorKey:apiOrder.vendorKey,groupKey:apiOrder.groupKey||null,skipSoId:apiOrder.skipSoId,apiResult:r,apiLines}):null;
       if(!orderedNum)return false;
       const _oid=r&&(r.orderId||r.orderNumber||r.transactionId);
-      const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+      const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0,warehouse_id:l.warehouse_id||'',warehouse:l.warehouse||'',warehouse_qty:Number(l.warehouse_qty)||0,warehouse_basis:l.warehouse_basis||''}))}:null;
       // Granularity (owner 2026-07-23): per-item vendor-key subset, full list as fallback.
       const _vkN2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
       const _stampFor2=(itemSku)=>{if(!_oid)return{};const base={api_order_id:_oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
@@ -2950,13 +2958,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
       const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
       if(myBatchIds.size>0){
-        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
-        const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
-        setO(updated);onSave(updated);
+        const current=oRef.current||o;
+        const items2=safeItems(current).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
+        const updated={...current,items:items2,updated_at:new Date().toLocaleString()};
+        setO(updated);oRef.current=updated;
+        let saved=true;
+        try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[apiOrderSubmitted] durable batch save failed',_saveErr)}
+        if(!saved){setO(current);oRef.current=current;return false}
       }
       return orderedNum;
     }
     return _recordApiOrder(apiOrder,r,apiLines);
+  };
+  const _removeSanMarApiLine=async(line)=>{
+    if(line?.sourceSO&&line.sourceSO!==o.id){nf('Open '+line.sourceSO+' to remove this line from its PO. Nothing was changed.','error');return false}
+    const current=oRef.current||o;
+    const result=removeApiLineFromPoItems(safeItems(current),line);
+    if(!result.removed){nf(result.reason||'This line could not be removed from the PO.','error');return false}
+    const updated={...current,items:result.items,updated_at:new Date().toLocaleString()};
+    setO(updated);oRef.current=updated;
+    let saved=true;
+    try{saved=onSaveNow?await onSaveNow(updated):(onSave(updated)!==false)}catch(_saveErr){saved=false;console.error('[removeSanMarApiLine] durable save failed',_saveErr)}
+    if(!saved){setO(current);oRef.current=current;nf('The PO removal could not be confirmed. Do not submit; reload the order and verify the PO.','error');return false}
+    if(line.sourceBatchId&&onBatchPO)onBatchPO(prev=>removeApiLineFromBatchPOs(prev,line));
+    setPoFullPage(pf=>{if(!pf)return pf;let first=null;const allLines=[];result.items.forEach((it,lineIdx)=>{const poIdx=(it.po_lines||[]).findIndex(pl=>pl.po_id===result.poId);if(poIdx>=0){allLines.push({lineIdx,poIdx});if(!first)first={item:it,po:it.po_lines[poIdx]}}});return first?{...pf,item:first.item,po:first.po,soItems:result.items,allLines}:null});
+    nf('Removed '+line.style+' '+line.size+' from '+result.poId+'; it will not be sent to SanMar.');
+    return true;
   };
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
@@ -10339,7 +10366,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                   newPoLines.push({lineIdx:idx,poIdx:updatedItems[idx].po_lines.length-1});
                 }
-                apiPayloadItems.push({sku:member.sku,name:member.name,color:member.color,sizes:lineSizes,unit_cost:unitCostVal,
+                apiPayloadItems.push({item_idx:idx,sku:member.sku,name:member.name,color:member.color,sizes:lineSizes,unit_cost:unitCostVal,
                   ...(poLine._size_costs?{_size_costs:poLine._size_costs}:{}),
                   ...(member._mt_skus?{_mt_style:member._mt_style,_mt_color:member._mt_color,_mt_sku:member._mt_sku,_mt_skus:member._mt_skus}:{})});
               }
@@ -10396,7 +10423,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 // DPO number on the attention line would come back blank.
                 const _linkShip=resolveDecoShipToClient({decoId:_linkDeco.deco_vendor_id,so:updated,decoVendors,vendors:vendorList,itemIdxs:_newIdxs});
                 setApiOrder({vendorKey:_linkVk,poNumber:effectivePoId,vendorName:vn,
-                  batchPOs:[{so_id:o.id,items:apiPayloadItems}],
+                  batchPOs:[{so_id:o.id,po_id:effectivePoId,items:apiPayloadItems}],
                   shipToDecoId:_linkDeco.deco_vendor_id,
                   initialDpoNumber:String(_linkDeco.po_id||''),// full "DPO ####" — the attention line must carry the DPO prefix, so the field holds it verbatim
                   ...(_linkShip?{shipTo:{companyName:_linkShip.name,attentionTo:_linkShip.attention||'',address1:_linkShip.line1,city:_linkShip.city,region:_linkShip.state,postalCode:_linkShip.zip}}:{})});
@@ -10424,7 +10451,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })();
                 if(_dsShipTo){
                   nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
-                  setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+                  setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,po_id:effectivePoId,items:apiPayloadItems}],shipTo:_dsShipTo});
                 }else{
                   // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
                   const first=newPoLines[0];
@@ -10644,7 +10671,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>;
       })()}
 
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted} onRemoveLine={_removeSanMarApiLine}/>}
       {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
       {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={_apiOrderSubmitted}/>}
 
@@ -15428,12 +15455,17 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const poStatus=isManualCostPO?'recorded':isDropShipFP?(totalBilledFP>=totalOrdered&&totalOrdered>0?'shipped':totalBilledFP>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
       const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
       const poTotal=totalOrdered*unitCost;
-      const vendorName=po.deco_vendor||(isManualCostPO?po.vendor:'')||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
+      // The supplier recorded on the PO is authoritative. The item catalog supplier is
+      // only a fallback and a mismatch signal; it must not silently relabel a real PO.
+      const vendorName=po.deco_vendor||vendorList.find(v=>v.id===po.vendor)?.name||D_V.find(v=>v.id===po.vendor)?.name||po.vendor||vendorList.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
+      const poVendorMismatch=poItems.map(x=>{const source=vendorList.find(v=>v.id===x.item?.vendor_id)||D_V.find(v=>v.id===x.item?.vendor_id);if(!source||!x.po?.vendor)return null;const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');const recorded=vendorList.find(v=>v.id===x.po.vendor)?.name||D_V.find(v=>v.id===x.po.vendor)?.name||x.po.vendor;return norm(recorded)!==norm(source.name)?{sku:x.item.sku,recorded,source:source.name}:null}).find(Boolean);
       // API placement — any line on this PO carrying api_order_id means it was submitted
       // electronically to the vendor (SanMar / S&S / Momentec). Surface it on the PO page.
       const apiPo=poItems.map(x=>x.po).find(p=>p&&p.api_order_id)||(po&&po.api_order_id?po:null);
+      const apiAcceptedCount=poItems.filter(x=>x.po&&x.po.api_order_id).length;
+      const apiPartiallyRecorded=apiAcceptedCount>0&&apiAcceptedCount<poItems.length;
       const merchandiseTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
@@ -15504,6 +15536,10 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {/* Ready-for-deco hand-off — persists after the receive toast fades */}
           {!isDecoPO&&!isManualCostPO&&decoReadyBanner((allLines||[]).map(ln=>ln.lineIdx))}
 
+          {poVendorMismatch&&<div style={{marginBottom:16,padding:'10px 12px',borderRadius:8,background:'#fef2f2',border:'2px solid #ef4444',color:'#991b1b',fontSize:12}}>
+            <strong>⚠ PO/item link mismatch — verify before ordering or receiving.</strong> This PO is recorded for <strong>{poVendorMismatch.recorded}</strong>, but it is attached to <strong>{poVendorMismatch.sku}</strong>, whose catalog supplier is <strong>{poVendorMismatch.source}</strong>. This can indicate that PO details were crossed onto the wrong sales-order item.
+          </div>}
+
           {/* PO Total Summary */}
           <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
             <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
@@ -15532,12 +15568,18 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {!isDecoPO&&!isManualCostPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Line Items</h2></div>
             <div className="card-body">
+              {apiPo&&<div style={{marginBottom:10,padding:'8px 10px',borderRadius:6,background:apiPartiallyRecorded?'#fff7ed':'#f0fdf4',border:'1px solid '+(apiPartiallyRecorded?'#fdba74':'#86efac'),color:apiPartiallyRecorded?'#9a3412':'#166534',fontSize:11,fontWeight:600}}>
+                {apiPartiallyRecorded?'⚠ Only '+apiAcceptedCount+' of '+poItems.length+' PO item lines have a saved API acknowledgement. Do not resubmit the whole PO; verify the unmarked lines first.':'✓ Every item line below carries the vendor API acknowledgement.'}
+                <span style={{fontWeight:400}}> “Open” in the size table means ordered but not yet received; it does not mean un-ordered.</span>
+              </div>}
               <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
                 <thead><tr style={{borderBottom:'2px solid #0f172a'}}>
                   <th style={{padding:'6px 8px',textAlign:'left'}}>SKU</th>
                   <th style={{padding:'6px 8px',textAlign:'left'}}>Product</th>
                   <th style={{padding:'6px 8px',textAlign:'left'}}>Color</th>
                   <th style={{padding:'6px 8px',textAlign:'center'}}>Qty</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>API acceptance</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>Expected origin</th>
                   <th style={{padding:'6px 8px',textAlign:'right'}}>Unit Cost</th>
                   <th style={{padding:'6px 8px',textAlign:'right'}}>Line Total</th>
                 </tr></thead>
@@ -15545,19 +15587,24 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                   {poItems.map(({item:it,po:p},idx)=>{
                     const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
+                    const apiCheck=apiVerificationForPoLine(it,p);
+                    const acceptedSizes=Object.entries(apiCheck.bySize).map(([size,v])=>size+':'+v.quantity).join(' ');
+                    const expectedOrigins=[...new Set(apiCheck.rows.map(row=>row.warehouse||row.warehouse_name||'').filter(Boolean))];
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                       <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
                       <td style={{padding:'6px 8px',color:'#64748b'}}>{it.color}</td>
                       <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{qty}<div style={{fontSize:10,color:'#94a3b8'}}>{sk.map(sz=>sz+':'+p[sz]).join(' ')}</div></td>
+                      <td style={{padding:'6px 8px'}}>{apiCheck.accepted?<><div style={{color:'#0f766e',fontWeight:800}}>✓ Accepted</div><div style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{acceptedSizes||'Legacy acknowledgement — size detail not captured'}</div></>:<span style={{color:'#b45309',fontWeight:700}}>Not recorded</span>}</td>
+                      <td style={{padding:'6px 8px'}}>{expectedOrigins.length?<><div style={{fontWeight:700,color:'#334155'}}>{expectedOrigins.join(' · ')}</div><div style={{fontSize:9,color:'#94a3b8'}}>Prediction saved at submission</div></>:<span style={{color:'#94a3b8'}}>Not captured</span>}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>
                     </tr>})}
-                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #fde68a'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
+                  {manualCost>0&&<tr style={{background:'#fffbeb',borderTop:'1px solid #fde68a'}}><td colSpan={3} style={{padding:'6px 8px',fontWeight:700,color:'#92400e'}}>Manual added cost{manualCostNote?' — '+manualCostNote:''}</td><td style={{padding:'6px 8px',textAlign:'center',color:'#92400e'}}>1</td><td colSpan={3}></td><td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,color:'#92400e'}}>${manualCost.toFixed(2)}</td></tr>}
                   <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
                     <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
                     <td style={{padding:'6px 8px',textAlign:'center'}}>{grandOrdered}</td>
-                    <td></td>
+                    <td colSpan={3}></td>
                     <td style={{padding:'6px 8px',textAlign:'right',fontSize:16,color:'#166534'}}>${grandTotal.toFixed(2)}</td>
                   </tr>
                 </tbody>

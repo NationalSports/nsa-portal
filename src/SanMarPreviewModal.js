@@ -41,14 +41,14 @@ const NSA_SHIP_TO = {
   country: 'US',
 };
 
-export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipWarning = '', shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted }) {
+export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'SanMar', env = 'prod', shipTo, shipWarning = '', shipToDecoId = null, initialDpoNumber = '', decoVendors = [], onClose, onSubmitted, onRemoveLine }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'xml'
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
-  const [bookErr, setBookErr] = useState(''); // order placed at vendor but NOT recorded in the portal
+  const [bookErr, setBookErr] = useState(''); // order placed at vendor but local recording could not be confirmed
   // partId (Unique_Key) resolution
   const [resolving, setResolving] = useState(true);
   const [resolvedParts, setResolvedParts] = useState({}); // lineNumber -> uniqueKey
@@ -64,6 +64,9 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // inventory list, warehouse order 1-7,12) — informational "ships from" display only;
   // a lookup failure leaves the column blank, never blocks.
   const [whseByLine, setWhseByLine] = useState(null); // null = loading
+  const [removedLineNumbers, setRemovedLineNumbers] = useState(() => new Set());
+  const [removingLine, setRemovingLine] = useState(null);
+  const [removalErr, setRemovalErr] = useState('');
 
   // Ship-to selector state; when shipToDecoId is set the mode is pre-determined (no manual picker).
   // 'order' appears only when the caller resolved a destination off the batch itself
@@ -143,8 +146,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
 
   // Lines still missing a partId after the base build — these need a live lookup.
   const missing = useMemo(
-    () => baseLines.filter(l => !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
-    [baseLines]
+    () => baseLines.filter(l => !removedLineNumbers.has(l.lineNumber) && !l.partId).map(l => ({ key: l.lineNumber, style: l.style, color: l.color, size: l.size })),
+    [baseLines, removedLineNumbers]
   );
 
   useEffect(() => {
@@ -168,7 +171,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // the vendor_keys we record all describe the item that will actually ship; what the order
   // said is kept on _manual so the table can show both.
   const lines = useMemo(
-    () => baseLines.map(l => {
+    () => baseLines.filter(l => !removedLineNumbers.has(l.lineNumber)).map(l => {
       const man = manualParts[l.lineNumber];
       if (man && man.uniqueKey) {
         const style = man.style || l.style, color = man.color || l.color, size = man.size || l.size;
@@ -180,7 +183,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
       }
       return l.partId ? l : { ...l, partId: resolvedParts[l.lineNumber] || '' };
     }),
-    [baseLines, resolvedParts, manualParts]
+    [baseLines, resolvedParts, manualParts, removedLineNumbers]
   );
   // Changing what ships un-confirms the order: the checkbox says "I confirm this is a real
   // order", and it was checked against the previous set of parts.
@@ -194,12 +197,19 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [forcedWhse, setForcedWhse] = useState('');
   // Lines as submitted: a forced warehouse rides on every line as fobId.
   const submitLines = useMemo(
-    () => (forcedWhse ? lines.map(l => ({ ...l, fobId: String(forcedWhse) })) : lines),
+    () => lines.map((l, index) => ({ ...l, lineNumber: index + 1, ...(forcedWhse ? { fobId: String(forcedWhse) } : {}) })),
     [lines, forcedWhse]
   );
-  const payload = useMemo(() => ({ ...base.payload, PO: { ...base.payload.PO, lineItems: submitLines } }), [base.payload, submitLines]);
+  const payload = useMemo(() => {
+    const totalAmount = submitLines.reduce((sum, line) => sum + line.quantity * (line.unitPrice || 0), 0);
+    return { ...base.payload, PO: { ...base.payload.PO, lineItems: submitLines, totalAmount: Number(totalAmount.toFixed(2)) } };
+  }, [base.payload, submitLines]);
   const soap = useMemo(() => buildSanMarPOSoap(payload, { id: '<from env>' }), [payload]);
-  const totals = base.totals;
+  const totals = useMemo(() => ({
+    totalQty: submitLines.reduce((sum, line) => sum + line.quantity, 0),
+    totalCost: submitLines.reduce((sum, line) => sum + line.quantity * (line.unitPrice || 0), 0),
+    lineCount: submitLines.length,
+  }), [submitLines]);
 
   // Fetch per-warehouse stock for every unique style+color+size on the order (one
   // legacy-inventory call each) — matched back to each line by the same key.
@@ -279,6 +289,28 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     }).map(l => ({ line: l, have: forcedRowFor(lineWhseRows[_whseKey(l)])?.qty ?? 0 }));
   }, [forcedInfo, lines, lineWhseRows]);
 
+  const expectedWarehouseFor = (line) => {
+    const rows = lineWhseRows[_whseKey(line)] || [];
+    if (forcedInfo) return forcedRowFor(rows);
+    if (consolidatedWhse) return rows.find(row => warehouseKey(row) === consolidatedWhse) || null;
+    return [...rows].sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity)).find(row => row.qty >= line.quantity)
+      || [...rows].sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity))[0] || null;
+  };
+
+  const removeLine = async (line) => {
+    if (!onRemoveLine || removingLine != null || submitting) return;
+    if (!window.confirm(`Remove ${line.style} ${line.color || ''} ${line.size} (${line.quantity}) from this PO?\n\nIt will not be sent to SanMar. The quantity will return to the sales order so it can be sourced elsewhere.`)) return;
+    setRemovingLine(line.lineNumber); setErrorMsg(''); setRemovalErr('');
+    try {
+      const removed = await onRemoveLine(line);
+      if (!removed) { setRemovalErr('The PO removal could not be confirmed. Do not submit from this window; reload the sales order and verify the PO first.'); return; }
+      setRemovedLineNumbers(prev => new Set([...prev, line.lineNumber]));
+      setConfirmed(false);
+    } catch (error) {
+      setRemovalErr((error?.message || 'The line could not be removed from the source PO.') + ' Do not submit from this window; reload and verify the PO first.');
+    } finally { setRemovingLine(null); }
+  };
+
   // Styles still unresolved → surface what SanMar actually returned for them.
   const unresolvedStyles = useMemo(() => {
     const s = new Set(lines.filter(l => !l.partId).map(l => String(l.style || '').toUpperCase().trim()));
@@ -299,7 +331,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   // Whatever the source, the address that actually goes to SanMar has to be complete.
   const shipIncomplete = shipToIncomplete(ship);
 
-  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete;
+  const blocked = lines.length === 0 || warnings.length > 0 || resolving || decoAddrIncomplete || decoNoVendor || shipIncomplete || !!removalErr;
   const done = submitState === 'success';
   const submitting = submitState === 'submitting';
   const canSubmit = !blocked && confirmed && !submitting && !done;
@@ -325,7 +357,17 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     // result was ignored. Await it and surface anything short of a recorded batch number.
     if (onSubmitted) {
       try {
-        const recorded = await onSubmitted(r, submitLines);
+        // Preserve the exact accepted lines and the best pre-submit warehouse prediction so
+        // the PO can prove which sizes were sent and where they were expected to ship.
+        const recordedLines = submitLines.map(line => {
+          const wh = expectedWarehouseFor(line);
+          return { ...line, ...(wh ? {
+            warehouse_id: wh.id || '', warehouse: wh.city || wh.label || '',
+            warehouse_qty: Number(wh.qty) || 0,
+            warehouse_basis: forcedInfo ? 'selected' : 'predicted',
+          } : {}) };
+        });
+        const recorded = await onSubmitted(r, recordedLines);
         if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
       } catch (e) {
         console.error('[SanMar] order placed but post-order bookkeeping failed:', e);
@@ -353,8 +395,8 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 <Stat label="Transaction ID" value={result?.transactionId || '—'} mono />
               </div>
               {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
-                ⚠ SanMar HAS this order, but the portal did NOT record it ({bookErr}).
-                Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
+                ⚠ SanMar HAS this order, but the portal could not confirm its saved API record ({bookErr}).
+                Do NOT submit or re-order this batch. Verify the SanMar transaction and the PO record first; if the marker is missing, record the vendor order number on the sales order manually.
               </div>}
             </div>
           ) : submitState === 'error' ? (
@@ -401,6 +443,12 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                   <div style={{ marginTop: 4, color: '#7f1d1d' }}>If the right color/size is in that list but didn't match, it's a naming difference — send me a screenshot and I'll fix the match. Otherwise, order these lines manually.</div>
                 </div>
               )}
+            </div>
+          )}
+
+          {!done && removalErr && (
+            <div style={{ padding: 10, background: '#fef2f2', border: '2px solid #ef4444', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b', fontWeight: 700 }}>
+              ⚠ {removalErr}
             </div>
           )}
 
@@ -634,11 +682,18 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                     <th style={{ ...th, textAlign: 'right' }}>Line $</th>
                     <th style={th}>Ships From (stock)</th>
                     <th style={th}>Source SO</th>
+                    {onRemoveLine && <th style={{ ...th, textAlign: 'right' }}></th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {lines.map(l => (<React.Fragment key={l.lineNumber}>
-                    <tr style={{ borderTop: '1px solid #f1f5f9' }}>
+                  {lines.map(l => {
+                    const available = (lineWhseRows[_whseKey(l)] || []).reduce((sum, row) => sum + (Number(row.qty) || 0), 0);
+                    // A missing map key means the lookup did not prove stock either way. Never
+                    // label a network/API miss as OOS or offer removal on uncertain data.
+                    const stockKnown = whseByLine !== null && Object.prototype.hasOwnProperty.call(whseByLine, _whseKey(l));
+                    const short = stockKnown && available < l.quantity;
+                    return <React.Fragment key={l.lineNumber}>
+                    <tr style={{ borderTop: '1px solid #f1f5f9', background: short ? '#fff7ed' : 'transparent' }}>
                       <td style={td}>{l.lineNumber}</td>
                       <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700, color: l.partId ? '#0f766e' : '#dc2626' }}>
                         <button
@@ -676,12 +731,14 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                               }]
                             : rankWarehouses(lineWhseRows[_whseKey(l)] || [], l.quantity, consolidatedWhse).filter(e => e.primary)}
                         />
+                        {short && <div style={{ marginTop: 3, fontSize: 10, fontWeight: 800, color: '#c2410c' }}>{available <= 0 ? 'OUT OF STOCK' : `SHORT — ${available} available / ${l.quantity} needed`}</div>}
                       </td>
                       <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{l.sourceSO}</td>
+                      {onRemoveLine && <td style={{ ...td, textAlign: 'right' }}>{short && <button className="btn btn-sm" disabled={removingLine != null || submitting} onClick={() => removeLine(l)} style={{ color: '#b91c1c', borderColor: '#fca5a5', fontSize: 10, whiteSpace: 'nowrap' }}>{removingLine === l.lineNumber ? 'Removing…' : 'Remove from PO'}</button>}</td>}
                     </tr>
                     {pickerLine === l.lineNumber && (
                       <tr style={{ background: '#f8fafc' }}>
-                        <td colSpan={10} style={{ padding: 10 }}>
+                        <td colSpan={onRemoveLine ? 11 : 10} style={{ padding: 10 }}>
                           <PartPicker
                             line={l}
                             candidates={candidates}
@@ -693,7 +750,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                         </td>
                       </tr>
                     )}
-                  </React.Fragment>))}
+                  </React.Fragment>;})}
                 </tbody>
               </table>
               {lines.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>No line items.</div>}
