@@ -789,6 +789,15 @@ export const squashMockLinks = (artFiles, artId, memberKeys) => {
   return keys.slice(1).reduce((acc, k) => applyMockLink(acc, artId, k, keys[0]), safeArr(artFiles));
 };
 
+// Replace the grouping for a known set of garments. Editable pickers use this form so
+// unchecking garments really removes an older link before the current group is applied.
+export const replaceMockLinkGroup = (artFiles, artId, candidateKeys, memberKeys) => {
+  const candidates = new Set(safeArr(candidateKeys).filter(Boolean));
+  let out = safeArr(artFiles);
+  candidates.forEach(k => { out = applyMockLink(out, artId, k, null); });
+  return squashMockLinks(out, artId, memberKeys);
+};
+
 // ── Mocks follow the garment when its identity changes ──
 // Per-garment mockups and mock links are keyed `sku|color`, so an IN-PLACE sku or color
 // edit on a line item silently orphans them: the mock stays under the old garment's key
