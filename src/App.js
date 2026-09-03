@@ -448,7 +448,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -29800,9 +29800,10 @@ export default function App(){
             ?['deco_account','freight_account','ap_account']
             :['purchases_account','freight_account','sports_inc_fee_account','ap_account'];
           const billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
-          const requiredSkus=decorationCategory?[]:(bill.items||[]).map(item=>item?.sku).filter(Boolean);
+          const qboRoutedBill=decorationCategory?routedBill:{...routedBill,items:mapBillItemsToPortalSkus(routedBill.items,routedBill._lineMappings)};
+          const requiredSkus=decorationCategory?[]:(qboRoutedBill.items||[]).map(item=>item?.sku).filter(Boolean);
           const billItemRefs=requiredSkus.length?indexQBNonInventoryItems(existingQBItems,requiredSkus):{};
-          const built=buildVendorBillLines(routedBill,billRefs,billItemRefs);
+          const built=buildVendorBillLines(qboRoutedBill,billRefs,billItemRefs);
           const amt=built.total;
           const lineItems=built.lines;
 

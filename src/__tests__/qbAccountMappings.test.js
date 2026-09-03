@@ -14,6 +14,7 @@ import {
   isDecorationVendorBill,
   loadAllQBEntities,
   loadQBAccounts,
+  mapBillItemsToPortalSkus,
   manualBillAccountKey,
   migrateQBAccountMapping,
   parseQBDateValue,
@@ -176,6 +177,36 @@ describe('vendor bill adversarial routing', () => {
       .toEqual([[12, 'freight'], [0.8, 'si']]);
     expect(result.lines.slice(1).every(line => !('accountNumber' in line.AccountBasedExpenseLineDetail.AccountRef)))
       .toBe(true);
+  });
+
+  test('posts a matched SanMar line with the portal SKU instead of the vendor catalog number', () => {
+    const rawItems = [{
+      sku: '1220314', desc: 'LNEA500. NE Lds French Try Plo', size: 'L', qty: 1,
+      unit_price: 25.86, extension: 25.86,
+    }];
+    const mapped = mapBillItemsToPortalSkus(rawItems, [
+      { bill_idx: 0, sku: 'LNEA500', allocated_qty: 1 },
+    ]);
+    expect(mapped[0]).toMatchObject({ sku: 'LNEA500', qty: 1, extension: 25.86 });
+
+    const result = buildVendorBillLines({
+      kind: 'goods', po_number: 'PO 58892 AMAV', merchandise_total: 25.86,
+      freight: 19.75, si_upcharge: 0.37, doc_total: 45.98, items: mapped,
+    }, refs, { LNEA500: { value: 'qbo-lnea500', name: 'LNEA500' } });
+    expect(result.lines[0]).toMatchObject({
+      Amount: 25.86,
+      ItemBasedExpenseLineDetail: { ItemRef: { value: 'qbo-lnea500', name: 'LNEA500' }, Qty: 1 },
+    });
+  });
+
+  test('uses the review SKU resolver without a saved tie and blocks conflicting accepted ties', () => {
+    expect(mapBillItemsToPortalSkus([
+      { sku: '1220314', desc: 'LNEA500. NE Lds French Try Plo' },
+    ])[0].sku).toBe('LNEA500');
+    expect(() => mapBillItemsToPortalSkus([{ sku: '1220314' }], [
+      { bill_idx: 0, sku: 'LNEA500', allocated_qty: 1 },
+      { bill_idx: 0, sku: 'PC61', allocated_qty: 1 },
+    ])).toThrow(/multiple portal SKUs/i);
   });
 
   test('removes portal-only account metadata from QBO write references', () => {
