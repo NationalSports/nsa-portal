@@ -21,6 +21,7 @@ const {
   applyMockLink,
   squashMockLinks,
   mockLinksOf,
+  replaceMockLinkGroup,
   resolveMockLink,
   mockLinkDependents,
   mockLinkSourceFiles,
@@ -106,6 +107,20 @@ describe('squashMockLinks — group write from the art-request modal', () => {
   test('duplicate keys collapse instead of producing a self-link', () => {
     const out = squashMockLinks(arts(), 'af1785687765691', [JX, AT, JX]);
     expect(mockLinksOf(out[0])).toEqual({ [AT]: JX });
+  });
+});
+
+describe('replaceMockLinkGroup — editable submit-to-art grouping', () => {
+  test('replaces an older group and makes the newly selected first garment the source', () => {
+    const before = squashMockLinks(arts(), 'af1785687765691', [JX, AT, JM]);
+    const out = replaceMockLinkGroup(before, 'af1785687765691', [JX, AT, JM], [AT, JM]);
+    expect(mockLinksOf(out[0])).toEqual({ [JM]: AT });
+  });
+
+  test('selecting fewer than two garments removes the old grouping', () => {
+    const before = squashMockLinks(arts(), 'af1785687765691', [JX, AT, JM]);
+    const out = replaceMockLinkGroup(before, 'af1785687765691', [JX, AT, JM], [JX]);
+    expect(mockLinksOf(out[0])).toEqual({});
   });
 });
 
