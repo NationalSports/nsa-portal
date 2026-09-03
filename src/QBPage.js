@@ -7,7 +7,7 @@ import { useAppData } from './AppContext';
 import { D_V } from './constants';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP } from './App';
-import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName } from './qbSyncEngine';
+import { createQBSyncEngine, groupPortalPurchaseOrders, portalCustomerDisplayName, qbResponseErrorDetail } from './qbSyncEngine';
 import {
   QB_ACCOUNT_MAPPING_DEFAULTS,
   QB_ACCOUNT_POSTING_MATRIX,
@@ -21,6 +21,7 @@ import {
   readQBWithRetry,
   manualBillAccountKey,
   normalizeVendorName,
+  qbWriteAccountRef,
   resolveQBAccountRefs,
 } from './qbAccountMappings';
 
@@ -181,14 +182,14 @@ export default function QBPage(){
       }
       const qbBill={
         VendorRef:{value:qbVendorId},
-        APAccountRef:apAccountRef,
+        APAccountRef:qbWriteAccountRef(apAccountRef),
         TxnDate:qbBillDate,
         Line:billLines,
         ...((isCanary||qbBillMemo)?{PrivateNote:[isCanary?'NSA-QB-CANARY:'+new Date().toISOString():'',qbBillMemo].filter(Boolean).join(' | ')}:{}),
       };
       const billRes=await qbApi('upsert_bill',{bill:qbBill});
       if(!billRes?.Bill?.Id){
-        log.details.push('Bill creation failed: '+(billRes?.Fault?.Error?.[0]?.Detail||'unknown'));
+        log.details.push('Bill creation failed: '+qbResponseErrorDetail(billRes));
         log.status='error';
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
         nf('Bill upload failed','error');

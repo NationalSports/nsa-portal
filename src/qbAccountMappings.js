@@ -494,6 +494,15 @@ export function manualBillAccountKey(vendorSelection) {
   return String(vendorSelection || '').startsWith('deco:') ? 'deco_account' : 'purchases_account';
 }
 
+// Account resolution keeps the account number/name for portal verification and
+// display. QBO write payloads use ReferenceType, which accepts only the entity
+// id; sending portal-only metadata such as accountNumber causes validation fault
+// 2010. Normalize every account reference at the write boundary.
+export function qbWriteAccountRef(ref) {
+  if (!ref?.value) throw new Error('QuickBooks account reference is missing; no transaction was sent.');
+  return { value: String(ref.value) };
+}
+
 export function isDecorationVendorBill(bill, decorationVendors = []) {
   if (bill?.kind === 'decoration') return true;
   return !!findUniqueVendorMatch(bill?.supplier, decorationVendors);
@@ -504,7 +513,7 @@ function expenseLine(amount, description, accountRef) {
     DetailType: 'AccountBasedExpenseLineDetail',
     Amount: money(amount),
     Description: description,
-    AccountBasedExpenseLineDetail: { AccountRef: accountRef },
+    AccountBasedExpenseLineDetail: { AccountRef: qbWriteAccountRef(accountRef) },
   };
 }
 

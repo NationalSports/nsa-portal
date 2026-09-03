@@ -18,6 +18,7 @@ import {
   migrateQBAccountMapping,
   parseQBDateValue,
   parseOmgDepositStatements,
+  qbWriteAccountRef,
   resolveQBAccount,
 } from '../qbAccountMappings';
 
@@ -173,6 +174,13 @@ describe('vendor bill adversarial routing', () => {
     });
     expect(result.lines.slice(1).map(line => [line.Amount, line.AccountBasedExpenseLineDetail.AccountRef.value]))
       .toEqual([[12, 'freight'], [0.8, 'si']]);
+    expect(result.lines.slice(1).every(line => !('accountNumber' in line.AccountBasedExpenseLineDetail.AccountRef)))
+      .toBe(true);
+  });
+
+  test('removes portal-only account metadata from QBO write references', () => {
+    expect(qbWriteAccountRef({value:146,name:'Accounts Payable',accountNumber:'21100'}))
+      .toEqual({value:'146'});
   });
 
   test('uses weighted unit cost when a SKU has size upcharges but preserves the exact bill total', () => {
