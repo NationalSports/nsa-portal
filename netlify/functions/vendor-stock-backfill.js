@@ -19,6 +19,7 @@
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+const { inventoryKey, stockByColorSize } = require('./_sanmarInventory');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'POST only' };
@@ -56,24 +57,17 @@ exports.handler = async (event) => {
     if (!items.length) return { statusCode: 404, body: JSON.stringify({ error: 'Style not found', style }) };
 
     // Per-color+size stock from PromoStandards getInventoryLevels.
-    const stockByCS = {};
+    let stockByCS = {};
     try {
-      const inv = await sm('promostandards', 'getInventoryLevels', { productId: style });
-      const variations = arr(
-        inv?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory ||
-        inv?.ProductVariationInventoryArray?.ProductVariationInventory ||
-        inv?.inventory || inv?.items
-      );
-      variations.forEach((v) => {
-        const color = String(v?.attributeColor || v?.color || '').toLowerCase();
-        const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA').trim();
-        let qty = 0;
-        const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
-        parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
-        if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
-        if (qty > 0) stockByCS[color + '|' + size] = (stockByCS[color + '|' + size] || 0) + qty;
-      });
+      // V2 exposes the reliable per-part warehouse quantities. The former V1 parser
+      // accepted the call but missed SanMar's PartInventory response and wrote zeros.
+      const inv = await sm('promostandardsV2', 'getInventoryLevels', { wsVersion: '2.0.0', productId: style });
+      stockByCS = stockByColorSize(inv, items);
+      if (!Object.keys(stockByCS).length) throw new Error('SanMar inventory returned no matched parts');
     } catch (e) { console.warn('[vendor-stock-backfill] inventory', style, e.message); }
+    if (!Object.keys(stockByCS).length) {
+      throw new Error('Inventory unavailable; preserving the last known stock instead of writing zeros');
+    }
 
     const byColor = {};
     for (const it of items) {
@@ -86,7 +80,7 @@ exports.handler = async (event) => {
       const sku = style + '-' + colorCode;
       const sizes = [...new Set(grp.recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
       for (const size of sizes) {
-        const key = String(grp.colorName).toLowerCase() + '|' + size;
+        const key = inventoryKey(grp.colorName, size);
         invUpserts.push({
           id: sku + '-' + size, sku, size, stock_qty: stockByCS[key] || 0,
           last_synced: new Date().toISOString(), source: 'sanmar',
