@@ -30,22 +30,21 @@ describe('OMG operational order sync', () => {
     expect(result.reason).toMatch(/preserved stored values/);
   });
 
-  test('worker manually advances page[number] when OMG omits links.next', async () => {
+  test('worker manually advances page[after] when OMG omits links.next', async () => {
     const requested = [];
     const pages = [
-      { data: [{ id: 'o1' }, { id: 'o2' }], links: {} },
-      { data: [{ id: 'o3' }], links: {} },
-      { data: [{ id: 'o3' }], links: {} },
+      { data: Array.from({ length: 100 }, (_, i) => ({ id: `o${i + 1}`, ...(i === 99 ? { meta: { page: { cursor: 'cursor-1' } } } : {}) })), links: {} },
+      { data: [{ id: 'o101' }], links: {} },
     ];
     const result = await sync.allOrderPages('/orders?include=sale', 5, async path => {
       requested.push(path);
       return pages.shift();
     });
-    expect(result.map(row => row.id)).toEqual(['o1', 'o2', 'o3']);
+    expect(result).toHaveLength(101);
+    expect(result[100].id).toBe('o101');
     expect(requested).toEqual([
       '/orders?include=sale',
-      '/orders?include=sale&page[number]=2',
-      '/orders?include=sale&page[number]=3',
+      '/orders?include=sale&page[after]=cursor-1',
     ]);
   });
 

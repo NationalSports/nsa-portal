@@ -64,14 +64,20 @@ async function allOrderPages(path, maxPages = 500, getPage = omgGet) {
   if (next) throw new Error(`OMG order pagination exceeded ${maxPages} pages; no store rows were changed`);
 
   // The global orders endpoint also commonly omits links.next even when the
-  // first page is full. Manually advance JSON:API page[number]. If OMG ignores
-  // the parameter, every row is a duplicate and we stop after the first probe.
+  // first page is full. OMG uses page[after] cursors in that case. Prefer the
+  // resource cursor when present; its API also accepts a base64 {id} cursor.
+  // If OMG ignores the cursor, every row is a duplicate and we stop safely.
   if (!first.links?.next && firstPage.pageRows.length && firstPage.added) {
     const separator = path.includes('?') ? '&' : '?';
+    let last = firstPage.pageRows[firstPage.pageRows.length - 1];
     for (let pageNumber = 2; pageNumber <= maxPages; pageNumber++) {
-      const response = await getPage(`${path}${separator}page[number]=${pageNumber}`);
+      const cursor = last?.meta?.page?.cursor
+        || Buffer.from(JSON.stringify({ id: last?.id })).toString('base64');
+      const response = await getPage(`${path}${separator}page[after]=${encodeURIComponent(cursor)}`);
       const { pageRows, added } = addPage(response);
       if (!pageRows.length || !added) return rows;
+      last = pageRows[pageRows.length - 1];
+      if (pageRows.length < 100) return rows;
     }
     throw new Error(`OMG order pagination exceeded ${maxPages} pages; no store rows were changed`);
   }
