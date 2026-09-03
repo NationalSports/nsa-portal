@@ -1,3 +1,5 @@
+import { ourBillSku } from './billResolve';
+
 // Single source of truth for every QuickBooks account used by the portal.
 // Values are account numbers (AcctNum), not display names. Account numbers are
 // stable across renamed accounts and let us fail closed instead of guessing.
@@ -518,6 +520,31 @@ function expenseLine(amount, description, accountRef) {
 }
 
 const skuKey = value => String(value == null ? '' : value).trim().toUpperCase();
+
+// QBO items are keyed by the portal SKU, never the vendor's internal catalog
+// number. Prefer an accepted line tie because it is the operator-approved
+// answer; otherwise use the same conservative alias/style/description resolver
+// that the bill-review UI uses. Keeping this conversion at the QBO boundary
+// preserves the raw vendor SKU for matching and audit history.
+export function mapBillItemsToPortalSkus(items = [], lineMappings = []) {
+  const mappedByIndex = new Map();
+  for (const mapping of lineMappings || []) {
+    const index = Number(mapping?.bill_idx);
+    const mappedSku = String(mapping?.sku || '').trim();
+    if (!Number.isInteger(index) || index < 0 || !mappedSku || !(Number(mapping?.allocated_qty) > 0)) continue;
+    if (!mappedByIndex.has(index)) mappedByIndex.set(index, new Map());
+    mappedByIndex.get(index).set(skuKey(mappedSku), mappedSku);
+  }
+
+  return (items || []).map((item, index) => {
+    const acceptedSkus = [...(mappedByIndex.get(index)?.values() || [])];
+    if (acceptedSkus.length > 1) {
+      throw new Error(`Bill line ${index + 1} is tied to multiple portal SKUs; no bill was sent.`);
+    }
+    const portalSku = acceptedSkus[0] || ourBillSku(item) || String(item?.sku || '').trim();
+    return portalSku ? { ...item, sku: portalSku } : item;
+  });
+}
 
 export function indexQBNonInventoryItems(items = [], requiredSkus = []) {
   const required = new Set((requiredSkus || []).map(skuKey).filter(Boolean));
