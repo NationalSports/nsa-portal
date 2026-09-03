@@ -33,7 +33,9 @@ async function catchUpUnlinkedOrders(admin, client, limit = 25) {
     .eq('payment_mode', 'paid')
     .not('stripe_pi_id', 'is', null)
     .is('stripe_balance_transaction_id', null)
-    .order('created_at', { ascending: true })
+    // Prioritize newly missed webhooks. Persistent legacy exceptions therefore
+    // cannot consume the whole nightly batch and starve current orders.
+    .order('created_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
   const linked = [];
@@ -52,6 +54,7 @@ async function catchUpUnlinkedOrders(admin, client, limit = 25) {
 
 async function loadFindings(admin, graceDays = 7) {
   const cutoff = new Date(Date.now() - graceDays * 24 * 60 * 60 * 1000).toISOString();
+  const failureCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const [unlinked, mismatches, failures] = await Promise.all([
     admin.from('webstore_orders')
       .select('id,so_id,total,created_at', { count: 'exact' })
@@ -61,11 +64,12 @@ async function loadFindings(admin, graceDays = 7) {
     admin.from('stripe_payouts')
       .select('stripe_payout_id,amount_cents,reconciliation_difference_cents,reconciliation_status,arrival_date')
       .eq('automatic', true).eq('status', 'paid')
-      .or('reconciliation_status.is.null,reconciliation_status.neq.exact')
+      .in('reconciliation_status', ['pending', 'mismatch', 'failed'])
       .order('stripe_created_at', { ascending: false }).limit(25),
     admin.from('stripe_payouts')
       .select('stripe_payout_id,amount_cents,status,failure_code,failure_message,arrival_date')
       .eq('automatic', true).eq('status', 'failed')
+      .gte('stripe_created_at', failureCutoff)
       .order('stripe_created_at', { ascending: false }).limit(25),
   ]);
   const error = unlinked.error || mismatches.error || failures.error;
@@ -95,7 +99,7 @@ async function sendAlert({ webhook, catchUp, payoutSweep, findings }) {
     <p>The nightly safety sweep found an accounting item that could not be proven automatically.</p>
     ${!webhook.healthy ? `<h3>Webhook subscription</h3><p>Missing events: ${escapeHtml(webhook.missing_events.join(', ') || 'no active portal webhook endpoint')}</p>` : ''}
     ${findings.unlinked_count ? `<h3>Old card orders without a balance-transaction link (${findings.unlinked_count})</h3><ul>${orderRows}</ul>` : ''}
-    ${findings.mismatches.length ? `<h3>Non-exact paid payouts (${findings.mismatches.length})</h3><ul>${mismatchRows}</ul>` : ''}
+    ${findings.mismatches.length ? `<h3>Actionable paid payouts (${findings.mismatches.length})</h3><ul>${mismatchRows}</ul>` : ''}
     ${findings.failures.length ? `<h3>Failed payouts (${findings.failures.length})</h3><ul>${failureRows}</ul>` : ''}
     ${catchUpRows ? `<h3>Catch-up errors</h3><ul>${catchUpRows}</ul>` : ''}
     <p style="font-size:12px;color:#64748b">Open QuickBooks → Stripe Payouts in the NSA portal to retry or inspect the ledger. No QuickBooks transaction is posted automatically.</p>

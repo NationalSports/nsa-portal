@@ -254,10 +254,54 @@ async function loadExistingBalanceTransactions(sb, ids) {
 
 async function recordPayoutReconciliation({ client, sb, payout }) {
   await recordPayoutStatus({ sb, payout });
-  if (!payout.automatic) {
-    const patch = { reconciliation_status: 'unavailable', reconciled_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+  const stripeReconciliationStatus = String(payout.reconciliation_status || '').toLowerCase();
+  const method = String(payout.method || '').toLowerCase();
+  const payoutStatus = String(payout.status || '').toLowerCase();
+  if (payoutStatus === 'failed' || payoutStatus === 'canceled') {
+    const patch = {
+      balance_transaction_count: null,
+      activity_amount_cents: null,
+      fee_cents: null,
+      net_cents: null,
+      webstore_net_cents: null,
+      unlinked_net_cents: null,
+      reconciliation_difference_cents: null,
+      reconciliation_status: 'failed',
+      reconciled_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
     const { error } = await sb.from('stripe_payouts').update(patch).eq('stripe_payout_id', payout.id);
-    if (error) throw new Error('Could not mark manual Stripe payout unreconciled: ' + error.message);
+    if (error) throw new Error('Could not mark failed Stripe payout: ' + error.message);
+    return { ...patch, stripe_payout_id: payout.id };
+  }
+  // Stripe can enumerate the transactions in standard automatic payouts only.
+  // Instant/manual payouts report reconciliation_status=not_applicable. Treat
+  // them as unavailable instead of fabricating a mismatch from the payout fee.
+  if (!payout.automatic || method === 'instant' || stripeReconciliationStatus === 'not_applicable') {
+    const patch = {
+      balance_transaction_count: null,
+      activity_amount_cents: null,
+      fee_cents: null,
+      net_cents: null,
+      webstore_net_cents: null,
+      unlinked_net_cents: null,
+      reconciliation_difference_cents: null,
+      reconciliation_status: 'unavailable',
+      reconciled_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await sb.from('stripe_payouts').update(patch).eq('stripe_payout_id', payout.id);
+    if (error) throw new Error('Could not mark non-reconcilable Stripe payout unavailable: ' + error.message);
+    return { ...patch, stripe_payout_id: payout.id };
+  }
+  if (stripeReconciliationStatus === 'in_progress') {
+    const patch = {
+      reconciliation_status: 'pending',
+      reconciled_at: null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await sb.from('stripe_payouts').update(patch).eq('stripe_payout_id', payout.id);
+    if (error) throw new Error('Could not mark Stripe payout reconciliation pending: ' + error.message);
     return { ...patch, stripe_payout_id: payout.id };
   }
 

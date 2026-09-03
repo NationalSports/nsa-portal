@@ -20,6 +20,18 @@ const response = (statusCode, origin, payload) => ({
 
 const validPayoutId = (value) => /^po_[A-Za-z0-9_]+$/.test(String(value || ''));
 
+function summarizeOrders(rows) {
+  return (rows || []).reduce((summary, row) => {
+    const cents = Math.round(Number(row.total || 0) * 100);
+    const linked = Boolean(row.stripe_balance_transaction_id);
+    summary.order_count += 1;
+    summary.total_cents += cents;
+    summary[linked ? 'linked_count' : 'unlinked_count'] += 1;
+    summary[linked ? 'linked_cents' : 'unlinked_cents'] += cents;
+    return summary;
+  }, { order_count: 0, linked_count: 0, unlinked_count: 0, total_cents: 0, linked_cents: 0, unlinked_cents: 0 });
+}
+
 async function oldestCardOrderUnix(admin) {
   const { data, error } = await admin.from('webstore_orders')
     .select('created_at')
@@ -156,16 +168,29 @@ exports.handler = async (event) => {
     }
 
     if (action === 'reconciliation_status') {
-      const [unlinkedResult, mismatchResult] = await Promise.all([
-        admin.from('webstore_orders').select('id', { count: 'exact', head: true })
-          .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null).is('stripe_balance_transaction_id', null),
-        admin.from('stripe_payouts').select('stripe_payout_id', { count: 'exact', head: true })
-          .eq('automatic', true).or('reconciliation_status.is.null,reconciliation_status.neq.exact'),
+      const [ordersResult, payoutsResult] = await Promise.all([
+        admin.from('webstore_orders').select('id,so_id,total,stripe_balance_transaction_id')
+          .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null),
+        admin.from('stripe_payouts').select('stripe_payout_id,automatic,method,status,reconciliation_status'),
       ]);
-      if (unlinkedResult.error || mismatchResult.error) throw unlinkedResult.error || mismatchResult.error;
+      if (ordersResult.error || payoutsResult.error) throw ordersResult.error || payoutsResult.error;
+      const orders = ordersResult.data || [];
+      const payouts = payoutsResult.data || [];
+      const cardOrders = summarizeOrders(orders);
+      const so2313 = summarizeOrders(orders.filter((row) => {
+        const soId = String(row.so_id || '').trim().toUpperCase();
+        return soId === 'SO-2313' || soId === '2313';
+      }));
+      const actionablePayouts = payouts.filter((row) => row.automatic &&
+        ['pending', 'mismatch', 'failed'].includes(String(row.reconciliation_status || 'pending')));
+      const unavailablePayouts = payouts.filter((row) => row.reconciliation_status === 'unavailable');
       return response(200, origin, {
-        unlinked_card_orders: unlinkedResult.count || 0,
-        non_exact_automatic_payouts: mismatchResult.count || 0,
+        unlinked_card_orders: cardOrders.unlinked_count,
+        non_exact_automatic_payouts: actionablePayouts.length,
+        actionable_automatic_payouts: actionablePayouts.length,
+        unavailable_payouts: unavailablePayouts.length,
+        card_orders: cardOrders,
+        so_2313: so2313,
       });
     }
 
@@ -178,3 +203,4 @@ exports.handler = async (event) => {
 
 module.exports.validPayoutId = validPayoutId;
 module.exports.oldestCardOrderUnix = oldestCardOrderUnix;
+module.exports.summarizeOrders = summarizeOrders;

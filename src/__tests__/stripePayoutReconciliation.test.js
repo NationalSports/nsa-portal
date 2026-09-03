@@ -29,8 +29,8 @@ describe('Stripe catch-up pagination and webhook audit', () => {
   test('returns a resumable payout cursor and preserves per-payout failures', async () => {
     const sb = fakeSb();
     const payouts = [
-      { id: 'po_ok', amount: 941, currency: 'usd', status: 'paid', automatic: true, created: 1788451200 },
-      { id: 'po_bad', amount: 941, currency: 'usd', status: 'paid', automatic: true, created: 1788451200 },
+      { id: 'po_ok', amount: 941, currency: 'usd', status: 'paid', automatic: true, method: 'standard', reconciliation_status: 'completed', created: 1788451200 },
+      { id: 'po_bad', amount: 941, currency: 'usd', status: 'paid', automatic: true, method: 'standard', reconciliation_status: 'completed', created: 1788451200 },
     ];
     const client = {
       payouts: { list: jest.fn().mockResolvedValue({ data: payouts, has_more: true }) },
@@ -156,7 +156,7 @@ describe('Stripe payout persistence', () => {
     const client = { balanceTransactions: { list: jest.fn().mockResolvedValue({
       data: [bt('txn_a', { amount: 700, fee: 20 }), bt('txn_b', { amount: 300, fee: 10 })], has_more: false,
     }) } };
-    const payout = { id: 'po_exact', amount: 970, currency: 'usd', status: 'paid', automatic: true, method: 'standard', type: 'bank_account', arrival_date: 1788624000, created: 1788451200 };
+    const payout = { id: 'po_exact', amount: 970, currency: 'usd', status: 'paid', automatic: true, method: 'standard', reconciliation_status: 'completed', type: 'bank_account', arrival_date: 1788624000, created: 1788451200 };
     const result = await recordPayoutReconciliation({ client, sb, payout });
     expect(result).toMatchObject({
       balance_transaction_count: 2, activity_amount_cents: 1000, fee_cents: 30,
@@ -172,5 +172,15 @@ describe('Stripe payout persistence', () => {
     const result = await recordPayoutReconciliation({ client, sb, payout });
     expect(result.reconciliation_status).toBe('mismatch');
     expect(result.reconciliation_difference_cents).toBe(9);
+  });
+
+  test('marks Instant Payouts unavailable instead of inventing a batch mismatch', async () => {
+    const sb = fakeSb();
+    const client = { balanceTransactions: { list: jest.fn() } };
+    const payout = { id: 'po_instant', amount: 2000000, currency: 'usd', status: 'paid', automatic: true, method: 'instant', reconciliation_status: 'not_applicable', created: 1788451200 };
+    const result = await recordPayoutReconciliation({ client, sb, payout });
+    expect(result).toMatchObject({ reconciliation_status: 'unavailable', reconciliation_difference_cents: null });
+    expect(client.balanceTransactions.list).not.toHaveBeenCalled();
+    expect(sb.state.payouts.po_instant).toMatchObject({ reconciliation_status: 'unavailable', activity_amount_cents: null, net_cents: null });
   });
 });

@@ -26,6 +26,19 @@ import {
   resolveQBAccountRefs,
 } from './qbAccountMappings';
 
+const stripeBackfillErrorSummary=(errors=[])=>{
+  const counts={};
+  errors.forEach(({error})=>{
+    const message=String(error||'Unknown Stripe error');
+    const category=/no such payment_intent/i.test(message)?'PaymentIntent not found in the current Stripe account':
+      /no balance transaction/i.test(message)?'PaymentIntent has no settled balance transaction':
+      /no such charge/i.test(message)?'Charge not found in the current Stripe account':
+      /rate limit|temporar|timeout|connection/i.test(message)?'Temporary Stripe/API error':'Other reconciliation error';
+    counts[category]=(counts[category]||0)+1;
+  });
+  return Object.entries(counts);
+};
+
 const QB_MAPPING_FIELDS = [
   ['income_account', 'Customer sales + shipping'],
   ['inventory_asset_account', 'Inventory asset'],
@@ -132,7 +145,7 @@ export default function QBPage(){
         stripeReconApi('reconciliation_status'),loadStripeWebhookStatus(),stripeReconApi('list_payouts'),
       ]);
       setStripePayouts(payoutData.payouts||[]);
-      setStripeBackfill({...progress,phase:'done',unlinked_card_orders:status.unlinked_card_orders,non_exact_automatic_payouts:status.non_exact_automatic_payouts,webhook_healthy:webhook.healthy});
+      setStripeBackfill({...progress,phase:'done',...status,webhook_healthy:webhook.healthy});
       nf(status.unlinked_card_orders===0?'Stripe historical backfill complete':'Stripe backfill complete with review items',status.unlinked_card_orders===0?'success':'error');
     }catch(e){setStripePayoutError(e.message);setStripeBackfill({...progress,phase:'error'});}finally{setStripePayoutLoading(false)}
   };
@@ -798,7 +811,9 @@ export default function QBPage(){
             </div>
             {stripeBackfill&&<div style={{padding:9,marginBottom:10,background:stripeBackfill.phase==='done'&&stripeBackfill.unlinked_card_orders===0?'#f0fdf4':'#eff6ff',border:'1px solid #bfdbfe',borderRadius:7,fontSize:11,color:'#1e3a8a'}}>
               <strong>{stripeBackfill.phase==='done'?'Backfill complete':stripeBackfill.phase==='error'?'Backfill stopped':'Backfill '+stripeBackfill.phase+' in progress'}:</strong> {stripeBackfill.orders_linked||0} of {stripeBackfill.orders_processed||0} order attempts linked · {stripeBackfill.payouts_processed||0} payouts reconciled · {(stripeBackfill.errors||[]).length} errors
-              {stripeBackfill.phase==='done'&&<span> · {stripeBackfill.unlinked_card_orders||0} card orders remain unlinked · {stripeBackfill.non_exact_automatic_payouts||0} non-exact automatic payouts</span>}
+              {stripeBackfill.phase==='done'&&<span> · {stripeBackfill.unlinked_card_orders||0} card orders remain unlinked · {stripeBackfill.actionable_automatic_payouts||0} actionable payouts · {stripeBackfill.unavailable_payouts||0} Instant/manual payouts not batch-reconcilable</span>}
+              {stripeBackfill.phase==='done'&&stripeBackfill.card_orders&&<div style={{marginTop:6}}>All card orders: ${(Number(stripeBackfill.card_orders.linked_cents||0)/100).toFixed(2)} linked of ${(Number(stripeBackfill.card_orders.total_cents||0)/100).toFixed(2)} · SO-2313: {stripeBackfill.so_2313?.linked_count||0}/{stripeBackfill.so_2313?.order_count||0} linked (${(Number(stripeBackfill.so_2313?.linked_cents||0)/100).toFixed(2)} of ${(Number(stripeBackfill.so_2313?.total_cents||0)/100).toFixed(2)})</div>}
+              {stripeBackfill.phase==='done'&&(stripeBackfill.errors||[]).length>0&&<div style={{marginTop:6,color:'#92400e'}}>{stripeBackfillErrorSummary(stripeBackfill.errors).map(([label,count])=><span key={label} style={{display:'inline-block',marginRight:12}}>{label}: <strong>{count}</strong></span>)}</div>}
             </div>}
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:10,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:7}}>
               <input className="form-input" style={{minWidth:300,flex:'1 1 300px'}} placeholder="Historical payout ID (po_...)" value={stripePayoutId} onChange={e=>setStripePayoutId(e.target.value)}/>
@@ -810,7 +825,7 @@ export default function QBPage(){
             <table style={{fontSize:11}}><thead><tr style={{background:'#f8fafc'}}><th>Payout</th><th>Arrival</th><th>Status</th><th>Reconciliation</th><th style={{textAlign:'right'}}>Activity amount</th><th style={{textAlign:'right'}}>Stripe fees</th><th style={{textAlign:'right'}}>Bank net</th><th></th></tr></thead><tbody>
               {!stripePayouts.length&&!stripePayoutLoading?<tr><td colSpan="8" style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No payout ledger rows yet. Paste a historical payout ID above or wait for Stripe&apos;s next payout webhook.</td></tr>:
               stripePayouts.map(p=>{const exact=p.reconciliation_status==='exact';return<tr key={p.stripe_payout_id} style={{borderBottom:'1px solid #f1f5f9'}}>
-                <td style={{fontFamily:'monospace',fontWeight:700}}>{p.stripe_payout_id}</td><td>{p.arrival_date||'—'}</td><td>{p.status}</td>
+                <td style={{fontFamily:'monospace',fontWeight:700}}>{p.stripe_payout_id}</td><td>{p.arrival_date||'—'}</td><td>{p.status}{p.method?' · '+p.method:''}</td>
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:700,background:exact?'#dcfce7':p.reconciliation_status==='mismatch'?'#fee2e2':'#fef3c7',color:exact?'#166534':p.reconciliation_status==='mismatch'?'#b91c1c':'#92400e'}}>{p.reconciliation_status}</span>{p.reconciliation_difference_cents?<span style={{marginLeft:5,color:'#b91c1c'}}>{p.reconciliation_difference_cents}¢ diff</span>:null}</td>
                 <td style={{textAlign:'right'}}>${(Number(p.activity_amount_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',color:'#b45309'}}>${(Number(p.fee_cents||0)/100).toFixed(2)}</td><td style={{textAlign:'right',fontWeight:700}}>${(Number(p.amount_cents||0)/100).toFixed(2)}</td>
                 <td style={{whiteSpace:'nowrap'}}><button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>loadStripePayoutDetail(p.stripe_payout_id)}>Detail</button>{!exact&&<button className="btn btn-secondary btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:4}} onClick={()=>reconcileStripePayout(p.stripe_payout_id)}>Retry</button>}</td>
