@@ -1,10 +1,24 @@
 // Scheduled (see netlify.toml): every Friday morning (PT) emails each rep a
 // branded A/R recap dedicated to their PAST-DUE invoices — every open, overdue
-// portal invoice for their customers, aged into 1-30 / 31-60 / 61-90 / 90+
+// invoice for their customers, aged into 1-30 / 31-60 / 61-90 / 90+
 // buckets with a total, grouped by account with the largest overdue account
 // balances first. This is the weekly collections
 // companion to the daily rep-ops-digest (which only flags invoices the day they
 // newly cross 10 days past due). Reps with nothing past due get no email.
+//
+// TWO A/R streams, deliberately merged into one account view:
+//   • portal invoices        — balance = total - paid, due_date stored on the row
+//   • customer_invoices      — the NetSuite import. Balance is the exported
+//                              "Amount Remaining" (open_balance); NetSuite carries
+//                              no due date, so it is derived from invoice_date +
+//                              the customer's payment terms, matching
+//                              create_past_due_invoice_todos() so the emailed list
+//                              and the in-app rep todo can't disagree.
+// A NetSuite row is collectable ONLY when it carries an explicit open_balance.
+// Rows without one are history, not a subledger: status alone can't prove what is
+// still owed, and the invoice screen already excludes them (see the balanceBasis
+// 'missing_authoritative' path in src/lib/historicalInvoiceAr.js). Chasing those
+// would mean emailing a customer over an invoice NetSuite no longer reports.
 //
 // Manual single-recipient test (same guard as rep-ops-digest — the unattended
 // all-reps send only runs from the scheduler, which carries no httpMethod):
@@ -16,6 +30,24 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':
 const num = (v) => (Number(v) || 0);
 const money = (n) => '$' + Math.round(num(n)).toLocaleString('en-US');
 const TZ = 'America/Los_Angeles';
+
+// NetSuite invoices carry no due date, so it is derived from the customer's terms.
+// Same mapping (and same net30 default) as create_past_due_invoice_todos(), so the
+// emailed A/R and the in-app rep todo age every invoice identically.
+const TERM_DAYS = { prepay: 0, net15: 15, net30: 30, net60: 60 };
+const termDays = (terms) => {
+  const d = TERM_DAYS[String(terms || 'net30').toLowerCase()];
+  return d == null ? 30 : d;
+};
+const addDays = (ymd, n) => {
+  const s = String(ymd || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return new Date(Date.parse(s + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+};
+// Open per NetSuite. 'partial' isn't a NetSuite status — a part-paid invoice stays
+// Open with a reduced Amount Remaining — but the portal writes 'partial' when a
+// payment is recorded against a historical invoice, so both are accepted.
+const HIST_OPEN_STATUSES = new Set(['open', 'partial', 'partially_paid']);
 
 // Extra recipients: an account-team member who should also receive a given rep's
 // weekly A/R recap. Keyed by rep team_member id → [extra team_member ids].
@@ -65,10 +97,15 @@ exports.handler = async (event) => {
   const dateLabel = new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'long', month: 'long', day: 'numeric' }).format(now);
 
   try {
-    const [members, customers, invoices] = await Promise.all([
+    const [members, customers, invoices, histInvoices] = await Promise.all([
       loadAll(admin, 'team_members', '*'),
-      loadAll(admin, 'customers', 'id,name,alpha_tag,primary_rep_id'),
+      loadAll(admin, 'customers', 'id,name,alpha_tag,primary_rep_id,payment_terms'),
       loadAll(admin, 'invoices', 'id,customer_id,so_id,date,due_date,total,paid,status,type,memo,created_by,rep_id,deleted_at', (q) => q.is('deleted_at', null)),
+      // NetSuite history. The open_balance filter is the collectable test from the
+      // header comment, applied server-side so this stays a few hundred rows rather
+      // than the full ~9k archive.
+      loadAll(admin, 'customer_invoices', 'id,document_number,customer_id,invoice_date,total,open_balance,status,type,memo',
+        (q) => q.not('open_balance', 'is', null).gt('open_balance', 0)),
     ]);
     const repById = {}; members.forEach((m) => { repById[m.id] = m; });
     const custById = {}; customers.forEach((c) => { custById[c.id] = c; });
@@ -85,6 +122,33 @@ exports.handler = async (event) => {
       const rep = inv.rep_id || custById[inv.customer_id]?.primary_rep_id || inv.created_by;
       if (!rep) return;
       (byRep[rep] || (byRep[rep] = [])).push({ inv, balance: invoiceBalance(inv), dpd, bucket: agingBucket(dpd) });
+    });
+
+    // NetSuite history, same buckets and the same byRep map so an account's two
+    // streams land in one block. These rows carry no rep of their own — the account
+    // rep owns them, and an unlinked invoice (customer_id never matched on import)
+    // has no rep and is skipped rather than guessed at.
+    histInvoices.forEach((ci) => {
+      if (String(ci.type || 'invoice').toLowerCase() !== 'invoice') return;
+      if (!HIST_OPEN_STATUSES.has(String(ci.status || '').trim().toLowerCase())) return;
+      const balance = num(ci.open_balance);
+      if (!(balance > 0.005)) return;
+      const cust = custById[ci.customer_id];
+      const rep = cust?.primary_rep_id;
+      if (!rep) return;
+      const due = addDays(ci.invoice_date, termDays(cust.payment_terms));
+      if (!due) return;
+      const dpd = invoiceDaysPastDue({ due_date: due }, todayPTYmd);
+      if (dpd == null || dpd < 1) return;
+      (byRep[rep] || (byRep[rep] = [])).push({
+        // Shaped like a portal invoice for the renderer. id is the document number
+        // (INV#####) — what the rep and the customer both recognise.
+        inv: { id: ci.document_number || ci.id, customer_id: ci.customer_id, memo: ci.memo, due_date: due },
+        balance,
+        dpd,
+        bucket: agingBucket(dpd),
+        hist: true,
+      });
     });
 
     // ── Test send (single recipient, rep-dependent) ──
@@ -186,6 +250,11 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
   // Same portal deep-link plus &dl=1, which auto-downloads the invoice PDF once the
   // invoice opens (see InvoicesPage.js). Opens in the rep's browser like any other link.
   const dlLink = (id) => `${portal}/?inv=${encodeURIComponent(id)}&dl=1`;
+  // NetSuite rows are not in the portal's own invoice list, so ?inv= can't resolve
+  // them (App.js resolves that param against `invs` only) and there is no portal
+  // PDF to download. Link the account instead — for a collections call that is the
+  // more useful destination anyway, and it's a link that actually works.
+  const custLink = (cid) => `${portal}/?cust=${encodeURIComponent(cid)}`;
   const total = rows.reduce((a, r) => a + r.balance, 0);
 
   // Aging summary tiles.
@@ -204,15 +273,16 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
       const heat = r.dpd >= 90 ? '#7F1D1D' : r.dpd >= 60 ? '#B91C1C' : r.dpd >= 30 ? '#B45309' : '#92400E';
       return `<tr>
         <td style="padding:9px 0 9px 12px;border-bottom:1px solid #f1ece1;vertical-align:top">
-          <div style="font-weight:700;color:${INK};font-size:14px">${esc(r.inv.id)}</div>
+          <div style="font-weight:700;color:${INK};font-size:14px">${esc(r.inv.id)}${r.hist ? ` <span style="font-size:9px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:${SUB};background:#F3EFE6;border:1px solid ${LINE};border-radius:3px;padding:1px 4px;vertical-align:1px">NetSuite</span>` : ''}</div>
           <div style="font-size:12px;color:${SUB};margin-top:1px">${esc(r.inv.memo || 'No memo')}</div>
-          <div style="font-size:11px;color:${SUB};margin-top:1px">Due ${esc(String(r.inv.due_date).slice(0, 10))}</div></td>
+          <div style="font-size:11px;color:${SUB};margin-top:1px">Due ${esc(String(r.inv.due_date).slice(0, 10))}${r.hist ? ' · from account terms' : ''}</div></td>
         <td align="right" style="padding:9px 0;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">
           <div style="font-weight:800;color:${RED};font-size:14px">${money(r.balance)}</div>
           <div style="margin-top:1px"><span style="font-size:12px;font-weight:800;color:${heat}">${r.dpd} days past</span></div>
-          <div style="margin-top:4px">
-            <a href="${invLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open →</a>
-            <a href="${dlLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700;margin-left:14px">↓ Download</a></div></td></tr>`;
+          <div style="margin-top:4px">${r.hist
+            ? `<a href="${custLink(r.inv.customer_id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open account →</a>`
+            : `<a href="${invLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open →</a>
+            <a href="${dlLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700;margin-left:14px">↓ Download</a>`}</div></td></tr>`;
     }).join('');
     return `<tr><td colspan="2" style="padding:15px 0 7px;border-bottom:2px solid ${LINE}">
         <table width="100%" style="border-collapse:collapse"><tr>
@@ -244,7 +314,7 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <table width="100%" style="border-collapse:collapse"><tbody>${rowsHtml}</tbody></table>
-      <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these customers. Accounts are ranked by total past-due balance; invoices within each account are oldest first.</p>
+      <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these customers. Accounts are ranked by total past-due balance; invoices within each account are oldest first.${rows.some((r) => r.hist) ? ` Rows tagged <b>NetSuite</b> came from the imported invoice history — their balance is the amount NetSuite still shows outstanding, and their due date is worked out from the account's payment terms.` : ''}</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>
   </div></div>`;
