@@ -708,7 +708,7 @@ export function createQBSyncEngine(ctx){
       // Query existing QB items to match by name and avoid duplicates
       let existingQBItems=[];
       try{
-        existingQBItems=await loadAllQBEntities(qbApi,'Item','Id, Name, Sku, Type, SyncToken, Active, TrackQtyOnHand, QtyOnHand, IncomeAccountRef, ExpenseAccountRef, AssetAccountRef',1000);
+        existingQBItems=await loadAllQBEntities(qbApi,'Item','*',1000);
       }catch(e){
         log.status='error';log.details.push('Item duplicate preflight failed: '+e.message);
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Product item sync blocked — QBO duplicate preflight failed','error');setQbSyncing(false);return{};
