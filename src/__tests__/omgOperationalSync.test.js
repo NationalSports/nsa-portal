@@ -3,6 +3,12 @@ const path = require('path');
 const sync = require('../../netlify/functions/omg-order-sync-background')._test;
 
 describe('OMG operational order sync', () => {
+  test('uses OMG documented relationship filter for each mapped sale', () => {
+    expect(sync.storeOrdersEndpoint({ _omg_sale_code: '6ph2a' })).toBe(
+      '/orders?filter[relationships][sale]=sale_6PH2A&include=sale,customer_info&page[size]=500'
+    );
+  });
+
   test('groups the unfiltered order feed by explicit sale relationship', () => {
     const rows = [
       { id: 'o1', relationships: { sale: { data: { id: 'sale_6PH2A' } }, customer_info: { data: { id: 'c1' } } } },
@@ -22,6 +28,15 @@ describe('OMG operational order sync', () => {
     });
     expect(result.values).not.toHaveProperty('total_sales');
     expect(result.values).not.toHaveProperty('net_profit');
+  });
+
+  test('summarizes a directly filtered store response', () => {
+    const rows = [
+      { id: 'o1', relationships: { customer_info: { data: { id: 'c1' } } } },
+      { id: 'o2', relationships: { customer_info: { data: { id: 'c1' } } } },
+      { id: 'o3', relationships: { customer_info: { data: { id: 'c2' } } } },
+    ];
+    expect(sync.summarizeStoreOrders(rows)).toEqual({ orders: 3, uniqueBuyers: 2 });
   });
 
   test('holds a regressive count instead of erasing known orders', () => {

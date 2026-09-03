@@ -1,7 +1,7 @@
-// Nightly operational OMG refresh. This intentionally reads the global order
-// feed and groups rows by their explicit sale relationship because OMG V1
-// silently ignores sale filters. It updates display-only order metadata and
-// never writes profit snapshots, monthly closeouts, or commission records.
+// Nightly operational OMG refresh. This uses OMG's documented deep-object
+// relationship filter to fetch each mapped sale independently. It updates
+// display-only order metadata and never writes profit snapshots, monthly
+// closeouts, or commission records.
 const { getSupabaseAdmin, verifyUserOrInternal } = require('./_shared');
 
 const API_BASE = (process.env.OMG_API_BASE_URL || 'https://app.ordermygear.com/v1').replace(/\/+$/, '');
@@ -84,22 +84,13 @@ async function allOrderPages(path, maxPages = 500, getPage = omgGet) {
   return rows;
 }
 
-async function fetchAllOrders() {
-  const endpoints = [
-    '/orders?include=sale,customer_info&sort=-updated_at&page[size]=200',
-    '/orders?include=sale&sort=-updated_at&page[size]=200',
-    '/orders?include=sale',
-    '/orders',
-  ];
-  let lastError;
-  for (const endpoint of endpoints) {
-    try { return await allOrderPages(endpoint); }
-    catch (error) { lastError = error; }
-  }
-  throw lastError || new Error('No OMG global order endpoint worked');
-}
-
 const normalizeSaleCode = value => String(value || '').replace(/^sale_/i, '').trim().toUpperCase();
+
+const storeOrdersEndpoint = store => {
+  const code = normalizeSaleCode(store?._omg_sale_code || store?._omg_id);
+  const saleId = `sale_${code}`;
+  return `/orders?filter[relationships][sale]=${encodeURIComponent(saleId)}&include=sale,customer_info&page[size]=500`;
+};
 
 const saleCodeForOrder = order => normalizeSaleCode(
   order?.relationships?.sale?.data?.id
@@ -133,11 +124,16 @@ function summarizeOrders(orders) {
   }]));
 }
 
+const summarizeStoreOrders = orders => ({
+  orders: (orders || []).length,
+  uniqueBuyers: new Set((orders || []).map(buyerKeyForOrder)).size,
+});
+
 function buildStoreUpdate(store, summary, now) {
   const nextOrders = summary?.orders || 0;
   const currentOrders = Number(store.orders) || 0;
   // Cumulative 24/7 stores should not lose order rows. A lower count means the
-  // global feed was incomplete or its relationship shape changed, so preserve
+  // filtered feed was incomplete or its relationship shape changed, so preserve
   // the known-good value and make the run partial instead of erasing data.
   if (nextOrders < currentOrders) {
     return {
@@ -179,24 +175,37 @@ exports.handler = async event => {
   const runId = run?.id || null;
 
   try {
-    const orders = await fetchAllOrders();
-    const summaries = summarizeOrders(orders);
     const errors = [];
     let synced = 0;
     let held = 0;
+    let ordersSeen = 0;
 
     for (const store of stores) {
       const code = normalizeSaleCode(store._omg_sale_code);
-      const update = buildStoreUpdate(store, summaries.get(code), now);
-      if (update.held) {
+      try {
+        const orders = await allOrderPages(storeOrdersEndpoint(store));
+        ordersSeen += orders.length;
+        // The relationship is included so a silently ignored OMG filter cannot
+        // leak another store's rows into this store's count.
+        const foreign = orders.find(order => {
+          const observed = saleCodeForOrder(order);
+          return observed && observed !== code;
+        });
+        if (foreign) throw new Error(`OMG sale filter returned an order for ${saleCodeForOrder(foreign)}; preserved stored values`);
+
+        const update = buildStoreUpdate(store, summarizeStoreOrders(orders), now);
+        if (update.held) {
+          held++;
+          errors.push({ storeCode: code, message: update.reason });
+          continue;
+        }
+        const { error } = await sb.from('omg_stores').update(update.values).eq('id', store.id);
+        if (error) errors.push({ storeCode: code, message: error.message });
+        else synced++;
+      } catch (error) {
         held++;
-        errors.push({ storeCode: code, message: update.reason });
-        continue;
+        errors.push({ storeCode: code, message: String(error?.message || error).slice(0, 500) });
       }
-      const { error } = await sb.from('omg_stores').update(update.values).eq('id', store.id);
-      if (error) {
-        errors.push({ storeCode: code, message: error.message });
-      } else synced++;
     }
 
     const status = errors.length ? (synced ? 'partial' : 'failed') : 'complete';
@@ -205,13 +214,13 @@ exports.handler = async event => {
         status,
         stores_synced: synced,
         stores_held: held,
-        orders_seen: orders.length,
+        orders_seen: ordersSeen,
         errors,
         finished_at: new Date().toISOString(),
       }).eq('id', runId);
     }
-    console.log('[omg-order-sync] complete', { status, stores: stores.length, synced, held, orders: orders.length, errors: errors.length });
-    return { statusCode: status === 'failed' ? 500 : 200, body: JSON.stringify({ status, stores: stores.length, synced, held, orders: orders.length, errors }) };
+    console.log('[omg-order-sync] complete', { status, stores: stores.length, synced, held, orders: ordersSeen, errors: errors.length });
+    return { statusCode: status === 'failed' ? 500 : 200, body: JSON.stringify({ status, stores: stores.length, synced, held, orders: ordersSeen, errors }) };
   } catch (error) {
     const errors = [{ message: String(error?.message || error).slice(0, 500) }];
     if (runId) {
@@ -224,4 +233,4 @@ exports.handler = async event => {
   }
 };
 
-exports._test = { apiPath, allOrderPages, normalizeSaleCode, saleCodeForOrder, summarizeOrders, buildStoreUpdate };
+exports._test = { apiPath, allOrderPages, normalizeSaleCode, storeOrdersEndpoint, saleCodeForOrder, summarizeOrders, summarizeStoreOrders, buildStoreUpdate };
