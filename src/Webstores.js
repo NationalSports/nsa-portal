@@ -28,6 +28,7 @@ import { downloadSilverScreenFulfillment } from './lib/silverScreenFulfillment';
 import { selectFulfillmentReportScope } from './lib/fulfillmentReportScope';
 import { webstoreProductionKey } from './lib/storeSkuGrouping';
 import { allocateMoneyCents } from './lib/bundleMoney';
+import { WEBSTORE_DELIVERY_WINDOWS, deliveryWindowLabel, normalizeDeliveryWindow, salesOrderDueDate } from './lib/webstoreDeliveryWindow';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const originalOrderTotal = (o) => Number(o && (o.original_total != null ? o.original_total : o.total)) || 0;
@@ -1152,7 +1153,7 @@ function flyerHtml(store, items = []) {
     </div>` : (pkg ? '' : `
     <div style="padding:22px 40px 120px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px"><h2 style="font-weight:800;font-size:28px;text-transform:uppercase;margin:0;color:${ink}">How To Order</h2><div style="flex:1;height:3px;background:${accent};transform:skewX(-12deg)"></div></div>
-      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team ~4–5 weeks after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
+      <div style="display:flex;flex-direction:column;gap:16px">${[['Visit the store','Scan the QR code or visit the link below to open the store.'],['Pick sizes & gear','Browse all items and choose sizes for each player.'],['Check out',`Place your order${closeDate?' before '+closeDate:''}. Gear ships to the team about ${deliveryWindowLabel(store.delivery_window_weeks)} after the store closes.`]].map(([t,b],i)=>`<div style="display:flex;align-items:flex-start;gap:12px"><div style="flex:0 0 auto;width:28px;height:28px;border-radius:50%;background:${primary};color:#fff;text-align:center;line-height:28px;font-weight:800;font-size:15px">${i+1}</div><div><div style="font-weight:700;font-size:16px;text-transform:uppercase;color:${ink}">${t}</div><div style="font-size:13.5px;color:${sub};margin-top:2px;font-family:Arial,sans-serif">${b}</div></div></div>`).join('')}</div>
     </div>`)}
     <div style="position:absolute;bottom:0;left:0;right:0">
       <div style="background:${cream};border-top:1px solid ${line};padding:9px 40px;display:flex;justify-content:space-between;align-items:center">
@@ -1356,7 +1357,7 @@ async function generateFlyerPdfBase64(store, items = []) {
     doc.setFillColor(ar,ag,ab); doc.rect(40+doc.getTextWidth('HOW TO ORDER')+12,y-5,W-40-doc.getTextWidth('HOW TO ORDER')-52,3,'F');
     y += 22;
     const closeDate2 = _fmtDate(store.close_at);
-    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. Gear ships to the team ~4–5 weeks after close.`]].forEach(([num,title,body])=>{
+    [['1','Visit the store','Scan the QR code or visit the link below to open the store.'],['2','Pick sizes & gear','Browse all items and choose sizes for each player.'],['3','Check out',`Place your order${closeDate2?' before '+closeDate2:''}. Gear ships to the team about ${deliveryWindowLabel(store.delivery_window_weeks)} after close.`]].forEach(([num,title,body])=>{
       doc.setFillColor(pr,pg,pb); doc.circle(54,y+6,9,'F');
       doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(255,255,255); doc.text(num,54,y+10,{align:'center'});
       doc.setTextColor(...INK); doc.setFontSize(13); doc.text(title.toUpperCase(),70,y+10);
@@ -3894,11 +3895,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // product lines so the club's open balance equals the team-tab gross.
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
+    const expectedDate = salesOrderDueDate(sel.close_at, sel.delivery_window_weeks);
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'} · expected ${deliveryWindowLabel(sel.delivery_window_weeks)} after close${expectedDate ? ` (${expectedDate})` : ''}\nNames & numbers are on each item's deco lines.${outsideDeco ? '\nDecoration: OUTSIDE — this store is set to be decorated off-site, so every deco (art, names and numbers) is routed Outside and spawns no in-house job. Add a Deco PO to pick the decorator and cost it.' : ''}${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, expected_date: expectedDate, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
       batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
       // The server derives the settlement split again from these locked orders; no
       // client-supplied money total is trusted at the accounting boundary.
@@ -5470,6 +5472,7 @@ const BLANK = {
   open_at: '', close_at: '',
   payment_mode: 'paid', require_login: false,
   delivery_mode: 'deliver_club',
+  delivery_window_weeks: '4-5',
   shipstation_store_id: '', shipstation_tag_id: '', shipstation_carrier: 'ups', shipstation_service: '', label_weight_lbs: 1, flat_shipping: 0,
   bagged_email_enabled: true, bagging_auto_label: true,
   director_name: '', director_email: '', director_phone: '',
@@ -5586,7 +5589,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     }
   };
   // Build a fresh hero blurb from the store's own details — coach-approved, the
-  // chosen delivery method, and the ~4-5 week post-close timeline. Varies each click.
+  // chosen delivery method and post-close delivery window. Varies each click.
   const genBlurb = () => {
     const team = (f.name || '').replace(/\s*(team |club )?store$/i, '').trim() || 'our team';
     const deliver = f.delivery_mode === 'ship_home' ? 'shipped right to your door' : `delivered to the ${noun.toLowerCase()}`;
@@ -5594,7 +5597,8 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     const pick = (a) => a[Math.floor(Math.random() * a.length)];
     const open = pick([`Welcome to the official ${team} store!`, `The ${team} store is open!`, `Gear up — the official ${team} store is here.`]);
     const body = pick([`Everything here has been hand-picked and approved by your coaching staff, so you can order with confidence.`, `Every item is pre-approved by your coaches — no guesswork, just official gear.`, `It's all coach-approved, so the whole ${noun.toLowerCase()} looks the part.`]);
-    const close = pick([`Orders are ${deliver} about 4–5 weeks after the store closes${closeOn}, so get yours in before the window shuts.`, `Once we close${closeOn}, orders go to production and arrive ${deliver} in roughly 4–5 weeks — don't miss it.`, `Place your order before the store closes${closeOn}; everything is ${deliver} about 4–5 weeks later.`]);
+    const weeks = deliveryWindowLabel(f.delivery_window_weeks);
+    const close = pick([`Orders are ${deliver} about ${weeks} after the store closes${closeOn}, so get yours in before the window shuts.`, `Once we close${closeOn}, orders go to production and arrive ${deliver} in roughly ${weeks} — don't miss it.`, `Place your order before the store closes${closeOn}; everything is ${deliver} about ${weeks} later.`]);
     return `${open} ${body} ${close}`;
   };
   // Sales reps: anyone who carries accounts. The owners (admins) are the primary rep
@@ -5658,6 +5662,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.label_weight_lbs = Number(payload.label_weight_lbs) || 1;
     payload.flat_shipping = Number(payload.flat_shipping) || 0;
     payload.processing_pct = Math.max(0, Number(payload.processing_pct) || 0);
+    payload.delivery_window_weeks = normalizeDeliveryWindow(payload.delivery_window_weeks);
     payload.org_type = orgType;
     // Team stores collect numbers per item (Catalog), so there's no store-wide
     // enable toggle — mark numbers active so order views/claims behave.
@@ -5819,6 +5824,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
           <option value="ship_home">Ship to home — collect each buyer's home address</option>
           <option value="deliver_club">{`Deliver to ${noun.toLowerCase()} — ships to the ${noun.toLowerCase()}'s default address`}</option>
         </select></Row>
+        <Row label="Estimated delivery after store closes"><select className="form-select" value={normalizeDeliveryWindow(f.delivery_window_weeks)} onChange={(e) => set('delivery_window_weeks', e.target.value)}>
+          {WEBSTORE_DELIVERY_WINDOWS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select></Row>
+        <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: -2, marginBottom: 8 }}>Shown to families on the storefront, cart, and checkout.</div>
         {f.delivery_mode === 'ship_home' && <Row label="Flat shipping charged to buyer ($)"><input className="form-input" type="number" step="0.01" min={0} value={f.flat_shipping} onChange={(e) => set('flat_shipping', e.target.value)} placeholder="0.00" /></Row>}
         <div style={{ display: 'flex', gap: 12 }}>
           <Row label="ShipStation Store ID (optional)"><input className="form-input" value={f.shipstation_store_id || ''} onChange={(e) => set('shipstation_store_id', e.target.value)} placeholder="e.g. 123456" /></Row>
@@ -14362,6 +14371,7 @@ function SettingsTab({ store: s }) {
     ['Login required', s.require_login ? 'Yes (club members only)' : 'No (public)'],
     ['Decoration', s.decoration_mode === 'outsourced' ? 'Decorated elsewhere (mockups only)' : 'In-house (production art required)'],
     ['Delivery', dlv],
+    ['Estimated delivery', `${deliveryWindowLabel(s.delivery_window_weeks)} after store closes`],
     ['Numbers', s.number_enabled ? `Enabled (${s.number_min}–${s.number_max}${s.number_unique ? ', unique required' : ''})` : 'Off'],
     ['SO creation', s.so_creation],
     ['Fundraising', `Per-item${s.fundraise_show_parents ? ', shown to families' : ', hidden from families'}`],

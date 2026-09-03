@@ -66,9 +66,9 @@ function getSb() {
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 
-// Exact allow-list from webstores_public. Keep this explicit so a future view
-// expansion cannot silently expose a staff-only webstores column here.
-const PUBLIC_STORE_FIELDS = 'id,slug,name,status,open_at,close_at,payment_mode,require_login,number_enabled,number_unique,number_min,number_max,fundraise_enabled,fundraise_show_parents,logo_url,banner_url,primary_color,accent_color,hero_blurb,theme,ship_home_enabled,deliver_club_enabled,delivery_mode,flat_shipping,public_listed,featured_product_ids,processing_pct,storefront_template,sport';
+// Exact public allow-list. Keep this explicit so a future base-table expansion
+// cannot silently expose a staff-only webstores column here.
+const PUBLIC_STORE_FIELDS = 'id,slug,name,status,open_at,close_at,payment_mode,require_login,number_enabled,number_unique,number_min,number_max,fundraise_enabled,fundraise_show_parents,logo_url,banner_url,primary_color,accent_color,hero_blurb,theme,ship_home_enabled,deliver_club_enabled,delivery_mode,delivery_window_weeks,flat_shipping,public_listed,featured_product_ids,processing_pct,storefront_template,sport';
 const PUBLIC_INVENTORY_FIELDS = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced,source';
 const safeText = (value, max) => String(value || '').trim().slice(0, max);
 const uniqueTextList = (values, maxItems, maxLength) => [...new Set((Array.isArray(values) ? values : [])
@@ -138,7 +138,10 @@ async function publicStorefrontProducts(sb, body) {
 async function publicStorefront(sb, body) {
   const slug = safeText(body.slug, 120);
   if (!slug || !/^[a-z0-9][a-z0-9-]*$/i.test(slug)) return bad(400, 'Invalid store slug');
-  const { data: stores, error: storeError } = await sb.from('webstores_public').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
+  // This handler uses the service role and returns only PUBLIC_STORE_FIELDS.
+  // Reading the base row lets newly added curated fields ship without widening
+  // the separately secured directory-search view.
+  const { data: stores, error: storeError } = await sb.from('webstores').select(PUBLIC_STORE_FIELDS).eq('slug', slug).limit(1);
   if (storeError) throw storeError;
   const store = (stores || [])[0];
   if (!store || store.status === 'archived') return bad(404, 'Store not found');

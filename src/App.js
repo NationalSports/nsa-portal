@@ -6576,11 +6576,11 @@ export default function App(){
     setCust(prev=>prev.map(cc=>cc.id===customerId?{...cc,credits:[...(cc.credits||[]),credit]}:cc));
     return credit;
   };
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,batch_label,batch_cutoff,order_ids})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,expected_date,art_files,fundraise_cost,batch_label,batch_cutoff,order_ids})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-      expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
+      expected_date:expected_date||'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
       ship_to_id:'default',tax_rate:0,tax_exempt:true,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
       // Club fundraising collected through the store. The club is paid in Fundraiser Dollars
       // (a cash credit line — see addFundraiseCredit above), so the collected amount counts as
@@ -11314,7 +11314,7 @@ export default function App(){
       onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onSavePendingShip={async(rec)=>{await _dbSavePendingShip(rec);const updated={...selC,pending_shipping:[...(selC.pending_shipping||[]).filter(r=>r.id!==rec.id),rec]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge saved')}}
       onDeletePendingShip={async(id)=>{await _dbDeletePendingShip(id);const updated={...selC,pending_shipping:(selC.pending_shipping||[]).filter(r=>r.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge removed')}}
-      onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={id=>{try{const u=new URL(window.location);u.searchParams.set('store',id);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}} onOmgStoreSaved={store=>setOmgStores(prev=>prev.some(s=>s.id===store.id)?prev.map(s=>s.id===store.id?{...s,...store}:s):[store,...prev])}
+      onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={id=>{try{const u=new URL(window.location);u.searchParams.set('store',id);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={canAccess('omg')?(id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}):null} onOmgStoreSaved={store=>setOmgStores(prev=>prev.some(s=>s.id===store.id)?prev.map(s=>s.id===store.id?{...s,...store}:s):[store,...prev])}
       onReceivePayment={c=>{const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
       onCopy={c=>{const{_version,created_at,updated_at,...rest}=c;const copy={...rest,id:'c'+Date.now(),name:c.name,alpha_tag:'',netsuite_internal_id:null,contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
