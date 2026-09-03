@@ -5,10 +5,11 @@
 import React from 'react';
 import { useAppData } from './AppContext';
 import { D_V, PRINT_CSS, orderedSizeKeys } from './constants';
-import { supabase, _dbSaveInvoice, _fetchHistInvoiceLines } from './lib/dbEngine';
+import { supabase, _dbSaveInvoice, _dbCreateInvoiceCreditMemo, _fetchHistInvoiceLines } from './lib/dbEngine';
 import { safeArt, safeDecos, safeItems, safeNum, safePicks, safeSizes, soLineKey } from './safeHelpers';
 import { isCommissionRep } from './businessLogic';
 import { applyHistoricalInvoicePayment, historicalInvoiceAr } from './lib/historicalInvoiceAr';
+import { calculateCreditMemo, creditableBalance, creditedTotal, seedCreditMemoLines, setCreditMemoLineQty, validateCreditMemo } from './invoiceCreditMemo';
 import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub, resolveOrderShipTo, billToIdFor } from './components';
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled, greetLine, withGreeting, emailMoney } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, matchInvoiceLinesToSo, fmtCreatedAt, sendBrevoSms } from './App';
@@ -31,7 +32,7 @@ function AutoRunOnce({run}){
 }
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,voidInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setCust,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     // Move ONE invoice to another rep (invoices.rep_id). Clearing it ('') returns the invoice to
     // the account rep. This replaced changeDocRep() here: that wrote customers.primary_rep_id, so
@@ -55,6 +56,7 @@ export default function InvoicesPage(){
     // detail page (nothing else reads it), keyed by invoice id so a slip left open never shows
     // up over a different invoice.
     const [packSlip,setPackSlip]=React.useState(null);
+    const [creditMemoModal,setCreditMemoModal]=React.useState(null);
 
     // Repair the exact orphan state shown by an open invoice with a covering Stripe
     // payment in its history. finalize_invoice retrieves the PaymentIntent from Stripe
@@ -220,6 +222,63 @@ export default function InvoicesPage(){
         return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),
           _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,_soIdx)}}).filter(Boolean):[];
       const lineItems=storedLineItems.length>0?storedLineItems:soComputedItems;
+      const creditMemos=inv.credit_memos||[];
+      const remainingCredit=creditableBalance(inv);
+      const activeCreditCalc=creditMemoModal&&creditMemoModal.invoiceId===inv.id
+        ?calculateCreditMemo({invoice:{...inv,line_items:lineItems},lines:creditMemoModal.lines,shipping:creditMemoModal.shipping})
+        :null;
+      const openCreditMemo=()=>{
+        const lines=lineItems.length
+          ?seedCreditMemoLines(lineItems,creditMemos)
+          :[{index:0,desc:'Credit adjustment',sku:'',max_qty:remainingCredit,qty:0,rate:1,is_amount:true}];
+        setCreditMemoModal({
+          invoiceId:inv.id,
+          date:new Date().toLocaleDateString('en-CA'),
+          reason:'',
+          shipping:0,
+          lines,
+          posting:false,
+        });
+      };
+      const postCreditMemo=async()=>{
+        if(!creditMemoModal||!activeCreditCalc)return;
+        const validation=validateCreditMemo({invoice:inv,calculation:activeCreditCalc,reason:creditMemoModal.reason});
+        if(validation){nf(validation,'error');return}
+        setCreditMemoModal(s=>({...s,posting:true}));
+        const payload={
+          invoice_id:inv.id,
+          subtotal:activeCreditCalc.subtotal,
+          tax:activeCreditCalc.tax,
+          shipping:activeCreditCalc.shipping,
+          reason:creditMemoModal.reason.trim(),
+          memo_date:creditMemoModal.date,
+          line_items:activeCreditCalc.line_items,
+          created_by:cu?.id||cu?.name||null,
+        };
+        let result;
+        if(supabase){
+          result=await _dbCreateInvoiceCreditMemo(payload);
+          if(!result||result.error){
+            nf('Credit memo was not posted: '+(result?.error||'database did not confirm the posting'),'error');
+            setCreditMemoModal(s=>s?{...s,posting:false}:s);
+            return;
+          }
+        }else{
+          const now=new Date().toISOString();
+          const id='CM-LOCAL-'+Date.now();
+          result={
+            memo:{id,invoice_id:inv.id,customer_id:inv.customer_id,customer_credit_id:'credit-'+id.toLowerCase(),memo_date:payload.memo_date,...activeCreditCalc,reason:payload.reason,created_by:payload.created_by,created_at:now},
+            credit:{id:'credit-'+id.toLowerCase(),customer_id:inv.customer_id,amount:activeCreditCalc.amount,used:0,source:'Credit memo '+id+' for '+inv.id+' — '+payload.reason,created_by:payload.created_by,created_at:now},
+          };
+        }
+        const memo=result.memo;const credit=result.credit;
+        const attachMemo=x=>x.id===inv.id?{...x,credit_memos:[...(x.credit_memos||[]),memo]}:x;
+        setInvs(prev=>prev.map(attachMemo));
+        setViewInvoice(prev=>prev&&prev.id===inv.id?attachMemo(prev):prev);
+        setCust(prev=>prev.map(c=>c.id===inv.customer_id?{...c,credits:[...(c.credits||[]),credit]}:c));
+        setCreditMemoModal(null);
+        nf(memo.id+' posted — $'+safeNum(memo.amount).toFixed(2)+' is now available on '+(ic?.name||'the customer')+' account');
+      };
       const shipAmt=inv.shipping||0;
       const taxAmt=inv.tax||0;
       const subtotal=lineItems.reduce((a,li)=>a+safeNum(li.amount),0);
@@ -419,6 +478,10 @@ export default function InvoicesPage(){
             {/* Portal-only actions. A NetSuite invoice carries no line items here, so editing it
                 writes an empty shell, and printing/sending it would show the customer a $0 document. */}
             {!inv._hist&&<>
+            <button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#fff7ed',color:'#9a3412',border:'1px solid #fdba74'}}
+              disabled={remainingCredit<=0.005}
+              title={remainingCredit<=0.005?'No paid amount remains available to credit':'Post a reusable account credit without changing the original invoice or its payments'}
+              onClick={openCreditMemo}>Credit Memo</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 // Seed billing_custom: true if there's an override that doesn't match any alt billing address on the customer
@@ -494,6 +557,19 @@ export default function InvoicesPage(){
             {canDelete&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',color:'#dc2626',border:'1px solid #fca5a5',background:'white',marginLeft:String(inv.status||'').toLowerCase()==='void'?'auto':8}}
               onClick={()=>{deleteInvoice(inv.id);setViewInvoice(null)}}>Delete</button>}
           </div>
+
+          {creditMemos.length>0&&<div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0',background:'#fffaf0'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <span style={{fontSize:11,fontWeight:800,color:'#9a3412',textTransform:'uppercase'}}>Credit Memos</span>
+              <span style={{fontSize:11,fontWeight:700,color:'#166534'}}>${creditedTotal(inv).toFixed(2)} posted to account · ${remainingCredit.toFixed(2)} creditable</span>
+            </div>
+            {creditMemos.map(cm=><div key={cm.id} style={{display:'grid',gridTemplateColumns:'90px 95px 1fr 110px',gap:10,alignItems:'center',fontSize:12,padding:'5px 0',borderTop:'1px solid #ffedd5'}}>
+              <span style={{fontWeight:800,color:'#9a3412'}}>{cm.id}</span>
+              <span style={{color:'#64748b'}}>{cm.memo_date||'—'}</span>
+              <span>{cm.reason}</span>
+              <span style={{fontWeight:800,color:'#166534',textAlign:'right'}}>-${safeNum(cm.amount).toFixed(2)}</span>
+            </div>)}
+          </div>}
 
           {/* Invoice info grid */}
           <div className="card-body" style={{padding:'20px 24px'}}>
@@ -905,6 +981,57 @@ export default function InvoicesPage(){
                 }}>📥 Download PDF</button>
             </div>
           </div></div>})()}
+
+        {/* ═══ CREDIT MEMO MODAL ═══ */}
+        {creditMemoModal&&creditMemoModal.invoiceId===inv.id&&activeCreditCalc&&<div className="modal-overlay" onClick={()=>{if(!creditMemoModal.posting)setCreditMemoModal(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column'}}>
+          <div className="modal-header" style={{background:'#9a3412',color:'white'}}>
+            <h2 style={{color:'white'}}>Credit Memo — {inv.id}</h2>
+            <button className="modal-close" style={{color:'white'}} disabled={creditMemoModal.posting} onClick={()=>setCreditMemoModal(null)}>×</button>
+          </div>
+          <div className="modal-body" style={{overflow:'auto',flex:1}}>
+            <div style={{padding:10,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,fontSize:12,color:'#7c2d12',marginBottom:14}}>
+              This leaves the original invoice and payment history intact. Posting creates an equal, reusable credit on <strong>{ic?.name||'this customer'}’s account</strong>.
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'160px 1fr',gap:12,marginBottom:14}}>
+              <div><label className="form-label">Memo Date</label><input type="date" className="form-input" value={creditMemoModal.date} onChange={e=>setCreditMemoModal(s=>({...s,date:e.target.value}))}/></div>
+              <div><label className="form-label">Reason *</label><input className="form-input" autoFocus value={creditMemoModal.reason} onChange={e=>setCreditMemoModal(s=>({...s,reason:e.target.value}))} placeholder="e.g., 35 dozen practice baseballs cancelled"/></div>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <label className="form-label" style={{margin:0}}>Items / quantities to credit</label>
+              <span style={{fontSize:11,color:'#64748b'}}>Up to ${remainingCredit.toFixed(2)} remains creditable</span>
+            </div>
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+              {creditMemoModal.lines.map((line,index)=>{const selected=line.qty>0;return<div key={index} style={{display:'grid',gridTemplateColumns:'24px 1fr 130px 95px',gap:10,alignItems:'center',padding:'10px 12px',borderBottom:index<creditMemoModal.lines.length-1?'1px solid #f1f5f9':'none',background:selected?'#fff7ed':'white'}}>
+                <input type="checkbox" checked={selected} onChange={e=>setCreditMemoModal(s=>({...s,lines:s.lines.map((l,i)=>i===index?setCreditMemoLineQty(l,e.target.checked?l.max_qty:0):l)}))} style={{accentColor:'#9a3412',width:16,height:16}}/>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:700}}>{line.desc}</div>
+                  {!line.is_amount&&<div style={{fontSize:10,color:'#64748b'}}>{line.invoiced_qty} invoiced{line.credited_qty>0?' · '+line.credited_qty+' already credited':''} · {line.max_qty} available · ${safeNum(line.rate).toFixed(2)} each</div>}
+                </div>
+                <div>
+                  <label style={{display:'block',fontSize:9,color:'#64748b',marginBottom:2}}>{line.is_amount?'AMOUNT TO CREDIT':'CREDIT QTY'}</label>
+                  <input className="form-input" type="number" min="0" max={line.max_qty} step={line.is_amount?'0.01':'1'} value={line.qty||''} placeholder="0" onChange={e=>setCreditMemoModal(s=>({...s,lines:s.lines.map((l,i)=>i===index?setCreditMemoLineQty(l,e.target.value):l)}))} style={{padding:'4px 7px',fontSize:12,textAlign:'right'}}/>
+                </div>
+                <div style={{fontSize:13,fontWeight:800,textAlign:'right',color:selected?'#9a3412':'#94a3b8'}}>${(safeNum(line.qty)*safeNum(line.rate)).toFixed(2)}</div>
+              </div>})}
+            </div>
+            <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}>
+              <div style={{width:300}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:5}}><span style={{color:'#64748b'}}>Selected subtotal</span><span>${activeCreditCalc.subtotal.toFixed(2)}</span></div>
+                {safeNum(inv.tax)>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:5}}><span style={{color:'#64748b'}}>Tax credit (prorated)</span><span>${activeCreditCalc.tax.toFixed(2)}</span></div>}
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,marginBottom:6}}>
+                  <span style={{color:'#64748b'}}>Shipping credit</span>
+                  <input className="form-input" type="number" min="0" step="0.01" value={creditMemoModal.shipping||''} placeholder="0.00" onChange={e=>setCreditMemoModal(s=>({...s,shipping:Math.max(0,safeNum(e.target.value))}))} style={{width:90,padding:'3px 6px',textAlign:'right',fontSize:12}}/>
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:900,color:'#9a3412',paddingTop:7,borderTop:'2px solid #9a3412'}}><span>Account Credit</span><span>${activeCreditCalc.amount.toFixed(2)}</span></div>
+                {activeCreditCalc.amount>remainingCredit+0.005&&<div style={{fontSize:10,color:'#dc2626',fontWeight:700,textAlign:'right',marginTop:4}}>Exceeds remaining creditable amount</div>}
+              </div>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" disabled={creditMemoModal.posting} onClick={()=>setCreditMemoModal(null)}>Cancel</button>
+            <button className="btn btn-primary" style={{background:'#9a3412'}} disabled={creditMemoModal.posting||!!validateCreditMemo({invoice:inv,calculation:activeCreditCalc,reason:creditMemoModal.reason})} onClick={postCreditMemo}>{creditMemoModal.posting?'Posting…':'Post Credit Memo — $'+activeCreditCalc.amount.toFixed(2)}</button>
+          </div>
+        </div></div>}
 
         {/* ═══ SPLIT INVOICE MODAL ═══ */}
         {splitModal&&(()=>{

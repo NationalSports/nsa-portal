@@ -38,6 +38,7 @@ import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { consolidateArtFamilies, artFamilyIds, artFamilyIdsIn } from './lib/artSplitFamily';
 import { approveArtOnSO, sendArtBackOnSO, artApproveTarget } from './lib/artReview';
+import { approvalArtContext } from './lib/artApproval';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { completedJobInvoiceExplanation, hasResponsePoForPull, isFreshNotificationDate, picksForCurrentSku, pulledItemsHaveMovedInLine, shouldShowCompletedJobNotice } from './lib/dashboardNotificationRules';
 import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPasteHandler } from './lib/msgAttach';
@@ -475,6 +476,7 @@ import {
   _diffSaveSkipLogged,
   _diffCmp,
   _custDiffCmp,
+  _invDiffCmp,
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
@@ -3613,7 +3615,7 @@ export default function App(){
 
   React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e),_estDiffCmp)},[ests]);
   React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s),_soDiffCmp)},[sos]);
-  React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i),_invDiffCmp)},[invs]);
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){
     _dbSave('omg_stores',[_pick(s,_omgStoreCols)]);
@@ -8221,6 +8223,10 @@ export default function App(){
       return;
     }
     const inv=invs.find(i=>i.id===invId);if(!inv)return;
+    if((inv.credit_memos||[]).length){
+      nf('Cannot delete '+invId+' — it has '+inv.credit_memos.length+' posted credit memo'+(inv.credit_memos.length===1?'':'s')+'. The invoice and payment history must remain for the account audit trail.','error');
+      return;
+    }
     if(inv.paid>0&&!window.confirm('This invoice has $'+inv.paid.toLocaleString()+' in payments recorded. Deleting will lose this payment history. Continue?'))return;
     if(!window.confirm('Delete invoice '+invId+'?'))return;
     // Remove from state
@@ -11355,7 +11361,7 @@ export default function App(){
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
-      onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
+      onDeleteCredit={async(id)=>{const ok=await _dbDeleteCredit(id);if(supabase&&ok!==true){nf('Credit could not be removed — posted credit memo credits stay locked to their invoice','error');return}const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onSavePendingShip={async(rec)=>{await _dbSavePendingShip(rec);const updated={...selC,pending_shipping:[...(selC.pending_shipping||[]).filter(r=>r.id!==rec.id),rec]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge saved')}}
       onDeletePendingShip={async(id)=>{await _dbDeletePendingShip(id);const updated={...selC,pending_shipping:(selC.pending_shipping||[]).filter(r=>r.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={id=>{try{const u=new URL(window.location);u.searchParams.set('store',id);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}} onOmgStoreSaved={store=>setOmgStores(prev=>prev.some(s=>s.id===store.id)?prev.map(s=>s.id===store.id?{...s,...store}:s):[store,...prev])}
@@ -24254,22 +24260,22 @@ export default function App(){
 
         // Send for approval — sends directly to rep for review, with optional message
         const sendForApproval=()=>{
-          // Re-fetch latest art file from sos state to avoid stale closure data
+          // Re-fetch both the order AND this job before validating. The modal can remain open while
+          // a realtime save splits/reassigns its job, leaving j._art_ids/items stale even though the
+          // rendered art comes from live SO decorations (SO-2199).
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const missing=skusMissingMockups(j,liveSO2);
+          const{currentJob:liveJob,missingImages:_noImg}=approvalArtContext(j,liveSO2,buildJobs(liveSO2));
+          const missing=skusMissingMockups(liveJob,liveSO2);
           if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
           // LOGO-1: every design needs a usable logo image before it can go out for approval. Per the
           // CW web-logo decision record, preview_url is the design-level fallback, NOT the only accepted
           // source — a web logo or any mockup the design already carries satisfies the visual requirement.
           // (Mockups are already mandatory via skusMissingMockups above, so designs that get here normally
           // have one; this gate only blocks a design that has no image of any kind at all.)
-          const _hasArtImage=(a)=>!!(a&&(a.preview_url||a.web_logo_url||safeArr(a.web_logos).length||safeArr(a.mockup_files).length||safeArr(a.sample_art).length||Object.values(safeObj(a.item_mockups)).some(v=>safeArr(v).length>0)));
-          const _jobArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-          const _noImg=_jobArtIds.map(id=>safeArt(liveSO2).find(a=>a.id===id)).filter(Boolean).filter(a=>!_hasArtImage(a));
           if(_noImg.length){nf('Add a logo image before sending for approval: '+_noImg.map(a=>a.name||'art').join(', '),'error');return}
-          if(!_confirmResendIfRejected(j))return;
+          if(!_confirmResendIfRejected(liveJob))return;
           // Move to waiting_approval / needs_approval
-          moveArtStatus(j,'waiting_approval');
+          moveArtStatus(liveJob,'waiting_approval');
           const msgs=[...artMessages];
           // Include artist's message if provided
           if(artJobDetailApprovalMsg.trim()){
@@ -24277,8 +24283,8 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
-          const _sendArtIds=jobLiveArtIds(j,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
+          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(liveJob,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,art_requests:closeOpenArtRequests(jj.art_requests),sent_to_coach_at:null,_coach_cleared:true}:jj);
+          const _sendArtIds=jobLiveArtIds(liveJob,liveSO2);savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>_sendArtIds.includes(a.id)?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
           nf('Mockup sent to '+(rep?.name||'rep')+' for approval');
