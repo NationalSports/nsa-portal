@@ -17,7 +17,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
+import { _pick, _estCols, _soCols, _itemCols, _soItemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
 import { itemEditReconciles, itemsWithWipedQty, decorationShrinkConflicts, unaccountedDroppedItems, jobAllRoutedOutside } from '../businessLogic';
 import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
@@ -395,7 +395,7 @@ const _dbLoad = async (opts={}) => {
     const _productsLoading=essential?false:(only?only.has('products'):!coreOnly);
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
-      rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
+      rInv,rInvPay,rInvItems,rInvCreditMemos,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
       rPromoProg,rPromoPeriods,rPromoUsage,rCredits,rCreditUsage,
       rPendingShip,rPendingShipUsage,
       rRepCsr,rAssignedTodos,rTodoComments,
@@ -437,6 +437,7 @@ const _dbLoad = async (opts={}) => {
       _grp('invoices',()=>_safeQuery('invoices',{order:'id'})),
       _grp('invoices',()=>_safeQuery('invoice_payments')),
       _grp('invoices',()=>_safeQuery('invoice_items')),
+      _grp('invoices',()=>_safeQuery('invoice_credit_memos',{order:'created_at'})),
       _grp('messages',()=>_safeQuery('messages',{order:'id'})),
       _grp('messages',()=>_safeQuery('message_reads')),
       _cold(()=>_safeQuery('omg_stores',{order:'id'})),
@@ -494,7 +495,7 @@ const _dbLoad = async (opts={}) => {
     const estRaw=d(rEst);const estArt=d(rEstArt);const estItems=d(rEstItems);const estDecos=d(rEstDecos);
     const soRaw=d(rSO);const soArt=d(rSOArt);const soFirm=d(rSOFirm);
     const soItems=d(rSOItems);const soDecos=d(rSODecos);const soPicks=d(rSOPicks);const soPOs=d(rSOPOs);const soJobs=d(rSOJobs);
-    const invRaw=d(rInv);const invPay=d(rInvPay);const invItems=d(rInvItems);
+    const invRaw=d(rInv);const invPay=d(rInvPay);const invItems=d(rInvItems);const invCreditMemos=d(rInvCreditMemos);
     const msgRaw=d(rMsg);const msgReads=d(rMsgReads);
     const omgRaw=d(rOMG);const omgProd=d(rOMGProd);
     const issues=d(rIssues);
@@ -635,7 +636,8 @@ const _dbLoad = async (opts={}) => {
       // Hydration flags so the save can tell a deliberate removal from items/payments that simply never loaded
       // (a timed-out invoice_items / invoice_payments query). _hydratedPayRefs lets payments be restore-merged by ref.
       const _hydratedPayRefs=[...new Set(payments.map(p=>p.ref).filter(Boolean))];
-      return{...inv,payments,items:items.length?items:undefined,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
+      const credit_memos=invCreditMemos.filter(cm=>cm.invoice_id===inv.id);
+      return{...inv,payments,items:items.length?items:undefined,credit_memos,_itemsHydrated:!_lastLoadTimedOut.has('invoice_items'),_paymentsHydrated:!_lastLoadTimedOut.has('invoice_payments'),_hydratedPayRefs}});
     // NetSuite historical invoices — read-only; reshape invoice_date → date and tag as historical.
     const hist_invoices=d(rHistInvs).map(_mapHistInvoice);
     // Messages: attach read_by array and parse tagged_members
@@ -742,6 +744,10 @@ const _CUST_CHILD_KEYS=['promo_programs','promo_periods','promo_usage','credits'
 // Phantom-save guard for customers: ignore the child-table arrays above (plus the server-managed
 // fields _diffCmp strips) so only changes _dbSaveCustomer can actually save trigger a save.
 const _custDiffCmp=(o)=>{const r={...o};delete r._version;delete r.updated_at;_CUST_CHILD_KEYS.forEach(k=>delete r[k]);return JSON.stringify(r)};
+// Credit memos are attached read-only from invoice_credit_memos and persist through
+// their transactional RPC. Adding one must not make the parent invoice look edited
+// and trigger an unrelated invoice upsert.
+const _invDiffCmp=(o)=>{const r={...o};delete r.credit_memos;return _diffCmp(r)};
 // NOT NULL columns with DB defaults reject an EXPLICIT null — a default only applies when the
 // column is omitted. Outbox payloads captured before the follow-up fields hydrated carry
 // follow_up_auto/follow_up_count as null, which hard-failed the whole save (SO-1401, 2026-07-31).
@@ -762,14 +768,14 @@ const _estDiffCmp=(e)=>JSON.stringify({
 });
 // Phantom-save guard for sales orders — DELIBERATELY CONSERVATIVE because the SO save is the most
 // data-loss-sensitive path in the app. It differs from _diffCmp ONLY by stripping, from each line
-// item, the scalar fields that are NOT in _itemCols — i.e. exactly the fields the SO save itself
-// discards (_pick(itemData,_itemCols) in _dbSaveSOInner). Those fields (recomputed-every-load
+// item, the scalar fields that are NOT in the SO item write lists — i.e. exactly the fields the SO
+// save itself discards. Those fields (recomputed-every-load
 // _sizeCosts/_sizeSells/_colorImage/etc.) can never be persisted, so dropping them from change-
 // detection can never hide a savable change → zero data-loss risk by construction. EVERYTHING else —
 // all SO-level fields, jobs, art_files, firm_dates, and each item's decorations/pick_lines/po_lines —
 // is still compared WHOLE, exactly as before. Only the per-item session scalars (the storm trigger)
 // stop counting as changes.
-const _soItemForDiff=(it)=>({..._pick(it,_itemCols),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
+const _soItemForDiff=(it)=>({..._pick(it,[..._itemCols,..._soItemCols]),decorations:it.decorations,pick_lines:it.pick_lines,po_lines:it.po_lines});
 const _soDiffCmp=(s)=>{const{_version,updated_at,...r}=s;if(Array.isArray(r.items))r.items=r.items.map(_soItemForDiff);return JSON.stringify(r)};
 // Phantom-save guard for products: compare ONLY what _dbSaveProduct actually persists — the products
 // row, the _pimg_ image backup (front/back/gallery), and product_inventory (_inv/_alerts). It mirrors
@@ -2383,7 +2389,7 @@ const _dbSaveSOInner = async (so) => {
       }
       _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
-    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
+    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,[..._itemCols,..._soItemCols]),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
     if(itemErr){
       if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
@@ -3226,6 +3232,26 @@ const _dbSaveCreditUsage = async (usage) => {
     return true;
   }catch(e){console.error('[DB] save credit usage:',e);return false}
 };
+// Atomically creates the audit memo and the equal reusable account credit. Keeping
+// both inserts inside the database function prevents a dropped browser request from
+// leaving only one side of the financial posting behind.
+const _dbCreateInvoiceCreditMemo = async ({invoice_id,subtotal,tax,shipping,reason,memo_date,line_items,created_by}) => {
+  if(!supabase)return null;
+  try{
+    const{data,error}=await supabase.rpc('create_invoice_credit_memo',{
+      p_invoice_id:invoice_id,
+      p_subtotal:subtotal,
+      p_tax:tax,
+      p_shipping:shipping,
+      p_reason:reason,
+      p_memo_date:memo_date,
+      p_line_items:line_items,
+      p_created_by:created_by||null,
+    });
+    if(error){console.error('[DB] create invoice credit memo:',error.message);return{error:error.message}}
+    return data||null;
+  }catch(e){console.error('[DB] create invoice credit memo:',e);return{error:e.message||String(e)}}
+};
 // ── Pending-shipping DB functions (mirror of credits) ──
 const _dbSavePendingShip = async (rec) => {
   if(!supabase)return false;
@@ -3936,6 +3962,7 @@ export {
   _diffSaveSkipLogged,
   _diffCmp,
   _custDiffCmp,
+  _invDiffCmp,
   _estDiffCmp,
   _soDiffCmp,
   _prodDiffCmp,
@@ -3963,6 +3990,7 @@ export {
   _dbSaveCredit,
   _dbDeleteCredit,
   _dbSaveCreditUsage,
+  _dbCreateInvoiceCreditMemo,
   _dbSavePendingShip,
   _dbDeletePendingShip,
   _dbSavePendingShipUsage,

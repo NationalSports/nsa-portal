@@ -44,6 +44,7 @@ const ROOT = path.join(__dirname, '..');
 const WRITES = {
   _artCols: ['estimate_art_files', 'so_art_files'],
   _itemCols: ['estimate_items', 'so_items'],
+  _soItemCols: ['so_items'],
   _decoCols: ['estimate_item_decorations', 'so_item_decorations'],
   _jobCols: ['so_jobs'],
   _estCols: ['estimates'],
