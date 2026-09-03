@@ -26,7 +26,7 @@ import * as fabric from 'fabric';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
-import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
+import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills, portalBillAlreadyApplied } from './appliedBillsLedger';
 import { canViewAiInbox, resolveAccessUser } from './lib/pageAccess';
 import { billAnomalyFlags, duplicateBillDetail } from './lib/billAnomalies';
 import { buildJobs, billOverageQty, billLineNeed, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes, jobAllRoutedOutside, garmentCost, assistantNormSize, assistantFindLine, assistantLineEdit, assistantRemoveLineGuard, assistantFindPoLine, assistantRemovePoLine } from './businessLogic';
@@ -29825,7 +29825,7 @@ export default function App(){
       });
       const setRowResult=(bi,b,status,message)=>{
         setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:status,qbMsg:message}:p)}));
-        return {[b.id]:{qbStatus:status,qbMsg:message}};
+        return {[b.id]:{qbStatus:status,qbMsg:message,portalStatus:b.portalStatus||null,portalMsg:b.portalMsg||''}};
       };
 
       let success=0,failed=0;
@@ -29941,20 +29941,32 @@ export default function App(){
           // Only now—after QBO success or an exact existing read-back—may the
           // portal apply quantities/costs. This prevents a QBO failure from
           // mutating the portal and makes a crash/retry safely recoverable.
-          let portalApplied=!!bill._applied;
+          // Initial-migration backfill: this document may already be in the
+          // portal ledger even though it has never reached QBO. Treat that as
+          // an already-complete portal side, rather than applying its quantity
+          // and cost again and manufacturing an over-bill warning.
+          const portalWasAlreadyApplied=portalBillAlreadyApplied(bill,_docAlreadyApplied);
+          let portalApplied=portalWasAlreadyApplied;
           let portalWarning='';
           if(!portalApplied){
             try{applyBillToSO(bill);portalApplied=true}
             catch(e){portalWarning='QBO Bill #'+qboBillId+' exists, but portal apply failed: '+(e.message||'unknown error')}
           }
-          if(portalApplied&&!bill._applied&&_billHasTarget(bill)){
+          if(portalApplied&&!portalWasAlreadyApplied&&_billHasTarget(bill)){
             try{await _recordAppliedBills([{parsed:bill}])}
             catch(e){portalWarning='QBO Bill #'+qboBillId+' and portal quantities were applied, but ledger write failed: '+(e.message||'unknown error')}
+          }
+          if(portalApplied&&!portalWarning){
+            b.portalStatus='success';
+            b.portalMsg=portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification';
+          }else if(portalWarning){
+            b.portalStatus='error';
+            b.portalMsg=portalWarning;
           }
 
           const action=created?'created':'verified existing';
           const log={ts:new Date().toLocaleString(),type:'bill_upload',status:portalWarning?'partial':'success',
-            details:['Bill '+action+': '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+qboBillId,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2),...(canaryReadback?[canaryReadback]:[]),...(portalWarning?[portalWarning]:[])]};
+            details:['Bill '+action+': '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+qboBillId,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2),...(canaryReadback?[canaryReadback]:[]),...(portalWasAlreadyApplied?['Portal already contained this document; quantities and costs were not applied again.']:[]),...(portalWarning?[portalWarning]:[])]};
           if(portalApplied){
             setQBConfig(prev=>{
               const ids=new Set((prev._syncedBillIds||[]).map(String));ids.add(String(qboBillId));
@@ -29980,7 +29992,7 @@ export default function App(){
       setSavedBills(prev=>{
         const updated=prev.map(sb=>{
           const result=qbResults[sb.id];
-          return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''}:sb;
+          return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})}:sb;
         });
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
