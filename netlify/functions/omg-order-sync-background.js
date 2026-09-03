@@ -32,24 +32,49 @@ async function omgGet(path, attempt = 0) {
   try { return JSON.parse(text); } catch (_) { throw new Error(`OMG ${path} returned non-JSON data`); }
 }
 
-async function allOrderPages(path, maxPages = 500) {
+async function allOrderPages(path, maxPages = 500, getPage = omgGet) {
   const rows = [];
   const seen = new Set();
-  let next = path;
-  let page = 0;
-  while (next && page < maxPages) {
-    const response = await omgGet(next);
+  const addPage = response => {
     const pageRows = Array.isArray(response.data) ? response.data : [];
+    let added = 0;
     for (const row of pageRows) {
       if (!seen.has(String(row.id))) {
         seen.add(String(row.id));
         rows.push(row);
+        added++;
       }
     }
+    return { pageRows, added };
+  };
+
+  const first = await getPage(path);
+  const firstPage = addPage(first);
+  let pages = 1;
+  let next = apiPath(first.links?.next);
+
+  // OMG sometimes supplies JSON:API links.next. Follow it when present.
+  while (next && pages < maxPages) {
+    const response = await getPage(next);
+    const { pageRows, added } = addPage(response);
+    pages++;
+    if (!pageRows.length || !added) return rows;
     next = apiPath(response.links?.next);
-    page++;
   }
   if (next) throw new Error(`OMG order pagination exceeded ${maxPages} pages; no store rows were changed`);
+
+  // The global orders endpoint also commonly omits links.next even when the
+  // first page is full. Manually advance JSON:API page[number]. If OMG ignores
+  // the parameter, every row is a duplicate and we stop after the first probe.
+  if (!first.links?.next && firstPage.pageRows.length && firstPage.added) {
+    const separator = path.includes('?') ? '&' : '?';
+    for (let pageNumber = 2; pageNumber <= maxPages; pageNumber++) {
+      const response = await getPage(`${path}${separator}page[number]=${pageNumber}`);
+      const { pageRows, added } = addPage(response);
+      if (!pageRows.length || !added) return rows;
+    }
+    throw new Error(`OMG order pagination exceeded ${maxPages} pages; no store rows were changed`);
+  }
   return rows;
 }
 
@@ -193,4 +218,4 @@ exports.handler = async event => {
   }
 };
 
-exports._test = { apiPath, normalizeSaleCode, saleCodeForOrder, summarizeOrders, buildStoreUpdate };
+exports._test = { apiPath, allOrderPages, normalizeSaleCode, saleCodeForOrder, summarizeOrders, buildStoreUpdate };

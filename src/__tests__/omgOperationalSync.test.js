@@ -30,6 +30,25 @@ describe('OMG operational order sync', () => {
     expect(result.reason).toMatch(/preserved stored values/);
   });
 
+  test('worker manually advances page[number] when OMG omits links.next', async () => {
+    const requested = [];
+    const pages = [
+      { data: [{ id: 'o1' }, { id: 'o2' }], links: {} },
+      { data: [{ id: 'o3' }], links: {} },
+      { data: [{ id: 'o3' }], links: {} },
+    ];
+    const result = await sync.allOrderPages('/orders?include=sale', 5, async path => {
+      requested.push(path);
+      return pages.shift();
+    });
+    expect(result.map(row => row.id)).toEqual(['o1', 'o2', 'o3']);
+    expect(requested).toEqual([
+      '/orders?include=sale',
+      '/orders?include=sale&page[number]=2',
+      '/orders?include=sale&page[number]=3',
+    ]);
+  });
+
   test('production wiring stays isolated from accounting tables', () => {
     const fn = fs.readFileSync(path.join(__dirname, '../../netlify/functions/omg-order-sync-background.js'), 'utf8');
     const cron = fs.readFileSync(path.join(__dirname, '../../netlify/functions/omg-order-sync-cron.js'), 'utf8');
