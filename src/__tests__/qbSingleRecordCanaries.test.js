@@ -211,4 +211,40 @@ describe('QuickBooks one-record canaries', () => {
     expect(qbApi.mock.calls.filter(([action])=>action==='upsert_vendor'||action==='upsert_item')).toHaveLength(0);
     expect(getConfig().qbPOMap['PO-1']).toBe('PO-QB');
   });
+
+  test('uses the saved PO line cost rounded to cents instead of a changed catalog cost', async() => {
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:99.999,sizes:{S:1},po_lines:[{po_id:'PO-1',created_at:'2026-09-01',S:1,unit_cost:37.115}]}]};
+    let sentPO;
+    const qbApi=jest.fn(async(action,{query,purchase_order}={})=>{
+      if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
+      if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='upsert_purchase_order'){sentPO=purchase_order;return{PurchaseOrder:{Id:'PO-QB',...purchase_order}}}
+      if(action==='query'&&query.includes("FROM PurchaseOrder WHERE Id = 'PO-QB'"))return{QueryResponse:{PurchaseOrder:[{Id:'PO-QB',DocNumber:'PO-1',VendorRef:{value:'V-QB'},TotalAmt:37.12,TxnDate:'2026-09-01'}]}};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1'}],vend:[{id:'V1',name:'Acme'}]});
+    getConfig().prodQBMap.P1='I-1';
+    await expect(engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'})).resolves.toEqual({status:'success',synced:1});
+    expect(sentPO.Line).toEqual([expect.objectContaining({
+      Amount:37.12,
+      ItemBasedExpenseLineDetail:expect.objectContaining({Qty:1,UnitPrice:37.12}),
+    })]);
+    expect(sentPO.TotalAmt).toBeUndefined();
+  });
+
+  test('records the QBO transport error instead of unknown when a PO write is rejected', async() => {
+    const so={id:'SO-1',items:[{product_id:'P1',sku:'SKU-1',name:'Test Jersey',brand:'Acme',nsa_cost:5,sizes:{S:2},po_lines:[{po_id:'PO-1',created_at:'2026-08-31',S:2,unit_cost:5}]}]};
+    const qbApi=jest.fn(async(action,{query}={})=>{
+      if(action==='query'&&query.includes('FROM Vendor STARTPOSITION'))return{QueryResponse:{Vendor:[{Id:'V-QB',DisplayName:'Acme',CompanyName:'Acme'}]}};
+      if(action==='query'&&query.includes('FROM PurchaseOrder STARTPOSITION'))return{QueryResponse:{PurchaseOrder:[]}};
+      if(action==='query'&&query.includes('FROM Account'))return accountResponse;
+      if(action==='upsert_purchase_order')return{__qbTransportError:true,status:400,error:'Transaction date is prior to start date for inventory item'};
+      throw new Error('Unexpected QBO call: '+action+' '+query);
+    });
+    const{engine,getConfig}=makeEngine({qbApi,sos:[so],prod:[{id:'P1',sku:'SKU-1'}],vend:[{id:'V1',name:'Acme'}]});
+    getConfig().prodQBMap.P1='I-1';
+    await expect(engine.syncPurchaseOrders({}, {canaryPOId:'PO-1'})).resolves.toEqual({status:'blocked',synced:0});
+    expect(getConfig().syncLog[0].details).toContain('PO-1 — FAILED: Transaction date is prior to start date for inventory item');
+  });
 });
