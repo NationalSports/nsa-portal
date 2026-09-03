@@ -449,7 +449,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, planQBNonInventoryItems, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -29801,7 +29801,7 @@ export default function App(){
           const bill=row.parsed||{};
           return '• '+(bill.doc_number||row.id||'no document #')+' — '+(bill.supplier||'unknown vendor')+' — $'+safeNum(bill.doc_total).toFixed(2);
         }).join('\n');
-        if(!window.confirm('TEST MODE — send only these '+batch.length+' bill(s) to the live QBO company?\n\n'+preview+'\n\nThe full push stays locked until you review the QBO records and approve it.'))return;
+        if(!window.confirm('TEST MODE — send only these '+batch.length+' bill(s) to the live QBO company?\n\n'+preview+'\n\nIf a required SKU item is missing, this test creates or repairs only that QBO NonInventory item using 40000 Sales and 51300 Purchases, with no quantity on hand or inventory value.\n\nThe full push stays locked until you review the QBO records and approve it.'))return;
       }
       const selectedIndexes=new Set(batch.map(entry=>entry.index));
       const remainingAfterBatch=Math.max(0,selectedEntries.length-batch.length);
@@ -29812,7 +29812,7 @@ export default function App(){
         [qbAccounts,existingQBVendors,existingQBItems,existingQBBills]=await Promise.all([
           loadQBAccounts(qbApi),
           loadAllQBEntities(qbApi,'Vendor','Id, DisplayName, CompanyName, Active',1000),
-          loadAllQBEntities(qbApi,'Item','Id, Name, Sku, Type, Active',1000),
+          loadAllQBEntities(qbApi,'Item','Id, SyncToken, Name, Sku, Type, Active, IncomeAccountRef, ExpenseAccountRef',1000),
           loadAllQBEntities(qbApi,'Bill','Id, DocNumber, VendorRef, TotalAmt, TxnDate',500),
         ]);
       }catch(e){
@@ -29875,11 +29875,31 @@ export default function App(){
           const routedBill=decorationCategory&&bill.kind!=='decoration'?{...bill,kind:'decoration'}:bill;
           const keys=decorationCategory
             ?['deco_account','freight_account','ap_account']
-            :['purchases_account','freight_account','sports_inc_fee_account','ap_account'];
+            :['income_account','purchases_account','freight_account','sports_inc_fee_account','ap_account'];
           const billRefs=resolveQBAccountRefs(qbAccounts,qbConfig.mapping,keys);
           const qboRoutedBill=decorationCategory?routedBill:{...routedBill,items:mapBillItemsToPortalSkus(routedBill.items,routedBill._lineMappings)};
           const requiredSkus=decorationCategory?[]:(qboRoutedBill.items||[]).map(item=>item?.sku).filter(Boolean);
-          const billItemRefs=requiredSkus.length?indexQBNonInventoryItems(existingQBItems,requiredSkus):{};
+          const itemDescriptions={};
+          (qboRoutedBill.items||[]).forEach(item=>{const sku=String(item?.sku||'').trim().toUpperCase();if(sku&&!itemDescriptions[sku])itemDescriptions[sku]=String(item?.desc||sku).trim()});
+          const itemPlan=requiredSkus.length?planQBNonInventoryItems(existingQBItems,requiredSkus,billRefs,itemDescriptions):{refs:{},upserts:[]};
+          const billItemRefs={...itemPlan.refs};
+          const itemSetupNotes=[];
+          for(const planned of itemPlan.upserts){
+            const itemRes=await qbApi('upsert_item',{item:planned.item});
+            const saved=itemRes?.Item;
+            if(!saved?.Id)throw new Error('QBO '+planned.sku+' item '+planned.action+' failed: '+(itemRes?.Fault?.Error?.[0]?.Detail||'unknown QBO item error')+'. No bill was sent.');
+            const readRes=await qbApi('read',{entity:'item',id:saved.Id});
+            const verified=readRes?.Item;
+            if(!verified||String(verified.Id)!==String(saved.Id)||String(verified.Type||'').toLowerCase()!=='noninventory'
+              ||String(verified.Sku||verified.Name||'').trim().toUpperCase()!==planned.sku
+              ||String(verified.IncomeAccountRef?.value||'')!==String(billRefs.income_account.value)
+              ||String(verified.ExpenseAccountRef?.value||'')!==String(billRefs.purchases_account.value)){
+              throw new Error('QBO '+planned.sku+' item '+planned.action+' could not be verified with NonInventory and 40000/51300 routing. No bill was sent.');
+            }
+            existingQBItems.push(verified);
+            billItemRefs[planned.sku]={value:String(verified.Id),name:verified.Name||planned.sku};
+            itemSetupNotes.push((planned.action==='create'?'Created':'Repaired')+' QBO NonInventory item '+planned.sku+' #'+verified.Id+' and verified 40000/51300 routing');
+          }
           const built=buildVendorBillLines(qboRoutedBill,billRefs,billItemRefs);
           const amt=built.total;
           const lineItems=built.lines;
@@ -29970,7 +29990,7 @@ export default function App(){
 
           const action=created?'created':'verified existing';
           const log={ts:new Date().toLocaleString(),type:'bill_upload',status:portalWarning?'partial':'success',
-            details:['Bill '+action+': '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+qboBillId,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2),...(canaryReadback?[canaryReadback]:[]),...(portalWasAlreadyApplied?['Portal already contained this document; quantities and costs were not applied again.']:[]),...(portalWarning?[portalWarning]:[])]};
+            details:['Bill '+action+': '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+qboBillId,'PO: '+bill.po_number,(bill.items||[]).length+' source line items, Freight: $'+safeNum(bill.freight).toFixed(2),...itemSetupNotes,...(canaryReadback?[canaryReadback]:[]),...(portalWasAlreadyApplied?['Portal already contained this document; quantities and costs were not applied again.']:[]),...(portalWarning?[portalWarning]:[])]};
           if(portalApplied){
             setQBConfig(prev=>{
               const ids=new Set((prev._syncedBillIds||[]).map(String));ids.add(String(qboBillId));

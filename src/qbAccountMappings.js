@@ -579,6 +579,63 @@ export function indexQBNonInventoryItems(items = [], requiredSkus = []) {
   return refs;
 }
 
+// Produce the smallest safe set of QBO item writes needed by a vendor bill.
+// Legacy portal orders can contain valid, reviewed SKUs that predate the
+// current product catalog, so the normal catalog-item canary cannot select
+// them. A bill still needs an ItemRef for each SKU. This planner either reuses
+// one exact active NonInventory match, repairs only its approved account
+// routing, or creates one zero-value NonInventory item. Duplicate SKUs and
+// incompatible QBO item types fail closed.
+export function planQBNonInventoryItems(items = [], requiredSkus = [], accountRefs = {}, descriptionsBySku = {}) {
+  const incomeRef = qbWriteAccountRef(accountRefs.income_account);
+  const expenseRef = qbWriteAccountRef(accountRefs.purchases_account);
+  if (!incomeRef.value || !expenseRef.value) throw new Error('QBO item routing requires the approved Sales and Purchases accounts. No bill was sent.');
+
+  const refs = {};
+  const upserts = [];
+  const uniqueSkus = [...new Set((requiredSkus || []).map(skuKey).filter(Boolean))];
+  for (const sku of uniqueSkus) {
+    const exactMatches = (items || []).filter(item => item &&
+      (skuKey(item.Sku) === sku || skuKey(item.Name) === sku));
+    const matches = exactMatches.filter(item => item.Active !== false);
+    if (matches.length > 1) throw new Error(`QBO SKU ${sku} is duplicated; no bill was sent.`);
+    if (!matches.length && exactMatches.some(item => item.Active === false)) {
+      throw new Error(`QBO SKU ${sku} exists only as an inactive item; no bill was sent.`);
+    }
+    const existing = matches[0] || null;
+    if (existing && String(existing.Type || '').toLowerCase() !== 'noninventory') {
+      throw new Error(`QBO SKU ${sku} has item type "${existing.Type || 'unknown'}"; expected NonInventory. No bill was sent.`);
+    }
+
+    const description = String(descriptionsBySku[sku] || sku)
+      .replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3800);
+    const accountsMatch = existing &&
+      String(existing.IncomeAccountRef?.value || '') === String(incomeRef.value) &&
+      String(existing.ExpenseAccountRef?.value || '') === String(expenseRef.value);
+    if (existing && accountsMatch) {
+      refs[sku] = { value: String(existing.Id), name: existing.Name || sku };
+      continue;
+    }
+
+    upserts.push({
+      sku,
+      action: existing ? 'repair' : 'create',
+      item: {
+        Name: sku.slice(0, 100),
+        Sku: sku,
+        Description: `${description} | Portal is inventory source of truth; QBO purchase item stores quantity only on documents`,
+        PurchaseDesc: description,
+        IncomeAccountRef: incomeRef,
+        ExpenseAccountRef: expenseRef,
+        ...(existing
+          ? { Id: String(existing.Id), SyncToken: String(existing.SyncToken || '0'), sparse: true }
+          : { Type: 'NonInventory', UnitPrice: 0, PurchaseCost: 0 }),
+      },
+    });
+  }
+  return { refs, upserts };
+}
+
 export function aggregateBillItemsBySku(items = []) {
   const bySku = new Map();
   let noSkuAmount = 0;

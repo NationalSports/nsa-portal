@@ -19,6 +19,7 @@ import {
   migrateQBAccountMapping,
   parseQBDateValue,
   parseOmgDepositStatements,
+  planQBNonInventoryItems,
   qbBillNeedsSync,
   qbWriteAccountRef,
   resolveQBAccount,
@@ -258,6 +259,37 @@ describe('vendor bill adversarial routing', () => {
       {Id:'2',Name:'Legacy inventory item',Sku:'OLD',Type:'Inventory',Active:true},
     ], ['A']).A.value).toBe('1');
     expect(() => indexQBNonInventoryItems([], ['MISSING'])).toThrow(/SKU MISSING was not found/i);
+  });
+
+  test('plans zero-value NonInventory SKU creation for a legacy bill SKU outside the product catalog', () => {
+    const plan=planQBNonInventoryItems([],['st350','YST350'],{
+      income_account:{value:'sales',accountNumber:'40000'},
+      purchases_account:{value:'purchases',accountNumber:'51300'},
+    },{ST350:'Sport-Tek Competitor Tee',YST350:'Youth Competitor Tee'});
+    expect(plan.refs).toEqual({});
+    expect(plan.upserts.map(x=>[x.sku,x.action,x.item])).toEqual([
+      ['ST350','create',expect.objectContaining({Name:'ST350',Sku:'ST350',Type:'NonInventory',UnitPrice:0,PurchaseCost:0,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}})],
+      ['YST350','create',expect.objectContaining({Name:'YST350',Sku:'YST350',Type:'NonInventory',UnitPrice:0,PurchaseCost:0,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}})],
+    ]);
+  });
+
+  test('reuses correctly routed items and repairs only an exact NonInventory SKU with wrong accounts', () => {
+    const plan=planQBNonInventoryItems([
+      {Id:'1',SyncToken:'3',Name:'A',Sku:'A',Type:'NonInventory',Active:true,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}},
+      {Id:'2',SyncToken:'7',Name:'B',Sku:'B',Type:'NonInventory',Active:true,IncomeAccountRef:{value:'wrong'},ExpenseAccountRef:{value:'purchases'}},
+    ],['A','B'],{income_account:{value:'sales'},purchases_account:{value:'purchases'}});
+    expect(plan.refs).toEqual({A:{value:'1',name:'A'}});
+    expect(plan.upserts).toEqual([{sku:'B',action:'repair',item:expect.objectContaining({Id:'2',SyncToken:'7',sparse:true,IncomeAccountRef:{value:'sales'},ExpenseAccountRef:{value:'purchases'}})}]);
+  });
+
+  test('legacy bill item planning fails closed on duplicate or incompatible QBO SKUs', () => {
+    const acctRefs={income_account:{value:'sales'},purchases_account:{value:'purchases'}};
+    expect(()=>planQBNonInventoryItems([
+      {Id:'1',Sku:'A',Type:'NonInventory',Active:true},
+      {Id:'2',Sku:'a',Type:'NonInventory',Active:true},
+    ],['A'],acctRefs)).toThrow(/duplicated/i);
+    expect(()=>planQBNonInventoryItems([{Id:'1',Sku:'A',Type:'Inventory',Active:true}],['A'],acctRefs)).toThrow(/expected NonInventory/i);
+    expect(()=>planQBNonInventoryItems([{Id:'1',Name:'A',Sku:'OLD',Type:'NonInventory',Active:false}],['A'],acctRefs)).toThrow(/inactive/i);
   });
 
   test('blocks a SKU bill when the QBO item is missing or merchandise totals disagree', () => {
