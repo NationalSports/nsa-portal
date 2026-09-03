@@ -19,6 +19,7 @@ import {
   migrateQBAccountMapping,
   parseQBDateValue,
   parseOmgDepositStatements,
+  qbBillNeedsSync,
   qbWriteAccountRef,
   resolveQBAccount,
 } from '../qbAccountMappings';
@@ -207,6 +208,14 @@ describe('vendor bill adversarial routing', () => {
       { bill_idx: 0, sku: 'LNEA500', allocated_qty: 1 },
       { bill_idx: 0, sku: 'PC61', allocated_qty: 1 },
     ])).toThrow(/multiple portal SKUs/i);
+  });
+
+  test('allows a failed bill write to retry without reopening completed results', () => {
+    expect(qbBillNeedsSync(null)).toBe(true);
+    expect(qbBillNeedsSync(undefined)).toBe(true);
+    expect(qbBillNeedsSync('error')).toBe(true);
+    expect(qbBillNeedsSync('success')).toBe(false);
+    expect(qbBillNeedsSync('partial')).toBe(false);
   });
 
   test('removes portal-only account metadata from QBO write references', () => {

@@ -546,6 +546,13 @@ export function mapBillItemsToPortalSkus(items = [], lineMappings = []) {
   });
 }
 
+// A failed write is safe to retry because the bill sync repeats its duplicate
+// preflight before creating anything. Successful and partial results stay
+// locked for review instead of being blindly re-run.
+export function qbBillNeedsSync(status) {
+  return !status || status === 'error';
+}
+
 export function indexQBNonInventoryItems(items = [], requiredSkus = []) {
   const required = new Set((requiredSkus || []).map(skuKey).filter(Boolean));
   const grouped = new Map();
