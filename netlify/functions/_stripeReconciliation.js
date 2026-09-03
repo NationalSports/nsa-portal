@@ -157,21 +157,31 @@ async function upsertBalanceTransaction({ client, sb, balanceTransaction, payout
 }
 
 async function recordPaymentIntentFinancials({ client, sb, paymentIntent }) {
+  const result = await inspectPaymentIntentFinancials({ client, sb, paymentIntent });
+  return result && result.row;
+}
+
+async function inspectPaymentIntentFinancials({ client, sb, paymentIntent }) {
   if (!paymentIntent || !paymentIntent.id) return null;
   const pi = await client.paymentIntents.retrieve(paymentIntent.id, {
     expand: ['latest_charge.balance_transaction'],
   });
-  if (!pi.latest_charge) return null;
+  if (pi.status !== 'succeeded' || !pi.latest_charge) {
+    return { row: null, payment_intent_status: pi.status || 'unknown' };
+  }
   const charge = typeof pi.latest_charge === 'string'
     ? await client.charges.retrieve(pi.latest_charge, { expand: ['balance_transaction'] })
     : pi.latest_charge;
-  if (!charge.balance_transaction) return null;
-  return upsertBalanceTransaction({
+  if (!charge.balance_transaction) {
+    return { row: null, payment_intent_status: pi.status || 'unknown' };
+  }
+  const row = await upsertBalanceTransaction({
     client,
     sb,
     balanceTransaction: charge.balance_transaction,
     source: charge,
   });
+  return { row, payment_intent_status: pi.status || 'unknown' };
 }
 
 async function recordRefundFinancials({ client, sb, refund }) {
@@ -305,7 +315,23 @@ async function recordPayoutReconciliation({ client, sb, payout }) {
     return { ...patch, stripe_payout_id: payout.id };
   }
 
-  const transactions = await listPayoutBalanceTransactions(client, payout.id);
+  const allTransactions = await listPayoutBalanceTransactions(client, payout.id);
+  const isPayoutMovement = (transaction) => {
+    const sourceId = stripeId(transaction && transaction.source);
+    return sourceId === payout.id || transaction.reporting_category === 'payout' || transaction.type === 'payout';
+  };
+  const payoutMovements = allTransactions.filter(isPayoutMovement);
+  const transactions = allTransactions.filter((transaction) => !isPayoutMovement(transaction));
+  // Stripe's payout-filtered list can include the negative transfer to the bank
+  // as well as the positive activity funding it. The bank movement is already
+  // represented by stripe_payouts; summing it into activity would always net the
+  // batch to zero and would also duplicate the bank leg in QBO export rows.
+  if (payoutMovements.length) {
+    const { error } = await sb.from('stripe_balance_transactions')
+      .update({ stripe_payout_id: null, updated_at: new Date().toISOString() })
+      .in('stripe_balance_transaction_id', payoutMovements.map((transaction) => transaction.id));
+    if (error) throw new Error('Could not detach Stripe payout transfer from settlement activity: ' + error.message);
+  }
   const existingById = await loadExistingBalanceTransactions(sb, transactions.map((transaction) => transaction.id));
   const rows = [];
   const knownRows = [];
@@ -454,6 +480,7 @@ module.exports = {
   REQUIRED_WEBHOOK_EVENTS,
   auditWebhookConfiguration,
   balanceTransactionRow,
+  inspectPaymentIntentFinancials,
   loadExistingBalanceTransactions,
   listPayoutBalanceTransactions,
   payoutRow,

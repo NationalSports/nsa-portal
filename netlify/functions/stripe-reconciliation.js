@@ -6,8 +6,8 @@ const stripe = require('stripe');
 const { corsHeaders, getSupabaseAdmin, verifyQBOUser } = require('./_shared');
 const {
   auditWebhookConfiguration,
+  inspectPaymentIntentFinancials,
   reconcilePayoutBatch,
-  recordPaymentIntentFinancials,
   recordPayoutReconciliation,
   repairWebhookConfiguration,
 } = require('./_stripeReconciliation');
@@ -116,15 +116,20 @@ exports.handler = async (event) => {
       if (error) throw error;
       const client = stripe(secret);
       const results = [];
+      const skipped = [];
       const errors = [];
       for (const order of (orders || [])) {
         try {
-          const row = await recordPaymentIntentFinancials({
+          const financials = await inspectPaymentIntentFinancials({
             client,
             sb: admin,
             paymentIntent: { id: order.stripe_pi_id },
           });
-          if (!row) throw new Error('Stripe PaymentIntent has no balance transaction yet');
+          const row = financials && financials.row;
+          if (!row) {
+            skipped.push({ order_id: order.id, payment_intent_status: financials?.payment_intent_status || 'unknown' });
+            continue;
+          }
           results.push({ order_id: order.id, balance_transaction_id: row.stripe_balance_transaction_id });
         } catch (orderError) {
           errors.push({ order_id: order.id, error: orderError.message });
@@ -135,6 +140,7 @@ exports.handler = async (event) => {
         processed: (orders || []).length,
         linked: results.length,
         results,
+        skipped,
         errors,
         has_more: (orders || []).length === limit,
         next_cursor: last ? last.id : null,
@@ -169,7 +175,7 @@ exports.handler = async (event) => {
 
     if (action === 'reconciliation_status') {
       const [ordersResult, payoutsResult] = await Promise.all([
-        admin.from('webstore_orders').select('id,so_id,total,stripe_balance_transaction_id')
+        admin.from('webstore_orders').select('id,so_id,total,status,stripe_balance_transaction_id')
           .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null),
         admin.from('stripe_payouts').select('stripe_payout_id,automatic,method,status,reconciliation_status'),
       ]);
@@ -177,6 +183,10 @@ exports.handler = async (event) => {
       const orders = ordersResult.data || [];
       const payouts = payoutsResult.data || [];
       const cardOrders = summarizeOrders(orders);
+      const incompleteAttempts = summarizeOrders(orders.filter((row) =>
+        row.status === 'pending_payment' && !row.stripe_balance_transaction_id));
+      const settledOrders = summarizeOrders(orders.filter((row) =>
+        row.status !== 'pending_payment' || row.stripe_balance_transaction_id));
       const so2313 = summarizeOrders(orders.filter((row) => {
         const soId = String(row.so_id || '').trim().toUpperCase();
         return soId === 'SO-2313' || soId === '2313';
@@ -185,11 +195,13 @@ exports.handler = async (event) => {
         ['pending', 'mismatch', 'failed'].includes(String(row.reconciliation_status || 'pending')));
       const unavailablePayouts = payouts.filter((row) => row.reconciliation_status === 'unavailable');
       return response(200, origin, {
-        unlinked_card_orders: cardOrders.unlinked_count,
+        unlinked_card_orders: settledOrders.unlinked_count,
         non_exact_automatic_payouts: actionablePayouts.length,
         actionable_automatic_payouts: actionablePayouts.length,
         unavailable_payouts: unavailablePayouts.length,
         card_orders: cardOrders,
+        settled_card_orders: settledOrders,
+        incomplete_card_attempts: incompleteAttempts,
         so_2313: so2313,
       });
     }

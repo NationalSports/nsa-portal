@@ -8,8 +8,8 @@ const stripe = require('stripe');
 const { getSupabaseAdmin } = require('./_shared');
 const {
   auditWebhookConfiguration,
+  inspectPaymentIntentFinancials,
   reconcilePayoutBatch,
-  recordPaymentIntentFinancials,
 } = require('./_stripeReconciliation');
 
 const HEADERS = { 'Content-Type': 'application/json' };
@@ -39,17 +39,22 @@ async function catchUpUnlinkedOrders(admin, client, limit = 25) {
     .limit(limit);
   if (error) throw error;
   const linked = [];
+  const skipped = [];
   const errors = [];
   for (const order of (data || [])) {
     try {
-      const row = await recordPaymentIntentFinancials({ client, sb: admin, paymentIntent: { id: order.stripe_pi_id } });
-      if (!row) throw new Error('Stripe PaymentIntent has no balance transaction yet');
+      const financials = await inspectPaymentIntentFinancials({ client, sb: admin, paymentIntent: { id: order.stripe_pi_id } });
+      const row = financials && financials.row;
+      if (!row) {
+        skipped.push({ order_id: order.id, payment_intent_status: financials?.payment_intent_status || 'unknown' });
+        continue;
+      }
       linked.push(order.id);
     } catch (orderError) {
       errors.push({ order_id: order.id, error: orderError.message });
     }
   }
-  return { attempted: (data || []).length, linked, errors };
+  return { attempted: (data || []).length, linked, skipped, errors };
 }
 
 async function loadFindings(admin, graceDays = 7) {
@@ -60,6 +65,7 @@ async function loadFindings(admin, graceDays = 7) {
       .select('id,so_id,total,created_at', { count: 'exact' })
       .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null)
       .is('stripe_balance_transaction_id', null).lt('created_at', cutoff)
+      .neq('status', 'pending_payment')
       .order('created_at', { ascending: true }).limit(25),
     admin.from('stripe_payouts')
       .select('stripe_payout_id,amount_cents,reconciliation_difference_cents,reconciliation_status,arrival_date')

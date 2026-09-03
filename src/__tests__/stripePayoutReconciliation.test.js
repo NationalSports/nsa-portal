@@ -3,6 +3,7 @@
 const {
   auditWebhookConfiguration,
   balanceTransactionRow,
+  inspectPaymentIntentFinancials,
   listPayoutBalanceTransactions,
   reconcilePayoutBatch,
   repairWebhookConfiguration,
@@ -10,15 +11,15 @@ const {
   recordPayoutReconciliation,
 } = require('../../netlify/functions/_stripeReconciliation');
 
-const bt = (id, { amount = 1000, fee = 59, net = amount - fee, source = null } = {}) => ({
+const bt = (id, { amount = 1000, fee = 59, net = amount - fee, source = null, reportingCategory = 'charge', type = reportingCategory } = {}) => ({
   id,
   amount,
   fee,
   net,
   source,
   currency: 'usd',
-  reporting_category: 'charge',
-  type: 'charge',
+  reporting_category: reportingCategory,
+  type,
   status: 'available',
   created: 1788451200,
   available_on: 1788624000,
@@ -104,6 +105,7 @@ function fakeSb(order = null) {
               if (table === 'webstore_orders') state.orderUpdates.push({ column, value, patch });
               return { error: null };
             },
+            async in() { return { error: null }; },
           };
         },
       };
@@ -141,7 +143,7 @@ describe('Stripe payout persistence', () => {
       id: 'ch_1', payment_intent: 'pi_1',
       balance_transaction: bt('txn_charge', { source: 'ch_1' }),
     };
-    const client = { paymentIntents: { retrieve: jest.fn().mockResolvedValue({ id: 'pi_1', latest_charge: charge }) } };
+    const client = { paymentIntents: { retrieve: jest.fn().mockResolvedValue({ id: 'pi_1', status: 'succeeded', latest_charge: charge }) } };
     await recordPaymentIntentFinancials({ client, sb, paymentIntent: { id: 'pi_1' } });
     expect(sb.state.transactions.txn_charge).toMatchObject({ payment_intent_id: 'pi_1', webstore_order_id: 'order-1' });
     expect(sb.state.orderUpdates[0].patch).toMatchObject({
@@ -149,6 +151,13 @@ describe('Stripe payout persistence', () => {
       stripe_fee_cents: 59, stripe_net_cents: 941, cc_fee: 0.59,
     });
     expect(sb.state.orderUpdates[0].patch).not.toHaveProperty('tax_state');
+  });
+
+  test('distinguishes an incomplete checkout from a missing settled charge', async () => {
+    const sb = fakeSb();
+    const client = { paymentIntents: { retrieve: jest.fn().mockResolvedValue({ id: 'pi_incomplete', status: 'requires_payment_method', latest_charge: null }) } };
+    await expect(inspectPaymentIntentFinancials({ client, sb, paymentIntent: { id: 'pi_incomplete' } }))
+      .resolves.toEqual({ row: null, payment_intent_status: 'requires_payment_method' });
   });
 
   test('marks a fully paginated automatic payout exact only when activity net equals the bank amount', async () => {
@@ -163,6 +172,21 @@ describe('Stripe payout persistence', () => {
       net_cents: 970, reconciliation_difference_cents: 0, reconciliation_status: 'exact',
     });
     expect(sb.state.payouts.po_exact.reconciliation_status).toBe('exact');
+  });
+
+  test('excludes the negative bank transfer from payout activity and QBO rows', async () => {
+    const sb = fakeSb();
+    const client = { balanceTransactions: { list: jest.fn().mockResolvedValue({
+      data: [
+        bt('txn_charge', { amount: 1000, fee: 30, net: 970 }),
+        bt('txn_payout', { amount: -970, fee: 0, net: -970, source: 'po_exact_transfer', reportingCategory: 'payout' }),
+      ],
+      has_more: false,
+    }) } };
+    const payout = { id: 'po_exact_transfer', amount: 970, currency: 'usd', status: 'paid', automatic: true, method: 'standard', reconciliation_status: 'completed', created: 1788451200 };
+    const result = await recordPayoutReconciliation({ client, sb, payout });
+    expect(result).toMatchObject({ balance_transaction_count: 1, activity_amount_cents: 1000, fee_cents: 30, net_cents: 970, reconciliation_status: 'exact' });
+    expect(sb.state.transactions).not.toHaveProperty('txn_payout');
   });
 
   test('preserves a mismatch instead of declaring a payout reconciled', async () => {
