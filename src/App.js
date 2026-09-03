@@ -24,7 +24,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, DECO_OR_LATER_STATUSES, ART_ATTENTION_STALE_DAYS, artNeedsAttention, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, szRank, normalizeFootwearSize, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, SO_STATUS_LABELS, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts } from './safeHelpers';
+import { garmentMockKey, mockSkuOf, itemMockFiles, safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, manualPoCostTotal, skusMissingMockups, missingMockupsMsg, mockSlotKeys, mockLinkKeyOf, applyMockLink, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, matchInvoiceLinesToSo, buildInvoicedQtyMap, soHasOpenShipWork, unshippedOrderItems, nextShippingCost, jobItemDecosOfKind, jobItemDecoIdxs, attachJobArtToUnresolvedDecos, jobHasUnresolvedArt, healOrphanArtRequest, jobsShareGarments, shippedSizesByLine, jobShippedUnits, jobsAfterShipment, jobShippedSizes, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage, slotMockFiles, nnMockCounts, hasOpenItemFulfillment, canAdjustInventory } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { resolveAccessUser } from './lib/pageAccess';
@@ -6547,6 +6547,7 @@ export default function App(){
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
+  const canAdjustInv=canAdjustInventory(cu,WAREHOUSE_LEAD_IDS);
   // Normalize: super_admin is treated as admin everywhere via _r helper
   const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id&&(showArchived||c.is_active!==false)),[cust,showArchived]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -8236,6 +8237,9 @@ export default function App(){
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];const deliverTasks=[];
     sos.filter(so=>{
+      // An open IF is physical warehouse work regardless of the parent SO's financial/booking
+      // status. Final invoicing must not make an unpulled ticket disappear from Item Fulfillment.
+      if(hasOpenItemFulfillment(so))return true;
       const st=calcSOStatus(so);
       if(st==='booking'&&!bookingHasFloorWork(so))return false;
       if(st!=='complete')return true;
@@ -11698,7 +11702,7 @@ export default function App(){
                 {readOnly?<span style={{marginLeft:'auto',fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f1f5f9',color:'#475569',fontWeight:700}} title="This item has transaction history but no row in the products catalog">NOT IN CATALOG</span>:<>
                 <button className="btn btn-sm btn-secondary" onClick={()=>setEditing(true)} style={{marginLeft:'auto'}}><Icon name="edit" size={12}/> Edit</button>
                 <button className="btn btn-sm" style={{background:ep.is_archived?'#fef3c7':'#f1f5f9',color:ep.is_archived?'#92400e':'#64748b',border:'1px solid '+(ep.is_archived?'#fde68a':'#e2e8f0'),fontWeight:700}} onClick={()=>{const updated={...ep,is_archived:!ep.is_archived};setEp(updated);setProd(p=>p.map(x=>x.id===updated.id?{...x,is_archived:updated.is_archived}:x));_dbSaveProduct(updated);nf(updated.is_archived?'Product archived':'Product unarchived')}}>{ep.is_archived?'Unarchive':'Archive'}</button>
-                <button className="btn btn-sm" style={{background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700}} onClick={()=>setAM({open:true,p:ep})}><Icon name="plus" size={12}/> Adjust Inventory</button>
+                {canAdjustInv&&<button className="btn btn-sm" style={{background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700}} onClick={()=>setAM({open:true,p:ep})}><Icon name="plus" size={12}/> Adjust Inventory</button>}
                 </>}
               </div>
               <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13,color:'#64748b',marginBottom:8}}>
@@ -12126,7 +12130,7 @@ export default function App(){
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
     <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
-      {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
+      {canAdjustInv&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
   </tr>})}</tbody></table></div></div></>)};
 
   // CLEARANCE ITEMS
@@ -37724,7 +37728,7 @@ export default function App(){
       onCreatePO={(vendorId,items)=>{setInvPOModal({open:true,vendor_id:vendorId,items,memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false})}}
     /></React.Suspense>}
     <VendorModal isOpen={vM.open} onClose={()=>setVM({open:false,v:null})} onSave={savV} vendor={vM.v} allVendors={vend}/>
-    <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
+    <AdjModal isOpen={aM.open&&canAdjustInv} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
     {/* INVENTORY PO CREATE MODAL */}
     {invPOModal.open&&<div className="modal-overlay" onClick={()=>setInvPOModal(x=>({...x,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'85vh',overflow:'auto'}}>
