@@ -60,7 +60,7 @@ async function catchUpUnlinkedOrders(admin, client, limit = 25) {
 async function loadFindings(admin, graceDays = 7) {
   const cutoff = new Date(Date.now() - graceDays * 24 * 60 * 60 * 1000).toISOString();
   const failureCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  const [unlinked, mismatches, failures] = await Promise.all([
+  const [unlinked, mismatches, failures, linkedOrders, linkedCharges] = await Promise.all([
     admin.from('webstore_orders')
       .select('id,so_id,total,created_at', { count: 'exact' })
       .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null)
@@ -74,17 +74,40 @@ async function loadFindings(admin, graceDays = 7) {
       .order('stripe_created_at', { ascending: false }).limit(25),
     admin.from('stripe_payouts')
       .select('stripe_payout_id,amount_cents,status,failure_code,failure_message,arrival_date')
-      .eq('automatic', true).eq('status', 'failed')
+      .eq('automatic', true).in('status', ['failed', 'canceled'])
       .gte('stripe_created_at', failureCutoff)
       .order('stripe_created_at', { ascending: false }).limit(25),
+    admin.from('webstore_orders')
+      .select('id,so_id,total,stripe_balance_transaction_id,created_at')
+      .eq('payment_mode', 'paid').not('stripe_balance_transaction_id', 'is', null),
+    admin.from('stripe_balance_transactions')
+      .select('stripe_balance_transaction_id,amount_cents')
+      .eq('reporting_category', 'charge'),
   ]);
-  const error = unlinked.error || mismatches.error || failures.error;
+  const error = unlinked.error || mismatches.error || failures.error || linkedOrders.error || linkedCharges.error;
   if (error) throw error;
+  const chargeById = new Map((linkedCharges.data || []).map((row) => [row.stripe_balance_transaction_id, row]));
+  const amountMismatches = (linkedOrders.data || []).flatMap((order) => {
+    const charge = chargeById.get(order.stripe_balance_transaction_id);
+    if (!charge) return [];
+    const portalCents = Math.round(Number(order.total || 0) * 100);
+    const stripeCents = Number(charge.amount_cents) || 0;
+    if (portalCents === stripeCents) return [];
+    return [{
+      order_id: order.id,
+      so_id: order.so_id || null,
+      portal_total_cents: portalCents,
+      stripe_amount_cents: stripeCents,
+      difference_cents: stripeCents - portalCents,
+      created_at: order.created_at,
+    }];
+  });
   return {
     unlinked: unlinked.data || [],
     unlinked_count: unlinked.count || 0,
     mismatches: mismatches.data || [],
     failures: failures.data || [],
+    amount_mismatches: amountMismatches,
     cutoff,
   };
 }
@@ -98,6 +121,8 @@ async function sendAlert({ webhook, catchUp, payoutSweep, findings }) {
     `<li><strong>${escapeHtml(row.stripe_payout_id)}</strong> · ${escapeHtml(row.reconciliation_status || 'not reconciled')} · difference ${Number(row.reconciliation_difference_cents || 0)}¢</li>`).join('');
   const failureRows = findings.failures.map((row) =>
     `<li><strong>${escapeHtml(row.stripe_payout_id)}</strong> · ${escapeHtml(row.failure_code || 'failed')} · ${escapeHtml(row.failure_message || '')}</li>`).join('');
+  const amountRows = findings.amount_mismatches.map((row) =>
+    `<li><strong>${escapeHtml(row.so_id || row.order_id)}</strong> · Stripe $${(Number(row.stripe_amount_cents || 0) / 100).toFixed(2)} vs portal $${(Number(row.portal_total_cents || 0) / 100).toFixed(2)}</li>`).join('');
   const catchUpRows = [...catchUp.errors, ...payoutSweep.errors].map((row) =>
     `<li><strong>${escapeHtml(row.order_id || row.payout_id || 'Stripe item')}</strong> · ${escapeHtml(row.error)}</li>`).join('');
   const htmlContent = `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:680px">
@@ -107,6 +132,7 @@ async function sendAlert({ webhook, catchUp, payoutSweep, findings }) {
     ${findings.unlinked_count ? `<h3>Old card orders without a balance-transaction link (${findings.unlinked_count})</h3><ul>${orderRows}</ul>` : ''}
     ${findings.mismatches.length ? `<h3>Actionable paid payouts (${findings.mismatches.length})</h3><ul>${mismatchRows}</ul>` : ''}
     ${findings.failures.length ? `<h3>Failed payouts (${findings.failures.length})</h3><ul>${failureRows}</ul>` : ''}
+    ${findings.amount_mismatches.length ? `<h3>Charged amount differs from portal order (${findings.amount_mismatches.length})</h3><ul>${amountRows}</ul>` : ''}
     ${catchUpRows ? `<h3>Catch-up errors</h3><ul>${catchUpRows}</ul>` : ''}
     <p style="font-size:12px;color:#64748b">Open QuickBooks → Stripe Payouts in the NSA portal to retry or inspect the ledger. No QuickBooks transaction is posted automatically.</p>
   </div>`;
@@ -116,7 +142,7 @@ async function sendAlert({ webhook, catchUp, payoutSweep, findings }) {
     body: JSON.stringify({
       sender: { name: 'NSA Stripe Reconciliation', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: ALERT_EMAIL }],
-      subject: `Stripe reconciliation alert — ${findings.unlinked_count} unlinked · ${findings.mismatches.length} mismatch · ${findings.failures.length} failed`,
+      subject: `Stripe reconciliation alert — ${findings.unlinked_count} unlinked · ${findings.amount_mismatches.length} amount review · ${findings.mismatches.length} payout mismatch · ${findings.failures.length} failed`,
       htmlContent,
     }),
   });
@@ -132,7 +158,7 @@ async function runSweep(admin, client) {
     loadFindings(admin),
   ]);
   const actionable = !webhook.healthy || catchUp.errors.length > 0 || payoutSweep.errors.length > 0 ||
-    findings.unlinked_count > 0 || findings.mismatches.length > 0 || findings.failures.length > 0;
+    findings.unlinked_count > 0 || findings.amount_mismatches.length > 0 || findings.mismatches.length > 0 || findings.failures.length > 0;
   if (actionable) await sendAlert({ webhook, catchUp, payoutSweep, findings });
   return { ok: !actionable, alerted: actionable, webhook, catch_up: catchUp, payout_sweep: payoutSweep, findings };
 }
@@ -155,6 +181,7 @@ exports.handler = async (event) => {
       payouts: result.payout_sweep.processed,
       unlinked: result.findings.unlinked_count,
       mismatches: result.findings.mismatches.length,
+      amount_mismatches: result.findings.amount_mismatches.length,
       failed: result.findings.failures.length,
       webhook_healthy: result.webhook.healthy,
     }));

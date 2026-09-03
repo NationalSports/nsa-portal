@@ -32,6 +32,38 @@ function summarizeOrders(rows) {
   }, { order_count: 0, linked_count: 0, unlinked_count: 0, total_cents: 0, linked_cents: 0, unlinked_cents: 0 });
 }
 
+function summarizeSettledOrders(rows, chargeByOrder) {
+  return (rows || []).reduce((summary, row) => {
+    const charge = chargeByOrder.get(row.id);
+    if (!charge) return summary;
+    const cents = Number(charge.amount_cents) || 0;
+    const linked = Boolean(row.stripe_balance_transaction_id);
+    summary.order_count += 1;
+    summary.total_cents += cents;
+    summary.portal_total_cents += Math.round(Number(row.total || 0) * 100);
+    summary[linked ? 'linked_count' : 'unlinked_count'] += 1;
+    summary[linked ? 'linked_cents' : 'unlinked_cents'] += cents;
+    return summary;
+  }, { order_count: 0, linked_count: 0, unlinked_count: 0, total_cents: 0, portal_total_cents: 0, linked_cents: 0, unlinked_cents: 0 });
+}
+
+function chargeAmountMismatches(orders, chargeByOrder) {
+  return (orders || []).flatMap((order) => {
+    const charge = chargeByOrder.get(order.id);
+    if (!charge) return [];
+    const portalCents = Math.round(Number(order.total || 0) * 100);
+    const stripeCents = Number(charge.amount_cents) || 0;
+    if (portalCents === stripeCents) return [];
+    return [{
+      order_id: order.id,
+      so_id: order.so_id || null,
+      portal_total_cents: portalCents,
+      stripe_amount_cents: stripeCents,
+      difference_cents: stripeCents - portalCents,
+    }];
+  });
+}
+
 async function oldestCardOrderUnix(admin) {
   const { data, error } = await admin.from('webstore_orders')
     .select('created_at')
@@ -105,7 +137,7 @@ exports.handler = async (event) => {
       if (!secret) return response(500, origin, { error: 'Stripe is not configured' });
       const limit = Math.max(1, Math.min(25, Number(body.limit) || 10));
       let query = admin.from('webstore_orders')
-        .select('id,stripe_pi_id,created_at')
+        .select('id,so_id,total,status,stripe_pi_id,created_at')
         .eq('payment_mode', 'paid')
         .not('stripe_pi_id', 'is', null)
         .is('stripe_balance_transaction_id', null)
@@ -127,10 +159,18 @@ exports.handler = async (event) => {
           });
           const row = financials && financials.row;
           if (!row) {
-            skipped.push({ order_id: order.id, payment_intent_status: financials?.payment_intent_status || 'unknown' });
+            skipped.push({ order_id: order.id, so_id: order.so_id || null, portal_status: order.status || null, payment_intent_status: financials?.payment_intent_status || 'unknown' });
             continue;
           }
-          results.push({ order_id: order.id, balance_transaction_id: row.stripe_balance_transaction_id });
+          const portalTotalCents = Math.round(Number(order.total || 0) * 100);
+          results.push({
+            order_id: order.id,
+            so_id: order.so_id || null,
+            balance_transaction_id: row.stripe_balance_transaction_id,
+            portal_total_cents: portalTotalCents,
+            stripe_amount_cents: row.amount_cents,
+            amount_matches: portalTotalCents === row.amount_cents,
+          });
         } catch (orderError) {
           errors.push({ order_id: order.id, error: orderError.message });
         }
@@ -174,19 +214,29 @@ exports.handler = async (event) => {
     }
 
     if (action === 'reconciliation_status') {
-      const [ordersResult, payoutsResult] = await Promise.all([
+      const [ordersResult, payoutsResult, chargesResult] = await Promise.all([
         admin.from('webstore_orders').select('id,so_id,total,status,stripe_balance_transaction_id')
           .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null),
         admin.from('stripe_payouts').select('stripe_payout_id,automatic,method,status,reconciliation_status'),
+        admin.from('stripe_balance_transactions')
+          .select('stripe_balance_transaction_id,webstore_order_id,amount_cents')
+          .eq('reporting_category', 'charge').not('webstore_order_id', 'is', null),
       ]);
-      if (ordersResult.error || payoutsResult.error) throw ordersResult.error || payoutsResult.error;
+      if (ordersResult.error || payoutsResult.error || chargesResult.error) {
+        throw ordersResult.error || payoutsResult.error || chargesResult.error;
+      }
       const orders = ordersResult.data || [];
       const payouts = payoutsResult.data || [];
+      const chargeByOrder = new Map((chargesResult.data || []).map((row) => [row.webstore_order_id, row]));
       const cardOrders = summarizeOrders(orders);
       const incompleteAttempts = summarizeOrders(orders.filter((row) =>
-        row.status === 'pending_payment' && !row.stripe_balance_transaction_id));
-      const settledOrders = summarizeOrders(orders.filter((row) =>
-        row.status !== 'pending_payment' || row.stripe_balance_transaction_id));
+        !chargeByOrder.has(row.id) && row.status === 'pending_payment'));
+      const portalPaymentReview = orders.filter((row) =>
+        !chargeByOrder.has(row.id) && row.status !== 'pending_payment');
+      const settledOrders = summarizeSettledOrders(orders, chargeByOrder);
+      const settledUnlinkedOrders = orders.filter((row) =>
+        chargeByOrder.has(row.id) && !row.stripe_balance_transaction_id);
+      const amountMismatches = chargeAmountMismatches(orders, chargeByOrder);
       const so2313 = summarizeOrders(orders.filter((row) => {
         const soId = String(row.so_id || '').trim().toUpperCase();
         return soId === 'SO-2313' || soId === '2313';
@@ -195,7 +245,16 @@ exports.handler = async (event) => {
         ['pending', 'mismatch', 'failed'].includes(String(row.reconciliation_status || 'pending')));
       const unavailablePayouts = payouts.filter((row) => row.reconciliation_status === 'unavailable');
       return response(200, origin, {
-        unlinked_card_orders: settledOrders.unlinked_count,
+        unlinked_card_orders: settledUnlinkedOrders.length,
+        portal_payment_review_count: portalPaymentReview.length,
+        portal_payment_review: portalPaymentReview.map((row) => ({
+          order_id: row.id,
+          so_id: row.so_id || null,
+          portal_status: row.status || null,
+          portal_total_cents: Math.round(Number(row.total || 0) * 100),
+        })),
+        charge_amount_mismatch_count: amountMismatches.length,
+        charge_amount_mismatches: amountMismatches,
         non_exact_automatic_payouts: actionablePayouts.length,
         actionable_automatic_payouts: actionablePayouts.length,
         unavailable_payouts: unavailablePayouts.length,
@@ -216,3 +275,5 @@ exports.handler = async (event) => {
 module.exports.validPayoutId = validPayoutId;
 module.exports.oldestCardOrderUnix = oldestCardOrderUnix;
 module.exports.summarizeOrders = summarizeOrders;
+module.exports.summarizeSettledOrders = summarizeSettledOrders;
+module.exports.chargeAmountMismatches = chargeAmountMismatches;

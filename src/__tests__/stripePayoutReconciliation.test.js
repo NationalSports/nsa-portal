@@ -10,6 +10,10 @@ const {
   recordPaymentIntentFinancials,
   recordPayoutReconciliation,
 } = require('../../netlify/functions/_stripeReconciliation');
+const {
+  chargeAmountMismatches,
+  summarizeSettledOrders,
+} = require('../../netlify/functions/stripe-reconciliation');
 
 const bt = (id, { amount = 1000, fee = 59, net = amount - fee, source = null, reportingCategory = 'charge', type = reportingCategory } = {}) => ({
   id,
@@ -153,6 +157,19 @@ describe('Stripe payout persistence', () => {
     expect(sb.state.orderUpdates[0].patch).not.toHaveProperty('tax_state');
   });
 
+  test('keeps the Stripe link when the portal order total differs from the amount actually charged', async () => {
+    const sb = fakeSb({ id: 'order-edited', total: 12 });
+    const charge = {
+      id: 'ch_edited', payment_intent: 'pi_edited',
+      balance_transaction: bt('txn_edited', { amount: 1000, fee: 59 }),
+    };
+    const client = { paymentIntents: { retrieve: jest.fn().mockResolvedValue({ id: 'pi_edited', status: 'succeeded', latest_charge: charge }) } };
+    await recordPaymentIntentFinancials({ client, sb, paymentIntent: { id: 'pi_edited' } });
+    expect(sb.state.orderUpdates[0].patch).toMatchObject({
+      stripe_balance_transaction_id: 'txn_edited', stripe_fee_cents: 59, stripe_net_cents: 941,
+    });
+  });
+
   test('distinguishes an incomplete checkout from a missing settled charge', async () => {
     const sb = fakeSb();
     const client = { paymentIntents: { retrieve: jest.fn().mockResolvedValue({ id: 'pi_incomplete', status: 'requires_payment_method', latest_charge: null }) } };
@@ -206,5 +223,25 @@ describe('Stripe payout persistence', () => {
     expect(result).toMatchObject({ reconciliation_status: 'unavailable', reconciliation_difference_cents: null });
     expect(client.balanceTransactions.list).not.toHaveBeenCalled();
     expect(sb.state.payouts.po_instant).toMatchObject({ reconciliation_status: 'unavailable', activity_amount_cents: null, net_cents: null });
+  });
+});
+
+describe('Stripe-settled order summaries', () => {
+  test('uses the actual Stripe charge amount and identifies portal-total differences', () => {
+    const orders = [
+      { id: 'order-1', so_id: 'SO-1', total: 12, stripe_balance_transaction_id: 'txn_1' },
+      { id: 'order-2', so_id: 'SO-2', total: 20, stripe_balance_transaction_id: null },
+    ];
+    const chargeByOrder = new Map([
+      ['order-1', { amount_cents: 1000 }],
+      ['order-2', { amount_cents: 2000 }],
+    ]);
+    expect(summarizeSettledOrders(orders, chargeByOrder)).toMatchObject({
+      order_count: 2, linked_count: 1, unlinked_count: 1,
+      total_cents: 3000, portal_total_cents: 3200,
+    });
+    expect(chargeAmountMismatches(orders, chargeByOrder)).toEqual([expect.objectContaining({
+      order_id: 'order-1', portal_total_cents: 1200, stripe_amount_cents: 1000, difference_cents: -200,
+    })]);
   });
 });

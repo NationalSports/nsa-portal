@@ -142,7 +142,7 @@ async function upsertBalanceTransaction({ client, sb, balanceTransaction, payout
   // Denormalize the original charge fee onto the order for existing webstore
   // accounting reports.  Refund/dispute fee adjustments remain separate ledger
   // rows and must not overwrite the original charge fee.
-  if (order && row.reporting_category === 'charge' && row.amount_cents === Math.round(Number(order.total || 0) * 100)) {
+  if (order && row.reporting_category === 'charge') {
     const patch = {
       stripe_charge_id: sourceTypeForId(sourceId) === 'charge' ? sourceId : null,
       stripe_balance_transaction_id: row.stripe_balance_transaction_id,
