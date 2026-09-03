@@ -22,6 +22,12 @@ export function rotatingBatch(items = [], offset = 0, size = 20) {
 }
 
 const normalizeQBCustomerName = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const qbCurrency = value => Math.round((safeNum(value) + Number.EPSILON) * 100) / 100;
+
+export function qbResponseErrorDetail(response, fallback = 'unknown') {
+  return response?.Fault?.Error?.[0]?.Detail || response?.Fault?.Error?.[0]?.Message ||
+    response?.error || response?.message || fallback;
+}
 
 export function portalCustomerDisplayName(customer = {}) {
   const name = String(customer.name || '').trim();
@@ -1021,7 +1027,11 @@ export function createQBSyncEngine(ctx){
         const qbLines=[];
         group.entries.forEach(({pl:p,so:s,it:i})=>{
           const qty=Object.entries(p).filter(([k,v])=>typeof v==='number'&&!k.startsWith('_')&&!['unit_cost','billed','tracking_numbers','vendor','drop_ship'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
-          const rate=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(i.nsa_cost);
+          // The saved PO line is the accounting source of truth for cost. The
+          // product catalog cost can change after a PO is issued, and raw
+          // half-cent values can otherwise be rounded differently by QBO.
+          const hasSavedRate=p.unit_cost!==undefined&&p.unit_cost!==null&&p.unit_cost!=='';
+          const rate=qbCurrency(hasSavedRate?p.unit_cost:i.nsa_cost);
           if(!(qty>0)||rate<0)return;
           if(group.accountKey==='deco_account'){
             qbLines.push({DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
@@ -1074,7 +1084,7 @@ export function createQBSyncEngine(ctx){
           }
           poMap[group.poId]=res.PurchaseOrder.Id;
           log.details.push(group.poId+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+totalAmount.toFixed(2)+', '+qbLines.length+' items)');synced++;
-        }else{log.details.push(group.poId+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+        }else{log.details.push(group.poId+' — FAILED: '+qbResponseErrorDetail(res));log.status='partial'}
       }
       if(synced===0&&poGroups.length>0)log.status='error';
       log.details.unshift(synced+'/'+poGroups.length+(canary?' purchase-order canary':' purchase orders completed in this batch')+(allPoGroups.length>poGroups.length?' · '+(allPoGroups.length-poGroups.length)+' remain':''));
