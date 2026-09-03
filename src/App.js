@@ -447,7 +447,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku, resolveMappedSoItemIndex } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
@@ -27046,7 +27046,7 @@ export default function App(){
       else{matchedPO={so_id:target.id,po_id:(target.raw&&target.raw.po_number)||target.id,so:target.raw};matchedPOSource='so_po'}
       const lineMappings=pr.ties.map(t=>{const it=target.items[t.target_idx];const bl=bill.items[t.bill_idx]||{};
         const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*t.allocated_qty;
-        return{bill_idx:t.bill_idx,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:t.allocated_qty,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};});
+        return{bill_idx:t.bill_idx,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',so_item_idx:it.so_item_idx,po_id:it.po_id||'',allocated_qty:t.allocated_qty,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};});
       const _pc={};lineMappings.forEach(m=>{if(m.po_id)_pc[m.po_id]=(_pc[m.po_id]||0)+1});
       const poCanon=Object.entries(_pc).sort((a,z)=>z[1]-a[1]).map(e=>e[0])[0]||bill.po_number;
       return{matchedPO,matchedPOSource,lineMappings,poCanon};
@@ -28283,7 +28283,7 @@ export default function App(){
         if(!r||!r.cand)return li;
         const it=r.cand;
         const billCost=safeNum(li.extension||0)||safeNum(li.unit_price||0)*safeNum(li.qty||0);
-        mappings.push({bill_idx:i,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
+        mappings.push({bill_idx:i,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',so_item_idx:it.so_item_idx,po_id:it.po_id||'',allocated_qty:safeNum(li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
         return{...li,_vendor_sku:li.sku,sku:it.sku,_ss_match:r.via};
       });
       return{items,_lineMappings:mappings};
@@ -28329,7 +28329,7 @@ export default function App(){
         if(!hit||hit.ambiguous)return null;
         const it=hit.item;
         const billCost=safeNum(u.li.extension||0)||safeNum(u.li.unit_price||0)*safeNum(u.li.qty||0);
-        maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(u.li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
+        maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',so_item_idx:it.so_item_idx,po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(u.li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
       }
       return maps;
     };
@@ -28526,21 +28526,14 @@ export default function App(){
         setSOs(prev=>prev.map(s=>{
           const soMaps=maps.filter(mp=>mp.so_id===s.id);
           if(!soMaps.length)return s;
-          // Resolve every mapping to exactly ONE item up front. item_id when it matches
-          // (string/number tolerant); otherwise the FIRST item matching by SKU, preferring
-          // one whose po_lines carry the mapping's po_id. The old per-item SKU fallback
-          // paid EVERY duplicate-SKU item row (SO-1275's twin PTS20 colorway lines turned
-          // a $576 Richardson bill into $1,152 of order cost). One mapping, one item.
+          // Resolve every mapping to exactly ONE item up front. The saved SO item position
+          // distinguishes copied colorways whose legacy item_id is duplicated; the shared
+          // resolver retains safe fallbacks for mappings saved before that address existed.
+          // One mapping, one item — never pay every duplicate-SKU row.
           const _itemIdxByMap=new Map();
           soMaps.forEach(mp=>{
             const its=s.items||[];
-            let idx=mp.item_id?its.findIndex(it2=>String(it2.id)===String(mp.item_id)):-1;
-            if(idx<0){
-              const skuEq=it2=>(mp.sku||'').toUpperCase()===(it2.sku||'').toUpperCase();
-              idx=its.findIndex(it2=>skuEq(it2)&&(it2.po_lines||[]).some(po=>(po.po_id||'')===(mp.po_id||'')));
-              if(idx<0)idx=its.findIndex(skuEq);
-            }
-            _itemIdxByMap.set(mp,idx);
+            _itemIdxByMap.set(mp,resolveMappedSoItemIndex(its,mp));
           });
           const updatedItems=(s.items||[]).map((it,_ii)=>{
             const itMaps=soMaps.filter(mp=>_itemIdxByMap.get(mp)===_ii);
@@ -28908,20 +28901,20 @@ export default function App(){
             const so=sos.find(s=>s.id===m.so_id);if(!so)return;
             let poRef=null,item=null,itIdx=-1,poIdx=-1;
             const itemsArr=(so.items||[]);
-            for(let ii=0;ii<itemsArr.length;ii++){
-              const it=itemsArr[ii];
-              if(m.item_id?it.id!==m.item_id:(it.sku||'').toUpperCase()!==(m.sku||'').toUpperCase())continue;
-              const pls=(it.po_lines||[]);
+            const ii=resolveMappedSoItemIndex(itemsArr,m);
+            if(ii>=0){
+              const it=itemsArr[ii],pls=(it.po_lines||[]);
               const pi=pls.findIndex(pl=>m.po_id?(pl.po_id||'')===m.po_id:true);
-              if(pi>-1){poRef=pls[pi];item=it;itIdx=ii;poIdx=pi;break}
+              if(pi>-1){poRef=pls[pi];item=it;itIdx=ii;poIdx=pi}
             }
             if(!poRef)return;
-            const key='s|'+so.id+'|'+(item.id||item.sku)+'|'+(poRef.po_id||'')+'|'+size;
+            const key='s|'+so.id+'|i'+itIdx+'|p'+poIdx+'|'+size;
             // _itIdx/_poIdx: the exact item/po_line ADDRESS (plus _itRef/_poRef object identity) —
             // _correctOrderFromBill matches on the index path with a po-id/SKU sanity check, never by
             // SKU alone (SOs legitimately carry duplicate-SKU lines via "Copy line"). Index paths stay
             // valid across a bulk run where an earlier bill's correction re-created the objects.
-            const g=(groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,billCost:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,size,sizeKey:size,po:poRef.po_id||so.id,so:so.id,_itRef:item,_poRef:poRef,_itIdx:itIdx,_poIdx:poIdx,poCost:safeNum(m.unit_cost)||safeNum(poRef.unit_cost)}));
+            const color=String(m.color||item.color||'').trim();
+            const g=(groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,billCost:0,label:(m.sku||item.sku)+(color?' '+color:'')+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,color,size,sizeKey:size,po:poRef.po_id||so.id,so:so.id,_itRef:item,_poRef:poRef,_itIdx:itIdx,_poIdx:poIdx,poCost:safeNum(m.unit_cost)||safeNum(poRef.unit_cost)}));
             g.add+=add;g.billCost+=safeNum(m.bill_cost);
           }
         });
@@ -32091,7 +32084,7 @@ export default function App(){
                                 if(m.skipped||m.target_idx==null)return null;
                                 const it=target.items[m.target_idx];
                                 const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
-                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
+                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',so_item_idx:it.so_item_idx,po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
                               // Approval covers the overage here too: the wizard rows show each
                               // target's open count, so a confirmed over-allocation was seen —
