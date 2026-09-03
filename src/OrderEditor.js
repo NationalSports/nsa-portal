@@ -3057,7 +3057,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return true;
   };
   const removeSzFromItem=(i,sz)=>{const it=o.items[i];const same=s=>it.is_footwear?normalizeFootwearSize(s)===normalizeFootwearSize(sz):s===sz;const qty=Object.entries(safeSizes(it)).filter(([s])=>same(s)).reduce((a,[,v])=>a+safeNum(v),0);if(qty>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...safeSizes(it)};Object.keys(newSizes).filter(same).forEach(s=>delete newSizes[s]);uI(i,'sizes',newSizes);uI(i,'available_sizes',(it.available_sizes||[]).filter(s=>!same(s)))};
-  const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
+  const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"','3"'],screen_print:['2"','4"','6"','8"','10"'],tackle_twill:TWN.map(r=>r.size)};
   const itemIsReversible=i=>{const it=o.items[i];return!!(it&&safeDecos(it).some(d=>d.reversible))};
   const _withDecoDeleteIntent=(e,ii,nextCount)=>{const from=safeDecos(safeItems(e)[ii]).length;if(nextCount>=from)return{};const prior=e._decoDeleteIntents?.[ii];return{_decoDeleteIntents:{...(e._decoDeleteIntents||{}),[ii]:{from:Number.isFinite(prior?.from)?prior.from:from,to:nextCount}}}};
   const addArtDeco=i=>{const rev=itemIsReversible(i);sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null,...(rev?{reversible:true}:{})}]}:x))};
