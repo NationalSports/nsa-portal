@@ -793,54 +793,6 @@ export function createQBSyncEngine(ctx){
       return prodQBMap;
     };
 
-    // Reconcile exactly one portal manual adjustment by setting the linked QBO
-    // Inventory item's aggregate SKU quantity to the portal's current total.
-    // This is deliberately a small canary (maximum five-unit delta). QBO creates
-    // the accounting-side quantity adjustment when QtyOnHand changes; the canary
-    // must be reviewed in QBO before any automatic adjustment batch is enabled.
-    const syncInventoryAdjustmentCanary=async(adjustmentId)=>{
-      if(!canaryPreflightReady())return{status:'blocked'};
-      const adjustment=invAdjLog.find(row=>String(row.id)===String(adjustmentId));
-      if(!adjustment||safeNum(adjustment.qty_change)===0){nf('Choose exactly one portal inventory adjustment','error');return{status:'blocked'}}
-      if(String(adjustment.adjustment_type||'manual')==='po_receive'){nf('PO receipts are not manual-adjustment canaries','error');return{status:'blocked'}}
-      const sku=String(adjustment.sku||'').trim().toUpperCase();
-      const skuProducts=prod.filter(p=>String(p.sku||'').trim().toUpperCase()===sku);
-      const mappedIds=[...new Set(skuProducts.map(p=>String((qbConfig.prodQBMap||{})[p.id]||'')).filter(Boolean))];
-      if(mappedIds.length!==1){nf('Adjustment test blocked — this SKU must link to exactly one QBO Inventory item','error');return{status:'blocked'}}
-      const targetQty=skuProducts.reduce((sum,p)=>sum+Object.values(p._inv||{}).reduce((n,value)=>n+safeNum(value),0),0);
-      const itemId=mappedIds[0];
-      setQbSyncing(true);
-      const log={ts:new Date().toLocaleString(),type:'inventory_adjustment_canary',status:'success',details:[]};
-      try{
-        const refs=await requiredAccountRefs(['income_account','cogs_account','inventory_asset_account','inventory_loss_account']);
-        const beforeRes=await qbApi('read',{entity:'item',id:itemId});
-        const before=beforeRes?.Item;
-        if(!before||before.Active===false||String(before.Type||'').toLowerCase()!=='inventory')throw new Error('Linked QBO item is missing, inactive, or not Inventory.');
-        if(String(before.Sku||'').trim().toUpperCase()!==sku)throw new Error('Linked QBO item SKU does not match the portal adjustment.');
-        if(String(before.IncomeAccountRef?.value||'')!==String(refs.income_account.value)||String(before.ExpenseAccountRef?.value||before.COGSAccountRef?.value||'')!==String(refs.cogs_account.value)||String(before.AssetAccountRef?.value||'')!==String(refs.inventory_asset_account.value))throw new Error('Linked QBO item does not use 40000 Sales / 50000 COGS / 12000 Inventory Asset.');
-        const beforeQty=safeNum(before.QtyOnHand);
-        const qtyDelta=targetQty-beforeQty;
-        if(Math.abs(qtyDelta)>5)throw new Error('Canary delta is '+qtyDelta+' units; choose a SKU within five units of the portal total.');
-        if(Math.abs(qtyDelta)>=0.0001){
-          const res=await qbApi('upsert_item',{item:{Id:before.Id,SyncToken:before.SyncToken,sparse:true,QtyOnHand:targetQty}});
-          if(!res?.Item?.Id)throw new Error(res?.Fault?.Error?.[0]?.Detail||'QBO rejected the quantity update.');
-        }
-        const verified=await verifyCanaryReadback('Item',itemId,{sku});
-        if(Math.abs(safeNum(verified.QtyOnHand)-targetQty)>=0.0001)throw new Error('QBO quantity did not match the portal total on API read-back.');
-        log.details.push('READ-BACK VERIFIED: '+sku+' · QBO Item #'+itemId+' · '+beforeQty+' → '+targetQty+' units');
-        log.details.push('ACCOUNT REVIEW REQUIRED: confirm the QBO-generated quantity adjustment uses 52400 Inventory Loss; 12000/40000/50000 item accounts were verified.');
-        const result={adjustmentId:String(adjustment.id),sku,itemId,beforeQty,targetQty,qtyDelta,inventoryLossAccountId:refs.inventory_loss_account.value,at:new Date().toISOString(),status:'awaiting_account_review'};
-        setQBConfig(prev=>({...prev,_inventoryAdjustmentCanary:result,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
-        nf('Quantity synced and verified — review its QBO adjustment account before enabling automatic sync','success');
-        return result;
-      }catch(e){
-        log.status='error';log.details.push(e.message||'Inventory adjustment canary failed');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
-        nf('Inventory adjustment test blocked — '+(e.message||'QBO quantity update failed'),'error');
-        return{status:'blocked'};
-      }finally{setQbSyncing(false)}
-    };
-
     // Remove only a stale portal link whose exact QBO item has already been
     // made inactive. The first call is read-only and asks the UI for explicit
     // confirmation; the confirmed call reads QBO again immediately before the
@@ -1147,5 +1099,5 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,syncInventoryAdjustmentCanary,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
+    return {syncCustomerCanary,syncCustomers,syncInvoices,syncPaidFromQB,syncBillsFromQB,syncInventory,clearInactiveProductLink,syncPortalSalesItemCanary,syncSalesOrders,syncPurchaseOrders,syncAll};
 }
