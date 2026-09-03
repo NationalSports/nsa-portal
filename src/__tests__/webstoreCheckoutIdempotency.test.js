@@ -109,6 +109,9 @@ describe('transactional path (place_webstore_order RPC)', () => {
     expect(JSON.parse(res.body).order.id).toBe('ord-new');
     const rpcCall = sb.calls.find((c) => c.op === 'rpc' && c.table === 'place_webstore_order');
     expect(rpcCall.payload.p_order.client_ref).toBe(REF);
+    expect(rpcCall.payload.p_order).toMatchObject({
+      tax: 0, tax_state: 'NV', tax_rate: 0, tax_source: 'not_registered',
+    });
     expect(rpcCall.payload.p_items).toHaveLength(1);
     expect(rpcCall.payload.p_items[0].order_id).toBeUndefined(); // proc injects it
     expect(rpcCall.payload.p_holds).toEqual([{ webstore_product_id: 'wp1', size: 'L', qty: 1, max_avail: 5, gross_max_avail: 5, label: 'Tee (size L)' }]);
@@ -315,6 +318,8 @@ describe('placeOrder — drift guard, coupon clamp, and payment-mode gates', () 
     const out = JSON.parse(res.body);
     expect(out.totals.total).toBe(0);
     expect(out.totals.total).toBeGreaterThanOrEqual(0);
+    const rpcCall = sb.calls.find((c) => c.op === 'rpc' && c.table === 'place_webstore_order');
+    expect(rpcCall.payload.p_order).toMatchObject({ tax_state: 'NV', tax_rate: 0, tax_source: 'zero_base' });
   });
 
   test('payMode "paid" on a store that only accepts unpaid → 409, nothing written', async () => {

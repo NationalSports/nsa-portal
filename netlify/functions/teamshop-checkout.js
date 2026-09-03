@@ -108,7 +108,11 @@ async function computeTotals(store, quote, ship) {
   const taxRes = await ws.calcTax(store, ship || {}, quote.subtotal, null);
   if (taxRes.error) return { error: taxRes.error };
   const total = r2(quote.subtotal + shipping + taxRes.tax);
-  return { subtotal: quote.subtotal, shipping, tax: taxRes.tax, tax_state: taxRes.state || '', total };
+  return {
+    subtotal: quote.subtotal, shipping, tax: taxRes.tax,
+    tax_state: taxRes.state || '', tax_rate: taxRes.rate || 0,
+    tax_source: taxRes.source || 'unknown', total,
+  };
 }
 
 // ── quote_totals ─────────────────────────────────────────────────────
@@ -202,6 +206,9 @@ async function placeOrder(sb, body, coach, opts) {
     shipping_fee: totals.shipping,
     processing_fee: 0,
     tax: totals.tax,
+    tax_state: totals.tax_state ? String(totals.tax_state).toUpperCase() : null,
+    tax_rate: Number(totals.tax_rate) || 0,
+    tax_source: totals.tax_source,
     total: totals.total,
     coupon_code: null,
     discount_amt: 0,
@@ -411,6 +418,9 @@ async function placeOrderPo(sb, body, coach) {
     shipping_fee: totals.shipping,
     processing_fee: 0,
     tax: totals.tax,
+    tax_state: totals.tax_state ? String(totals.tax_state).toUpperCase() : null,
+    tax_rate: Number(totals.tax_rate) || 0,
+    tax_source: totals.tax_source,
     total: totals.total,
     coupon_code: null,
     discount_amt: 0,

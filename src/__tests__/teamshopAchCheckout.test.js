@@ -128,6 +128,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   calcTaxSpy = jest.spyOn(ws, 'calcTax').mockResolvedValue(TAX);
   stripeMock.__pi.create.mockResolvedValue({ id: 'pi_ach_1', client_secret: 'cs_ach_1' });
+  // These ACH state-machine tests do not model a Stripe Charge.  The payout
+  // ledger helper legitimately no-ops when the retrieved intent has none.
+  stripeMock.__pi.retrieve.mockImplementation(async (id) => ({ id, latest_charge: null }));
 });
 afterEach(() => { calcTaxSpy.mockRestore(); });
 

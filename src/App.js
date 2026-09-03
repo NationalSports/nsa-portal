@@ -45,6 +45,7 @@ import { MsgAttachments, MsgAttachBar, MsgDropZone, msgAttachments, makeMsgPaste
 import { AppDataProvider } from './AppContext';
 import PortalAssistant from './PortalAssistant';
 import { canManageQuickBooksRole, storedUserCanManageQuickBooks } from './qbAccess';
+import { applyTaxRemittanceLedger, reversedTaxRemittanceIds } from './lib/taxRemittanceLedger';
 import { qboProductionReconnectUrl } from './qbOAuthCallback';
 import { canViewFinancials } from './lib/financialAccess';
 import { consolidateOmgProductRows } from './lib/storeSkuGrouping';
@@ -2606,12 +2607,14 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
-  // Store sales-tax remittance ledger: {[rowId]:{at,by,amount}}. OMG collects
-  // tax from parents and remits it to NSA bundled in the payout; webstores
-  // collect it at Stripe checkout — NSA files both with the state manually
-  // (not Stripe Tax). This tracks which store/state rows have been remitted so
-  // nothing is missed or double-paid. Durable in app_state like omgFirstSeen.
-  const[omgTaxRemit,setOmgTaxRemit]=useState(()=>loadState('omg_tax_remit',{}));
+  // Append-only filing records are loaded through a staff-only endpoint. The
+  // legacy app_state.omg_tax_remit blob is migrated once and never written by
+  // this client again; corrections are reversal rows rather than deletes.
+  const[taxRemittanceLedger,setTaxRemittanceLedger]=useState([]);
+  const[taxRemittanceLoaded,setTaxRemittanceLoaded]=useState(false);
+  const[taxRemitDraft,setTaxRemitDraft]=useState(null);
+  const[taxRemitBusy,setTaxRemitBusy]=useState(false);
+  const[taxRemitError,setTaxRemitError]=useState('');
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
   // Portal-side Adidas availability for the Assign Task bot card: the portal
   // already syncs per-size stock + restock dates (adidas_inventory), so show
@@ -4199,7 +4202,18 @@ export default function App(){
     }));
   },[sos,ests]);
   React.useEffect(()=>{_saveAppState('omg_first_seen',omgFirstSeen)},[omgFirstSeen]);
-  React.useEffect(()=>{_saveAppState('omg_tax_remit',omgTaxRemit)},[omgTaxRemit]);
+  const taxRemittanceApi=async(action,payload={})=>{
+    const res=await authFetch('/.netlify/functions/sales-tax-remittance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...payload})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(data.error||('Sales-tax ledger returned HTTP '+res.status));
+    return data;
+  };
+  const loadTaxRemittanceLedger=async()=>{
+    setTaxRemittanceLoaded(false);
+    try{const data=await taxRemittanceApi('list');setTaxRemittanceLedger(data.entries||[]);setTaxRemittanceLoaded(true);setTaxRemitError('')}
+    catch(e){setTaxRemittanceLoaded(false);setTaxRemitError(e.message);console.warn('[sales tax ledger] load failed:',e.message)}
+  };
+  React.useEffect(()=>{if(pg==='omg')loadTaxRemittanceLedger()},[pg]);
   // Webstore-collected sales tax, aggregated per store + buyer state for the
   // remittance report. Webstores charge tax at checkout (CDTFA/TaxCloud rates)
   // on the buyer's destination, so one store can owe several states. Card
@@ -4215,13 +4229,16 @@ export default function App(){
     _webTaxLoaded.current=true;
     (async()=>{try{
       const{data,error}=await supabase.from('webstore_orders')
-        .select('store_id,so_id,tax,payment_mode,status,ship_address,created_at,webstores!inner(source,name)')
+        .select('store_id,so_id,tax,tax_state,tax_rate,tax_source,payment_mode,status,ship_address,created_at,webstores!inner(source,name)')
         .eq('webstores.source','webstore').gt('tax',0);
       if(error){console.warn('[web tax] fetch failed:',error.message);return}
       const byKey={};
       (data||[]).forEach(o=>{
         if(!o||o.status==='cancelled'||o.status==='refunded')return;
-        const st=String((o.ship_address&&(o.ship_address.state||o.ship_address.State))||'—').toUpperCase();
+        // Pickup/team-delivery orders intentionally have no shipping address.
+        // tax_state is the immutable jurisdiction captured at checkout; retain
+        // the address fallback only for pre-migration history.
+        const st=String(o.tax_state||(o.ship_address&&(o.ship_address.state||o.ship_address.State))||'—').toUpperCase();
         const k=o.store_id+':'+st;
         const b=byKey[k]||(byKey[k]={storeId:o.store_id,name:o.webstores?.name||'Webstore',state:st,cardTax:0,tabBySo:{},orders:0,firstAt:o.created_at});
         const tax=+o.tax||0;
@@ -18977,12 +18994,10 @@ export default function App(){
         const $=n=>'$'+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
         const omgRows=(omgStores||[]).filter(s=>s&&(+s._omg_tax||0)>0.005).map(s=>{
           const c=cust.find(x=>x.id===s.customer_id);
-          const rec=omgTaxRemit[s.id];
           const dRaw=s._report_imported_at||s._last_synced||null;
           return{id:s.id,src:'OMG',name:s.store_name||s.id,code:s._omg_sale_code||'',
-            state:(c?.shipping_state||c?.billing_state||'—'),cust:c?.name||'',
-            tax:Math.round((+s._omg_tax)*100)/100,pending:0,date:dRaw?String(dRaw).slice(0,10):'',
-            remitted:!!rec,remittedAt:rec?String(rec.at).slice(0,10):'',remittedBy:rec?.by||null};
+            state:String(c?.shipping_state||c?.billing_state||'—').toUpperCase(),cust:c?.name||'',
+            tax:Math.round((+s._omg_tax)*100)/100,pending:0,date:dRaw?String(dRaw).slice(0,10):''};
         });
         // Webstore rows keyed store+state (one store can owe several states).
         // Card tax is collected at checkout; team-tab tax counts as collected
@@ -18993,26 +19008,66 @@ export default function App(){
           let tabCollected=0,tabPending=0;
           Object.entries(b.tabBySo||{}).forEach(([soId,t])=>{ if(soId!=='_unbatched'&&_wPaidSo.has(soId))tabCollected+=t; else tabPending+=t; });
           const id='ws:'+b.storeId+':'+b.state;
-          const rec=omgTaxRemit[id];
           return{id,src:'WEB',name:b.name,code:'',state:b.state,cust:'',
             tax:Math.round((b.cardTax+tabCollected)*100)/100,pending:Math.round(tabPending*100)/100,
-            date:b.firstAt?String(b.firstAt).slice(0,10):'',
-            remitted:!!rec,remittedAt:rec?String(rec.at).slice(0,10):'',remittedBy:rec?.by||null};
+            date:b.firstAt?String(b.firstAt).slice(0,10):''};
         }).filter(b=>b.tax>0.005||b.pending>0.005);
-        const rows=[...omgRows,...webRows].sort((a,b)=>(a.remitted-b.remitted)||(b.tax-a.tax));
-        if(!rows.length)return null;
+        const collectedRows=[...omgRows,...webRows];
+        if(!collectedRows.length)return null;
+        if(!taxRemittanceLoaded){
+          const collected=Math.round(collectedRows.reduce((a,r)=>a+r.tax,0)*100)/100;
+          const pending=Math.round(collectedRows.reduce((a,r)=>a+(r.pending||0),0)*100)/100;
+          return <div className="card" style={{marginBottom:12,border:'1px solid #fca5a5'}}><div style={{padding:'14px 16px'}}>
+            <div style={{fontSize:15,fontWeight:800,color:'#b91c1c',marginBottom:10}}>🧾 Store Sales Tax — Remittance <span style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>(OMG + webstores)</span></div>
+            <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10}}>
+              <div style={{flex:'1 1 140px',padding:'10px 14px',background:'#3341550d',border:'1px solid #33415540',borderRadius:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.4}}>Total collected</div><div style={{fontSize:20,fontWeight:800,color:'#334155'}}>{$(collected)}</div></div>
+            </div>
+            <div style={{padding:10,background:taxRemitError?'#fef2f2':'#f8fafc',border:'1px solid '+(taxRemitError?'#fecaca':'#cbd5e1'),borderRadius:6,color:taxRemitError?'#b91c1c':'#475569',fontSize:11,fontWeight:600}}>
+              {taxRemitError?'Filing ledger unavailable: '+taxRemitError:'Loading the filing ledger…'} Filed and outstanding amounts are withheld until the audit ledger is available.
+              {pending>0.005&&<div style={{marginTop:4,color:'#92400e'}}>{$(pending)} of additional team-tab tax is pending club payment.</div>}
+            </div>
+            {taxRemitError&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:8}} onClick={loadTaxRemittanceLedger}>Retry ledger</button>}
+          </div></div>;
+        }
+        const rows=applyTaxRemittanceLedger(collectedRows,taxRemittanceLedger)
+          .sort((a,b)=>(b.outstanding-a.outstanding)||(b.tax-a.tax));
         const total=Math.round(rows.reduce((a,r)=>a+r.tax,0)*100)/100;
-        const remitted=Math.round(rows.filter(r=>r.remitted).reduce((a,r)=>a+r.tax,0)*100)/100;
+        const remitted=Math.round(rows.reduce((a,r)=>a+r.remittedAmount,0)*100)/100;
         const outstanding=Math.round((total-remitted)*100)/100;
         const pendingTotal=Math.round(rows.reduce((a,r)=>a+(r.pending||0),0)*100)/100; // team-tab tax not yet collected (club unpaid)
-        const byState={};rows.forEach(r=>{const b=byState[r.state]||(byState[r.state]={total:0,out:0});b.total+=r.tax;if(!r.remitted)b.out+=r.tax});
-        const markRemit=(id,amt)=>setOmgTaxRemit(prev=>({...prev,[id]:{at:new Date().toISOString(),by:cu?.id||null,amount:amt}}));
-        const unmarkRemit=(id)=>setOmgTaxRemit(prev=>{const n={...prev};delete n[id];return n});
+        const byState={};rows.forEach(r=>{const b=byState[r.state]||(byState[r.state]={total:0,out:0,remitted:0});b.total+=r.tax;b.out+=r.outstanding;b.remitted+=r.remittedAmount});
+        const reversedIds=reversedTaxRemittanceIds(taxRemittanceLedger);
+        const activeFilings=(taxRemittanceLedger||[]).filter(e=>e.entry_type==='remittance'&&!reversedIds.has(e.id));
+        const uuid=()=>{if(window.crypto?.randomUUID)return window.crypto.randomUUID();return'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const v=Math.random()*16|0;return(c==='x'?v:(v&3|8)).toString(16)})};
+        const nextDate=(value)=>{const d=new Date(String(value||'')+'T12:00:00Z');if(Number.isNaN(d.getTime()))return'';d.setUTCDate(d.getUTCDate()+1);return d.toISOString().slice(0,10)};
+        const openFiling=(r)=>{
+          if(!/^[A-Z]{2}$/.test(String(r.state||''))){setTaxRemitError('Set a valid two-letter jurisdiction before recording a filing.');return}
+          const prior=activeFilings.filter(e=>e.source_key===r.id&&e.jurisdiction===r.state).sort((a,b)=>String(b.filing_period_end).localeCompare(String(a.filing_period_end)))[0];
+          const today=new Date().toISOString().slice(0,10);
+          setTaxRemitDraft({source_type:r.src==='WEB'?'webstore':'omg',source_key:r.id,store_name:r.name,jurisdiction:r.state,
+            filing_period_start:(prior&&nextDate(prior.filing_period_end))||r.date||today,filing_period_end:today,
+            amount:(Math.max(0,r.outstandingCents)/100).toFixed(2),payment_reference:'',notes:''});setTaxRemitError('');
+        };
+        const saveFiling=async()=>{
+          const d=taxRemitDraft;if(!d)return;
+          const amountCents=Math.round((Number(d.amount)||0)*100);
+          if(!amountCents||amountCents<1){setTaxRemitError('Enter a positive filing amount.');return}
+          if(!d.payment_reference.trim()){setTaxRemitError('Enter the state payment or filing confirmation reference.');return}
+          setTaxRemitBusy(true);setTaxRemitError('');
+          try{await taxRemittanceApi('record',{...d,amount_cents:amountCents,cutoff_at:new Date().toISOString(),idempotency_key:uuid()});await loadTaxRemittanceLedger();setTaxRemitDraft(null);nf('Sales-tax filing recorded in the append-only ledger')}
+          catch(e){setTaxRemitError(e.message)}finally{setTaxRemitBusy(false)}
+        };
+        const reverseFiling=async(entry)=>{
+          const reason=window.prompt('Why is this filing record being reversed? The original entry will remain in the audit trail.');if(!reason?.trim())return;
+          setTaxRemitBusy(true);setTaxRemitError('');
+          try{await taxRemittanceApi('reverse',{entry_id:entry.id,reason:reason.trim(),idempotency_key:uuid()});await loadTaxRemittanceLedger();nf('Sales-tax filing reversal recorded')}
+          catch(e){setTaxRemitError(e.message)}finally{setTaxRemitBusy(false)}
+        };
         const exportCsv=()=>{
-          const head=['Source','Store','Sale Code','State','Customer','Report Date','Collected Tax','Pending (team tab)','Remitted','Remitted On'];
-          const body=rows.map(r=>[r.src,r.name,r.code,r.state,r.cust,r.date,r.tax.toFixed(2),(r.pending||0).toFixed(2),r.remitted?'Yes':'No',r.remittedAt]);
+          const head=['Source','Store','Sale Code','State','Customer','Report Date','Collected Tax','Pending (team tab)','Filed / Remitted','Outstanding'];
+          const body=rows.map(r=>[r.src,r.name,r.code,r.state,r.cust,r.date,r.tax.toFixed(2),(r.pending||0).toFixed(2),r.remittedAmount.toFixed(2),r.outstanding.toFixed(2)]);
           const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
-          const csv=[head,...body,['','','','','','TOTAL',total.toFixed(2),pendingTotal.toFixed(2),'',''],['','','','','','OUTSTANDING',outstanding.toFixed(2),'','','']].map(r=>r.map(esc).join(',')).join('\r\n');
+          const csv=[head,...body,['','','','','','TOTAL',total.toFixed(2),pendingTotal.toFixed(2),remitted.toFixed(2),outstanding.toFixed(2)]].map(r=>r.map(esc).join(',')).join('\r\n');
           try{const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='store-sales-tax-'+new Date().toISOString().slice(0,10)+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){nf('Export failed: '+e.message,'error')}
         };
         const tile=(label,val,color)=><div style={{flex:'1 1 140px',padding:'10px 14px',background:color+'0d',border:'1px solid '+color+'40',borderRadius:8}}>
@@ -19025,34 +19080,52 @@ export default function App(){
           </div>
           <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10}}>
             {tile('Outstanding — owed',outstanding,'#dc2626')}
-            {tile('Remitted',remitted,'#166534')}
+            {tile('Filed / remitted',remitted,'#166534')}
             {tile('Total collected',total,'#334155')}
           </div>
           {Object.keys(byState).length>0&&<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10,alignItems:'center'}}>
             {Object.entries(byState).sort((a,b)=>b[1].out-a[1].out).map(([st,b])=>
               <span key={st} style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:'#f1f5f9',color:'#334155',fontWeight:600}}>
-                {st}: <strong style={{color:b.out>0.005?'#dc2626':'#166534'}}>{$(b.out)}</strong> owed <span style={{color:'#94a3b8'}}>of {$(b.total)}</span></span>)}
+                {st}: <strong style={{color:b.out>0.005?'#dc2626':'#166534'}}>{$(b.out)}</strong> owed <span style={{color:'#94a3b8'}}>· {$(b.remitted)} filed of {$(b.total)}</span></span>)}
             {pendingTotal>0.005&&<span style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:'#fffbeb',color:'#92400e',fontWeight:600}} title="Team-tab sales tax billed to clubs but not yet collected — becomes owed when the club pays its invoice">+ {$(pendingTotal)} pending club payment</span>}
+          </div>}
+          {taxRemitError&&<div style={{margin:'8px 0',padding:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#b91c1c',fontSize:11,fontWeight:600}}>{taxRemitError}</div>}
+          {taxRemitDraft&&<div style={{margin:'10px 0',padding:12,background:'#f8fafc',border:'1px solid #cbd5e1',borderRadius:8}}>
+            <div style={{fontSize:12,fontWeight:800,color:'#334155',marginBottom:8}}>Record filing — {taxRemitDraft.store_name} · {taxRemitDraft.jurisdiction}</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:8}}>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>PERIOD START<input className="form-input" type="date" value={taxRemitDraft.filing_period_start} onChange={e=>setTaxRemitDraft(d=>({...d,filing_period_start:e.target.value}))}/></label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>PERIOD END<input className="form-input" type="date" value={taxRemitDraft.filing_period_end} onChange={e=>setTaxRemitDraft(d=>({...d,filing_period_end:e.target.value}))}/></label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>AMOUNT REMITTED<input className="form-input" type="number" min="0.01" step="0.01" value={taxRemitDraft.amount} onChange={e=>setTaxRemitDraft(d=>({...d,amount:e.target.value}))}/></label>
+              <label style={{fontSize:10,fontWeight:700,color:'#64748b'}}>PAYMENT / FILING REFERENCE<input className="form-input" value={taxRemitDraft.payment_reference} maxLength={160} onChange={e=>setTaxRemitDraft(d=>({...d,payment_reference:e.target.value}))} placeholder="Confirmation or payment ID"/></label>
+            </div>
+            <label style={{display:'block',fontSize:10,fontWeight:700,color:'#64748b',marginTop:8}}>NOTES<input className="form-input" value={taxRemitDraft.notes} maxLength={1000} onChange={e=>setTaxRemitDraft(d=>({...d,notes:e.target.value}))} placeholder="Optional filing notes"/></label>
+            <div style={{fontSize:9,color:'#64748b',marginTop:6}}>The collection cutoff is recorded at submission time. This creates a permanent entry; corrections require a separately logged reversal.</div>
+            <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:9}}><button className="btn btn-sm btn-secondary" disabled={taxRemitBusy} onClick={()=>setTaxRemitDraft(null)}>Cancel</button><button className="btn btn-sm btn-primary" disabled={taxRemitBusy} onClick={saveFiling}>{taxRemitBusy?'Recording…':'Record filing'}</button></div>
           </div>}
           <details>
             <summary style={{cursor:'pointer',fontSize:12,fontWeight:700,color:'#475569',marginBottom:6}}>Per-store detail — {rows.length} store{rows.length!==1?'s':''}</summary>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginTop:6}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
               <th style={{padding:'4px 8px'}}>STORE</th><th style={{padding:'4px 8px'}}>STATE</th><th style={{padding:'4px 8px'}}>REPORT DATE</th>
               <th style={{padding:'4px 8px',textAlign:'right'}}>COLLECTED TAX</th><th style={{padding:'4px 8px'}}>STATUS</th></tr></thead><tbody>
-              {rows.map(r=><tr key={r.id} style={{borderTop:'1px solid #e2e8f0',background:r.remitted?'#f0fdf4':'#fff'}}>
+              {rows.map(r=><tr key={r.id} style={{borderTop:'1px solid #e2e8f0',background:r.outstanding<=0.005?'#f0fdf4':'#fff'}}>
                 <td style={{padding:'6px 8px'}}><span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,marginRight:6,background:r.src==='WEB'?'#e0f2fe':'#ede9fe',color:r.src==='WEB'?'#0369a1':'#6d28d9'}}>{r.src}</span><span style={{fontWeight:600}}>{r.name}</span> <span style={{fontFamily:'monospace',fontSize:10,color:'#64748b'}}>{r.code}</span></td>
                 <td style={{padding:'6px 8px'}}>{r.state}</td>
                 <td style={{padding:'6px 8px',color:'#64748b'}}>{r.date||'—'}</td>
-                <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700}}>{$(r.tax)}{r.pending>0.005&&<div style={{fontSize:9,fontWeight:600,color:'#b45309'}}>+{$(r.pending)} pending</div>}</td>
+                <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700}}>{$(r.tax)}<div style={{fontSize:9,fontWeight:600,color:r.outstanding>0.005?'#b91c1c':'#166534'}}>{$(r.remittedAmount)} filed · {$(r.outstanding)} owed</div>{r.pending>0.005&&<div style={{fontSize:9,fontWeight:600,color:'#b45309'}}>+{$(r.pending)} pending</div>}</td>
                 <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
-                  {r.remitted
-                    ?<><span style={{fontSize:11,color:'#166534',fontWeight:700}}>✓ Remitted {r.remittedAt}</span> <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:6,background:'#fff',border:'1px solid #cbd5e1',color:'#64748b'}} onClick={()=>unmarkRemit(r.id)}>Undo</button></>
-                    :r.tax>0.005?<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#166534',color:'#fff',border:'none'}} onClick={()=>markRemit(r.id,r.tax)}>Mark remitted</button>
+                  {r.outstanding<=0.005
+                    ?<span style={{fontSize:11,color:'#166534',fontWeight:700}}>✓ Fully filed</span>
+                    :r.tax>0.005?(canManageQuickBooksRole(cu?.role)?<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#166534',color:'#fff',border:'none'}} onClick={()=>openFiling(r)}>Record filing</button>:<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>accounting action required</span>)
                     :<span style={{fontSize:10,color:'#b45309',fontStyle:'italic'}}>awaiting club payment</span>}
                 </td></tr>)}
             </tbody></table>
           </details>
-          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>OMG collects sales tax from parents and remits it to NSA bundled in the payout; webstores collect it at Stripe checkout (CDTFA/TaxCloud rates by buyer destination). NSA files both with the state manually — the store invoices stay tax-exempt, so this liability lives here, not on an invoice. Webstore rows are per store per state. Team-tab tax (billed to the club, not charged at checkout) shows as <strong>pending</strong> until the club pays its invoice, then counts as collected. Marking a row remitted is a bookkeeping record, not a filing.</div>
+          {taxRemittanceLedger.length>0&&<details style={{marginTop:10}}><summary style={{cursor:'pointer',fontSize:12,fontWeight:700,color:'#475569'}}>Filing audit trail — {taxRemittanceLedger.length} entr{taxRemittanceLedger.length===1?'y':'ies'}</summary>
+            <table style={{width:'100%',fontSize:10,borderCollapse:'collapse',marginTop:6}}><thead><tr style={{textAlign:'left',color:'#94a3b8'}}><th>RECORDED</th><th>STORE / STATE</th><th>PERIOD</th><th>REFERENCE</th><th style={{textAlign:'right'}}>AMOUNT</th><th></th></tr></thead><tbody>
+              {taxRemittanceLedger.map(e=>{const reversed=e.entry_type==='remittance'&&reversedIds.has(e.id);return<tr key={e.id} style={{borderTop:'1px solid #e2e8f0',background:e.entry_type==='reversal'?'#fff7ed':reversed?'#f8fafc':'#fff'}}><td>{String(e.recorded_at||'').slice(0,10)}<div style={{fontSize:9,color:'#94a3b8'}}>{e.recorded_by||'legacy'}</div></td><td>{e.store_name} · {e.jurisdiction}<div style={{fontFamily:'monospace',fontSize:9,color:'#94a3b8'}}>{e.source_key}</div></td><td>{e.filing_period_start} — {e.filing_period_end}<div style={{fontSize:9,color:'#94a3b8'}}>cutoff {String(e.cutoff_at||'').slice(0,10)}</div></td><td>{e.payment_reference||'Legacy reference unavailable'}{e.notes&&<div style={{fontSize:9,color:'#64748b'}}>{e.notes}</div>}</td><td style={{textAlign:'right',fontWeight:800,color:e.entry_type==='reversal'?'#c2410c':'#166534'}}>{e.entry_type==='reversal'?'-':''}${(Number(e.amount_cents||0)/100).toFixed(2)}{reversed&&<div style={{fontSize:9,color:'#94a3b8'}}>reversed</div>}</td><td>{e.entry_type==='remittance'&&!reversed&&canManageQuickBooksRole(cu?.role)&&<button className="btn btn-sm btn-secondary" disabled={taxRemitBusy} style={{fontSize:9,padding:'2px 6px'}} onClick={()=>reverseFiling(e)}>Reverse</button>}</td></tr>})}
+            </tbody></table>
+          </details>}
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>OMG collects sales tax from parents and remits it to NSA bundled in the payout; webstores collect it at Stripe checkout (CDTFA/TaxCloud rates by buyer destination). NSA files both with the state manually — the store invoices stay tax-exempt, so this liability lives here, not on an invoice. Webstore rows are per store per state. Team-tab tax shows as <strong>pending</strong> until the club pays its invoice. Each filing now records a period, collection cutoff, exact amount, reference, actor, and timestamp; later collections remain outstanding automatically.</div>
         </div></div>;
       })()}
 
