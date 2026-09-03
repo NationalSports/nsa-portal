@@ -7508,6 +7508,33 @@ export default function App(){
   // Manual "Check Shipping Status" button (fetchSOShippingStatus) still works on demand.
 
   // ─── OMG Sync Handler ───
+  // Operational-only refresh. The background function reads the unfiltered
+  // OMG order feed, groups by the explicit sale relationship, and updates only
+  // order-count metadata for mapped 24/7 stores. Accounting stays manual.
+  const syncOMGOrderCounts = async () => {
+    if (omgSyncing) return;
+    setOmgSyncing(true);
+    try {
+      const response = await authFetch('/.netlify/functions/omg-order-sync-background', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(message || `HTTP ${response.status}`);
+      }
+      nf('OMG 24/7 order sync started — totals will refresh in the background');
+      // Pull the first completed checkpoint promptly; the ordinary portal poll
+      // continues reconciling if the global feed takes longer.
+      setTimeout(() => { if (_runPollRef.current) _runPollRef.current(); }, 8000);
+    } catch (error) {
+      nf('OMG order sync failed to start: ' + error.message, 'error');
+    } finally {
+      setOmgSyncing(false);
+    }
+  };
+
   // Lightweight sync: fetches store list only (no order/product details).
   // Details are loaded on-demand when user clicks into a store.
   const syncOMGStores = async () => {
@@ -18903,6 +18930,7 @@ export default function App(){
       {/* Ingest an OMG store from a shared report link → review SKUs → create it. */}
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,flexWrap:'wrap'}}>
         <button className="btn btn-primary" style={{background:'#166534',whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 18px'}} onClick={()=>{setOmgIngestUrl('');setOmgIngestOpen(true)}} title="Paste an OMG report link to ingest its items into a new store — review & fix SKUs, then create it">📥 Ingest OMG Store</button>
+        <button className="btn btn-secondary" disabled={omgSyncing} onClick={syncOMGOrderCounts} title="Refresh order counts for all mapped 24/7 OMG stores. Profit and commissions are not changed." style={{whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 16px'}}>{omgSyncing?'⏳ Starting…':'↻ Sync 24/7 orders now'}</button>
         <span style={{fontSize:12,color:'#64748b'}}>Paste a shared OMG report link to pull its products into a new store — you'll review &amp; fix SKUs, then it's created.</span>
       </div>
 

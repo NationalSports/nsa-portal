@@ -34,9 +34,12 @@ describe('OMG operational order sync', () => {
     const fn = fs.readFileSync(path.join(__dirname, '../../netlify/functions/omg-order-sync-background.js'), 'utf8');
     const cron = fs.readFileSync(path.join(__dirname, '../../netlify/functions/omg-order-sync-cron.js'), 'utf8');
     const config = fs.readFileSync(path.join(__dirname, '../../netlify.toml'), 'utf8');
+    const app = fs.readFileSync(path.join(__dirname, '../App.js'), 'utf8');
     expect(fn).not.toMatch(/omg_store_profit_snapshots|omg_store_commission_months|omg_store_profit_daily_snapshots/);
     expect(cron).toContain('/.netlify/functions/omg-order-sync-background');
     expect(config).toContain('[functions."omg-order-sync-cron"]');
     expect(config).toContain('schedule = "15 8 * * *"');
+    expect(app).toContain("authFetch('/.netlify/functions/omg-order-sync-background'");
+    expect(app).toContain('Sync 24/7 orders now');
   });
 });
