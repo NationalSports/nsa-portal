@@ -2,9 +2,28 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase, descStyleToken, ourBillSku } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase, descStyleToken, ourBillSku, resolveMappedSoItemIndex } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
+
+describe('resolveMappedSoItemIndex — duplicate-id colorways', () => {
+  const items = [
+    { id: 'legacy-dup', sku: 'YST350', color: 'Neon Yellow', po_lines: [{ po_id: 'PO 58088 LYSL' }] },
+    { id: 'legacy-dup', sku: 'YST350', color: 'Neon Pink', po_lines: [{ po_id: 'PO 58088 LYSL' }] },
+  ];
+
+  test('uses the persisted SO item position even when copied colorways share an item id', () => {
+    expect(resolveMappedSoItemIndex(items, { item_id: 'legacy-dup', so_item_idx: 1, sku: 'YST350', color: 'Neon Pink', po_id: 'PO 58088 LYSL' })).toBe(1);
+  });
+
+  test('old mappings without a position fall back to item id plus color', () => {
+    expect(resolveMappedSoItemIndex(items, { item_id: 'legacy-dup', sku: 'YST350', color: 'Neon Pink', po_id: 'PO 58088 LYSL' })).toBe(1);
+  });
+
+  test('rejects a stale position and still finds the color-correct row', () => {
+    expect(resolveMappedSoItemIndex(items, { item_id: 'legacy-dup', so_item_idx: 99, sku: 'YST350', color: 'Neon Yellow', po_id: 'PO 58088 LYSL' })).toBe(0);
+  });
+});
 
 // ── Augusta family trailing-"00" (owner 2026-07-24: Momentec/Alleson/C2 "4120 = 412000") ──
 // The bill prints the full style+color number ("410500" = style 4105 + color "00"/white);
