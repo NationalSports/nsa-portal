@@ -448,7 +448,7 @@ import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken, ourBillSku } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
-import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
+import { QB_ACCOUNT_MAPPING_DEFAULTS, buildVendorBillLines, calculateOmgInvoicePayment, findUniqueVendorMatch, indexQBNonInventoryItems, isDecorationVendorBill, loadAllQBEntities, loadQBAccounts, mapBillItemsToPortalSkus, migrateQBAccountMapping, normalizeVendorName, parseQBDateValue, qbBillNeedsSync, qbWriteAccountRef, queryQBReadOnly, resolveQBAccountRefs } from './qbAccountMappings';
 import { BaggingQueueTile } from './baggingstation/BaggingDashCard';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -29708,7 +29708,7 @@ export default function App(){
     const pushBillsToQB=async()=>{
       if(qbConfig.preflight?.status!=='success'||String(qbConfig.preflight?.realm_id||'')!==String(qbConfig.realm_id||'')){nf('Run the read-only live QBO preflight before sending any parsed bill','error');return}
       const selectedEntries=billImport.parsed.map((row,index)=>({row,index}))
-        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&!row.qbStatus);
+        .filter(({row})=>_billIsReadyToPush(row)&&!_billTriage(row)?.issue&&qbBillNeedsSync(row.qbStatus));
       if(!selectedEntries.length){nf('No matched bills to push','error');return}
       const canaryMode=qbConfig.initialMigrationApproved!==true;
       const completedCanaries=new Set((qbConfig._qbCanaryBillIds||[]).map(String));
@@ -30981,7 +30981,7 @@ export default function App(){
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
+                  {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.some(b=>qbBillNeedsSync(b.qbStatus)),onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
                     ⚡ Auto-push clean bills</label>
