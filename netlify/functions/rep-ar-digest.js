@@ -268,7 +268,33 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
       ${AGING_BUCKETS.map((k) => tile(k === '90+' ? '90+ days' : k + ' days', byBucket[k])).join('')}</tr></table>`;
 
   const groups = groupOverdueInvoicesByAccount(rows, custName);
-  const rowsHtml = groups.map((group) => {
+
+  // Gmail clips a body over ~102 KB behind a "[Message clipped]" link, silently
+  // hiding the tail. Folding the NetSuite stream in roughly doubled the row count
+  // (the largest rep went 51 -> 114 invoices, 78 KB -> 161 KB), pushing several reps
+  // past that. So render the worst accounts in full and summarise the remainder:
+  // what's left out is stated with its own total instead of being dropped by the
+  // mail client. Whole accounts only — splitting one across the cut reads as a bug.
+  // The header total and aging tiles above are still computed from EVERY row, so the
+  // headline figure stays the rep's true past-due balance.
+  const MAX_ROWS = 60;
+  const shownGroups = [];
+  let shownRows = 0, moreInvoices = 0, moreAmount = 0, moreAccounts = 0;
+  groups.forEach((group) => {
+    if (shownRows >= MAX_ROWS) {
+      moreAccounts++; moreInvoices += group.invoices.length; moreAmount += group.total;
+      return;
+    }
+    shownGroups.push(group);
+    shownRows += group.invoices.length;
+  });
+  const moreRow = moreInvoices ? `<tr><td colspan="2" style="padding:14px 0 0">
+      <div style="background:${CREAM};border:1px solid ${LINE};border-radius:8px;padding:11px 13px;font-size:13px;color:${INK}">
+        <b>+ ${moreInvoices} more overdue invoice${moreInvoices === 1 ? '' : 's'}</b> across ${moreAccounts} smaller account${moreAccounts === 1 ? '' : 's'}, totalling <b style="color:${RED}">${money(moreAmount)}</b>.
+        <div style="font-size:12px;color:${SUB};margin-top:3px">Trimmed so your mail app doesn't clip this email — the totals above still include them. <a href="${portal}/?pg=reports" style="color:${ACCENT};font-weight:700;text-decoration:none">See the full list →</a></div>
+      </div></td></tr>` : '';
+
+  const rowsHtml = shownGroups.map((group) => {
     const invoiceRows = group.invoices.map((r) => {
       const heat = r.dpd >= 90 ? '#7F1D1D' : r.dpd >= 60 ? '#B91C1C' : r.dpd >= 30 ? '#B45309' : '#92400E';
       return `<tr>
@@ -313,7 +339,7 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
       ${ccFor ? `<div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">📋 You're receiving ${esc(ccFor)}'s weekly A/R recap — you're on their account team.</div>` : ''}
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
-      <table width="100%" style="border-collapse:collapse"><tbody>${rowsHtml}</tbody></table>
+      <table width="100%" style="border-collapse:collapse"><tbody>${rowsHtml}${moreRow}</tbody></table>
       <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these customers. Accounts are ranked by total past-due balance; invoices within each account are oldest first.${rows.some((r) => r.hist) ? ` Rows tagged <b>NetSuite</b> came from the imported invoice history — their balance is the amount NetSuite still shows outstanding, and their due date is worked out from the account's payment terms.` : ''}</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>
