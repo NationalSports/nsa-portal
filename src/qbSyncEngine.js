@@ -689,24 +689,23 @@ export function createQBSyncEngine(ctx){
       setQbSyncing(false);
     };
 
-    // ── SYNC: Products as QBO Inventory items ──
-    // The portal remains the SKU/size/color source of truth. QBO receives one
-    // aggregate Inventory item per SKU, using the owner's chart of accounts.
-    // Bulk creation stays locked until the legacy-item retirement and opening
-    // balance cutover have been reviewed; this routine currently permits only
-    // an exact one-item, zero-opening-balance canary.
+    // ── SYNC: Products as QBO NonInventory items ──
+    // The portal remains the inventory source of truth. QBO receives one
+    // purchase item per normalized SKU so POs and vendor bills can preserve
+    // quantities while posting purchases directly to 51300. No QBO quantity
+    // on hand or inventory value is created by this routine.
     const syncInventory=async(options={})=>{
       const canaryProductId=String(options?.canaryProductId||'');
       const canary=!!canaryProductId;
       if(canary?!canaryPreflightReady():productionSyncLocked())return{};
-      if(!canary){nf('QBO Inventory batch sync is locked until the legacy-item cutover and opening balances are approved','error');return{status:'blocked'}}
+      if(!canary){nf('QBO product-item batch sync is locked until the canaries are reviewed','error');return{status:'blocked'}}
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:canary?'item_canary':'inventory',status:'success',details:[]};
       let synced=0;
-      let incomeAcctRef,cogsAcctRef,assetAcctRef;
+      let incomeAcctRef,purchasesAcctRef;
       try{
-        const refs=await requiredAccountRefs(['income_account','cogs_account','inventory_asset_account']);
-        incomeAcctRef=refs.income_account;cogsAcctRef=refs.cogs_account;assetAcctRef=refs.inventory_asset_account;
+        const refs=await requiredAccountRefs(['income_account','purchases_account']);
+        incomeAcctRef=refs.income_account;purchasesAcctRef=refs.purchases_account;
       }catch(e){
         log.status='error';log.details.push(e.message||'Required product-item account could not be resolved');
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Product item sync blocked — '+(e.message||'account setup error'),'error');setQbSyncing(false);return{};
@@ -743,36 +742,34 @@ export function createQBSyncEngine(ctx){
         const itemName=sku.slice(0,100);
         // Match exactly one QBO item by stored ID/SKU. Choosing the first of
         // duplicate SKUs would make later PO and bill routing nondeterministic.
-        let qbId=existingQBId;let syncToken=null;let existingType=null;let existingActive=true;let existingQty=0;
+        let qbId=existingQBId;let syncToken=null;let existingType=null;let existingActive=true;
         if(qbId){
           const match=existingQBItems.find(i=>i.Id===qbId);
-          if(match){syncToken=match.SyncToken;existingType=match.Type;existingActive=match.Active!==false;existingQty=safeNum(match.QtyOnHand)}else{qbId=null}
+          if(match){syncToken=match.SyncToken;existingType=match.Type;existingActive=match.Active!==false}else{qbId=null}
         }
         const skuMatches=existingQBItems.filter(i=>i.Active!==false&&
           (String(i.Sku||'').trim().toUpperCase()===sku||String(i.Name||'').trim().toUpperCase()===sku));
         if(skuMatches.length>1){log.details.push(sku+' — BLOCKED: duplicate active QBO items use this SKU/name');log.status='partial';continue}
         if(!qbId&&skuMatches.length===1){
-          const match=skuMatches[0];qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type;existingActive=match.Active!==false;existingQty=safeNum(match.QtyOnHand);
+          const match=skuMatches[0];qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type;existingActive=match.Active!==false;
         }
-        if(qbId&&existingType&&String(existingType).toLowerCase()!=='inventory'){
-          log.details.push(sku+' — BLOCKED: existing QBO item type is '+existingType+'; QBO cannot convert it to Inventory');log.status='partial';continue;
+        if(qbId&&existingType&&String(existingType).toLowerCase()!=='noninventory'){
+          log.details.push(sku+' — BLOCKED: existing QBO item type is '+existingType+'; QBO cannot convert it to NonInventory');log.status='partial';continue;
         }
         if(qbId&&!existingActive){log.details.push(sku+' — BLOCKED: linked QBO item is inactive');log.status='partial';continue}
-        if(qbId&&Math.abs(existingQty)>=0.0001){log.details.push(sku+' — BLOCKED: existing QBO Inventory item has '+existingQty+' units; zero-quantity canary will not alter it');log.status='partial';continue}
         const isUpdate=!!qbId;
         const qbItem={
           Name:itemName,
           Sku:sku,
-          Description:cleanName+' | Portal is source of truth for size/color; QBO stores aggregate SKU quantity',
+          Description:cleanName+' | Portal is inventory source of truth; QBO purchase item stores aggregate SKU quantity on documents',
           PurchaseDesc:cleanName,
           UnitPrice:safeNum(p.retail_price||p.nsa_cost),
           PurchaseCost:safeNum(p.nsa_cost),
           IncomeAccountRef:incomeAcctRef,
-          ExpenseAccountRef:cogsAcctRef,
-          AssetAccountRef:assetAcctRef,
+          ExpenseAccountRef:purchasesAcctRef,
           ...(isUpdate
             ?{Id:qbId,SyncToken:syncToken,sparse:true}
-            :{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:0,InvStartDate:'2026-09-01'}),
+            :{Type:'NonInventory'}),
         };
         let res;
         try{res=await qbApi('upsert_item',{item:qbItem})}
@@ -781,20 +778,19 @@ export function createQBSyncEngine(ctx){
           if(canary){
             try{
               const verified=await verifyCanaryReadback('Item',res.Item.Id,{sku});
-              if(String(verified.Type||'').toLowerCase()!=='inventory'||verified.TrackQtyOnHand!==true)throw new Error('QBO item type was not tracked Inventory on API read-back.');
-              if(Math.abs(safeNum(verified.QtyOnHand))>=0.0001)throw new Error('QBO Inventory canary did not start at zero quantity.');
-              if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAcctRef.value)||String(verified.ExpenseAccountRef?.value||verified.COGSAccountRef?.value||'')!==String(cogsAcctRef.value)||String(verified.AssetAccountRef?.value||'')!==String(assetAcctRef.value))throw new Error('QBO item accounts did not match 40000/50000/12000 on API read-back.');
-              log.details.push('READ-BACK VERIFIED: '+sku+' · QBO Item #'+verified.Id+' · Inventory · opening quantity 0');
+              if(String(verified.Type||'').toLowerCase()!=='noninventory')throw new Error('QBO item type was not NonInventory on API read-back.');
+              if(String(verified.IncomeAccountRef?.value||'')!==String(incomeAcctRef.value)||String(verified.ExpenseAccountRef?.value||'')!==String(purchasesAcctRef.value))throw new Error('QBO item accounts did not match 40000/51300 on API read-back.');
+              log.details.push('READ-BACK VERIFIED: '+sku+' · QBO Item #'+verified.Id+' · NonInventory · 40000/51300');
             }catch(e){log.details.push(sku+' — VERIFY FAILED: '+e.message);log.status='error';continue}
           }
           products.forEach(pp=>{prodQBMap[pp.id]=res.Item.Id});
-          log.details.push(sku+' → QBO Inventory Item #'+res.Item.Id+' ('+products.length+' portal variant'+(products.length===1?'':'s')+')');synced++;
+          log.details.push(sku+' → QBO NonInventory Item #'+res.Item.Id+' ('+products.length+' portal variant'+(products.length===1?'':'s')+')');synced++;
         }else{log.details.push(sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       const remainingSkus=[...skuGroups.values()].filter(products=>!products.some(p=>prodQBMap[p.id])).length;
       log.details.unshift(synced+'/'+skuBatches.length+(canary?' item canary':' product items completed in this batch')+(remainingSkus?' · '+remainingSkus+' remain unlinked':''));
       setQBConfig(prev=>({...prev,...(!canary?{_inventorySyncOffset:inventoryBatch.nextOffset}:{}),prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
-      nf(canary?(synced?'Created and verified exactly one zero-quantity QBO Inventory item':'QBO Inventory item canary stopped'):'QBO Inventory batch sync is locked',synced?'success':'error');
+      nf(canary?(synced?'Created and verified exactly one QBO NonInventory SKU item':'QBO NonInventory item canary stopped'):'QBO product-item batch sync is locked',synced?'success':'error');
       setQbSyncing(false);
       return prodQBMap;
     };
