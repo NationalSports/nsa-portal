@@ -79,7 +79,7 @@ describe('_dbSaveSOInner — identical copies of the same po_id collapse to one 
       ],
       so_items: [
         { data: [{ id: 'oi-1', item_index: 0, sku: 'JX4468', color: 'Orange/White', product_id: null }], error: null }, // old-items read
-        { data: [{ id: 'n1' }], error: null },                              // insert: 1 row back
+        { data: [{ id: 'n1', item_index: 0 }], error: null },               // insert: 1 row back
       ],
       so_art_files: [{ data: [], error: null }],
       so_item_po_lines: [
@@ -137,7 +137,7 @@ describe('_dbSaveSOInner — identical copies of the same po_id collapse to one 
       ],
       so_items: [
         { data: [{ id: 'oi-1', item_index: 0, sku: 'LST400', color: 'Light Grey Hth', product_id: null }], error: null },
-        { data: [{ id: 'n1' }], error: null },
+        { data: [{ id: 'n1', item_index: 0 }], error: null },
       ],
       so_art_files: [{ data: [], error: null }],
       so_item_po_lines: [

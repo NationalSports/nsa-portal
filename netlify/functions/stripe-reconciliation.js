@@ -10,6 +10,7 @@ const {
   reconcilePayoutBatch,
   recordPayoutReconciliation,
   repairWebhookConfiguration,
+  selectAllRows,
 } = require('./_stripeReconciliation');
 
 const response = (statusCode, origin, payload) => ({
@@ -218,20 +219,23 @@ exports.handler = async (event) => {
     }
 
     if (action === 'reconciliation_status') {
-      const [ordersResult, payoutsResult, chargesResult] = await Promise.all([
-        admin.from('webstore_orders').select('id,so_id,total,status,stripe_balance_transaction_id')
-          .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null),
-        admin.from('stripe_payouts').select('stripe_payout_id,automatic,method,status,reconciliation_status'),
-        admin.from('stripe_balance_transactions')
-          .select('stripe_balance_transaction_id,webstore_order_id,reporting_category,amount_cents')
-          .not('webstore_order_id', 'is', null),
+      // This screen is described as a full historical reconciliation, so every
+      // read is paged and count-verified. A single unbounded .select() stops at
+      // the PostgREST row cap without saying so, which would drop refunds out
+      // of net activity and understate the linked/settled counts.
+      const [orders, payouts, financialRows] = await Promise.all([
+        selectAllRows(() => admin.from('webstore_orders')
+          .select('id,so_id,total,status,stripe_balance_transaction_id', { count: 'exact' })
+          .eq('payment_mode', 'paid').not('stripe_pi_id', 'is', null)
+          .order('id', { ascending: true }), { label: 'card orders' }),
+        selectAllRows(() => admin.from('stripe_payouts')
+          .select('stripe_payout_id,automatic,method,status,reconciliation_status', { count: 'exact' })
+          .order('stripe_payout_id', { ascending: true }), { label: 'Stripe payouts' }),
+        selectAllRows(() => admin.from('stripe_balance_transactions')
+          .select('stripe_balance_transaction_id,webstore_order_id,reporting_category,amount_cents', { count: 'exact' })
+          .not('webstore_order_id', 'is', null)
+          .order('stripe_balance_transaction_id', { ascending: true }), { label: 'Stripe balance transactions' }),
       ]);
-      if (ordersResult.error || payoutsResult.error || chargesResult.error) {
-        throw ordersResult.error || payoutsResult.error || chargesResult.error;
-      }
-      const orders = ordersResult.data || [];
-      const payouts = payoutsResult.data || [];
-      const financialRows = chargesResult.data || [];
       const chargeByOrder = new Map(financialRows
         .filter((row) => row.reporting_category === 'charge')
         .map((row) => [row.webstore_order_id, row]));
