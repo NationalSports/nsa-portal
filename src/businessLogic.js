@@ -1850,19 +1850,41 @@ function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
 // skipped when the month is flagged "pay full". Once a month has been applied to the loan,
 // appliedAmt is authoritative (the stored amount) and overrides the percentage.
 function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, appliedAmt } = {}) {
-  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-  const netComm = r2(netCommission);
-  const _draw = Math.max(0, r2(draw));
-  const loanBal = Math.max(0, r2(loanBalance));
-  const pct = loanPct == null ? 50 : Math.min(100, Math.max(0, Number(loanPct) || 0));
-  const underBy = _draw > 0 ? Math.max(0, r2(_draw - netComm)) : 0;
-  const payable = Math.max(0, r2(netComm - _draw));
-  const applied = appliedAmt == null ? null : r2(appliedAmt);
-  const withhold = applied != null
-    ? Math.min(applied, payable)
-    : (loanBal > 0 && !payFull ? Math.min(Math.round(payable * pct) / 100, loanBal) : 0);
-  const payout = Math.max(0, r2(payable - withhold));
-  return { netComm, draw: _draw, underBy, payable, loanBal, pct, withhold, payout };
+  // Every amount is snapped to whole cents on the way in and the arithmetic runs in
+  // integer cents from there. Doing the loan split in floating point made the penny on
+  // an exact half-cent land arbitrarily: 50% of $2,578.47 is $1,289.235, and `2578.47*50`
+  // evaluates to 128923.49999999999 (rounds down) while `1000.01*50` gives
+  // 50000.500000000007 (rounds up) — same half-cent, opposite directions, decided by the
+  // binary representation rather than by a rule. In cents the split is exact and the
+  // half-cent always rounds up, to the loan.
+  const cents = (n) => { const v = Number(n); return Number.isFinite(v) ? Math.round(v * 100) : 0; };
+  const money = (c) => Math.round(c) / 100;
+  const netC = cents(netCommission);
+  const drawC = Math.max(0, cents(draw));
+  const loanC = Math.max(0, cents(loanBalance));
+  // A missing, blank or unparseable withholding % falls back to the 50% default — reading
+  // it as 0 would silently stop withholding and quietly overpay the rep. Only a real number
+  // or a non-blank numeric string counts, because loose coercion is not safe here:
+  // Number([]) is 0 and Number(true) is 1, so a stray array or boolean in the stored JSON
+  // would read as a real "withhold 0%" / "withhold 1%" rate rather than as junk.
+  const _pctRaw = typeof loanPct === 'string' ? loanPct.trim() : loanPct;
+  const _pctOk = (typeof _pctRaw === 'number' || (typeof _pctRaw === 'string' && _pctRaw !== ''))
+    && Number.isFinite(Number(_pctRaw));
+  const pct = _pctOk ? Math.min(100, Math.max(0, Number(_pctRaw))) : 50;
+  const underByC = drawC > 0 ? Math.max(0, drawC - netC) : 0;
+  const payableC = Math.max(0, netC - drawC);
+  // An already-applied month is authoritative, but it is clamped to [0, payable]: a
+  // negative stored amount would otherwise pay out MORE than was earned, and an amount
+  // larger than payable would drive the payout negative.
+  const appliedC = appliedAmt == null ? null : Math.min(Math.max(0, cents(appliedAmt)), payableC);
+  const withholdC = appliedC != null
+    ? appliedC
+    : (loanC > 0 && !payFull ? Math.min(Math.round(payableC * pct / 100), loanC) : 0);
+  return {
+    netComm: money(netC), draw: money(drawC), underBy: money(underByC),
+    payable: money(payableC), loanBal: money(loanC), pct,
+    withhold: money(withholdC), payout: money(payableC - withholdC),
+  };
 }
 
 module.exports = {

@@ -140,3 +140,89 @@ describe('calcRepPayout — garbage in cannot mint money', () => {
     }
   });
 });
+
+/* ── Adversarial pass ──────────────────────────────────────────────────────────
+ * Each case below is a hole that was actually open in calcRepPayout and is now
+ * closed. The inputs are not hypothetical shapes: draw / loanBalance / loanPct /
+ * loanLog all come out of a hand-editable JSON blob in app_state, so the function
+ * has to survive values the settings modal would never have written. */
+describe('calcRepPayout — adversarial', () => {
+  test('a negative stored loan amount cannot pay out MORE than was earned', () => {
+    // Was: withhold -500 → payout 4500 on a payable of 4000. Money out of thin air.
+    const r = calcRepPayout({ netCommission: 9000, draw: 5000, appliedAmt: -500 });
+    expect(r.withhold).toBe(0);
+    expect(r.payout).toBe(4000);
+    expect(r.payout).toBeLessThanOrEqual(r.payable);
+  });
+
+  test('a blank or unparseable withholding % falls back to 50, never to 0', () => {
+    // Was: '' and NaN both read as 0% — withholding silently stopped and the rep was
+    // overpaid, with nothing on screen to say the loan had been skipped.
+    // Number([]) is 0 and Number(true) is 1 — loose coercion would read these as a real
+    // withholding rate rather than as the junk they are.
+    for (const loanPct of ['', '   ', 'abc', NaN, {}, [], true, false]) {
+      const r = calcRepPayout({ netCommission: 9000, draw: 5000, loanBalance: 9999, loanPct });
+      expect(r.pct).toBe(50);
+      expect(r.withhold).toBe(2000);
+    }
+  });
+
+  test('an exact half-cent split is deterministic — the penny always goes to the loan', () => {
+    // Was: decided by binary float. 2578.47*50 === 128923.49999999999 rounded DOWN while
+    // 1000.01*50 === 50000.500000000007 rounded UP — same half-cent, opposite ways.
+    const cases = [[2578.47, 1289.24, 1289.23], [1000.01, 500.01, 500], [3333.33, 1666.67, 1666.66], [0.03, 0.02, 0.01]];
+    for (const [payable, withhold, payout] of cases) {
+      const r = calcRepPayout({ netCommission: payable + 5000, draw: 5000, loanBalance: 999999, loanPct: 50 });
+      expect(r.payable).toBe(payable);
+      expect(r.withhold).toBe(withhold);
+      expect(r.payout).toBe(payout);
+      expect(Math.round((r.withhold + r.payout) * 100) / 100).toBe(payable); // no penny lost
+    }
+  });
+
+  test('withholding never exceeds payable, even at 100%', () => {
+    const r = calcRepPayout({ netCommission: 9000, draw: 5000, loanBalance: 99999, loanPct: 100 });
+    expect(r.withhold).toBe(4000);
+    expect(r.payout).toBe(0);
+  });
+
+  test('numeric strings from stored JSON are honoured, not silently read as no-draw', () => {
+    const r = calcRepPayout({ netCommission: 9000, draw: '5000', loanBalance: '800', loanPct: '50' });
+    expect(r.draw).toBe(5000);
+    expect(r.payable).toBe(4000);
+    expect(r.withhold).toBe(800);
+  });
+
+  test('non-finite money never reaches the screen as Infinity or NaN', () => {
+    for (const v of [Infinity, -Infinity, NaN]) {
+      const r = calcRepPayout({ netCommission: v, draw: v, loanBalance: v });
+      for (const k of ['netComm', 'draw', 'underBy', 'payable', 'loanBal', 'withhold', 'payout']) {
+        expect(Number.isFinite(r[k])).toBe(true);
+      }
+    }
+  });
+
+  test('invariants hold across the whole input space (fuzz)', () => {
+    const MONEY = ['netComm', 'draw', 'underBy', 'payable', 'loanBal', 'withhold', 'payout'];
+    let seed = 1234567;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < 20000; i++) {
+      const applied = rnd() < 0.15 ? rnd() * 4000 - 500 : null;
+      const payFull = rnd() < 0.15;
+      const r = calcRepPayout({
+        netCommission: rnd() * 40000 - 5000,
+        draw: rnd() < 0.4 ? 0 : rnd() * 20000,
+        loanBalance: rnd() < 0.5 ? 0 : rnd() * 20000,
+        loanPct: rnd() < 0.2 ? null : rnd() * 120 - 10,
+        payFull, appliedAmt: applied,
+      });
+      expect(r.payout).toBeGreaterThanOrEqual(0);        // a rep is never billed to work
+      expect(r.withhold).toBeGreaterThanOrEqual(0);
+      expect(r.underBy).toBeGreaterThanOrEqual(0);
+      expect(r.withhold).toBeLessThanOrEqual(r.payable); // withholding can't exceed the check
+      expect(Math.round((r.withhold + r.payout) * 100) / 100).toBe(r.payable); // no penny created or lost
+      if (applied == null && !payFull) expect(r.withhold).toBeLessThanOrEqual(r.loanBal);
+      for (const k of MONEY) expect(Math.round(r[k] * 100) / 100).toBe(r[k]);
+    }
+  });
+});
