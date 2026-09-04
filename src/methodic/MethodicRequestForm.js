@@ -10,20 +10,24 @@ const centsToDollars = (value) => value == null ? '' : (Number(value) / 100).toF
 
 const options = (items) => Object.entries(items).map(([value, text]) => <option key={value} value={value}>{text}</option>);
 
-export default function MethodicRequestForm({ request, order, teamMembers = [], onSave, onCancel }) {
+export default function MethodicRequestForm({ request, order, initialItem, itemIndex, documentType = 'sales_order', teamMembers = [], onSave, onCancel }) {
   const isNew = !request?.id;
+  const itemSizes = initialItem?.sizes || {};
+  const itemQty = Object.values(itemSizes).reduce((sum, qty) => sum + Number(qty || 0), 0) || Number(initialItem?.est_qty || 0);
+  const itemJobs = (Array.isArray(order?.jobs) ? order.jobs : []).filter((job) => itemIndex == null || (job.items || []).some((item) => Number(item?.item_idx) === Number(itemIndex)));
+  const defaultArtJobId = documentType === 'sales_order' && itemJobs.length === 1 ? itemJobs[0].id : '';
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [form, setForm] = useState(() => ({
-    title: request?.title || order?.memo || '',
-    style_number: request?.style_number || '',
-    garment_description: request?.garment_description || '',
-    garment_color: request?.garment_color || '',
-    quantity: request?.quantity || 0,
-    size_breakdown: request?.size_breakdown || {},
+    title: request?.title || initialItem?.name || order?.memo || '',
+    style_number: request?.style_number || initialItem?.sku || '',
+    garment_description: request?.garment_description || initialItem?.name || '',
+    garment_color: request?.garment_color || initialItem?.color || '',
+    quantity: request?.quantity || itemQty,
+    size_breakdown: request?.size_breakdown || itemSizes,
     priority: request?.priority || 'normal',
-    art_job_id: request?.art_job_id || '',
+    art_job_id: request?.art_job_id || defaultArtJobId,
     request_notes: request?.request_notes || '',
     reference_files: request?.reference_files || [],
     pricing_status: request?.pricing_status || 'requested',
@@ -48,7 +52,11 @@ export default function MethodicRequestForm({ request, order, teamMembers = [], 
     owner_id: request?.owner_id || '',
     blocker: request?.blocker || '',
   }));
-  const jobs = useMemo(() => Array.isArray(order?.jobs) ? order.jobs : [], [order]);
+  const jobs = useMemo(() => {
+    const all = Array.isArray(order?.jobs) ? order.jobs : [];
+    if (itemIndex == null) return all;
+    return all.filter((job) => (job.items || []).some((item) => Number(item?.item_idx) === Number(itemIndex)));
+  }, [order, itemIndex]);
   const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
   const chooseJob = (jobId) => {
     const job = jobs.find((item) => item.id === jobId);
@@ -70,7 +78,6 @@ export default function MethodicRequestForm({ request, order, teamMembers = [], 
   const submit = async () => {
     setError('');
     if (!form.title.trim()) return setError('Add a short request title.');
-    if (form.mockup_status === 'requested' && !form.art_job_id) return setError('Choose the sales-order art job that should receive this mock request.');
     setSaving(true);
     try {
       await onSave({
@@ -119,10 +126,12 @@ export default function MethodicRequestForm({ request, order, teamMembers = [], 
 
     <div style={{ ...grid, marginTop: 16, padding: 14, background: '#f5f3ff', borderRadius: 10 }}>
       <label style={field}><span style={label}>Mockup status</span><select style={input} value={form.mockup_status} onChange={(e) => set('mockup_status', e.target.value)}>{options(METHODIC_STATUS.mockup)}</select></label>
-      <label style={field}><span style={label}>Send to art job</span><select style={input} value={form.art_job_id} onChange={(e) => chooseJob(e.target.value)}><option value="">Choose job…</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.id} — {job.art_name || job.key || 'Art job'}</option>)}</select></label>
+      <label style={field}><span style={label}>Send to art job</span><select style={input} value={form.art_job_id} onChange={(e) => chooseJob(e.target.value)}><option value="">{documentType === 'estimate' ? 'Links automatically after conversion' : 'Use Methodic pre-job queue'}</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.id} — {job.art_name || job.key || 'Art job'}</option>)}</select></label>
       <label style={field}><span style={label}>Mock expected</span><input style={input} type="date" value={form.expected_mockup_date} onChange={(e) => set('expected_mockup_date', e.target.value)} /></label>
-      <div style={{ fontSize: 12, color: jobs.length ? '#5b21b6' : '#b45309', alignSelf: 'end', paddingBottom: 8 }}>{jobs.length ? 'Requesting a mock adds it directly to the Art Dashboard.' : 'This order has no art jobs yet. Add/link its artwork before requesting a mock.'}</div>
+      <div style={{ fontSize: 12, color: '#5b21b6', alignSelf: 'end', paddingBottom: 8 }}>{form.art_job_id ? 'This mock goes into the selected normal Art job.' : documentType === 'estimate' ? 'This enters the Art Dashboard now and follows the same record onto the SO.' : 'No job yet — this enters the Methodic pre-job lane on the Art Dashboard.'}</div>
     </div>
+
+    {(request?.mockup_files || []).length > 0 && <div style={{ marginTop: 12, padding: 12, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 9 }}><div style={label}>Completed Methodic mockups</div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>{request.mockup_files.map((file, index) => <a key={`${file.url}-${index}`} href={file.url} target="_blank" rel="noreferrer" style={{ fontSize: 11, fontWeight: 700 }}>{file.name || `Mockup ${index + 1}`}</a>)}</div></div>}
 
     <div style={{ ...grid, marginTop: 16, padding: 14, background: '#fffbeb', borderRadius: 10 }}>
         <label style={field}><span style={label}>Sample status</span><select style={input} value={form.sample_status} onChange={(e) => set('sample_status', e.target.value)}>{options(METHODIC_STATUS.sample)}</select></label>
@@ -130,7 +139,7 @@ export default function MethodicRequestForm({ request, order, teamMembers = [], 
         <label style={field}><span style={label}>Sample tracking</span><input style={input} value={form.sample_tracking_number} onChange={(e) => set('sample_tracking_number', e.target.value)} /></label>
         <label style={field}><span style={label}>Sample tracking URL</span><input style={input} value={form.sample_tracking_url} onChange={(e) => set('sample_tracking_url', e.target.value)} /></label>
     </div>
-    {!isNew && <>
+    {!isNew && documentType === 'sales_order' && <>
       <div style={{ ...grid, marginTop: 16, padding: 14, background: '#ecfdf5', borderRadius: 10 }}>
         <label style={field}><span style={label}>Order status</span><select style={input} value={form.order_status} onChange={(e) => set('order_status', e.target.value)}>{options(METHODIC_STATUS.order)}</select></label>
         <label style={field}><span style={label}>NSA PO</span><input style={input} value={form.purchase_order_number} onChange={(e) => set('purchase_order_number', e.target.value)} /></label>

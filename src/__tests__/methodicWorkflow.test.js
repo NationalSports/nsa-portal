@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { daysUntil, isRequestOverdue, nextAction, nextDue, requestStage } from '../methodic/methodicWorkflow';
+import { daysUntil, isMethodicItem, isRequestOverdue, nextAction, nextDue, requestStage } from '../methodic/methodicWorkflow';
 
 jest.mock('../../netlify/functions/_shared', () => ({
   corsHeaders: () => ({ 'Content-Type': 'application/json' }),
@@ -52,6 +52,17 @@ describe('Methodic workflow helpers', () => {
     expect(_test.artStatusToMockup('art_requested')).toBe('in_art');
     expect(_test.artStatusToMockup('waiting_approval')).toBe('ready_for_rep');
     expect(_test.artStatusToMockup('art_complete')).toBe('approved');
+  });
+
+  test('recognizes Methodic catalog and custom-vendor lines', () => {
+    expect(isMethodicItem({ brand: 'Methodic' })).toBe(true);
+    expect(isMethodicItem({ vendor_id: 'v-methodic' }, [{ id: 'v-methodic', name: 'Methodic' }])).toBe(true);
+    expect(isMethodicItem({ brand: 'adidas' })).toBe(false);
+  });
+
+  test('prefills quantity and sizes from the source estimate or SO item', () => {
+    expect(_test.quantityFromItem({ sizes: { S: 3, M: 7 }, est_qty: 99 })).toEqual({ sizes: { S: 3, M: 7 }, quantity: 10 });
+    expect(_test.quantityFromItem({ sizes: {}, est_qty: 24 })).toEqual({ sizes: {}, quantity: 24 });
   });
 
   test('hands a mock request directly to the selected sales-order art job and is idempotent', async () => {

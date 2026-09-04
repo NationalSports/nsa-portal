@@ -32,6 +32,13 @@ export const METHODIC_COLORS = {
   blocked: { bg: '#fef2f2', fg: '#b91c1c' },
 };
 
+export function isMethodicItem(item, vendors = []) {
+  if (!item) return false;
+  const vendorName = vendors.find((vendor) => vendor.id === item.vendor_id)?.name || '';
+  return [item.brand, item.vendor_source, vendorName]
+    .some((value) => /(^|\s)methodic(\s|$)/i.test(String(value || '').trim()));
+}
+
 export function statusTone(group, status) {
   if (!status || status === 'not_requested' || status === 'not_ordered') return 'muted';
   if (['cancelled', 'declined', 'expired', 'changes_requested', 'revisions_requested', 'on_hold'].includes(status)) return 'blocked';

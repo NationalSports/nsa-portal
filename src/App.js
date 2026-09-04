@@ -407,6 +407,7 @@ const UniformBuilder = lazyRetry(() => import('./uniform/ProBuilder'));
 const UniformPatternsAdmin = lazyRetry(() => import('./uniform/PatternLibraryAdmin'));
 const UniformOrdersAdmin = lazyRetry(() => import('./uniform/UniformOrdersAdmin'));
 const MethodicDashboard = lazyRetry(() => import('./methodic/MethodicDashboard'));
+const MethodicArtQueue = lazyRetry(() => import('./methodic/MethodicArtQueue'));
 const UniformBuilderSettingsAdmin = lazyRetry(() => import('./uniform/BuilderSettingsAdmin'));
 const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm, VendorModal } from './modals';
@@ -7143,8 +7144,14 @@ export default function App(){
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
-    // Explicitly save to DB immediately — don't rely solely on useEffect chain
-    _dbSaveSO(so);_dbSaveEstimate(convertedEst);
+    // Explicitly save to DB immediately — don't rely solely on useEffect chain.
+    // Methodic work is relinked only after both source/target documents exist, so
+    // the same request follows the line instead of creating an SO-side duplicate.
+    const[_soSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
+    if(_soSaved!==false){
+      try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
+      catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
+    }
     // Consume the attached pending shipping charge (persisted SO — safe to record usage now).
     if(so.pending_ship_applied)_consumePendingShipForSO(so);
     const c=cust.find(x=>x.id===so.customer_id);
@@ -11062,6 +11069,7 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
+      onOpenMethodicDashboard={()=>{setEEst(null);setPg('methodic')}}
       companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} onSaveCustomer={savC} onScheduleEmail={scheduleEmailSend} extractPdfText={extractPdfText}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
@@ -23052,6 +23060,8 @@ export default function App(){
         <input className="form-input" data-tour-id="art-search" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artistJobs.length} job{artistJobs.length!==1?'s':''}</span>
       </div>
+
+      <React.Suspense fallback={null}><MethodicArtQueue estimates={ests} salesOrders={sos} customers={cust} teamMembers={REPS} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense>
 
       {/* ═══ ART TIME CLOCK ═══ */}
       {_isArtistUser&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
@@ -37132,7 +37142,7 @@ export default function App(){
         </div>
       </div>}
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='uniforms'&&<ComponentErrorBoundary name="UniformJobs"><React.Suspense fallback={<LazyFallback/>}><UniformOrdersAdmin/></React.Suspense></ComponentErrorBoundary>}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='financials'&&<ComponentErrorBoundary name="Financials"><React.Suspense fallback={<LazyFallback/>}><FinancialsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='salesmap'&&<ComponentErrorBoundary name="SalesMap"><React.Suspense fallback={<LazyFallback/>}><SalesMap customers={cust} orders={sos} invoices={invs} historicalInvoices={histInvs} vendors={vend} reps={REPS} calcMargin={calcOrderMargin} companyInfo={companyInfo} currentUser={cu} onOpenCustomer={c2=>{setSelC(c2.parent_id?cust.find(x=>x.id===c2.parent_id)||c2:c2);setPg('customers')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='marketing'&&<ComponentErrorBoundary name="Marketing"><React.Suspense fallback={<LazyFallback/>}><MarketingPage/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
-    {pg==='methodic'&&canAccess(pg)&&<div className="content"><ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenOrder={soId=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+soId+' not found','error')}}/></React.Suspense></ComponentErrorBoundary></div>}
+    {pg==='methodic'&&canAccess(pg)&&<div className="content"><ComponentErrorBoundary name="MethodicOperations"><React.Suspense fallback={<LazyFallback/>}><MethodicDashboard orders={sos} estimates={ests} customers={cust} teamMembers={REPS} currentUser={cu} notify={nf} onOpenDocument={(type,id)=>{if(type==='estimate'){const est=ests.find(x=>x.id===id);if(est){setEEst(est);setEEstC(cust.find(c=>c.id===est.customer_id)||null);setPg('estimates')}else nf('Estimate '+id+' not found','error')}else{const so=sos.find(x=>x.id===id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setESOTab('methodic');setPg('orders')}else nf('Sales order '+id+' not found','error')}}}/></React.Suspense></ComponentErrorBoundary></div>}
     {pg==='ai_inbox'&&<div className="content"><AiInbox supabase={supabase} customers={cust} onCreateEstimate={createEstimateFromInbox} notify={nf}/></div>}
     {pg==='ai_tasks'&&<div className="content"><AiTasks supabase={supabase} customers={cust} notify={nf}/></div>}
     {/* ═══ CREATE TODO MODAL (global) ═══ */}

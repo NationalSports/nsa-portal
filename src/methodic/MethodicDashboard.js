@@ -15,7 +15,7 @@ function Pill({ group, value }) {
 
 const TABS = ['All', 'Requests', 'Pricing', 'Art', 'Samples', 'Orders', 'Tracking', 'Billing', 'Blocked', 'Overdue', 'Mine'];
 
-export default function MethodicDashboard({ orders = [], customers = [], teamMembers = [], currentUser, notify, onOpenOrder }) {
+export default function MethodicDashboard({ orders = [], estimates = [], customers = [], teamMembers = [], currentUser, notify, onOpenDocument }) {
   const [requests, setRequests] = useState([]);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -28,6 +28,7 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
 
   const customerById = useMemo(() => new Map(customers.map((customer) => [customer.id, customer])), [customers]);
   const orderById = useMemo(() => new Map(orders.map((order) => [order.id, order])), [orders]);
+  const estimateById = useMemo(() => new Map(estimates.map((estimate) => [estimate.id, estimate])), [estimates]);
   const memberById = useMemo(() => new Map(teamMembers.map((member) => [member.id, member])), [teamMembers]);
   const eventByRequest = useMemo(() => events.reduce((map, event) => { (map[event.request_id] ||= []).push(event); return map; }, {}), [events]);
 
@@ -40,13 +41,13 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
   useEffect(() => { load(); }, [load]);
 
   const enriched = useMemo(() => requests.map((request) => {
-    const order = orderById.get(request.sales_order_id);
+    const order = request.sales_order_id ? orderById.get(request.sales_order_id) : estimateById.get(request.estimate_id);
     const customer = customerById.get(request.customer_id || order?.customer_id);
     const rep = memberById.get(request.rep_id || customer?.primary_rep_id || order?.created_by);
     const owner = memberById.get(request.owner_id);
     const due = nextDue(request);
     return { ...request, order, customer, rep, owner, due, stage: requestStage(request), overdue: isRequestOverdue(request) };
-  }), [requests, orderById, customerById, memberById]);
+  }), [requests, orderById, estimateById, customerById, memberById]);
 
   const visible = useMemo(() => enriched.filter((request) => {
     if (repFilter !== 'all' && request.rep_id !== repFilter) return false;
@@ -63,7 +64,7 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
       }
     }
     if (search) {
-      const hay = [request.request_number, request.sales_order_id, request.title, request.style_number, request.garment_description, request.customer?.name, request.customer?.alpha_tag, request.rep?.name, request.methodic_order_number, request.purchase_order_number, request.tracking_number].join(' ').toLowerCase();
+      const hay = [request.request_number, request.sales_order_id, request.estimate_id, request.title, request.style_number, request.garment_description, request.customer?.name, request.customer?.alpha_tag, request.rep?.name, request.methodic_order_number, request.purchase_order_number, request.tracking_number].join(' ').toLowerCase();
       if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
@@ -85,13 +86,18 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
 
   const save = async (payload) => {
     const isEdit = !!editing?.id;
-    const order = isEdit ? orderById.get(editing.sales_order_id) : orderById.get(newOrderId);
-    if (!order) throw new Error('Choose a sales order first.');
-    const data = await methodicApi(isEdit ? 'update' : 'create', isEdit ? { id: editing.id, ...payload } : { sales_order_id: order.id, ...payload });
+    const editingIsEstimate = !!editing?.estimate_id;
+    const [kind, selectedId] = String(newOrderId || '').split(':');
+    const order = isEdit ? (editingIsEstimate ? estimateById.get(editing.estimate_id) : orderById.get(editing.sales_order_id)) : (kind === 'est' ? estimateById.get(selectedId) : orderById.get(selectedId));
+    if (!order) throw new Error('Choose a sales order or estimate first.');
+    const source = kind === 'est' ? { estimate_id: order.id } : { sales_order_id: order.id };
+    const data = await methodicApi(isEdit ? 'update' : 'create', isEdit ? { id: editing.id, ...payload } : { ...source, ...payload });
     setEditing(null); setNewOrderId(''); await load();
     notify?.(`${data.request?.request_number || 'Methodic request'} saved${!isEdit && payload.mockup_status === 'requested' ? ' and sent to Art Dashboard' : ''}`);
   };
-  const editingOrder = editing?.id ? orderById.get(editing.sales_order_id) : orderById.get(newOrderId);
+  const [newKind, newId] = String(newOrderId || '').split(':');
+  const editingOrder = editing?.id ? (editing.estimate_id ? estimateById.get(editing.estimate_id) : orderById.get(editing.sales_order_id)) : (newKind === 'est' ? estimateById.get(newId) : orderById.get(newId));
+  const editingDocumentType = editing?.id ? (editing.estimate_id ? 'estimate' : 'sales_order') : (newKind === 'est' ? 'estimate' : 'sales_order');
 
   return <div>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -116,7 +122,7 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
     {!!visible.length && <div className="card" style={{ overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1260 }}><thead><tr style={{ background: '#f8fafc', color: '#64748b', textAlign: 'left', fontSize: 10, textTransform: 'uppercase' }}>{['Request / customer', 'Rep / owner', 'Stage', 'Pricing', 'Art mock', 'Sample', 'Order / tracking', 'Billing', 'Next action', 'Updated', ''].map((heading) => <th key={heading} style={{ padding: '9px 10px', borderBottom: '1px solid #e2e8f0' }}>{heading}</th>)}</tr></thead><tbody>{visible.map((row) => {
       const latest = (eventByRequest[row.id] || [])[0];
       return <tr key={row.id} style={{ borderBottom: '1px solid #eef2f7', background: row.blocker ? '#fffafa' : row.overdue ? '#fffdf7' : 'white' }}>
-        <td style={{ padding: 10 }}><div style={{ fontFamily: 'monospace', color: '#4338ca', fontWeight: 900 }}>{row.request_number}</div><button onClick={() => onOpenOrder?.(row.sales_order_id)} style={{ border: 0, background: 'none', color: '#2563eb', padding: 0, cursor: 'pointer', fontWeight: 800 }}>{row.sales_order_id}</button><div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginTop: 3 }}>{row.customer?.name || 'Unknown customer'}</div><div style={{ fontSize: 11, color: '#64748b' }}>{row.title}{row.style_number ? ` · ${row.style_number}` : ''}</div></td>
+        <td style={{ padding: 10 }}><div style={{ fontFamily: 'monospace', color: '#4338ca', fontWeight: 900 }}>{row.request_number}</div><button onClick={() => onOpenDocument?.(row.estimate_id ? 'estimate' : 'sales_order', row.estimate_id || row.sales_order_id)} style={{ border: 0, background: 'none', color: '#2563eb', padding: 0, cursor: 'pointer', fontWeight: 800 }}>{row.estimate_id || row.sales_order_id}</button><div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginTop: 3 }}>{row.customer?.name || 'Unknown customer'}</div><div style={{ fontSize: 11, color: '#64748b' }}>{row.title}{row.style_number ? ` · ${row.style_number}` : ''}</div></td>
         <td style={{ padding: 10, fontSize: 11 }}><strong>{row.rep?.name || '—'}</strong><div style={{ color: '#64748b', marginTop: 3 }}>{row.owner?.name ? `Owner: ${row.owner.name}` : 'Unassigned'}</div></td>
         <td style={{ padding: 10 }}><span style={{ fontSize: 10, fontWeight: 900, color: '#0369a1', background: '#e0f2fe', padding: '3px 7px', borderRadius: 999 }}>{row.stage}</span>{row.priority !== 'normal' && <div style={{ marginTop: 5, fontSize: 9, fontWeight: 900, color: row.priority === 'rush' ? '#b91c1c' : '#a16207', textTransform: 'uppercase' }}>{row.priority}</div>}</td>
         <td style={{ padding: 10 }}><Pill group="pricing" value={row.pricing_status} /><div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>{row.quoted_unit_cost_cents != null ? `${cash(row.quoted_unit_cost_cents)} / unit` : fmtDate(row.expected_pricing_date)}</div></td>
@@ -130,9 +136,9 @@ export default function MethodicDashboard({ orders = [], customers = [], teamMem
       </tr>;
     })}</tbody></table></div>}
 
-    {editing && <div className="modal-overlay" onClick={() => { setEditing(null); setNewOrderId(''); }}><div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: 940, width: '95vw', maxHeight: '94vh', overflow: 'auto' }}><div className="modal-header"><h2>{editing.id ? `${editing.request_number} · ${editing.sales_order_id}` : 'New Methodic request'}</h2><button className="modal-close" onClick={() => { setEditing(null); setNewOrderId(''); }}>×</button></div><div className="modal-body">
-      {!editing.id && <label className="form-group" style={{ display: 'block', marginBottom: 16 }}><span className="form-label">Sales order</span><select className="form-input" value={newOrderId} onChange={(event) => setNewOrderId(event.target.value)}><option value="">Choose an order…</option>{orders.filter((order) => !order.deleted_at).slice().sort((a, b) => String(b.id).localeCompare(String(a.id), undefined, { numeric: true })).map((order) => <option key={order.id} value={order.id}>{order.id} — {customerById.get(order.customer_id)?.name || order.memo || 'Unknown customer'}</option>)}</select></label>}
-      {editingOrder ? <MethodicRequestForm request={editing.id ? editing : null} order={editingOrder} teamMembers={teamMembers} onSave={save} onCancel={() => { setEditing(null); setNewOrderId(''); }} /> : <div style={{ padding: 28, textAlign: 'center', color: '#64748b' }}>Choose a sales order to load its art jobs and create the request.</div>}
+    {editing && <div className="modal-overlay" onClick={() => { setEditing(null); setNewOrderId(''); }}><div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: 940, width: '95vw', maxHeight: '94vh', overflow: 'auto' }}><div className="modal-header"><h2>{editing.id ? `${editing.request_number} · ${editing.estimate_id || editing.sales_order_id}` : 'New Methodic request'}</h2><button className="modal-close" onClick={() => { setEditing(null); setNewOrderId(''); }}>×</button></div><div className="modal-body">
+      {!editing.id && <label className="form-group" style={{ display: 'block', marginBottom: 16 }}><span className="form-label">Sales order or estimate</span><select className="form-input" value={newOrderId} onChange={(event) => setNewOrderId(event.target.value)}><option value="">Choose a document…</option><optgroup label="Sales orders">{orders.filter((order) => !order.deleted_at).slice().sort((a, b) => String(b.id).localeCompare(String(a.id), undefined, { numeric: true })).map((order) => <option key={order.id} value={`so:${order.id}`}>{order.id} — {customerById.get(order.customer_id)?.name || order.memo || 'Unknown customer'}</option>)}</optgroup><optgroup label="Estimates">{estimates.filter((estimate) => !estimate.deleted_at && estimate.status !== 'converted').slice().sort((a, b) => String(b.id).localeCompare(String(a.id), undefined, { numeric: true })).map((estimate) => <option key={estimate.id} value={`est:${estimate.id}`}>{estimate.id} — {customerById.get(estimate.customer_id)?.name || estimate.memo || 'Unknown customer'}</option>)}</optgroup></select></label>}
+      {editingOrder ? <MethodicRequestForm request={editing.id ? editing : null} order={editingOrder} itemIndex={editing.item_index} initialItem={editing.item_index != null ? editingOrder.items?.[editing.item_index] : null} documentType={editingDocumentType} teamMembers={teamMembers} onSave={save} onCancel={() => { setEditing(null); setNewOrderId(''); }} /> : <div style={{ padding: 28, textAlign: 'center', color: '#64748b' }}>Choose a sales order or estimate to create the request.</div>}
     </div></div></div>}
   </div>;
 }

@@ -1,9 +1,9 @@
 // Staff-only Methodic brand workflow.
 //
-// Methodic requests live beside normal National sales orders. A mock request is
-// handed directly to an existing SO art job by appending a normal art_requests
-// entry; artists therefore work it from the existing Art Dashboard rather than
-// from a second, disconnected mockup system.
+// A request may begin on an estimate line, then moves onto the matching sales
+// order line when the estimate converts. If an SO art job exists the request is
+// embedded in that normal job; otherwise it remains visible in the Methodic
+// pre-job lane on the Art Dashboard.
 const { corsHeaders, verifyUser } = require('./_shared');
 
 const PRICING = new Set(['not_requested', 'requested', 'working', 'quoted', 'approved', 'declined', 'expired']);
@@ -21,7 +21,8 @@ const TEXT_LIMITS = {
   carrier: 120, tracking_number: 200, tracking_url: 1000,
 };
 const UPDATE_FIELDS = new Set([
-  ...Object.keys(TEXT_LIMITS), 'art_job_id', 'owner_id', 'priority', 'quantity', 'size_breakdown', 'reference_files',
+  ...Object.keys(TEXT_LIMITS), 'art_job_id', 'owner_id', 'priority', 'quantity',
+  'size_breakdown', 'reference_files', 'mockup_files',
   'pricing_status', 'mockup_status', 'sample_status', 'order_status',
   ...DATE_FIELDS, ...MONEY_FIELDS,
 ]);
@@ -59,6 +60,11 @@ const artStatusToMockup = (status) => {
   if (['production_files_needed', 'order_dtf_transfers', 'upload_emb_files', 'art_complete'].includes(status)) return 'approved';
   return ['art_requested', 'art_in_progress'].includes(status) ? 'in_art' : 'requested';
 };
+const quantityFromItem = (item) => {
+  const sizes = cleanSizes(item?.sizes);
+  const sized = Object.values(sizes).reduce((sum, qty) => sum + Number(qty || 0), 0);
+  return { sizes, quantity: sized || Math.max(0, Math.floor(Number(item?.est_qty || 0))) };
+};
 
 function validatePatch(input, { create = false } = {}) {
   const patch = {};
@@ -80,7 +86,7 @@ function validatePatch(input, { create = false } = {}) {
       if (!Number.isFinite(qty) || qty < 0 || qty > 100000) throw new Error('Invalid quantity.');
       patch.quantity = qty;
     } else if (key === 'size_breakdown') patch.size_breakdown = cleanSizes(value);
-    else if (key === 'reference_files') patch.reference_files = cleanFiles(value);
+    else if (key === 'reference_files' || key === 'mockup_files') patch[key] = cleanFiles(value);
     else if (key === 'priority') {
       if (!PRIORITY.has(value)) throw new Error('Invalid priority.');
       patch.priority = value;
@@ -107,14 +113,46 @@ async function addEvent(sb, requestId, actorId, eventType, message, metadata = {
     request_id: requestId, actor_id: actorId || null, event_type: eventType,
     message: cleanText(message, 1000), metadata,
   });
-  // The request itself remains authoritative. A temporary audit-table problem
-  // must not roll back a successful art handoff and leave the SO job orphaned.
   if (error) { console.error('[methodic-workflow] event insert:', error.message); return false; }
   return true;
 }
 
+async function sourceDocument(sb, body) {
+  const salesOrderId = cleanText(body.sales_order_id, 120);
+  const estimateId = cleanText(body.estimate_id, 120);
+  if (!!salesOrderId === !!estimateId) throw new Error('Choose one sales order or estimate.');
+  const isEstimate = !!estimateId;
+  const id = estimateId || salesOrderId;
+  const { data: document, error } = await sb.from(isEstimate ? 'estimates' : 'sales_orders')
+    .select('id,customer_id,created_by,deleted_at').eq('id', id).maybeSingle();
+  if (error) throw error;
+  if (!document || document.deleted_at) throw new Error(`The ${isEstimate ? 'estimate' : 'sales order'} was not found.`);
+
+  let item = null;
+  const itemIndex = body.item_index == null || body.item_index === '' ? null : Math.floor(Number(body.item_index));
+  if (itemIndex != null) {
+    if (!Number.isFinite(itemIndex) || itemIndex < 0) throw new Error('Invalid item index.');
+    const result = await sb.from(isEstimate ? 'estimate_items' : 'so_items').select('*')
+      .eq(isEstimate ? 'estimate_id' : 'so_id', id).eq('item_index', itemIndex).maybeSingle();
+    if (result.error) throw result.error;
+    if (!result.data) throw new Error('The Methodic item was not found on this document. Save the document and try again.');
+    item = result.data;
+  }
+  return { document, isEstimate, item, itemIndex };
+}
+
+async function matchingArtJob(sb, salesOrderId, itemIndex) {
+  if (!salesOrderId || itemIndex == null) return null;
+  const { data, error } = await sb.from('so_jobs')
+    .select('id,so_id,art_name,art_status,art_requests,assigned_artist,rep_notes,items')
+    .eq('so_id', salesOrderId);
+  if (error) throw error;
+  return (data || []).find((job) => (Array.isArray(job.items) ? job.items : [])
+    .some((item) => Number(item?.item_idx) === Number(itemIndex))) || null;
+}
+
 async function handoffToArt(sb, request, actor) {
-  if (!request.art_job_id) throw new Error('Choose an art job before requesting a Methodic mockup.');
+  if (!request.art_job_id || !request.sales_order_id) throw new Error('Choose an art job before handing off this Methodic mockup.');
   const { data: job, error } = await sb.from('so_jobs')
     .select('id,so_id,art_name,art_status,art_requests,assigned_artist,rep_notes')
     .eq('so_id', request.sales_order_id).eq('id', request.art_job_id).maybeSingle();
@@ -125,7 +163,6 @@ async function handoffToArt(sb, request, actor) {
   const existing = requests.find((item) => item?.source === 'methodic' && item?.methodic_request_id === request.id);
   if (existing) return { artRequestId: existing.id, artStatus: job.art_status, reused: true };
 
-  const now = new Date().toISOString();
   const artRequestId = `AR-${request.request_number}`;
   const instructions = [
     `METHODIC MOCK REQUEST ${request.request_number}`,
@@ -137,7 +174,8 @@ async function handoffToArt(sb, request, actor) {
   ].filter(Boolean).join('\n');
   const next = [...requests, {
     id: artRequestId, status: 'requested', instructions,
-    created_at: now, created_by: actor.teamMemberId,
+    files: cleanFiles(request.reference_files),
+    created_at: new Date().toISOString(), created_by: actor.teamMemberId,
     artist: job.assigned_artist || null,
     source: 'methodic', methodic_request_id: request.id,
   }];
@@ -152,7 +190,7 @@ async function handoffToArt(sb, request, actor) {
 }
 
 async function rollbackArtHandoff(sb, request, artRequestId) {
-  if (!request?.art_job_id || !artRequestId) return;
+  if (!request?.art_job_id || !request?.sales_order_id || !artRequestId) return;
   try {
     const { data: job } = await sb.from('so_jobs').select('art_status,art_requests')
       .eq('so_id', request.sales_order_id).eq('id', request.art_job_id).maybeSingle();
@@ -167,6 +205,7 @@ async function rollbackArtHandoff(sb, request, artRequestId) {
 async function listRequests(sb, body) {
   let query = sb.from('methodic_requests').select('*').order('updated_at', { ascending: false }).limit(1000);
   if (body.sales_order_id) query = query.eq('sales_order_id', cleanText(body.sales_order_id, 120));
+  if (body.estimate_id) query = query.eq('estimate_id', cleanText(body.estimate_id, 120));
   const { data, error } = await query;
   if (error) throw error;
   const ids = (data || []).map((row) => row.id);
@@ -181,39 +220,54 @@ async function listRequests(sb, body) {
 }
 
 async function createRequest(sb, body, actor) {
-  const soId = cleanText(body.sales_order_id, 120);
-  if (!soId) throw new Error('Choose a sales order.');
-  const { data: so, error: soError } = await sb.from('sales_orders')
-    .select('id,customer_id,created_by,deleted_at').eq('id', soId).maybeSingle();
-  if (soError) throw soError;
-  if (!so || so.deleted_at) throw new Error('The sales order was not found.');
-  const { data: customer, error: customerError } = so.customer_id
-    ? await sb.from('customers').select('id,primary_rep_id').eq('id', so.customer_id).maybeSingle()
+  const { document, isEstimate, item, itemIndex } = await sourceDocument(sb, body);
+  const sourceColumn = isEstimate ? 'estimate_id' : 'sales_order_id';
+  if (itemIndex != null) {
+    const existing = await sb.from('methodic_requests').select('*')
+      .eq(sourceColumn, document.id).eq('item_index', itemIndex).maybeSingle();
+    if (existing.error) throw existing.error;
+    if (existing.data) return { ...existing.data, _reused: true };
+  }
+  const { data: customer, error: customerError } = document.customer_id
+    ? await sb.from('customers').select('id,primary_rep_id').eq('id', document.customer_id).maybeSingle()
     : { data: null, error: null };
   if (customerError) throw customerError;
 
   const patch = validatePatch(body, { create: true });
+  if (item) {
+    const itemQuantity = quantityFromItem(item);
+    if (!patch.style_number) patch.style_number = cleanText(item.sku, TEXT_LIMITS.style_number);
+    if (!patch.garment_description) patch.garment_description = cleanText(item.name, TEXT_LIMITS.garment_description);
+    if (!patch.garment_color) patch.garment_color = cleanText(item.color, TEXT_LIMITS.garment_color);
+    if (!patch.quantity) patch.quantity = itemQuantity.quantity;
+    if (!Object.keys(patch.size_breakdown || {}).length) patch.size_breakdown = itemQuantity.sizes;
+  }
+  if (!isEstimate && !patch.art_job_id) {
+    const job = await matchingArtJob(sb, document.id, itemIndex);
+    if (job) patch.art_job_id = job.id;
+  }
   const now = new Date().toISOString();
   const wantsPricing = patch.pricing_status === 'requested';
   const wantsMock = patch.mockup_status === 'requested';
   const wantsSample = patch.sample_status === 'requested';
   Object.assign(patch, {
-    sales_order_id: so.id,
-    customer_id: so.customer_id || null,
-    rep_id: customer?.primary_rep_id || so.created_by || actor.teamMemberId,
+    sales_order_id: isEstimate ? null : document.id,
+    estimate_id: isEstimate ? document.id : null,
+    item_index: itemIndex,
+    customer_id: document.customer_id || null,
+    rep_id: customer?.primary_rep_id || document.created_by || actor.teamMemberId,
     created_by: actor.teamMemberId,
     updated_by: actor.teamMemberId,
     pricing_requested_at: wantsPricing ? now : null,
     mockup_requested_at: wantsMock ? now : null,
     sample_requested_at: wantsSample ? now : null,
   });
-  if (wantsMock && !patch.art_job_id) throw new Error('Choose an art job for the Methodic mockup request.');
 
   const { data: created, error } = await sb.from('methodic_requests').insert(patch).select('*').single();
   if (error) throw error;
   let handoffResult = null;
   try {
-    if (wantsMock) {
+    if (wantsMock && created.art_job_id) {
       handoffResult = await handoffToArt(sb, created, actor);
       const nextPatch = {
         art_request_id: handoffResult.artRequestId,
@@ -225,9 +279,11 @@ async function createRequest(sb, body, actor) {
       Object.assign(created, saved.data);
     }
     await addEvent(sb, created.id, actor.teamMemberId, 'request_created',
-      `Methodic request created for ${created.sales_order_id}.`, { pricing: wantsPricing, mockup: wantsMock, sample: wantsSample });
+      `Methodic request created for ${created.sales_order_id || created.estimate_id}.`,
+      { pricing: wantsPricing, mockup: wantsMock, sample: wantsSample, item_index: itemIndex });
     if (wantsMock) await addEvent(sb, created.id, actor.teamMemberId, 'art_requested',
-      `Mockup sent to Art Dashboard job ${created.art_job_id}.`, { art_request_id: created.art_request_id });
+      created.art_job_id ? `Mockup sent to Art Dashboard job ${created.art_job_id}.` : 'Mockup added to the Methodic pre-job Art queue.',
+      { art_request_id: created.art_request_id, awaiting_art_job: !created.art_job_id });
     return created;
   } catch (handoffError) {
     if (handoffResult && !handoffResult.reused) await rollbackArtHandoff(sb, created, handoffResult.artRequestId);
@@ -248,6 +304,10 @@ async function updateRequest(sb, body, actor) {
   if (patch.pricing_status === 'requested' && current.pricing_status !== 'requested') patch.pricing_requested_at = now;
   if (patch.pricing_status === 'quoted' && current.pricing_status !== 'quoted') patch.quoted_at = now;
   if (patch.mockup_status === 'requested' && current.mockup_status !== 'requested') patch.mockup_requested_at = now;
+  if (Array.isArray(patch.mockup_files) && patch.mockup_files.length && ['requested', 'in_art'].includes(patch.mockup_status || current.mockup_status)) {
+    patch.mockup_status = 'ready_for_rep';
+    patch.mockup_ready_at = now;
+  }
   if (patch.sample_status === 'requested' && current.sample_status !== 'requested') patch.sample_requested_at = now;
   if (patch.sample_status === 'received' && current.sample_status !== 'received') patch.sample_received_at = now;
   if (patch.order_status === 'ordered' && current.order_status !== 'ordered') patch.ordered_at = now;
@@ -273,7 +333,9 @@ async function updateRequest(sb, body, actor) {
   if (['shipped', 'delivered'].includes(merged.order_status) && !merged.tracking_number && !merged.tracking_url) {
     throw new Error('Add shipment tracking before marking the Methodic order shipped.');
   }
-  const shouldHandoff = merged.mockup_status === 'requested' && (!current.art_request_id || current.art_job_id !== merged.art_job_id);
+  const shouldHandoff = ['requested', 'in_art'].includes(merged.mockup_status)
+    && !!merged.sales_order_id && !!merged.art_job_id
+    && (!current.art_request_id || current.art_job_id !== merged.art_job_id);
   if (shouldHandoff) {
     handoff = await handoffToArt(sb, merged, actor);
     patch.art_request_id = handoff.artRequestId;
@@ -289,6 +351,41 @@ async function updateRequest(sb, body, actor) {
   return saved;
 }
 
+async function relinkEstimate(sb, body, actor) {
+  const estimateId = cleanText(body.estimate_id, 120);
+  const salesOrderId = cleanText(body.sales_order_id, 120);
+  if (!estimateId || !salesOrderId) throw new Error('Estimate and sales order ids are required.');
+  const { data: so, error: soError } = await sb.from('sales_orders').select('id,estimate_id').eq('id', salesOrderId).maybeSingle();
+  if (soError) throw soError;
+  if (!so || so.estimate_id !== estimateId) throw new Error('The sales order is not linked to this estimate.');
+  const { data: requests, error } = await sb.from('methodic_requests').select('*').eq('estimate_id', estimateId);
+  if (error) throw error;
+  const moved = [];
+  for (const request of requests || []) {
+    const job = await matchingArtJob(sb, salesOrderId, request.item_index);
+    const sourcePatch = {
+      sales_order_id: salesOrderId, estimate_id: null,
+      art_job_id: request.art_job_id || job?.id || null,
+      updated_by: actor.teamMemberId,
+    };
+    let linked = { ...request, ...sourcePatch };
+    const shouldHandoff = ['requested', 'in_art'].includes(linked.mockup_status) && linked.art_job_id && !linked.art_request_id;
+    if (shouldHandoff) {
+      const handoff = await handoffToArt(sb, linked, actor);
+      sourcePatch.art_request_id = handoff.artRequestId;
+      sourcePatch.mockup_status = artStatusToMockup(handoff.artStatus);
+    }
+    const saved = await sb.from('methodic_requests').update(sourcePatch).eq('id', request.id).select('*').single();
+    if (saved.error) throw saved.error;
+    linked = saved.data;
+    await addEvent(sb, request.id, actor.teamMemberId, 'estimate_converted',
+      `Moved from ${estimateId} to ${salesOrderId}${linked.art_job_id ? ` and linked to ${linked.art_job_id}` : ''}.`,
+      { estimate_id: estimateId, sales_order_id: salesOrderId, art_job_id: linked.art_job_id });
+    moved.push(linked);
+  }
+  return moved;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders(), body: '' };
   if (event.httpMethod !== 'POST') return reply(405, { ok: false, error: 'Method not allowed.' });
@@ -301,6 +398,7 @@ exports.handler = async (event) => {
     if (body.action === 'list') return reply(200, { ok: true, ...await listRequests(actor.admin, body) });
     if (body.action === 'create') return reply(200, { ok: true, request: await createRequest(actor.admin, body, actor) });
     if (body.action === 'update') return reply(200, { ok: true, request: await updateRequest(actor.admin, body, actor) });
+    if (body.action === 'relink_estimate') return reply(200, { ok: true, requests: await relinkEstimate(actor.admin, body, actor) });
     return reply(400, { ok: false, error: 'Unknown action.' });
   } catch (error) {
     console.error('[methodic-workflow]', error);
@@ -309,4 +407,4 @@ exports.handler = async (event) => {
   }
 };
 
-exports._test = { validatePatch, cleanFiles, cleanSizes, artStatusToMockup, handoffToArt, rollbackArtHandoff };
+exports._test = { validatePatch, cleanFiles, cleanSizes, artStatusToMockup, handoffToArt, rollbackArtHandoff, quantityFromItem };
