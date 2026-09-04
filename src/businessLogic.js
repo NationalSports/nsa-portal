@@ -1835,12 +1835,66 @@ function assistantRemovePoLine(order, { itemIdx, plIdx, size }) {
   return { next, poId, summary, removedWholePo };
 }
 
+// ── Rep payout: monthly draw + employee loan → what actually gets paid ──
+// The DRAW is a cash advance against COMMISSION (per Steve, 2026-09): the rep receives
+// the draw through payroll, and it is recovered out of the commission they earn, so
+// payable = net commission − draw, floored at $0. A rep whose commission lands under
+// their draw keeps the draw and is paid nothing further; that shortfall does NOT carry
+// into the next month — every month starts clean.
+//
+// This replaced a rule that measured the draw against GROSS PROFIT dollars, which cleared
+// far too easily: a $5,000 draw passed on $5,000 of GP — worth only $1,500 of commission
+// — and then paid commission on top of a draw that had never been earned back.
+//
+// Loan withholding then takes loanPct% of payable, capped at the outstanding balance and
+// skipped when the month is flagged "pay full". Once a month has been applied to the loan,
+// appliedAmt is authoritative (the stored amount) and overrides the percentage.
+function calcRepPayout({ netCommission, draw, loanBalance, loanPct, payFull, appliedAmt } = {}) {
+  // Every amount is snapped to whole cents on the way in and the arithmetic runs in
+  // integer cents from there. Doing the loan split in floating point made the penny on
+  // an exact half-cent land arbitrarily: 50% of $2,578.47 is $1,289.235, and `2578.47*50`
+  // evaluates to 128923.49999999999 (rounds down) while `1000.01*50` gives
+  // 50000.500000000007 (rounds up) — same half-cent, opposite directions, decided by the
+  // binary representation rather than by a rule. In cents the split is exact and the
+  // half-cent always rounds up, to the loan.
+  const cents = (n) => { const v = Number(n); return Number.isFinite(v) ? Math.round(v * 100) : 0; };
+  const money = (c) => Math.round(c) / 100;
+  const netC = cents(netCommission);
+  const drawC = Math.max(0, cents(draw));
+  const loanC = Math.max(0, cents(loanBalance));
+  // A missing, blank or unparseable withholding % falls back to the 50% default — reading
+  // it as 0 would silently stop withholding and quietly overpay the rep. Only a real number
+  // or a non-blank numeric string counts, because loose coercion is not safe here:
+  // Number([]) is 0 and Number(true) is 1, so a stray array or boolean in the stored JSON
+  // would read as a real "withhold 0%" / "withhold 1%" rate rather than as junk.
+  const _pctRaw = typeof loanPct === 'string' ? loanPct.trim() : loanPct;
+  const _pctOk = (typeof _pctRaw === 'number' || (typeof _pctRaw === 'string' && _pctRaw !== ''))
+    && Number.isFinite(Number(_pctRaw));
+  const pct = _pctOk ? Math.min(100, Math.max(0, Number(_pctRaw))) : 50;
+  const underByC = drawC > 0 ? Math.max(0, drawC - netC) : 0;
+  const payableC = Math.max(0, netC - drawC);
+  // An already-applied month is authoritative, but it is clamped to [0, payable]: a
+  // negative stored amount would otherwise pay out MORE than was earned, and an amount
+  // larger than payable would drive the payout negative.
+  const appliedC = appliedAmt == null ? null : Math.min(Math.max(0, cents(appliedAmt)), payableC);
+  const withholdC = appliedC != null
+    ? appliedC
+    : (loanC > 0 && !payFull ? Math.min(Math.round(payableC * pct / 100), loanC) : 0);
+  return {
+    netComm: money(netC), draw: money(drawC), underBy: money(underByC),
+    payable: money(payableC), loanBal: money(loanC), pct,
+    withhold: money(withholdC), payout: money(payableC - withholdC),
+  };
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs, manualPoCostTotal,
   // Attribution
   commissionRepId,
   isCommissionRep,
+  // Commission payouts (draw + loan)
+  calcRepPayout,
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
