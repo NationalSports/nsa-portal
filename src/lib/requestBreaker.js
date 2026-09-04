@@ -17,9 +17,9 @@ export function makeBreakerFetch(opts = {}) {
   const COOLDOWN_MS = opts.cooldownMs || 15000;
   const label = opts.label || 'circuit-breaker';
 
-  const baseFetch = (typeof window !== 'undefined' && window.fetch)
+  const baseFetch = opts.fetch || ((typeof window !== 'undefined' && window.fetch)
     ? window.fetch.bind(window)
-    : ((...a) => fetch(...a));
+    : ((...a) => fetch(...a)));
   const windowByPath = new Map(); // path -> recent request timestamps
   const trippedUntil = new Map(); // path -> epoch-ms until which the path is short-circuited
   let lastLoggedAt = 0;

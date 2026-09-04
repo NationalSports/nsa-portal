@@ -50,6 +50,7 @@ import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCom
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState, isPureArtExpansion, isClosedJob, splitClosedJobAdditions, consolidateFrozenJobDecos, frozenJobNonArtLabels, liveItemDecoDescriptors, splitSliceOwnedKeys, pruneStaleSliceRows, reparentOrphanSplitJobs, remapFrozenJobItemIndexes } from './lib/syncJobsMatch';
 import { itemVendorInvSource, vendorInvCacheKey } from './vendorInventory';
+import { getPortalUrl } from './lib/portalLinks';
 import { stampSplitRuns } from './lib/splitJobPricing';
 import { closeOpenArtRequests } from './lib/artRequests';
 import { artFamilyKey } from './lib/artSplitFamily';
@@ -174,7 +175,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onEmergencySave,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSOReopened,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,autoSend,onAutoSendConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onManualShip,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,onNavWebstore,onOpenMethodicDashboard,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSetFundAllocation,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox,extractPdfText}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -554,12 +555,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // re-reports the garment as unmocked (SO-1727: error bar over a visibly mocked KH0086) and the
   // send modal never opens. applyPriorMock passes its saved order explicitly so the gate is
   // deterministic even if the post-save re-render hasn't committed oRef yet.
-  const openCoachSend=(jIdx,oOverride)=>{const co=oOverride||oRef.current||o;const jb0=safeJobs(co)[jIdx];if(!jb0)return;
+  const openCoachSend=async(jIdx,oOverride)=>{const co=oOverride||oRef.current||o;const jb0=safeJobs(co)[jIdx];if(!jb0)return;
     // Same per-garment mock gate as the Send-to-Coach button — this opener is also reached
     // from applyPriorMock, which may have mocked only one of the job's garments.
     const _mmO=skusMissingMockups(jb0,co);
     if(_mmO.length>0){nf(missingMockupsMsg('send to coach',_mmO),'error');return}
-    const c2=ic||allCustomers?.find?.(x=>x.id===co.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c2.alpha_tag)+'&so='+co.id+'&job='+jb0.id):'';const _label=(co.memo&&co.memo.trim())||jb0.art_name;const _checked=Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())]));const defMsg=greetLine(Object.keys(_checked).filter(em=>_checked[em]),c2?.contacts)+'\n\nYour artwork mockup for "'+_label+'" is ready for you to review.\n\nYou can review and approve it right in your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nPlease let us know if you\'d like any changes, and thank you for your business!\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:_checked,customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
+    const c2=ic||allCustomers?.find?.(x=>x.id===co.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */let pUrl;try{pUrl=await getPortalUrl(c2?.id,'so='+encodeURIComponent(co.id)+'&job='+encodeURIComponent(jb0.id))}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error');return}const _label=(co.memo&&co.memo.trim())||jb0.art_name;const _checked=Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())]));const defMsg=greetLine(Object.keys(_checked).filter(em=>_checked[em]),c2?.contacts)+'\n\nYour artwork mockup for "'+_label+'" is ready for you to review.\n\nYou can review and approve it right in your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nPlease let us know if you\'d like any changes, and thank you for your business!\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:_checked,customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
   // Apply a chosen prior mock to a garment on this order's art file, tagged with the CW inherited
   // from the item. sendToCoach=true also moves the job to Waiting Approval and opens the send
   // modal; otherwise the art stays approved/complete.
@@ -3608,31 +3609,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return{promoRev,promoCost,promoShip,promoAmount,promoCredit,normalRev,normalCost,normalShip,normalTax,customerPays};
   },[o,artQty,cust,af,costArtQty,outsourcedByItemCost]); // eslint-disable-line
 
-  // Replace this document's prior draw with the exact current promo total.
-  // Restoring its old usage first lets an edited order reuse its own dollars.
+  // Save the priced document with an explicit pending marker, then let one
+  // database transaction replace both promo and credit ledgers. A failed RPC
+  // leaves an honest retryable state instead of a silently discounted order.
   const reconcilePromoDraw=useCallback(async(orderToSave,targetAmount)=>{
-    if(!orderToSave.promo_applied)return{ok:true,order:orderToSave};
     const money=n=>Math.round(safeNum(n)*100)/100;const target=money(targetAmount);
-    if(Math.abs(safeNum(orderToSave.promo_amount)-target)<=0.005)return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true}};
-    if(!promoHistoryReady){nf('Promo balance is still calculating. Wait a moment and Save again.','error');return{ok:false,order:orderToSave}}
-    if(!promoCust||!onSavePromoPeriod||!onSavePromoUsage||!onDeletePromoUsage){nf('Promo pricing changed, but the parent promo ledger is not available to sync. Reload and try again.','error');return{ok:false,order:orderToSave}}
-    const mine=u=>isSO?u.so_id===orderToSave.id:(u.estimate_id===orderToSave.id&&!u.so_id);
-    const oldUsages=(promoCust.promo_usage||[]).filter(mine);const oldByPeriod={};oldUsages.forEach(u=>{oldByPeriod[u.period_id]=(oldByPeriod[u.period_id]||0)+safeNum(u.amount)});
-    const restored=(promoCust.promo_periods||[]).map(p=>({...p,used:Math.max(0,safeNum(p.used)-safeNum(oldByPeriod[p.id]))}));
-    const now=new Date(),year=now.getFullYear(),periodStart=now.getMonth()<6?year+'-01-01':year+'-07-01';const oldPeriodIds=new Set(Object.keys(oldByPeriod));
-    const drawable=restored.filter(p=>oldPeriodIds.has(p.id)||p.period_start>=periodStart).sort((a,b)=>(a.period_start||'').localeCompare(b.period_start||''));
-    const available=drawable.reduce((a,p)=>a+Math.max(0,safeNum(p.allocated)-safeNum(p.used)),0);
-    if(target>available+0.005){nf('Full promo coverage needs $'+target.toFixed(2)+', but the parent account has only $'+available.toFixed(2)+' drawable.','error');return{ok:false,order:orderToSave}}
-    let left=target;const takes={};drawable.forEach(p=>{if(left<=0.005)return;const take=Math.min(left,Math.max(0,safeNum(p.allocated)-safeNum(p.used)));if(take>0){takes[p.id]=money(take);left=money(left-take)}});
-    const finalPeriods=restored.map(p=>takes[p.id]?{...p,used:money(safeNum(p.used)+takes[p.id])}:p);
-    const changedPeriods=finalPeriods.filter(p=>{const old=(storedPromoCust?.promo_periods||[]).find(x=>x.id===p.id);return!old||Math.abs(safeNum(p.used)-safeNum(old.used))>0.005||Math.abs(safeNum(p.allocated)-safeNum(old.allocated))>0.005});
-    for(const p of changedPeriods)await onSavePromoPeriod(p);
-    for(const periodId of oldPeriodIds)await onDeletePromoUsage(periodId,isSO?orderToSave.id:null,isSO?null:orderToSave.id);
-    const newUsages=Object.entries(takes).map(([period_id,amount])=>({period_id,amount,description:orderToSave.memo||('Promo on '+orderToSave.id),created_by:cu?.name||'System',so_id:isSO?orderToSave.id:null,estimate_id:isSO?(orderToSave.estimate_id||null):orderToSave.id,created_at:new Date().toISOString()}));
-    for(const usage of newUsages)await onSavePromoUsage(usage);
-    setCust(c=>c?{...c,promo_periods:finalPeriods,promo_usage:[...(promoCust.promo_usage||[]).filter(u=>!mine(u)),...newUsages]}:c);
-    return{ok:true,order:{...orderToSave,promo_amount:target,tax_exempt:true,updated_at:new Date().toLocaleString()}};
-  },[promoCust,storedPromoCust,promoHistoryReady,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,isSO,cu,nf]); // eslint-disable-line
+    const promo=orderToSave.promo_applied?target:0;const credit=orderToSave.credit_applied?money(orderToSave.credit_amount):0;
+    if(Math.abs(safeNum(orderToSave.promo_amount)-promo)<=0.005&&Math.abs(safeNum(orderToSave.credit_amount)-credit)<=0.005&&orderToSave.fund_allocation_status!=='pending')return{ok:true,order:orderToSave};
+    if(!onSaveNow||!onSetFundAllocation){nf('The fund ledger is not available. Reload and try again.','error');return{ok:false,order:orderToSave}}
+    const pending={...orderToSave,promo_amount:promo,credit_amount:credit,fund_allocation_status:'pending',fund_allocation_error:null,updated_at:new Date().toLocaleString()};
+    const saved=await onSaveNow(pending);if(saved!==true){nf('The document was not saved, so its funds were not posted. Try again.','error');return{ok:false,order:pending}}
+    const result=await onSetFundAllocation({documentType:isSO?'sales_order':'estimate',documentId:pending.id,customerId:pending.customer_id,promoAmount:promo,creditAmount:credit,sourceEstimateId:isSO?(pending.estimate_id||null):null,description:pending.memo||('Funds on '+pending.id),createdBy:cu?.name||cu?.id||'System'});
+    if(!result?.ok){const failed={...pending,fund_allocation_error:result?.error||'Posting failed'};setO(failed);nf('Fund posting is pending. Retry Save before invoicing or converting this document.','error');return{ok:false,order:failed}}
+    return{ok:true,order:{...pending,...(result.data?.document||{}),items:pending.items,art_files:pending.art_files}};
+  },[onSaveNow,onSetFundAllocation,isSO,cu,nf]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
   // Items that share the exact same set of decorations AND deco type are grouped into one job
@@ -4675,7 +4665,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}</span>
               <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></>}
           </div>}
-          {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
+          {cust?.id&&<div style={{fontSize:11,marginTop:2}}><button type="button" onClick={async()=>{try{window.open(await getPortalUrl(cust.id),'_blank','noopener,noreferrer')}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error')}}} style={{color:'#7c3aed',background:'none',border:'none',padding:0,cursor:'pointer',fontWeight:500}}>🔗 Customer Portal</button></div>}
           {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
             {(o._shipments||[]).map((s,si)=>s.tracking_number?<a key={si} href={s.tracking_url||((/^1Z/i.test(s.tracking_number))?'https://www.ups.com/track?tracknum='+s.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+s.tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,marginRight:6}}>{s.tracking_number}</a>:<span key={si} style={{fontSize:11,color:'#94a3b8',marginRight:6}}>Box {si+1} (no tracking)</span>)}
@@ -4779,7 +4769,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button ref={actionsRef} data-tour-id="oe-actions-toggle" className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
           {showActionsDD&&(()=>{const r=actionsRef.current?.getBoundingClientRect();
             // Build the printable/downloadable doc options. Shared by Print and Download.
-            const _makeDocOpts=()=>{
+            const _makeDocOpts=async()=>{
               const items=_docPdfItems(o);
               const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
               const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
@@ -4862,14 +4852,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]},
                   ]}],
                 footer:isE?'Prices subject to change. '+_ci.depositTerms:_ci.terms,
-                portalLink:cust?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)+(isE?'&est=':'&so=')+encodeURIComponent(o.id)):undefined,
+                portalLink:cust?.id?await getPortalUrl(cust.id,(isE?'est=':'so=')+encodeURIComponent(o.id)):undefined,
                 companyInfo:_ci
               };
             };
             return<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'fixed',top:(r?r.bottom+4:0),right:(r?window.innerWidth-r.right:0),background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:180}}>
             {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{if(safeItems(o).length===0){nf('Add at least one line item before sending.','error');setShowActionsDD(false);return}setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
-            <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
-              printDoc(_makeDocOpts());
+            <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+              try{printDoc(await _makeDocOpts())}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error');return}
               const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];sv('print_history',ph);onSave({...o,print_history:ph});
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
             {isSO&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
@@ -4912,7 +4902,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📦 Pack Slip</button>}
             {isSO&&onManualShip&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onManualShip(o)}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>⚡ Ship Items / Override</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
-              try{await downloadDoc(_makeDocOpts(),o.id+(cust?.name?'-'+cust.name:''));nf('📥 Downloaded '+o.id+'.pdf');}
+              try{await downloadDoc(await _makeDocOpts(),o.id+(cust?.name?'-'+cust.name:''));nf('📥 Downloaded '+o.id+'.pdf');}
               catch(err){console.warn('PDF download failed:',err);nf('Download failed: '+(err?.message||'unknown error'),'error');}
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📥 Download</button>
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
@@ -4961,10 +4951,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
                   const newPeriod={id:'pp_'+promoCust.id+'_'+_pStart,customer_id:promoCust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-                  if(onSavePromoPeriod)await onSavePromoPeriod(newPeriod);else await _dbSavePromoPeriod(newPeriod);
-                  setCust(c=>c?{...c,promo_periods:[...(promoCust.promo_periods||[]),newPeriod]}:c);
                   _cur=[newPeriod];
-                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_halfLabel(_pStart));
                 }
               }
               // Drawable periods: current half first, then future allocations (early use), each with a remaining balance.
@@ -4983,48 +4970,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const promoShip=o.shipping_type==='pct'?rQ(originalSubtotal*(o.shipping_value||0)/100*1.25):rQ(safeNum(o.shipping_value)*1.25);
               const promoUsed=Math.round((promoSubtotal+promoShip)*100)/100;const remaining=Math.round((promoBudget-promoUsed)*100)/100;
               if(promoUsed>promoBudget+0.005){nf('Promo not applied — the full order needs $'+promoUsed.toFixed(2)+', but the parent account has only $'+promoBudget.toFixed(2)+' available','error');return}
-              sv('tax_exempt',true);sv('promo_applied',true);sv('items',newItems);
-              // Deduct from balance + record usage immediately on both estimates and SOs so the Promo $ tab
-              // and balance reflect the spend right away. Usage is keyed by estimate_id on an estimate (so_id
-              // null) and by so_id on an SO; convertSO re-links the estimate's usage to the new SO instead of
-              // deducting again, so an estimate and the SO it becomes never double-spend.
-              {
-                if(promoUsed>0){
-                  // Spread the deduction across drawable periods: current half first, then future (early use).
-                  let _toDeduct=promoUsed;const _updatedPeriods=[];const _usageRecs=[];
-                  for(const p of _drawable){
-                    if(_toDeduct<=0.0001)break;
-                    const avail=safeNum(p.allocated)-safeNum(p.used);if(avail<=0)continue;
-                    const take=Math.min(avail,_toDeduct);const isEarly=p.period_start>_pStart;
-                    _updatedPeriods.push({...p,used:safeNum(p.used)+take});
-                    _usageRecs.push({period_id:p.id,amount:take,description:(o.memo||('Promo on '+o.id))+(isEarly?' — early draw from '+_halfLabel(p.period_start):''),created_by:cu?.name||'System',so_id:isSO?o.id:null,estimate_id:isSO?(o.estimate_id||null):o.id,created_at:new Date().toISOString()});
-                    _toDeduct-=take;
-                  }
-                  for(const up of _updatedPeriods){if(onSavePromoPeriod)await onSavePromoPeriod(up);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(up)}
-                  for(const ur of _usageRecs){if(onSavePromoUsage)await onSavePromoUsage(ur)}
-                  setCust(c=>c?{...c,promo_periods:(promoCust.promo_periods||[]).map(p=>{const up=_updatedPeriods.find(x=>x.id===p.id);return up||p}),promo_usage:[...(promoCust.promo_usage||[]),..._usageRecs]}:c);
-                  sv('promo_amount',promoUsed);
-                }
-              }
-              nf('Promo mode enabled — all '+fullCount+' priced line(s) are covered by the parent promo fund')
+              sv('tax_exempt',true);sv('promo_applied',true);sv('promo_amount',promoUsed);sv('fund_allocation_status','pending');sv('fund_allocation_error',null);sv('items',newItems);
+              nf('Promo mode enabled — Save to reserve $'+promoUsed.toFixed(2)+' for all '+fullCount+' priced line(s)')
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
-              // Reverse the deduction by deleting any usage tied to this doc (by so_id on an SO, by estimate_id
-              // on an estimate) and restoring each affected period's balance.
-              if(promoCust){
-                const _mine=u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id);
-                const usages=(promoCust.promo_usage||[]).filter(_mine);
-                for(const u of usages){
-                  const period=(promoCust.promo_periods||[]).find(p=>p.id===u.period_id);
-                  if(period){
-                    const restored={...period,used:Math.max(0,safeNum(period.used)-safeNum(u.amount))};
-                    if(onSavePromoPeriod)await onSavePromoPeriod(restored);else if(_dbSavePromoPeriod)await _dbSavePromoPeriod(restored);
-                  }
-                }
-                if(usages.length&&onDeletePromoUsage){const _pids=[...new Set(usages.map(u=>u.period_id))];for(const _pid of _pids)await onDeletePromoUsage(_pid,isSO?o.id:null,isSO?null:o.id)}
-                if(usages.length){setCust(c=>{if(!c)return c;const _byPeriod={};usages.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});return{...c,promo_periods:(promoCust.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(promoCust.promo_usage||[]).filter(u=>!_mine(u))}})}
-              }
-              sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,...(it._pre_promo_sizeSells?{_sizeSells:it._pre_promo_sizeSells}:{}),decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_pre_promo_sizeSells:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
+              sv('promo_applied',false);sv('promo_amount',0);sv('fund_allocation_status','pending');sv('fund_allocation_error',null);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,...(it._pre_promo_sizeSells?{_sizeSells:it._pre_promo_sizeSells}:{}),decorations:safeDecos(it).map(d=>d._pre_promo_sell_override!==undefined?{...d,sell_override:d._pre_promo_sell_override,_pre_promo_sell_override:undefined}:d),_pre_promo_sell:undefined,_pre_promo_sizeSells:undefined,_promo_credit:undefined,_promo_partial_qty:undefined})));nf('Promo removed — Save to release the reserved funds')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {/* Credit — show when customer has credits available */}
             {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const credits=(cust.credits||[]).filter(cr=>(cr.amount||0)-(cr.used||0)>0);
@@ -5035,10 +4985,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const creditToApply=Math.min(totalBal,orderTotal);
               // Calculate how credit reduces tax: credit reduces taxable subtotal proportionally
               // Credit is applied to the invoice total (subtotal + ship + tax), but tax is recalculated on reduced amount
-              sv('credit_applied',true);sv('credit_amount',Math.round(creditToApply*100)/100);
-              nf('Credit of $'+creditToApply.toFixed(2)+' applied (available: $'+totalBal.toFixed(2)+')');
+              sv('credit_applied',true);sv('credit_amount',Math.round(creditToApply*100)/100);sv('fund_allocation_status','pending');sv('fund_allocation_error',null);
+              nf('Credit of $'+creditToApply.toFixed(2)+' selected — Save to reserve it');
             }} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Apply Credit</button>}
-            {o.credit_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('credit_applied',false);sv('credit_amount',0);nf('Credit removed')}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Remove Credit</button>}
+            {o.credit_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('credit_applied',false);sv('credit_amount',0);sv('fund_allocation_status','pending');sv('fund_allocation_error',null);nf('Credit removed — Save to release it')}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Remove Credit</button>}
             {onAssignTodo&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onAssignTodo({title:'',description:'',so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:o.id})}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📋 Assign TODO</button></>}
             {isSO&&onAssignTodo&&isBotOwner(cu)&&(()=>{
               const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
@@ -5069,6 +5019,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             return tot-inv>0;
           });
           const _openCreateInv=(typeHint)=>{
+            if(o.fund_allocation_status==='pending'){nf('Post the pending promo/credit allocation before creating an invoice.','error');return}
             // Pre-select only items that still have remaining qty
             const remIdxs=safeItems(o).map((it,idx)=>{
               const tot=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -5128,6 +5079,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.credit_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#d1fae5',color:'#065f46'}}>🏷️ CREDIT ${safeNum(o.credit_amount).toFixed(2)}</span>}
         {o.pending_ship_applied&&safeNum(o.pending_ship_amount)>0&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#eff6ff',color:'#1e40af'}}>📦 PRIOR SHIP ${safeNum(o.pending_ship_amount).toFixed(2)}</span>}
       </div>
+      {o.fund_allocation_status==='pending'&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fef2f2',borderRadius:8,border:'2px solid #ef4444',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:800,color:'#991b1b'}}>⚠ Promo/credit posting pending</span>
+        <span style={{fontSize:11,color:'#7f1d1d',flex:1}}>This document is saved, but its discount is not posted. Retry before converting or invoicing.</span>
+        <button className="btn btn-sm" style={{fontSize:10,background:'#b91c1c',color:'white',border:'none'}} onClick={async()=>{const synced=await reconcilePromoDraw(o,promoTotals?.promoAmount);if(synced.ok){setO(synced.order);onSave(synced.order);nf('Promo and credit posting completed')}}}>Retry posting</button>
+      </div>}
       {/* Promo Summary */}
       {o.promo_applied&&promoTotals&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
         <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>💰 PROMO ORDER</span>
@@ -8475,11 +8431,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Show invoice review page instead of navigating away
             setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
-            const invPortalUrl=cust?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust.alpha_tag)+'&inv='+encodeURIComponent(inv.id):'';
+            let invPortalUrl='';try{invPortalUrl=await getPortalUrl(cust?.id,'inv='+encodeURIComponent(inv.id))}catch(error){nf('Invoice created, but the secure portal link could not be created: '+(error?.message||'Unknown error'),'error')}
             const _invJob=(o.memo||'').trim();
             setInvSendMsg(greetLine(contact?.email?[contact.email]:[],cust?.contacts)+'\n\nAttached below is your invoice'+(_invJob?' for "'+_invJob+'"':'')+', totalling '+emailMoney(invTotal)+(dueDate?', due on '+dueDate:'')+'.'+(invPortalUrl?'\n\nYou can also view it anytime through your portal:\n'+invPortalUrl:'')+'\n\nPlease let us know if you have any questions, and thank you for your business!\n\nNSA Team');
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvFollowUp(seedFollowUp(inv));setInvSendAt(_invDateStr);
-            setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: '+(invPortalUrl||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust?.alpha_tag||'')));
+            setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: '+(invPortalUrl||'[secure portal link unavailable]'));
             }finally{setInvCreating(false)}
           }}>{(()=>{
             const _zeroCovered=shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied});
@@ -8800,7 +8756,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               brevoAttachments.push({name:_invPdfName,content:pdfB64});
             }catch(err){console.warn('Failed to build invoice PDF:',err)}
             // Build email with portal link — deep-linked to this invoice (?inv=)
-            const portalUrl=ic?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(ic.alpha_tag)+'&inv='+encodeURIComponent(ir.id):'';
+            const portalUrl=await getPortalUrl(ic?.id,'inv='+encodeURIComponent(ir.id));
             const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')
               +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
               +(invSendReview?buildReviewButtonHtml():'')
@@ -11871,12 +11827,12 @@ const _ownDis=jobItemDecoIdxs(gi);const _decosSorted=it?safeDecos(it).map((d,di)
                 const _mmA=skusMissingMockups(j,o);
                 if(_mmA.length>0){nf(missingMockupsMsg('approve',_mmA),'error');return}
                 const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>{const _a=af.find(a=>a.id===id);return artProdFilesConfirmed(_a)||artDstOnFile(_a)});/* artDstOnFile: approving IS the sign-off on the current art, so a live (non-stale) .dst counts here even though the file's status hasn't flipped to approved yet — no more "is the DST attached?" prompt with the DST in plain sight. A NEW logo still on the __tbd placeholder must NOT skip the gate — it used to land in production with no files stage at all. A job with no art ids and no placeholder (names/numbers-only) has nothing to gate and approves straight through. */if(_allConfirmed||(_apArtIds.length===0&&!_apHasTbd)){_approveArtTo(j.id,_apArtIds,'art_complete',true)}else{setArtApproveGate({jobId:j.id,artIds:_apArtIds,deco:_apDeco,artName:j.art_name})}}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{/* Same per-garment mock gate as Approve — the coach must never be asked to
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={async()=>{/* Same per-garment mock gate as Approve — the coach must never be asked to
                 approve a proof with unmocked garments (they could approve it; the portal blocks too,
                 but don't send them a broken proof in the first place). */
                 const _mmS=skusMissingMockups(j,o);
                 if(_mmS.length>0){nf(missingMockupsMsg('send to coach',_mmS),'error');return}
-                const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(c2.alpha_tag)+'&so='+o.id+'&job='+j.id):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const _checked=Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())]));const defMsg=greetLine(Object.keys(_checked).filter(em=>_checked[em]),c2?.contacts)+'\n\nYour artwork mockup for "'+_label+'" is ready for you to review.\n\nYou can review and approve it right in your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nPlease let us know if you\'d like any changes, and thank you for your business!\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:_checked,customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(j)})}}>📤 Send to Coach</button>
+                const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const _billEmails=new Set(getBillingContacts(c2,allCustomers).filter(a=>a.email).map(a=>a.email.toLowerCase()));/* Billing/AP contacts stay selectable but are NOT pre-checked for art proofs — estimates/invoices default-check billing on purpose, art must not. */let pUrl;try{pUrl=await getPortalUrl(c2?.id,'so='+encodeURIComponent(o.id)+'&job='+encodeURIComponent(j.id))}catch(error){nf('Could not create portal link: '+(error?.message||'Unknown error'),'error');return}const _label=(o.memo&&o.memo.trim())||j.art_name;const _checked=Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,!_billEmails.has(ct2.email.toLowerCase())]));const defMsg=greetLine(Object.keys(_checked).filter(em=>_checked[em]),c2?.contacts)+'\n\nYour artwork mockup for "'+_label+'" is ready for you to review.\n\nYou can review and approve it right in your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nPlease let us know if you\'d like any changes, and thank you for your business!\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:_checked,customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(j)})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>

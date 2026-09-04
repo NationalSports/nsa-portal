@@ -275,7 +275,11 @@ exports.handler = async (event) => {
       }
       let intent;
       try {
-        intent = await client.paymentIntents.retrieve(payment_intent_id);
+        // Expand the settled charge/payment method so the ledger records the actual method and
+        // charge date when Stripe exposes them. The RPC receives only server-derived values.
+        intent = await client.paymentIntents.retrieve(payment_intent_id, {
+          expand: ['latest_charge', 'payment_method'],
+        });
       } catch (e) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Payment intent not found' }) };
       }
@@ -287,7 +291,9 @@ exports.handler = async (event) => {
         result = await reconcileInvoiceFromIntent(getSupabaseAdmin(), intent);
       } catch (e) {
         console.error('[stripe-payment] finalize_invoice reconcile error:', e.message);
-        return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ ok: false, error: 'Reconcile failed' }) };
+        // The charge succeeded but its accounting transaction did not commit. A 503 is explicit
+        // retryable feedback to the portal; it must never wrap this state in a 200/ok response.
+        return { statusCode: 503, headers: corsHeaders(), body: JSON.stringify({ ok: false, retryable: true, error: 'Payment received; account update is still pending.' }) };
       }
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...result }) };
     }
@@ -504,7 +510,7 @@ exports.handler = async (event) => {
       );
       // Best-effort audit row so the refund shows on the invoice's payment history instead of
       // being invisible ("unrecorded escape hatch"). Negative amount, deduped by ref — mirrors
-      // reconcileInvoiceFromIntent's invoice_payments insert in _shared.js.
+      // reconcileInvoiceFromIntent's atomic invoice_payments ledger entry.
       if (invoice_id) {
         try {
           const admin = getSupabaseAdmin();

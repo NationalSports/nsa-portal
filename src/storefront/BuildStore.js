@@ -285,7 +285,7 @@ function StorePreview({ org, primary, accent }) {
 
 const LABEL = { display: 'block', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', color: '#6A7180', marginBottom: 6 };
 
-export default function StoreBuilder({ mode = 'public', customer = null, rep = null, onClose }) {
+export default function StoreBuilder({ mode = 'public', customer = null, portalCredential = null, rep = null, onClose }) {
   const isCoach = mode === 'coach';
   const [step, setStep] = useState(isCoach ? 'start' : 'contact'); // start(coach) | contact(public) | items | brand | review | done
   const [loading, setLoading] = useState(isCoach); // coach loads templates first
@@ -498,7 +498,7 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
     try {
       const branding = { primary_color: primary, accent_color: accent, logo_url: logoUrl, hero_blurb: blurb.trim(), coach_contact_email: isCoach ? ((customer?.contacts || [])[0]?.email || '') : cEmail.trim() };
       const payload = isCoach
-        ? { alpha_tag: customer?.alpha_tag, customer_id: customer?.id, name: name.trim(), template_id: templateId, item_product_ids: chosen.map((c) => c.product_id), fundraise, notify_to: rep?.email ? [rep.email] : [], branding }
+        ? { alpha_tag: portalCredential, customer_id: customer?.id, name: name.trim(), template_id: templateId, item_product_ids: chosen.map((c) => c.product_id), fundraise, notify_to: rep?.email ? [rep.email] : [], branding }
         : { public: true, name: name.trim(), item_product_ids: chosen.map((c) => c.product_id), fundraise, contact: { name: cName.trim(), email: cEmail.trim(), phone: cPhone.trim(), org: org.trim() }, branding };
       const d = await invokeEdgeFn('coach-store-submit', payload);
       if (!d?.ok) throw new Error(d?.error || 'Submission failed.');

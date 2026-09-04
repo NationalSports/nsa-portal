@@ -8,6 +8,9 @@
 jest.mock('../../netlify/functions/_shared', () => ({
   getSupabaseAdmin: () => global.__fakeAdmin,
 }));
+jest.mock('../../netlify/functions/_portalCredentials', () => ({
+  issuePortalCredential: jest.fn(async (_admin, customerId) => ({ token: `issued-${customerId}`, id: `cred-${customerId}` })),
+}), { virtual: true });
 
 const sweep = require('../../netlify/functions/followup-sweep');
 
@@ -61,6 +64,8 @@ describe('followup-sweep send safety', () => {
     process.env.BREVO_API_KEY = 'test-brevo';
     process.env.URL = 'https://portal.test';
     global.fetch = brevoFetchMock();
+    const { issuePortalCredential } = require('../../netlify/functions/_portalCredentials');
+    issuePortalCredential.mockReset().mockResolvedValue({ token: 'issued-c1', id: 'cred-c1' });
   });
 
   test('claims before sending, then finalizes with the repeat cadence', async () => {
@@ -70,6 +75,7 @@ describe('followup-sweep send safety', () => {
       return { data: [] };
     });
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).htmlContent).toContain('portal=issued-c1');
     expect(body.estimate).toBe(1);
     const updates = admin.ops.filter((o) => o.kind === 'update' && o.table === 'estimates');
     // First update is the claim: CAS on the exact follow_up_at we read, gated on auto still on.
@@ -84,6 +90,21 @@ describe('followup-sweep send safety', () => {
     expect(fin.values.follow_up_count).toBe(1);
     expect(fin.values.follow_up_last_sent_at).toBeTruthy();
     expect(new Date(fin.values.follow_up_at).getTime()).toBeGreaterThan(Date.now() + 2.5 * 86400000);
+  });
+
+  test('credential persistence failure sends nothing and backs the claimed row off', async () => {
+    const { issuePortalCredential } = require('../../netlify/functions/_portalCredentials');
+    issuePortalCredential.mockRejectedValueOnce(new Error('credential store down'));
+    const { admin, body } = await runSweep((op) => {
+      if (op.kind === 'select' && op.table === 'estimates') return { data: [dueEstimate()] };
+      if (op.kind === 'update' && op.table === 'estimates') return { data: [{ id: 'EST-1001' }], error: null };
+      return { data: [] };
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(body.errors).toBe(1);
+    const updates = admin.ops.filter((o) => o.kind === 'update' && o.table === 'estimates');
+    expect(updates).toHaveLength(2);
+    expect(updates[1].values.follow_up_at).toBeTruthy();
   });
 
   test('lost claim (another invocation got the row) sends nothing', async () => {

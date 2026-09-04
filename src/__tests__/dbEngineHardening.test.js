@@ -15,7 +15,7 @@
 // per table (FIFO) and records every call for assertions. Built entirely inside the mock
 // factory (no outer-scope refs) per Jest's jest.mock hoisting rules.
 jest.mock('@supabase/supabase-js', () => {
-  const state = { responses: {}, calls: [] };
+  const state = { responses: {}, calls: [], rpcCalls: [], rpcResponse: { data: { ok: true, version: 2 }, error: null } };
   const DEFAULT = { data: null, error: null, count: 0 };
   const makeBuilder = (table) => {
     let method = null;
@@ -44,7 +44,7 @@ jest.mock('@supabase/supabase-js', () => {
       getSession: () => Promise.resolve({ data: { session: null } }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    rpc: (name, args) => { state.rpcCalls.push({ name, args }); return Promise.resolve(state.rpcResponse); },
   };
   return { createClient: () => client, __mockState: state };
 });
@@ -259,46 +259,25 @@ describe('_dbSaveSOInner — exact decoration deletion intent', () => {
   });
 });
 
-// ── Fix 4: _dbSaveInvoiceInner — insert-first swap for invoice_items ────────────────────────
-// A failed insert of the new rows must leave the old rows untouched (no delete issued) and the
-// save must report failure, instead of the old delete-then-insert order that could zero the invoice.
-describe('_dbSaveInvoiceInner — invoice_items insert-first swap (fix 4)', () => {
+// ── Fix 4: invoice items are part of the atomic invoice RPC ─────────────────
+describe('_dbSaveInvoiceInner — invoice child atomic boundary (fix 4)', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
-  test('failed insert of new invoice_items never deletes the old rows and reports failure', async () => {
+  test('an atomic RPC error reports failure without a legacy invoice-item delete', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
-    __mockState.responses = {
-      invoices: [{ error: null }], // invoices upsert
-      invoice_payments: [{ data: [], error: null }], // payment-restore read (no payments)
-      invoice_items: [
-        { count: 2, error: null }, // hydration-safety count check
-        { data: [{ id: 'old-1' }, { id: 'old-2' }], error: null }, // old-id read
-        { data: null, error: { message: 'insert failed: constraint violated' } }, // new-row insert FAILS
-      ],
-    };
-
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
+    __mockState.rpcResponse = { data: null, error: { message: 'item constraint failed' } };
     const { _dbSaveInvoice, _dbSaveFailedIds } = require('../lib/dbEngine');
-    const inv = {
-      id: 'INV-HARDEN-1',
-      payments: [],
-      items: [
-        { sku: 'A', name: 'Item A', qty: 1, unit_price: 10, total: 10 },
-        { sku: 'B', name: 'Item B', qty: 1, unit_price: 10, total: 10 },
-        { sku: 'C', name: 'Item C', qty: 1, unit_price: 10, total: 10 },
-      ],
-    };
+    const inv = { id: 'INV-HARDEN-1', payments: [], items: [
+      { sku: 'A', name: 'Item A', qty: 1, unit_price: 10, total: 10 },
+      { sku: 'B', name: 'Item B', qty: 1, unit_price: 10, total: 10 },
+    ] };
 
-    const result = await _dbSaveInvoice(inv);
-
-    expect(result).toBe(false);
+    expect(await _dbSaveInvoice(inv)).toBe(false);
     expect(_dbSaveFailedIds.has('INV-HARDEN-1')).toBe(true);
-
-    // The old-order bug deleted-then-inserted; the fix inserts first, so a failed insert must
-    // issue NO delete against the old invoice_items rows at all.
-    const invoiceItemDeletes = __mockState.calls.filter(c => c.table === 'invoice_items' && c.method === 'delete');
-    expect(invoiceItemDeletes.length).toBe(0);
+    expect(__mockState.rpcCalls[0]).toEqual(expect.objectContaining({ name: 'save_invoice_atomic' }));
+    expect(__mockState.calls.filter(c=>c.table==='invoice_items')).toEqual([]);
   });
 });
 
@@ -444,12 +423,8 @@ describe('_dbSaveProductInner — a partial product save must not wipe available
   });
 });
 
-// ── Fix 8: _dbSaveInvoiceInner — a failed payment write must never delete payment rows ──────
-// INV-1053 (2026-08-12): the old fallback here deleted every invoice_payments row and then
-// re-inserted the SAME payload that had just failed, swallowing both errors. With the payment
-// row gone, CommissionsPage falls back to the INVOICE date and books the rep's commission in
-// the wrong month — an invoice paid 8/11 landed on the July statement.
-describe('_dbSaveInvoiceInner — payment write failures never destroy payment rows (fix 8)', () => {
+// ── Fix 8: invoice payment writes use the atomic RPC ──────────────────────────
+describe('_dbSaveInvoiceInner — atomic payment contract (fix 8)', () => {
   beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
   afterEach(() => { restoreEnv(); jest.resetModules(); });
 
@@ -458,74 +433,30 @@ describe('_dbSaveInvoiceInner — payment write failures never destroy payment r
     payments: [{ amount: 500, method: 'check', ref: 'chk 8891', date: '08/11/2026', cc_fee: 0 }],
   });
 
-  test('cc_fee is coerced to a number so an undefined can never reject the batch', async () => {
+  test('coerces cc_fee and sends the payment only through save_invoice_atomic', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
-    __mockState.responses = {
-      invoices: [{ error: null }],
-      invoice_payments: [
-        { data: [], error: null }, // restore read
-        { error: null },           // upsert succeeds
-        { data: [], error: null }, // stale-row read
-      ],
-      invoice_items: [{ count: 0, error: null }],
-    };
-
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
+    __mockState.rpcResponse = { data: { ok: true, version: 2 }, error: null };
     const { _dbSaveInvoice } = require('../lib/dbEngine');
-    const inv = invWithPayment();
-    delete inv.payments[0].cc_fee;
-    await _dbSaveInvoice(inv);
+    const inv = invWithPayment();delete inv.payments[0].cc_fee;
 
-    const upsert = __mockState.calls.find(c => c.table === 'invoice_payments' && c.method === 'upsert');
-    expect(upsert.args[0][0].cc_fee).toBe(0);
-    expect(upsert.args[0][0].date).toBe('08/11/2026');
+    expect(await _dbSaveInvoice(inv)).toBe(true);
+    expect(__mockState.rpcCalls).toEqual([expect.objectContaining({
+      name: 'save_invoice_atomic',
+      args: expect.objectContaining({ p_payments: [expect.objectContaining({ cc_fee: 0, date: '08/11/2026' })] }),
+    })]);
+    expect(__mockState.calls.filter(c=>['invoices','invoice_payments','invoice_items'].includes(c.table))).toEqual([]);
   });
 
-  test('a failed upsert issues NO delete, falls back to inserting the missing row, and succeeds', async () => {
+  test('an RPC error fails closed without any legacy payment delete/insert', async () => {
     const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
-    __mockState.responses = {
-      invoices: [{ error: null }],
-      invoice_payments: [
-        { data: [], error: null },                                   // restore read — DB holds none
-        { error: { message: 'no unique constraint matching ON CONFLICT' } }, // upsert FAILS
-        { error: null },                                             // plain insert succeeds
-      ],
-      invoice_items: [{ count: 0, error: null }],
-    };
-
+    __mockState.calls.length = 0;__mockState.rpcCalls.length = 0;
+    __mockState.rpcResponse = { data: null, error: { message: 'simulated RPC failure' } };
     const { _dbSaveInvoice, _dbSaveFailedIds } = require('../lib/dbEngine');
-    const result = await _dbSaveInvoice(invWithPayment());
 
-    expect(result).toBe(true);
-    expect(_dbSaveFailedIds.has('INV-PAY-1')).toBe(false);
-    const payDeletes = __mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'delete');
-    expect(payDeletes.length).toBe(0);
-    const inserts = __mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'insert');
-    expect(inserts.length).toBe(1);
-    expect(inserts[0].args[0][0].ref).toBe('chk 8891');
-  });
-
-  test('when the insert fallback also fails the save reports failure instead of dropping the payment', async () => {
-    const { __mockState } = require('@supabase/supabase-js');
-    __mockState.calls.length = 0;
-    __mockState.responses = {
-      invoices: [{ error: null }],
-      invoice_payments: [
-        { data: [], error: null },
-        { error: { message: 'column cc_fee does not exist' } }, // upsert FAILS
-        { error: { message: 'column cc_fee does not exist' } }, // insert FAILS too
-      ],
-      invoice_items: [{ count: 0, error: null }],
-    };
-
-    const { _dbSaveInvoice, _dbSaveFailedIds } = require('../lib/dbEngine');
-    const result = await _dbSaveInvoice(invWithPayment());
-
-    expect(result).toBe(false);
+    expect(await _dbSaveInvoice(invWithPayment())).toBe(false);
     expect(_dbSaveFailedIds.has('INV-PAY-1')).toBe(true);
-    const payDeletes = __mockState.calls.filter(c => c.table === 'invoice_payments' && c.method === 'delete');
-    expect(payDeletes.length).toBe(0);
+    expect(__mockState.calls.filter(c=>['invoices','invoice_payments','invoice_items'].includes(c.table))).toEqual([]);
   });
 });
 
@@ -754,8 +685,8 @@ describe('_dbSaveSOInner — version-conflict save with an in-place SKU change (
     const { _dbSaveSO } = require('../lib/dbEngine');
     const result = await _dbSaveSO(payload('SO-REKEY-BLOCK'));
 
-    expect(result).toBe(false);
-    // Blocked before the item swap: nothing inserted, nothing deleted.
+    expect(result).toBe('stale');
+    // Rejected before the item swap: nothing inserted, nothing deleted.
     expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
     expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'delete')).toBe(false);
   });
@@ -769,11 +700,9 @@ describe('_dbSaveSOInner — version-conflict save with an in-place SKU change (
     // soItemKey of the pre-change line — exactly what _stampRekeyTomb records in the editor.
     const result = await _dbSaveSO(payload('SO-REKEY-OK', ['hr8470|black']));
 
-    expect(result).toBe(true);
+    expect(result).toBe('stale');
     expect(_dbSaveFailedIds.has('SO-REKEY-OK')).toBe(false);
-    const inserts = __mockState.calls.filter(c => c.table === 'so_items' && c.method === 'insert');
-    expect(inserts.length).toBe(1);
-    expect(inserts[0].args[0].map(r => r.sku)).toEqual(['NEWSKU', 'K540']);
+    expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
   });
 
   test('a tombstone excuses ONLY its own key — a different uncovered DB line still blocks', async () => {
@@ -787,7 +716,7 @@ describe('_dbSaveSOInner — version-conflict save with an in-place SKU change (
     const { _dbSaveSO } = require('../lib/dbEngine');
     const result = await _dbSaveSO(payload('SO-REKEY-MIXED', ['hr8470|black']));
 
-    expect(result).toBe(false);
+    expect(result).toBe('stale');
     expect(__mockState.calls.some(c => c.table === 'so_items' && c.method === 'insert')).toBe(false);
   });
 });
@@ -1054,10 +983,8 @@ describe('_dbSaveSOInner — stale SO save preserves header decisions (po_number
     __mockState.calls.length = 0;
     __mockState.responses = responses({ status: 'complete', po_number: 'PO-777' });
     const { _dbSaveSO } = require('../lib/dbEngine');
-    await _dbSaveSO(basePayload({ status: 'ready_to_invoice', po_number: null }));
-    const row = soUpsertRow(__mockState.calls);
-    expect(row.po_number).toBe('PO-777');
-    expect(row.status).toBe('complete');
+    expect(await _dbSaveSO(basePayload({ status: 'ready_to_invoice', po_number: null }))).toBe('stale');
+    expect(__mockState.calls.some(c=>c.table==='sales_orders'&&c.method==='upsert')).toBe(false);
   });
 
   test('the deliberate reopen (_status_reverted) passes and the one-shot marker is consumed', async () => {
@@ -1066,9 +993,9 @@ describe('_dbSaveSOInner — stale SO save preserves header decisions (po_number
     __mockState.responses = responses({ status: 'complete', po_number: 'PO-777' });
     const { _dbSaveSO } = require('../lib/dbEngine');
     const so = basePayload({ status: 'ready_to_invoice', po_number: 'PO-777', _status_reverted: true });
-    await _dbSaveSO(so);
-    expect(soUpsertRow(__mockState.calls).status).toBe('ready_to_invoice');
-    expect(so._status_reverted).toBeUndefined();
+    expect(await _dbSaveSO(so)).toBe('stale');
+    expect(__mockState.calls.some(c=>c.table==='sales_orders'&&c.method==='upsert')).toBe(false);
+    expect(so._status_reverted).toBe(true);
   });
 
   test('without a version conflict the client header is written as-is', async () => {

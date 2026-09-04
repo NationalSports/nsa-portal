@@ -35,6 +35,11 @@ describe('resolveCustomerFamily — parents + sub-customers', () => {
     // second query (kids) hits the same 'customers' stub; return both via a call counter.
     let call = 0;
     sb.from = (table) => {
+      if (table === 'portal_access_credentials') {
+        const missing = { data: null, error: { code: '42P01', message: 'relation portal_access_credentials does not exist' } };
+        const chain = { select: () => chain, in: () => chain, then: (res, rej) => Promise.resolve(missing).then(res, rej) };
+        return chain;
+      }
       const chain = {
         select: () => chain, eq: () => chain, ilike: () => chain, not: () => chain,
         in: () => chain,
@@ -56,7 +61,12 @@ describe('resolveCustomerFamily — parents + sub-customers', () => {
 
   test('a failed kids lookup surfaces an error, not a shrunken family', async () => {
     let call = 0;
-    const sb = { from: () => {
+    const sb = { from: (table) => {
+      if (table === 'portal_access_credentials') {
+        const missing = { data: null, error: { code: '42P01', message: 'relation portal_access_credentials does not exist' } };
+        const missingChain = { select: () => missingChain, in: () => missingChain, then: (res, rej) => Promise.resolve(missing).then(res, rej) };
+        return missingChain;
+      }
       const chain = {
         select: () => chain, eq: () => chain, ilike: () => chain, not: () => chain, in: () => chain,
         then: (res, rej) => {
@@ -97,6 +107,9 @@ jest.mock('../../netlify/functions/_shared', () => {
   const actual = jest.requireActual('../../netlify/functions/_shared');
   return { ...actual, verifyUser: jest.fn(), resolveCustomerFamily: jest.fn(), rosterTeamCustomerId: jest.fn(), getSupabaseAdmin: jest.fn() };
 });
+jest.mock('../../netlify/functions/_portalCredentials', () => ({
+  issuePortalCredential: jest.fn(async () => ({ token: 'issued-token', id: 'cred-1' })),
+}), { virtual: true });
 
 const mockedShared = require('../../netlify/functions/_shared');
 const { handler } = require('../../netlify/functions/coach-invite');

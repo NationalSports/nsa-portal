@@ -21,6 +21,16 @@ Harnesses:
   READ is preserved and linked staff + service_role keep full access. Ends with
   `ALL_RLS_STEP1_SCENARIOS_PASSED`. Same runner recipe, substituting the RLS
   fixture/scenarios and migration 00173.
+- `portal_public_security_fixture.sql` + `portal_public_security_scenarios.sql` —
+  the staged portal credential and core-read lockdown migrations. The fixture
+  begins with permissive public policies/grants, then the scenarios prove anon
+  and nonstaff reads are closed while staff/service access and hash-only legacy
+  link backfill remain intact.
+
+For the portal public-security pair, run the disposable fixture, then
+`20260904224715_portal_access_credentials.sql`,
+`20260904224722_lock_core_reads_to_staff.sql`,
+`20260904230554_restrict_public_app_state.sql`, and finally the scenarios file.
 
 ## place_webstore_order (00171)
 

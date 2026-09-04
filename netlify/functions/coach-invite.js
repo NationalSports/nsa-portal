@@ -7,6 +7,7 @@
 // role — that path bypasses RLS so a signed-in coach can invite a teammate even
 // though coach_accounts INSERT is otherwise staff-only.
 const { verifyUser, resolveCustomerFamily, rosterTeamCustomerId, getSupabaseAdmin: _getSupabaseAdmin } = require('./_shared');
+const { issuePortalCredential } = require('./_portalCredentials');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Shared factory throws when creds are missing; this endpoint's callers expect null.
@@ -125,18 +126,15 @@ exports.handler = async (event) => {
     const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
     if (!brevoKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: !!coachId, coach_id: coachId, emailed: false, error: 'Email not configured' }) };
 
-    // Look up the customer's alpha_tag so we can link to the coach portal
-    // (?portal=<tag>) rather than the generic LiveLook catalog. The portal link
-    // is the gate — no sign-in needed. Falls back to /adidas if the customer
-    // can't be found (e.g. no customer_id supplied).
+    // Customer-specific invites receive a revocable, hash-only portal credential.
+    // A missing customer_id still uses the generic catalog sign-in flow.
     const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
     let link = `${portal}/adidas?signin=${encodeURIComponent(email)}`;
     if (customerId) {
       const admin = getSupabaseAdmin();
-      if (admin) {
-        const { data: cust } = await admin.from('customers').select('alpha_tag').eq('id', customerId).maybeSingle();
-        if (cust?.alpha_tag) link = `${portal}/?portal=${encodeURIComponent(cust.alpha_tag)}`;
-      }
+      if (!admin) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: 'service-creds-missing' }) };
+      const credential = await issuePortalCredential(admin, customerId, { label: 'Coach invite' });
+      link = `${portal}/coach?portal=${encodeURIComponent(credential.token)}`;
     }
     const hello = name ? `Hi ${esc(name.split(' ')[0])},` : 'Hi Coach,';
 

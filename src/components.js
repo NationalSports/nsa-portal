@@ -5,6 +5,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC, isServiceLine } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
 import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment, greetLine, withGreeting, emailMoney } from './utils';
+import { getPortalUrl } from './lib/portalLinks';
 
 // allowVector: when true the gallery also accepts vector (.ai/.eps/.svg) and .pdf
 // artwork — used by the Topstar digitizing/Vector PO flow where production-ready
@@ -304,6 +305,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const[checkedEmails,setCheckedEmails]=useState({});const[customEmails,setCustomEmails]=useState([]);const[addingEmail,setAddingEmail]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
+  const[portalUrl,setPortalUrl]=useState('');const[portalLoading,setPortalLoading]=useState(false);const[portalError,setPortalError]=useState('');
   const[followUpDays,setFollowUpDays]=useState(0);
   const[followUp,setFollowUp]=useState({auto:false,firstDays:3,intervalDays:0,max:4,message:''});
   const contactEmails=[...new Set((customer?.contacts||[]).filter(c=>c.email).map(c=>c.email))];
@@ -316,7 +318,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
   const repUserRef=React.useRef(repUser);repUserRef.current=repUser;
   const docTotalRef=React.useRef(docTotal);docTotalRef.current=docTotal;
-  React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
+  React.useEffect(()=>{let cancelled=false;if(isOpen&&!prevOpenRef.current){
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
     const lbl=dt==='so'?'Sales Order':'Estimate';
     if(cust2){
@@ -331,19 +333,20 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const _signer=repUserRef.current?.name||'National Sports Apparel';
     // Deep-link the portal straight to this estimate (?est=<id>) / SO (?so=<id>)
     // instead of the portal home — the coach portal opens the matching view on load.
-    const _dl=est2?.id?(dt==='so'?'&so='+est2.id:'&est='+est2.id):'';
-    const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag)+_dl:'';
+    const _dl=est2?.id?(dt==='so'?'so='+encodeURIComponent(est2.id):'est='+encodeURIComponent(est2.id)):'';
     const _job=(est2?.memo||'').trim();
     const _forJob=_job?` for "${_job}"`:'';
     const _total=Number(docTotalRef.current||0);
     const _totalTxt=_total>0?`, totalling ${emailMoney(_total)}`:'';
-    setBody(`${_greeting}\n\nAttached below is your ${lbl.toLowerCase()}${_forJob}${_totalTxt}. You can ${dt==='so'?'view it':'review and approve it'} right in your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(cust2.alpha_tag||'')}\n\nPlease let us know if you have any questions, and thank you for your business!\n\n${_signer}\nNational Sports Apparel`);
+    const _message=url=>`${_greeting}\n\nAttached below is your ${lbl.toLowerCase()}${_forJob}${_totalTxt}. You can ${dt==='so'?'view it':'review and approve it'} right in your portal.\n\nPortal link: ${url}\n\nPlease let us know if you have any questions, and thank you for your business!\n\n${_signer}\nNational Sports Apparel`;
+    setPortalUrl('');setPortalError('');setPortalLoading(true);
+    setBody(_message('Creating secure link…'));
     setSmsPhone(primaryContact?.phone||'');
-    const portalUrl2=portalLink;
-    setSmsMsg('Hi '+_firstName+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
+    setSmsMsg('Creating secure portal link…');
+    getPortalUrl(cust2.id,_dl).then(url=>{if(cancelled)return;setPortalUrl(url);setBody(_message(url));setSmsMsg('Hi '+_firstName+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+url);setPortalLoading(false)}).catch(error=>{if(cancelled)return;setPortalError(error?.message||'Could not create secure portal link');setBody(_message('[secure portal link unavailable]'));setSmsMsg('');setPortalLoading(false)});
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setFollowUp(seedFollowUp(est2));
-    setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
+    setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen;return()=>{cancelled=true}},[isOpen]);
   // Keep the greeting in step with the recipient checkboxes ("Hi Cam and Hillary,").
   // Only the greeting line is swapped, so edits to the rest of the message survive.
   const _toKey=allTargets.join('|');
@@ -362,9 +365,10 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(sendingRef.current)return;// prevent double send
     const emails=allTargets;
     if(emails.length===0){alert('Please select at least one recipient');return}
+    if(portalLoading){alert('The secure portal link is still being created. Please wait a moment.');return}
+    if(portalError||!portalUrl){alert('Could not create the secure portal link: '+(portalError||'Unknown error'));return}
     sendingRef.current=true;setSending(true);
     const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
-    const portalUrl=customer?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+encodeURIComponent(customer.alpha_tag)+(estimate?.id?(docType==='so'?'&so=':'&est=')+encodeURIComponent(estimate.id):''):'';
     const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
@@ -424,6 +428,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const doGmailDraft=async()=>{
     if(sendingRef.current)return;
     if(!estimate?.source_inbox_message_id){alert('This estimate is not linked to an AI Inbox email.');return}
+    if(portalLoading){alert('The secure portal link is still being created. Please wait a moment.');return}
+    if(portalError||!portalUrl){alert('Could not create the secure portal link: '+(portalError||'Unknown error'));return}
     sendingRef.current=true;setSending(true);
     try{
       const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
@@ -505,9 +511,10 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
           <FollowUpAutoPanel value={followUp} onChange={setFollowUp} defaultMessage={`${greetLine(allTargets,customer?.contacts)}\n\nJust following up on the ${label.toLowerCase()} we sent over${estimate?.memo?` for "${estimate.memo}"`:''}. Let us know if you'd like to move forward or have any questions — we're happy to help!\n\n${repUser?.name||'National Sports Apparel'}\nNational Sports Apparel`}/>
         </div>
       )}
-      <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
+      {portalError&&<div style={{padding:8,marginBottom:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#b91c1c'}}>Could not create secure portal link: {portalError}</div>}
+      <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 {portalLoading?'Creating secure portal link…':'Portal link included in message'}{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
-    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button>{estimate?.source_inbox_message_id&&<button className="btn btn-secondary" disabled={sending} onClick={doGmailDraft}><Icon name="mail" size={14}/> {sending?'Creating…':'Create Gmail Draft'}</button>}<button className="btn btn-primary" disabled={sending} onClick={doSend}><Icon name="send" size={14}/> {sending?'Sending...':'Send '+label}</button></div>
+    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button>{estimate?.source_inbox_message_id&&<button className="btn btn-secondary" disabled={sending||portalLoading||!!portalError} onClick={doGmailDraft}><Icon name="mail" size={14}/> {sending?'Creating…':'Create Gmail Draft'}</button>}<button className="btn btn-primary" disabled={sending||portalLoading||!!portalError} onClick={doSend}><Icon name="send" size={14}/> {sending?'Sending...':'Send '+label}</button></div>
   </div></div>);
 }
 

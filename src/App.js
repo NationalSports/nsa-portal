@@ -11,6 +11,7 @@ import AiTasks from './AiTasks';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, resolveBatchDestination, decoShipToPresets, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
+import { prepareUnpaidInvoiceSplit } from './lib/invoiceSplit';
 import { _sbAuthLock } from './lib/supabase';
 import { fetchPublicInventory } from './lib/webstorePublicData';
 import { startDeployReloadWatcher } from './deployReload';
@@ -508,10 +509,9 @@ import {
   _dbDeletePromoPeriod,
   _dbSavePromoUsage,
   _dbDeletePromoUsage,
-  _dbRelinkPromoUsage,
   _dbSaveCredit,
   _dbDeleteCredit,
-  _dbSaveCreditUsage,
+  _dbSetFundAllocation,
   _dbSavePendingShip,
   _dbDeletePendingShip,
   _dbSavePendingShipUsage,
@@ -3520,7 +3520,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(new URLSearchParams(window.location.search).get('portal'))return;if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];const oldById=new Map();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item)){changed.push(item);oldById.set(item.id,old||null)}});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item,oldById.get(item.id));if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c),_custDiffCmp)},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
@@ -7314,6 +7314,19 @@ export default function App(){
     });
     return{...so,items,_itemsHydrated:true,_decosHydrated:true};
   };
+  const setFundAllocation=async args=>{
+    const result=await _dbSetFundAllocation(args);
+    if(!result.ok)return result;
+    const data=result.data||{};const promoOwnerId=data.promo_owner_id;
+    const applyBalances=cc=>{
+      if(!cc)return cc;let next=cc;
+      if(promoOwnerId&&(cc.id===promoOwnerId||cc.parent_id===promoOwnerId))next={...next,promo_periods:data.promo_periods||[],promo_usage:data.promo_usage||[]};
+      if(cc.id===args.customerId)next={...next,credits:data.credits||[],credit_usage:data.credit_usage||[]};
+      return next;
+    };
+    setCust(prev=>prev.map(applyBalances));setSelC(prev=>applyBalances(prev));
+    return{...result,customer:applyBalances(cust.find(cc=>cc.id===args.customerId))};
+  };
   const convertSO=async est=>{
     // Auto-heal a partially-loaded estimate before converting. The loader flags
     // _decosHydrated/_itemsHydrated false when estimate_item_decorations or
@@ -7385,76 +7398,28 @@ export default function App(){
       }
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    let so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,bill_to_id:est.bill_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),fund_allocation_status:'pending',fund_allocation_error:null,fund_allocation_updated_at:null,tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Auto-attach any pending shipping charge the customer is carrying (mirror of the newSOFn path).
     if(_convCust){const _pb=pendingShipBalance(_convCust);if(_pb.amount>0){so.pending_ship_applied=true;so.pending_ship_amount=_pb.amount;
       const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
-    const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
-    // Explicitly save to DB immediately — don't rely solely on useEffect chain.
-    // Methodic work is relinked only after both source/target documents exist, so
-    // the same request follows the line instead of creating an SO-side duplicate.
-    const[_soSaved]=await Promise.all([_dbSaveSO(so),_dbSaveEstimate(convertedEst)]);
-    if(_soSaved!==false){
+    // The SO is first made durable with an explicit pending marker. The RPC then
+    // transfers/replaces estimate usage, posts credits, and marks the estimate
+    // converted in one transaction. A lost request leaves an honest retryable SO.
+    const _soSaved=await _dbSaveSO(so);
+    if(_soSaved!==true){nf('Conversion did not save a sales order. The estimate is still open; try again.','error');return}
+    const allocation=await setFundAllocation({documentType:'sales_order',documentId:so.id,customerId:so.customer_id,promoAmount:est.promo_applied?promoAmount:0,creditAmount:est.credit_applied?safeNum(est.credit_amount):0,sourceEstimateId:est.id,description:est.memo||('Funds on '+so.id),createdBy:cu?.name||cu?.id||'System'});
+    if(allocation.ok){
+      so={...so,...(allocation.data.document||{}),items:so.items,art_files:so.art_files,firm_dates:so.firm_dates};
+      const convertedEst={...est,status:'converted',updated_at:so.fund_allocation_updated_at||new Date().toLocaleString()};
+      setSOs(p=>[...p.filter(x=>x.id!==so.id),so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
       try{const{methodicApi}=await import('./methodic/methodicApi');await methodicApi('relink_estimate',{estimate_id:est.id,sales_order_id:so.id});window.dispatchEvent(new CustomEvent('methodic-updated',{detail:{salesOrderId:so.id,estimateId:est.id}}))}
       catch(methodicError){console.error('[convertSO] Methodic relink failed:',methodicError);nf('Sales order created, but Methodic work could not be relinked yet. Open the Methodic queue and retry.','warn')}
+      if(so.pending_ship_applied)_consumePendingShipForSO(so);
+      const c=allocation.customer||cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`);return;
     }
-    // Consume the attached pending shipping charge (persisted SO — safe to record usage now).
-    if(so.pending_ship_applied)_consumePendingShipForSO(so);
-    const c=cust.find(x=>x.id===so.customer_id);
-    // Promo already deducted on the estimate — carry the usage onto the SO instead of deducting again.
-    if(_promoAlreadyDeducted&&c){
-      const _ownerId=c.parent_id||c.id;
-      const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
-      _dbRelinkPromoUsage(est.id,so.id);
-      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_usage:(cc.promo_usage||[]).map(u=>u.estimate_id===est.id&&!u.so_id?{...u,so_id:so.id}:u)}:cc));
-    }
-    // Deduct promo funds from customer's current period (promo lives on parent — apply to parent + all subs in state)
-    if(est.promo_applied&&promoAmount>0&&c&&!_promoAlreadyDeducted){
-      const promoOwnerId=c.parent_id||c.id;
-      const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
-      const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-      const _pStart=_m<6?_y+'-01-01':_y+'-07-01';
-      let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
-      // Auto-allocate period from fixed programs if none exists
-      if(periods.length===0){
-        const progs=(c.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
-        const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
-        if(totalFixed>0){
-          const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
-          const newPd={id:'pp_'+Date.now(),customer_id:promoOwnerId,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-          periods=[newPd];
-          setCust(prev=>prev.map(cc=>isFamily(cc)?{...cc,promo_periods:[...(cc.promo_periods||[]),newPd]}:cc));
-        }
-      }
-      if(periods.length>0){
-        const pd=periods[0];
-        const updatedPeriod={...pd,used:(pd.used||0)+promoAmount};
-        const usageRec={period_id:pd.id,amount:promoAmount,description:est.memo||so.memo||'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
-        // Chain: save period first, THEN insert usage (FK constraint requires period to exist)
-        _dbSavePromoPeriod(updatedPeriod).then(ok=>{if(ok)_dbSavePromoUsage(usageRec);else console.error('[Promo] period save failed, skipping usage insert')});
-        // Update parent + all subs in state so balance is consistent everywhere in the family
-        setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const updatedPeriods=(cc.promo_periods||[]).some(p=>p.id===pd.id)?(cc.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p):[...(cc.promo_periods||[]),updatedPeriod];return{...cc,promo_periods:updatedPeriods,promo_usage:[...(cc.promo_usage||[]),usageRec]}}));
-      }
-    }
-    // Deduct credit funds from customer's credits
-    if(est.credit_applied&&safeNum(est.credit_amount)>0&&c){
-      let creditRemaining=safeNum(est.credit_amount);
-      const updatedCredits=(c.credits||[]).map(cr=>{
-        if(creditRemaining<=0)return cr;
-        const bal=(cr.amount||0)-(cr.used||0);
-        if(bal<=0)return cr;
-        const deduct=Math.min(bal,creditRemaining);
-        creditRemaining-=deduct;
-        const usageRec={credit_id:cr.id,amount:deduct,description:est.memo||so.memo||'Credit on order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
-        _dbSaveCreditUsage(usageRec);
-        const updated={...cr,used:(cr.used||0)+deduct};
-        _dbSaveCredit(updated);
-        return updated;
-      });
-      setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,credits:updatedCredits}:cc));
-    }
-    setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
+    so={...so,fund_allocation_status:'pending',fund_allocation_error:allocation.error||'Posting failed'};
+    setSOs(p=>[...p.filter(x=>x.id!==so.id),so]);setEEst(null);const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');
+    nf(`${so.id} was saved, but its promo/credit posting is pending. Retry from the order before invoicing.`,'error')};
   const copyEstimate=async est=>{
     // Auto-heal a partially-loaded estimate before copying — same failure mode the convert
     // path guards against: when estimate_item_decorations/estimate_items timed out on the
@@ -7878,6 +7843,12 @@ export default function App(){
     const est=ests.find(e=>e.id===estId);if(!est)return;
     // Check if an SO was created from this estimate
     const linkedSO=sos.find(s=>s.estimate_id===estId);
+    const _estCust=cust.find(x=>x.id===est.customer_id);
+    const _hasEstFundUsage=(_estCust?.promo_usage||[]).some(u=>u.estimate_id===estId&&!u.so_id)
+      ||(_estCust?.credit_usage||[]).some(u=>u.estimate_id===estId&&!u.so_id);
+    const _fundedEstimate=est.fund_allocation_status==='pending'||_hasEstFundUsage
+      ||(est.status!=='converted'&&(est.promo_applied||est.credit_applied));
+    if(_fundedEstimate)return nf('Remove the promo/credit and Save this estimate before deleting it. This keeps the document and its fund release together.','error');
     if(linkedSO&&!window.confirm('SO '+linkedSO.id+' was created from this estimate. The SO will remain but its estimate link will be cleared. Continue?'))return;
     if(!window.confirm('Delete estimate '+estId+'? This cannot be undone.'))return;
     // Remove from state
@@ -7886,21 +7857,6 @@ export default function App(){
     if(linkedSO){setSOs(prev=>prev.map(s=>s.estimate_id===estId?{...s,estimate_id:null,updated_at:new Date().toLocaleString()}:s))}
     // Soft-delete in DB
     _dbDeleteEstimate(estId);
-    // Release any promo this estimate deducted but never converted (usage still keyed to the estimate,
-    // so_id null) so the budget isn't leaked. Converted estimates have their usage re-linked to the SO,
-    // which owns the deduction, so those rows are left untouched.
-    const _estCust=cust.find(x=>x.id===est.customer_id);
-    const _estPromoUsage=(_estCust?.promo_usage||[]).filter(u=>u.estimate_id===estId&&!u.so_id);
-    if(_estPromoUsage.length&&_estCust){
-      const _ownerId=_estCust.parent_id||_estCust.id;const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
-      const _byPeriod={};_estPromoUsage.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});
-      Object.entries(_byPeriod).forEach(([pid,amt])=>{
-        const pd=(_estCust.promo_periods||[]).find(p=>p.id===pid);
-        if(pd)_dbSavePromoPeriod({...pd,used:Math.max(0,safeNum(pd.used)-amt)});
-        _dbDeletePromoUsage(pid,null,estId);
-      });
-      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_periods:(cc.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(cc.promo_usage||[]).filter(u=>!(u.estimate_id===estId&&!u.so_id))}:cc));
-    }
     logChange('deleted','Estimate',estId,est.memo||'');
     nf('Estimate '+estId+' deleted');
     // If we were editing this estimate, go back to list
@@ -8304,6 +8260,11 @@ export default function App(){
       if(paidInvs.length>0)return nf('Cannot delete — SO has invoices with payments ('+paidInvs.map(i=>i.id).join(', ')+'). Void invoices first.','error');
       if(!window.confirm('This will also delete '+linkedInvs.length+' linked invoice(s): '+linkedInvs.map(i=>i.id).join(', ')+'. Continue?'))return;
     }
+    const _soCust=cust.find(x=>x.id===so.customer_id);
+    const _hasSOFundUsage=(_soCust?.promo_usage||[]).some(u=>u.so_id===soId)
+      ||(_soCust?.credit_usage||[]).some(u=>u.so_id===soId);
+    if(so.fund_allocation_status==='pending'||so.promo_applied||so.credit_applied||_hasSOFundUsage)
+      return nf('Remove the promo/credit and Save this order before deleting it. This keeps the document and its fund release together.','error');
     if(!window.confirm('Delete sales order '+soId+'? This cannot be undone.'))return;
     // Remove SO from state
     setSOs(prev=>prev.filter(s=>s.id!==soId));
@@ -8316,19 +8277,6 @@ export default function App(){
     }
     // Soft-delete in DB
     _dbDeleteSO(soId);
-    // Release any promo this SO deducted so the budget isn't leaked when the order is removed.
-    const _soCust=cust.find(x=>x.id===so.customer_id);
-    const _soPromoUsage=(_soCust?.promo_usage||[]).filter(u=>u.so_id===soId);
-    if(_soPromoUsage.length&&_soCust){
-      const _ownerId=_soCust.parent_id||_soCust.id;const _isFam=cc=>cc.id===_ownerId||cc.parent_id===_ownerId;
-      const _byPeriod={};_soPromoUsage.forEach(u=>{_byPeriod[u.period_id]=(_byPeriod[u.period_id]||0)+safeNum(u.amount)});
-      Object.entries(_byPeriod).forEach(([pid,amt])=>{
-        const pd=(_soCust.promo_periods||[]).find(p=>p.id===pid);
-        if(pd)_dbSavePromoPeriod({...pd,used:Math.max(0,safeNum(pd.used)-amt)});
-        _dbDeletePromoUsage(pid,soId);
-      });
-      setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_periods:(cc.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(cc.promo_usage||[]).filter(u=>u.so_id!==soId)}:cc));
-    }
     // Release any pending shipping charge this SO consumed so it returns to the customer's balance
     // and re-attaches to their next order (a deleted order was never billed).
     const _soPendUsage=(_soCust?.pending_shipping_usage||[]).filter(u=>u.so_id===soId);
@@ -11368,6 +11316,7 @@ export default function App(){
   // ESTIMATES LIST
   function rEst(){
     if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eEst.id} supabase={supabase} order={eEst} mode="estimate" autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} customer={eEstC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={e=>{const e2=savE(e);setEEst(e2)}} onSaveNow={e=>savENow(e)} onEmergencySave={e=>savENow(e,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} onNavBatch={()=>{setEEst(null);setPg('batch_pos')}} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eEst?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+      onSetFundAllocation={setFundAllocation}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -11426,6 +11375,7 @@ export default function App(){
   // SALES ORDERS LIST
   function rSO(){
     if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><ActiveOrderEditor ui={uiMode} key={eSO.id} supabase={supabase} order={eSO} mode="so" soBoxes={boxRows.filter(b=>b.so_id===eSO.id||(b.source_refs||[]).some(r=>r?.type==='SO'&&r.id===eSO.id))} onOpenBox={b=>setBoxModal({box:b,combineWith:''})} customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onEmergencySave={s=>savSONow(s,{stageOutbox:true})} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onSOReopened={onSOReopened} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} autoSend={oeAutoSend} onAutoSendConsumed={()=>setOEAutoSend(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} onOpenMethodicDashboard={()=>{setESO(null);setESOTab(null);setPg('methodic')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onManualShip={openManualShipForSO} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onNavWebstore={eSO.webstore_id&&!eSO.omg_store_id?()=>{try{const u=new URL(window.location);u.searchParams.set('store',eSO.webstore_id);u.searchParams.set('tab','orders');u.searchParams.delete('order');window.history.replaceState({},'',u)}catch(e){}setESO(null);setPg('webstores')}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+      onSetFundAllocation={setFundAllocation}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -15300,46 +15250,28 @@ export default function App(){
   },[_applyRouteFromUrl]);
 
   // Split invoice helper — creates two invoices from one based on selected item indices
-  const splitInvoice=(inv,selIndices,splitMemo)=>{
-    const lineItems=inv.line_items||[];
-    if(!lineItems.length||!selIndices.length||selIndices.length===lineItems.length)return;
-    const itemsA=selIndices.map(i=>lineItems[i]).filter(Boolean);
-    const itemsB=lineItems.filter((_,i)=>!selIndices.includes(i));
-    const subA=itemsA.reduce((a,li)=>a+safeNum(li.amount),0);
-    const subB=itemsB.reduce((a,li)=>a+safeNum(li.amount),0);
-    const totalSub=subA+subB||1;
-    const pctA=subA/totalSub;const pctB=subB/totalSub;
-    const shipA=Math.round((inv.shipping||0)*pctA*100)/100;
-    const shipB=Math.round((inv.shipping||0)*pctB*100)/100;
-    const taxA=Math.round((inv.tax||0)*pctA*100)/100;
-    const taxB=Math.round((inv.tax||0)*pctB*100)/100;
-    const totalA=Math.round((subA+shipA+taxA)*100)/100;
-    const totalB=Math.round((subB+shipB+taxB)*100)/100;
-    // Prorate existing payments proportionally
-    const paidA=Math.round(inv.paid*pctA*100)/100;
-    const paidB=Math.round(inv.paid*pctB*100)/100;
-    const statusA=paidA>=totalA?'paid':paidA>0?'partial':'open';
-    const statusB=paidB>=totalB?'paid':paidB>0?'partial':'open';
-    // Update original invoice to become invoice A
-    const updatedOrig={...inv,line_items:itemsA,total:totalA,paid:paidA,status:statusA,
-      shipping:shipA,tax:taxA,memo:(splitMemo||inv.memo||'')+' (Split 1/2)',
-      updated_at:new Date().toLocaleString()};
-    // Create new invoice B
-    const newId=nextInvId(invs);
-    const newInv={...inv,id:newId,line_items:itemsB,total:totalB,paid:paidB,status:statusB,
-      idempotency_key:null,
-      shipping:shipB,tax:taxB,memo:(splitMemo||inv.memo||'')+' (Split 2/2)',
-      payments:inv.payments?inv.payments.map(p=>({...p,amount:Math.round(p.amount*pctB*100)/100,cc_fee:Math.round((p.cc_fee||0)*pctB*100)/100})):[],
-      cc_fee:Math.round((inv.cc_fee||0)*pctB*100)/100,
-      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
-    // Also prorate payments on original
-    updatedOrig.payments=inv.payments?inv.payments.map(p=>({...p,amount:Math.round(p.amount*pctA*100)/100,cc_fee:Math.round((p.cc_fee||0)*pctA*100)/100})):[];
-    updatedOrig.cc_fee=Math.round((inv.cc_fee||0)*pctA*100)/100;
-    setInvs(prev=>[newInv,...prev.map(i=>i.id===inv.id?updatedOrig:i)]);
-    logChange('split','Invoice',inv.id,'Split into '+inv.id+' and '+newId);
-    nf('Invoice '+inv.id+' split into '+inv.id+' ($'+totalA.toLocaleString()+') and '+newId+' ($'+totalB.toLocaleString()+')');
-    setSplitModal(null);
-    setViewInvoice(null);
+  const _invoiceSplitInFlight=useRef(new Set());
+  const splitInvoice=async(inv,selIndices,splitMemo)=>{
+    if(_invoiceSplitInFlight.current.has(inv.id))return;
+    _invoiceSplitInFlight.current.add(inv.id);
+    try{
+      if(!supabase)throw new Error('Connect to the database before splitting an invoice.');
+      const {original,split}=prepareUnpaidInvoiceSplit(inv,selIndices,nextInvId(invs),splitMemo);
+      const {data,error}=await supabase.rpc('split_unpaid_invoice_atomic',{
+        p_original:original,p_split:split,p_base_version:inv._version,
+      });
+      if(error||!data?.ok)throw new Error(error?.message||data?.reason||'Invoice split could not be saved.');
+      const savedOriginal={...original,...data.original,items:data.original_items,payments:[]};
+      const savedSplit={...split,...data.split,items:data.split_items,payments:[]};
+      // Both records are already committed. Advance the autosave baseline so this
+      // state refresh cannot start a second pair of independent writes.
+      _dbSnap.current.invs=[savedSplit,...(_dbSnap.current.invs||[]).map(i=>i.id===inv.id?savedOriginal:i)];
+      setInvs(prev=>[savedSplit,...prev.map(i=>i.id===inv.id?savedOriginal:i)]);
+      logChange('split','Invoice',inv.id,'Split into '+inv.id+' and '+savedSplit.id);
+      nf('Invoice '+inv.id+' split into '+inv.id+' and '+savedSplit.id);
+      setSplitModal(null);setViewInvoice(null);
+    }catch(error){nf(error.message||'Invoice split failed. Your original invoice is unchanged.','error');}
+    finally{_invoiceSplitInFlight.current.delete(inv.id);}
   };
 
   // ── OMG invoice + settlement in one step ─────────────────────────────
@@ -37563,7 +37495,7 @@ export default function App(){
 
   // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
   const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
-  const _portalMatches=_portalTag?cust.filter(c=>(c.alpha_tag||'').trim().toLowerCase()===_portalTag.trim().toLowerCase()):[];
+  const _portalMatches=_portalTag?cust.filter(c=>c._portal_owner===true):[];
   const _portalCust=_portalMatches.length===1?_portalMatches[0]:null;
   if(_portalTag){
     if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
@@ -37577,7 +37509,7 @@ export default function App(){
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
       <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
-    return<ComponentErrorBoundary name="CoachPortal"><React.Suspense fallback={<LazyFallback/>}><CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} savSOFn={savSO} portalSettings={portalSettings} dbSaveEstimate={_dbSaveEstimate}/></React.Suspense></ComponentErrorBoundary>;
+    return<ComponentErrorBoundary name="CoachPortal"><React.Suspense fallback={<LazyFallback/>}><CoachPortal customer={_portalCust} portalCredential={_portalTag} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} portalSettings={portalSettings} dbSaveEstimate={_dbSaveEstimate}/></React.Suspense></ComponentErrorBoundary>;
   }
 
   // LOADING GATE
