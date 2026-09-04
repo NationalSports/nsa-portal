@@ -97,23 +97,34 @@ export const isMissingLedgerColumnError = (e) => !!e && (e.code === '42703' || e
 export const mergeServerBills = (savedBills, serverRows) => {
   const local = savedBills || [];
   const seen = new Set();
+  // S&S can issue more than one invoice for the same order. In those rows the
+  // SI/S&S document number is the order number, not a unique invoice key, so a
+  // real invoice number must win and the shared order number must not collapse
+  // sibling invoices out of Bill History. Rows without an invoice number still
+  // fall back to the order number, preserving the legacy dedup safety net.
+  const isSsInvoice = (row, parsed) => {
+    const vendor = String(parsed?.vendor || parsed?.supplier || row?.vendor || '').trim();
+    return /s\s*(?:&|and)\s*s\s+activewear/i.test(vendor) && !!_norm(parsed?.doc_number || row?.doc_number || row?.doc_norm);
+  };
   local.forEach((sb) => {
     const p = sb.parsed || {};
     const c = p.is_credit ? '1' : '0';
     const d = _norm(p.doc_number);
     if (d) seen.add('d|' + c + '|' + d);
     const s = _norm(p.si_doc_number);
-    if (s) seen.add('s|' + c + '|' + s);
+    if (s && !isSsInvoice(sb, p)) seen.add('s|' + c + '|' + s);
   });
   const extras = [];
   (serverRows || []).forEach((r) => {
     const c = r.is_credit ? '1' : '0';
     const d = _norm(r.doc_norm || r.doc_number);
     const s = _norm(r.si_doc_number);
-    if ((d && seen.has('d|' + c + '|' + d)) || (s && seen.has('s|' + c + '|' + s))) return;
+    const parsedMeta = (r.raw_meta && typeof r.raw_meta === 'object') ? r.raw_meta : null;
+    const ssInvoice = isSsInvoice(r, parsedMeta);
+    if ((d && seen.has('d|' + c + '|' + d)) || (s && !ssInvoice && seen.has('s|' + c + '|' + s))) return;
     if (d) seen.add('d|' + c + '|' + d);
-    if (s) seen.add('s|' + c + '|' + s);
-    const parsed = (r.raw_meta && typeof r.raw_meta === 'object') ? r.raw_meta : {
+    if (s && !ssInvoice) seen.add('s|' + c + '|' + s);
+    const parsed = parsedMeta || {
       doc_number: r.doc_number || r.doc_norm || '',
       si_doc_number: r.si_doc_number || undefined,
       is_credit: !!r.is_credit,

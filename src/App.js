@@ -27927,7 +27927,10 @@ export default function App(){
     };
 
     const _billIsBaseReadyToPush=b=>{
-      if(!b||b.portalStatus||b.reviewLater)return false;
+      if(!b||b.reviewLater)return false;
+      // A Bill History QBO backfill is intentionally already complete on the
+      // portal side. It may enter the QBO pipeline, but never the portal writer.
+      if(b.portalStatus&&!b._qbBackfill)return false;
       return _billHasTarget(b.parsed);
     };
 
@@ -29314,7 +29317,7 @@ export default function App(){
       // the SI number. Check both so the same physical invoice can never be pushed twice — the
       // backstop that would have stopped the PO 3294 double-bill even if parse-dedup missed it.
       const _sdn=String(p.si_doc_number||'').trim();
-      if(_docAlreadyApplied(p.doc_number)||(_sdn&&_docAlreadyApplied(_sdn,'si')))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
+      if(!p._qbBackfill&&(_docAlreadyApplied(p.doc_number)||(_sdn&&_docAlreadyApplied(_sdn,'si'))))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
       // Credits reverse goods; the normal push ADDS. Block the normal path outright — the
       // ↩ Apply-credit panel on the card is the one door for credits (owner 2026-07-23).
       if(p.is_credit)errs.push('Credit memo — use ↩ Apply credit on the card (it un-bills the returned goods); the normal push would ADD what the credit reverses.');
@@ -29782,7 +29785,7 @@ export default function App(){
       // Only the full-go bills — matched AND clean. Flagged/matched bills are left for review or
       // AI-match rather than bulk-pushed, so this mirrors the primary button's count exactly and a
       // clean push needs no problem modal. (A flagged bill pushes once it's been reconciled clean.)
-      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
+      const selected=billImport.parsed.filter(b=>!b._qbBackfill&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       if(force!==true){
         const cleanBills=[],problemBills=[];
@@ -30047,9 +30050,23 @@ export default function App(){
 
       setBillImport(x=>({...x,uploading:false}));
       setSavedBills(prev=>{
+        const sourceRows=new Map((billImport.parsed||[]).map(row=>[row.id,row]));
+        const persistedIds=new Set();
         const updated=prev.map(sb=>{
           const result=qbResults[sb.id];
+          if(result)persistedIds.add(sb.id);
           return result?{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})}:sb;
+        });
+        // Server-ledger rows are not necessarily present in this browser's
+        // local cache. Persist their QBO result so Bill History keeps the
+        // verified status after navigation/reload instead of reverting to
+        // "Not pushed".
+        Object.entries(qbResults).forEach(([id,result])=>{
+          if(persistedIds.has(id))return;
+          const source=sourceRows.get(id);if(!source)return;
+          const {_qbBackfill,...cleanSource}=source;
+          const cleanParsed={...(source.parsed||{})};delete cleanParsed._qbBackfill;
+          updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus,qbMsg:result.qbMsg||'',...(result.portalStatus?{portalStatus:result.portalStatus,portalMsg:result.portalMsg||''}:{})});
         });
         _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
@@ -31113,6 +31130,8 @@ export default function App(){
           const _matchedHeader=!_inReview?null:(()=>{
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
+            const portalReady=ready.filter(b=>!b._qbBackfill);
+            const portalReadyTotal=portalReady.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const done=billImport.parsed.filter(b=>!_billTriage(b)).length;
             const failed=billImport.parsed.filter(b=>b.portalStatus&&b.portalStatus!=='success').length;
             return<div style={{marginBottom:16}}>
@@ -31122,7 +31141,7 @@ export default function App(){
                   {done>0&&<div style={{alignSelf:'center',fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1,textTransform:'uppercase',color:'rgba(255,255,255,.4)'}}>{done} done</div>}
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
-                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
+                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!portalReady.length,onClick:()=>pushBillsToPortal(),children:<>Push {portalReady.length} matched → Portal{portalReadyTotal>0?' · '+nsaMoney(portalReadyTotal):''}</>})}
                   {qbOperator&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.some(b=>qbBillNeedsSync(b.qbStatus)),onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':(qbConfig.initialMigrationApproved===true?'Push next batch to QuickBooks':'Test 1 in QuickBooks')})}
                   <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
                     <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
@@ -32675,7 +32694,7 @@ export default function App(){
                   <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
                   <td style={{padding:'6px 12px'}} onClick={e=>e.stopPropagation()}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
                     {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
-                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
+                      onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,qbMsg:'',portalStatus:null,portalMsg:'',_qbBackfill:true,parsed:{...(sb.parsed||{}),_qbBackfill:true}}],uploading:false,showRaw:{}});nf('Bill loaded for QBO backfill — the Portal side will not be applied again')}}>Re-push</button>}</td>
                   <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
                     {sb._serverLedger
                     ?<span style={{fontSize:9,fontWeight:700,color:'#94a3b8'}} title="Pushed on the server ledger (possibly from another machine) — read-only here">server</span>
