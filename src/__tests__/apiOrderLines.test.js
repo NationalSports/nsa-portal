@@ -1,4 +1,4 @@
-import { apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from '../lib/apiOrderLines';
+import { apiLineSourceKey, apiVerificationForPoLine, removeApiLineFromBatchPOs, removeApiLineFromPoItems } from '../lib/apiOrderLines';
 import { buildSanMarLineItems } from '../sanmarPO';
 
 const po = { po_id: 'PO 58989 GHBSB', vendor: 'SanMar', status: 'waiting', received: {}, shipments: [], S: 8, M: 36 };
@@ -7,6 +7,13 @@ const items = [{ sku: 'ST420', color: 'Forest Green', po_lines: [po] }];
 test('SanMar lines retain the exact SO, PO, batch, item, and SKU source', () => {
   const { lines } = buildSanMarLineItems([{ id: 'BPO-1', so_id: 'SO-2306', po_id: po.po_id, items: [{ item_idx: 0, sku: 'ST420', color: 'Forest Green', sizes: { S: 8 }, unit_cost: 17.25 }] }]);
   expect(lines[0]).toMatchObject({ sourceSO: 'SO-2306', sourcePO: po.po_id, sourceBatchId: 'BPO-1', sourceItemIdx: 0, sourceSku: 'ST420', sourceColor: 'Forest Green', size: 'S', quantity: 8 });
+});
+
+test('source identity survives display-line renumbering after an earlier line is removed', () => {
+  const source = { lineNumber: 5, sourceSO: 'SO-2306', sourcePO: po.po_id, sourceBatchId: 'BPO-1', sourceItemIdx: 2, sourceSku: 'ST350', sourceColor: 'Forest Green', size: 'L' };
+  expect(apiLineSourceKey(source)).toBe(apiLineSourceKey({ ...source, lineNumber: 1 }));
+  expect(apiLineSourceKey(source)).not.toBe(apiLineSourceKey({ ...source, size: 'XL' }));
+  expect(apiLineSourceKey({ ...source, sourceItemIdx: 0 })).not.toBe(apiLineSourceKey({ ...source, sourceItemIdx: 1 }));
 });
 
 test('builds the exact three-style SanMar order confirmed by PO 58989', () => {
@@ -49,6 +56,11 @@ test('a line with vendor acceptance history cannot be removed', () => {
   expect(result.reason).toMatch(/already has API/);
 });
 
+test('a partially recorded legacy API stamp also blocks removal', () => {
+  const result = removeApiLineFromPoItems([{ ...items[0], po_lines: [{ ...po, vendor_keys: { order_no: 'TX-OLD' } }] }], { sourcePO: po.po_id, sourceItemIdx: 0, size: 'S', quantity: 8 });
+  expect(result.removed).toBe(false);
+});
+
 test('removing a size updates the queued batch quantity and cost', () => {
   const batches = [{ id: 'BPO-1', items: [{ item_idx: 0, sku: 'ST420', color: 'Forest Green', sizes: { S: 8, M: 2 }, qty: 10, unit_cost: 17.25 }], total_cost: 172.5 }];
   const next = removeApiLineFromBatchPOs(batches, { sourceBatchId: 'BPO-1', sourceItemIdx: 0, size: 'S', quantity: 8 });
@@ -62,6 +74,36 @@ test('API verification reports accepted quantities and predicted warehouses by s
     { style: 'ST420', size: 'M', qty: 36, warehouse: 'Reno, NV' },
   ] } });
   expect(verification.accepted).toBe(true);
+  expect(verification.verified).toBe(true);
   expect(verification.bySize.S).toEqual({ quantity: 8, warehouses: ['Reno, NV'] });
   expect(verification.bySize.M.quantity).toBe(36);
+});
+
+test('API verification flags the reported 75-versus-100 quantity mismatch', () => {
+  const verification = apiVerificationForPoLine(
+    { sku: 'ST420', color: 'Forest Green' },
+    { ...po, S: 20, M: 40, L: 30, XL: 8, '2XL': 2, api_order_id: 'TX-2', vendor_keys: { lines: [
+      { style: 'ST420', size: 'S', qty: 8, warehouse: 'Reno, NV' },
+      { style: 'ST420', size: 'M', qty: 36, warehouse: 'Reno, NV' },
+      { style: 'ST420', size: 'L', qty: 24, warehouse: 'Reno, NV' },
+      { style: 'ST420', size: 'XL', qty: 6, warehouse: 'Reno, NV' },
+      { style: 'ST420', size: '2XL', qty: 1, warehouse: 'Reno, NV' },
+    ] } },
+  );
+
+  expect(Object.values(verification.expectedBySize).reduce((sum, qty) => sum + qty, 0)).toBe(100);
+  expect(Object.values(verification.bySize).reduce((sum, entry) => sum + entry.quantity, 0)).toBe(75);
+  expect(verification.accepted).toBe(true);
+  expect(verification.verified).toBe(false);
+  expect(verification.discrepancies).toEqual(expect.arrayContaining([
+    { size: 'S', expected: 20, recorded: 8 },
+    { size: 'M', expected: 40, recorded: 36 },
+  ]));
+});
+
+test('a legacy API id is acknowledged but not falsely called size-verified', () => {
+  const verification = apiVerificationForPoLine(items[0], { ...po, api_order_id: 'LEGACY-1' });
+  expect(verification.accepted).toBe(true);
+  expect(verification.hasLineDetail).toBe(false);
+  expect(verification.verified).toBe(false);
 });

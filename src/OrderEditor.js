@@ -15466,6 +15466,8 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
       const apiPo=poItems.map(x=>x.po).find(p=>p&&p.api_order_id)||(po&&po.api_order_id?po:null);
       const apiAcceptedCount=poItems.filter(x=>x.po&&x.po.api_order_id).length;
       const apiPartiallyRecorded=apiAcceptedCount>0&&apiAcceptedCount<poItems.length;
+      const apiVerifiedCount=poItems.filter(x=>apiVerificationForPoLine(x.item,x.po).verified).length;
+      const apiHasUnverified=apiAcceptedCount>0&&apiVerifiedCount<poItems.length;
       const merchandiseTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='shipping'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
@@ -15568,8 +15570,12 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
           {!isDecoPO&&!isManualCostPO&&<div className="card" style={{marginBottom:16}}>
             <div className="card-header"><h2>Line Items</h2></div>
             <div className="card-body">
-              {apiPo&&<div style={{marginBottom:10,padding:'8px 10px',borderRadius:6,background:apiPartiallyRecorded?'#fff7ed':'#f0fdf4',border:'1px solid '+(apiPartiallyRecorded?'#fdba74':'#86efac'),color:apiPartiallyRecorded?'#9a3412':'#166534',fontSize:11,fontWeight:600}}>
-                {apiPartiallyRecorded?'⚠ Only '+apiAcceptedCount+' of '+poItems.length+' PO item lines have a saved API acknowledgement. Do not resubmit the whole PO; verify the unmarked lines first.':'✓ Every item line below carries the vendor API acknowledgement.'}
+              {apiPo&&<div style={{marginBottom:10,padding:'8px 10px',borderRadius:6,background:(apiPartiallyRecorded||apiHasUnverified)?'#fff7ed':'#f0fdf4',border:'1px solid '+((apiPartiallyRecorded||apiHasUnverified)?'#fdba74':'#86efac'),color:(apiPartiallyRecorded||apiHasUnverified)?'#9a3412':'#166534',fontSize:11,fontWeight:600}}>
+                {apiPartiallyRecorded
+                  ?'⚠ Only '+apiAcceptedCount+' of '+poItems.length+' PO item lines have a saved API acknowledgement. Do not resubmit the whole PO; verify the unmarked lines first.'
+                  :apiHasUnverified
+                    ?'⚠ Every item line has an API acknowledgement, but only '+apiVerifiedCount+' of '+poItems.length+' have size quantities that exactly match this PO. Review the flagged lines before taking action.'
+                    :'✓ Every item line below is API-acknowledged and its recorded size quantities exactly match this PO.'}
                 <span style={{fontWeight:400}}> “Open” in the size table means ordered but not yet received; it does not mean un-ordered.</span>
               </div>}
               <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
@@ -15589,13 +15595,20 @@ const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLoc
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
                     const apiCheck=apiVerificationForPoLine(it,p);
                     const acceptedSizes=Object.entries(apiCheck.bySize).map(([size,v])=>size+':'+v.quantity).join(' ');
+                    const apiMismatch=apiCheck.discrepancies.map(d=>d.size+' PO:'+d.expected+' API:'+d.recorded).join(' · ');
                     const expectedOrigins=[...new Set(apiCheck.rows.map(row=>row.warehouse||row.warehouse_name||'').filter(Boolean))];
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                       <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
                       <td style={{padding:'6px 8px',color:'#64748b'}}>{it.color}</td>
                       <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{qty}<div style={{fontSize:10,color:'#94a3b8'}}>{sk.map(sz=>sz+':'+p[sz]).join(' ')}</div></td>
-                      <td style={{padding:'6px 8px'}}>{apiCheck.accepted?<><div style={{color:'#0f766e',fontWeight:800}}>✓ Accepted</div><div style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{acceptedSizes||'Legacy acknowledgement — size detail not captured'}</div></>:<span style={{color:'#b45309',fontWeight:700}}>Not recorded</span>}</td>
+                      <td style={{padding:'6px 8px'}}>{apiCheck.verified
+                        ?<><div style={{color:'#0f766e',fontWeight:800}}>✓ Verified</div><div style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{acceptedSizes}</div></>
+                        :apiCheck.accepted&&apiCheck.hasLineDetail
+                          ?<><div style={{color:'#c2410c',fontWeight:800}}>⚠ Quantity mismatch</div><div style={{fontSize:9,color:'#9a3412',fontFamily:'monospace'}}>{apiMismatch}</div></>
+                          :apiCheck.accepted
+                            ?<><div style={{color:'#b45309',fontWeight:800}}>Acknowledged — not size-verified</div><div style={{fontSize:9,color:'#64748b'}}>Legacy API record has no submitted line detail.</div></>
+                            :<span style={{color:'#b45309',fontWeight:700}}>Not recorded</span>}</td>
                       <td style={{padding:'6px 8px'}}>{expectedOrigins.length?<><div style={{fontWeight:700,color:'#334155'}}>{expectedOrigins.join(' · ')}</div><div style={{fontSize:9,color:'#94a3b8'}}>Prediction saved at submission</div></>:<span style={{color:'#94a3b8'}}>Not captured</span>}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
                       <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>

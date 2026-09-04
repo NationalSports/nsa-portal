@@ -1,8 +1,31 @@
-const norm = value => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const norm = value => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+const PO_NON_SIZE_FIELDS = new Set([
+  'status', 'po_id', 'received', 'shipments', 'cancelled', 'vendor', 'created_at',
+  'expected_date', 'memo', 'po_type', 'unit_cost', 'drop_ship', 'billed',
+  'tracking_numbers', 'deco_vendor', 'deco_type', 'notes', 'shipping',
+  'batch_queue_id', 'batch_po_number', 'preexisting', 'email_history',
+  'api_order_id', 'api_ordered_at', 'vendor_keys',
+]);
+
+const poSizeQuantities = po => Object.fromEntries(Object.entries(po || {}).filter(([key, value]) => (
+  !key.startsWith('_') && !PO_NON_SIZE_FIELDS.has(key) && typeof value === 'number' && value > 0
+)));
+
+// Display line numbers are regenerated after a removal, so they cannot safely
+// key resolver, picker, or removal state. This identity survives renumbering.
+export function apiLineSourceKey(line) {
+  return [
+    line?.sourceSO, line?.sourcePO, line?.sourceBatchId,
+    Number.isInteger(line?.sourceItemIdx) ? line.sourceItemIdx : '',
+    line?.sourceSku || line?.style, line?.sourceColor || line?.color, line?.size,
+  ].map(norm).join('|');
+}
 
 const poHasHistory = po => {
   const anyPositive = value => value && Object.values(value).some(qty => Number(qty) > 0);
-  return !!(po && (po.api_order_id || anyPositive(po.received) || anyPositive(po.billed)
+  return !!(po && (po.api_order_id || po.api_ordered_at || po.vendor_keys?.order_no
+    || anyPositive(po.received) || anyPositive(po.billed)
     || (po.shipments || []).length || (po.tracking_numbers || []).length));
 };
 
@@ -37,8 +60,7 @@ export function removeApiLineFromPoItems(items, line) {
   const nextQty = Math.max(0, current - Math.min(current, removeQty));
   if (nextQty > 0) nextPo[size] = nextQty;
   else delete nextPo[size];
-  const meta = new Set(['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type','notes','shipping']);
-  const unitsLeft = Object.entries(nextPo).reduce((sum, [key, value]) => sum + (!key.startsWith('_') && !meta.has(key) && typeof value === 'number' ? value : 0), 0);
+  const unitsLeft = Object.values(poSizeQuantities(nextPo)).reduce((sum, value) => sum + value, 0);
   const nextLines = unitsLeft > 0
     ? items[itemIndex].po_lines.map((entry, index) => index === poIndex ? nextPo : entry)
     : items[itemIndex].po_lines.filter((_, index) => index !== poIndex);
@@ -80,9 +102,10 @@ export function removeApiLineFromBatchPOs(batchPOs, line) {
 export function apiVerificationForPoLine(item, po) {
   const rows = Array.isArray(po?.vendor_keys?.lines) ? po.vendor_keys.lines : [];
   const sku = norm(item?.sku);
-  const relevant = rows.filter(row => {
+  const exact = rows.filter(row => sku && norm(row.style || row.sku) === sku);
+  const relevant = exact.length ? exact : rows.filter(row => {
     const style = norm(row.style || row.sku);
-    return !sku || !style || style === sku || sku.startsWith(style) || style.startsWith(sku);
+    return !sku || !style || sku.startsWith(style) || style.startsWith(sku);
   });
   const bySize = {};
   relevant.forEach(row => {
@@ -94,5 +117,15 @@ export function apiVerificationForPoLine(item, po) {
     if (warehouse && !prev.warehouses.includes(warehouse)) prev.warehouses.push(warehouse);
     bySize[size] = prev;
   });
-  return { accepted: !!po?.api_order_id, orderId: po?.api_order_id || '', bySize, rows: relevant };
+  const expectedBySize = poSizeQuantities(po);
+  const discrepancies = [...new Set([...Object.keys(expectedBySize), ...Object.keys(bySize)])]
+    .filter(size => Number(expectedBySize[size] || 0) !== Number(bySize[size]?.quantity || 0))
+    .map(size => ({ size, expected: Number(expectedBySize[size] || 0), recorded: Number(bySize[size]?.quantity || 0) }));
+  const accepted = !!po?.api_order_id;
+  const hasLineDetail = relevant.length > 0;
+  const verified = accepted && hasLineDetail && discrepancies.length === 0;
+  return {
+    accepted, verified, hasLineDetail, orderId: po?.api_order_id || '',
+    expectedBySize, bySize, discrepancies, rows: relevant,
+  };
 }
