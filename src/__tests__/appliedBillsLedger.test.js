@@ -165,6 +165,21 @@ describe('mergeServerBills (Bill History union)', () => {
     expect(merged[0].id).toBe('srv-2'); // newest first
     expect(merged[1].id).toBe('a');
   });
+
+  it('keeps distinct S&S invoices that share one split-shipment order number', () => {
+    const merged = mergeServerBills([], [
+      srv({ id: 1, doc_norm: '100404449', doc_number: '100404449', si_doc_number: '4504', vendor: 'S&S Activewear' }),
+      srv({ id: 2, doc_norm: '100404450', doc_number: '100404450', si_doc_number: '4504', vendor: 'S AND S ACTIVEWEAR' }),
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(new Set(merged.map(row => row.parsed.doc_number))).toEqual(new Set(['100404449', '100404450']));
+  });
+
+  it('does not let a cached S&S sibling hide a server-ledger invoice for the same order', () => {
+    const local = [{ id: 'cached', parsed: { doc_number: '100404450', si_doc_number: '4504', vendor: 'S&S Activewear' } }];
+    const merged = mergeServerBills(local, [srv({ id: 1, doc_norm: '100404449', doc_number: '100404449', si_doc_number: '4504', vendor: 'S&S Activewear' })]);
+    expect(merged).toHaveLength(2);
+  });
 });
 
 // ── Adversarial-input regressions (2026-07-18 sweep) ──

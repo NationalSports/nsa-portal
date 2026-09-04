@@ -79,6 +79,14 @@ describe('supplier-bill apply paths (App.js)', () => {
     expect(APP).toContain("b.portalMsg=portalWasAlreadyApplied?'Already applied to Portal; QBO backfill verified':'Applied to Portal after QBO verification'");
     expect(APP).toContain('if(portalApplied&&!portalWasAlreadyApplied&&_billHasTarget(bill))');
   });
+
+  it('admits an explicit history backfill only to QBO and persists server-row results', () => {
+    expect(APP).toContain('if(b.portalStatus&&!b._qbBackfill)return false');
+    expect(APP).toContain('if(!p._qbBackfill&&(_docAlreadyApplied(p.doc_number)');
+    expect(APP).toContain('const selected=billImport.parsed.filter(b=>!b._qbBackfill&&_billIsReadyToPush(b)');
+    expect(APP).toContain("_qbBackfill:true,parsed:{...(sb.parsed||{}),_qbBackfill:true}");
+    expect(APP).toContain('updated.push({...cleanSource,parsed:cleanParsed,qbStatus:result.qbStatus');
+  });
 });
 
 describe('duplicateBillDetail against the real SO-1468 shape', () => {
