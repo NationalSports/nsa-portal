@@ -254,17 +254,24 @@ exports.handler = async (event) => {
         // returned 4.52/5.51/6.30 when our real prices were 3.52/4.51/5.30 (and 3.05
         // base on sale). The account price lives in the Pricing service's getPricing —
         // the same call + field priority (myPrice → salePrice → piecePrice) the Order
-        // Editor uses, which has been reliable. One lookup per style (uniform across
-        // colors); keep the lowest price seen per size. Falls back to the product-info
-        // fields if the pricing call fails.
+        // Editor uses, which has been reliable. One lookup per style returns all
+        // color/size rows; keep those dimensions intact so a promo on one color never
+        // becomes another color's cost. If account pricing is unavailable, preserve
+        // the existing catalog cost instead of replacing it with product-info list price.
         const priceBySize = {};
+        const priceByColorSize = {};
+        const priceColorKey = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         try {
           const priced = await sm('pricing', 'getPricing', { style, color: '', size: '' });
           for (const r of arr(priced.items)) {
             const sz = String(r.size || r.labelSize || '').trim();
             if (!sz) continue;
             const p = num(r.myPrice) || num(r.salePrice) || num(r.piecePrice);
-            if (p > 0 && (priceBySize[sz] == null || p < priceBySize[sz])) priceBySize[sz] = p;
+            const ck = priceColorKey(r.catalogColor || r.color || r.colorName || r.productColor);
+            if (ck) {
+              priceByColorSize[ck] = priceByColorSize[ck] || {};
+              if (p > 0 && (priceByColorSize[ck][sz] == null || p < priceByColorSize[ck][sz])) priceByColorSize[ck][sz] = p;
+            } else if (p > 0 && (priceBySize[sz] == null || p < priceBySize[sz])) priceBySize[sz] = p;
           }
         } catch (e) { console.warn('[sanmar-brands-sync] pricing', style, e.message); }
 
@@ -279,15 +286,15 @@ exports.handler = async (event) => {
           const recs = grp.recs, r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          // Our real per-size cost: the account price from getPricing when we got
-          // one for this size, else the product-info fields. Base cost = the LOWEST
-          // size's price (the XS–XL tier) — recs[0] is whatever size SanMar lists first
-          // (often an upsized 2XL+ row), which inflated nsa_cost for every color
-          // (e.g. LPC380 stored 4.52 vs the real 3.05 base).
+          // Our real per-size cost comes only from account getPricing. Base cost is
+          // the lowest size price (the XS–XL tier). If this color has no account-price
+          // row, omit cost fields from the upsert so the last verified cost survives.
           const costOf = (r) => {
             const sz = String(r.size || r.labelSize || '').trim();
+            const exact = priceByColorSize[priceColorKey(grp.colorName)] || {};
+            if (sz && exact[sz] > 0) return exact[sz];
             if (sz && priceBySize[sz] > 0) return priceBySize[sz];
-            return num(r.myPrice) || num(r.salePrice) || num(r.piecePrice) || num(r.customerPrice) || num(r.casePrice);
+            return 0;
           };
           const _perSize = recs.map(costOf).filter((c) => c > 0);
           const cost   = _perSize.length ? Math.min(..._perSize) : 0;
@@ -312,9 +319,11 @@ exports.handler = async (event) => {
             color: grp.colorName,
             category: mapCategory(title),
             retail_price: retail,
-            nsa_cost: cost,
-            size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
-            catalog_sell_price: cost > 0 ? Math.round(cost * 1.65 * 100) / 100 : null,
+            ...(cost > 0 ? {
+              nsa_cost: cost,
+              size_costs: Object.keys(sizeCosts).length ? sizeCosts : null,
+              catalog_sell_price: Math.round(cost * 1.65 * 100) / 100,
+            } : {}),
             is_active: true,
             available_sizes: sizes,
             image_front_url: img || null,

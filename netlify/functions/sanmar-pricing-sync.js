@@ -5,9 +5,9 @@
 //
 // Pricing is looked up per SanMar STYLE (e.g. "ST520"). Product SKUs are stored
 // color-suffixed ("ST520-Cardinal"), so the style is the segment before the first
-// "-". SanMar prices per style+size (uniform across colors), so one lookup re-costs
-// every color of a style. nsa_cost = the lowest (base, XS–XL) size price; size_costs
-// holds the per-size upcharges (2XL/3XL+).
+// "-". One style lookup can return multiple colors and sizes; those dimensions must
+// remain scoped so a promotion on one color never re-costs the others. nsa_cost is
+// the lowest base-tier price for that color; size_costs holds 2XL/3XL+ differences.
 //
 // Environment variables required:
 //   SANMAR_USERNAME, SANMAR_PASSWORD — SanMar API credentials
@@ -101,6 +101,33 @@ function parseSizeCosts(xml) {
   return map;
 }
 
+function parsePricingRows(xml) {
+  var rows = [];
+  var wrappers = ['listResponse', 'PriceInfo', 'productPricing', 'return', 'item'];
+  var blocks = null;
+  for (var w = 0; w < wrappers.length; w++) {
+    var re = new RegExp('<(?:[\\w]+:)?' + wrappers[w] + '\\b[^>]*>([\\s\\S]*?)</(?:[\\w]+:)?' + wrappers[w] + '>', 'gi');
+    var found = [];
+    var m;
+    while ((m = re.exec(xml)) !== null) found.push(m[1]);
+    if (found.length && found.some(function(b) { return /<(?:[\w]+:)?size\b/i.test(b); })) { blocks = found; break; }
+  }
+  if (!blocks) return rows;
+  blocks.forEach(function(b) {
+    var size = extractTag(b, 'size') || extractTag(b, 'labelSize');
+    if (!size) return;
+    var color = extractTag(b, 'catalogColor') || extractTag(b, 'color') || extractTag(b, 'colorName') || extractTag(b, 'productColor') || '';
+    var price = 0;
+    ['myPrice', 'salePrice', 'piecePrice', 'customerPrice'].some(function(key) {
+      var n = parseFloat(extractTag(b, key));
+      if (n > 0) { price = n; return true; }
+      return false;
+    });
+    if (price > 0) rows.push({ color: color, size: size.trim(), price: price });
+  });
+  return rows;
+}
+
 // Stable stringify (sorted keys) so we can diff a freshly-parsed map against
 // the stored jsonb without false positives from key ordering.
 function stableSC(obj) {
@@ -150,7 +177,7 @@ exports.handler = async (event) => {
     //    non-SanMar vendor) — the old vendor-only filter skipped those, so a wrong
     //    cost on such a row could never be corrected here.
     const vendorIds = vendors.map(function(v) { return '"' + v.id + '"'; }).join(',');
-    const pRes = await fetch(sbUrl + '/rest/v1/products?or=(vendor_id.in.(' + vendorIds + '),inventory_source.eq.sanmar)&select=id,sku,nsa_cost,size_costs,vendor_id,inventory_source&limit=100000', { headers: sbHeaders });
+    const pRes = await fetch(sbUrl + '/rest/v1/products?or=(vendor_id.in.(' + vendorIds + '),inventory_source.eq.sanmar)&select=id,sku,color,nsa_cost,size_costs,vendor_id,inventory_source&limit=100000', { headers: sbHeaders });
     const products = await pRes.json();
     if (!Array.isArray(products) || !products.length) {
       return { statusCode: 200, headers, body: JSON.stringify({ message: 'No SanMar products in database', updated: 0, vendors_found: vendors.length }) };
@@ -158,8 +185,8 @@ exports.handler = async (event) => {
 
     // 3. Group products by SanMar STYLE. Stored SKUs are color-suffixed
     //    ("ST520-Cardinal"); the SanMar style is the segment before the first "-".
-    //    Pricing is per style+size (uniform across colors), so one lookup re-costs
-    //    every color of the style. (The old code passed the full color-suffixed SKU
+    //    One style lookup returns all available color/size prices, so it can re-cost
+    //    every color without discarding color scope. (The old code passed the full color-suffixed SKU
     //    as the style to getSignInPricing, which matched nothing — so brand-synced
     //    SanMar rows were never re-costed by this function.)
     var styleOf = function(sku) { return String(sku || '').split('-')[0].trim(); };
@@ -202,29 +229,30 @@ exports.handler = async (event) => {
             .filter(function(v) { return v > 0; });
         }
 
-        // Build the per-size cost map (cheapest customer-facing price per size).
-        // Only persist it when sizes actually differ (an upcharge exists); a flat
-        // price needs no map and falls back to nsa_cost in the app.
-        var sizeCosts = parseSizeCosts(xml);
-        var scVals = Object.keys(sizeCosts).map(function(s) { return sizeCosts[s]; });
-
-        if (!scVals.length && !prices.length) continue;
-
-        // Base cost = the lowest (XS–XL tier) size price. SanMar record order varies
-        // (an upsized 2XL+ row can come first), so take the min — matching
-        // sanmar-brands-sync and what the store editor shows as the item cost.
-        // Prefer the per-size map (it honors sale/my price); the flat piecePrice
-        // scan is the fallback when the response has no per-size structure.
-        var newCost = scVals.length ? Math.min.apply(null, scVals) : Math.min.apply(null, prices);
-        var distinctVals = {};
-        Object.keys(sizeCosts).forEach(function(s) { distinctVals[sizeCosts[s].toFixed(2)] = true; });
-        var nextSizeCosts = Object.keys(distinctVals).length > 1 ? sizeCosts : null;
-        var nextSCStr = stableSC(nextSizeCosts);
+        var pricingRows = parsePricingRows(xml);
+        if (!pricingRows.length && !prices.length) continue;
+        var colorKey = function(v) { return String(v || '').toLowerCase().replace(/[^a-z0-9]/g, ''); };
+        var hasColoredRows = pricingRows.some(function(r) { return colorKey(r.color); });
 
         var matching = byStyle[style];
 
         for (var j = 0; j < matching.length; j++) {
           var prod = matching[j];
+          var wanted = colorKey(prod.color);
+          var scopedRows = wanted ? pricingRows.filter(function(r) { return colorKey(r.color) === wanted; }) : pricingRows;
+          // An exact-color miss must not silently inherit another color's promo.
+          if (!scopedRows.length && !hasColoredRows) scopedRows = pricingRows;
+          var sizeCosts = {};
+          scopedRows.forEach(function(r) {
+            if (sizeCosts[r.size] == null || r.price < sizeCosts[r.size]) sizeCosts[r.size] = r.price;
+          });
+          var scVals = Object.keys(sizeCosts).map(function(s) { return sizeCosts[s]; });
+          if (!scVals.length && hasColoredRows) continue;
+          var newCost = scVals.length ? Math.min.apply(null, scVals) : Math.min.apply(null, prices);
+          var distinctVals = {};
+          Object.keys(sizeCosts).forEach(function(s) { distinctVals[sizeCosts[s].toFixed(2)] = true; });
+          var nextSizeCosts = Object.keys(distinctVals).length > 1 ? Object.fromEntries(Object.entries(sizeCosts).filter(function(entry) { return Math.abs(entry[1] - newCost) > 0.001; })) : null;
+          var nextSCStr = stableSC(nextSizeCosts);
           var costChanged = Math.abs((prod.nsa_cost || 0) - newCost) > 0.005;
           var scChanged = stableSC(prod.size_costs) !== nextSCStr;
           if (costChanged || scChanged) {
@@ -267,3 +295,5 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers, body: JSON.stringify({ error: 'Sync crashed: ' + err.message }) };
   }
 };
+
+exports._test = { parseSizeCosts, parsePricingRows };
